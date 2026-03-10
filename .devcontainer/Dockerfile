@@ -29,12 +29,12 @@ WORKDIR /home/vscode
 # Accept conda ToS and initialize conda
 RUN conda tos accept && conda init bash
 
-# Create conda environment from environment.yml (uses channels aihabitat + conda-forge)
-COPY --chown=vscode:vscode environment.yml /home/vscode/environment.yml
+# Create conda environment from environment.yaml (uses channels aihabitat + conda-forge)
+COPY --chown=vscode:vscode environment.yaml /home/vscode/environment.yaml
 RUN . /opt/conda/etc/profile.d/conda.sh && \
-    conda env create -f /home/vscode/environment.yml && \
+    conda env create -f /home/vscode/environment.yaml && \
     conda clean -afy && \
-    rm /home/vscode/environment.yml
+    rm /home/vscode/environment.yaml
 
 # Ensure the environment is activated on shell startup
 RUN echo "conda activate etpr1" >> ~/.bashrc
