@@ -34,6 +34,7 @@ Create the conda environment and install dependencies:
 cd ETP-R1
 conda env create -f environment.yaml
 conda activate etpr1
+pip install -r requirements.txt
 ```
 
 ### 3. Install Habitat-Lab
