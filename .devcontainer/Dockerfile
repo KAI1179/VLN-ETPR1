@@ -39,7 +39,7 @@ RUN . /opt/conda/etc/profile.d/conda.sh && \
 # Install additional Python packages using pip
 COPY --chown=vscode:vscode requirements.txt /home/vscode/requirements.txt
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && \
-    pip install -r /home/vscode/requirements.txt && \
+    pip install -i https://mirrors.aliyun.com/pypi/simple -r /home/vscode/requirements.txt && \
     rm /home/vscode/requirements.txt
 
 # Ensure the environment is activated on shell startup
