@@ -51,7 +51,6 @@ cd habitat-lab-0.1.7
 python setup.py develop --all
 ```
 
-
 ## Data Preparation
 
 ### 1. Matterport3D (MP3D) Dataset

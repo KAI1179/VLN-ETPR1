@@ -37,4 +37,4 @@ RUN . /opt/conda/etc/profile.d/conda.sh && \
     rm /home/vscode/environment.yml
 
 # Ensure the environment is activated on shell startup
-RUN echo "conda activate prior" >> ~/.bashrc
+RUN echo "conda activate etpr1" >> ~/.bashrc
