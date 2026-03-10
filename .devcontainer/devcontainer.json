@@ -23,7 +23,7 @@
     "forwardPorts": [
         // 7860 // Gradio default port
     ],
-    "postCreateCommand": "bash -c 'source /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && cd /workspaces/ETP-R1/data/habitat-lab-0.1.7 && python setup.py develop --all &&  && echo DONE'",
+    "postCreateCommand": "bash -c 'source /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && cd /workspaces/ETP-R1/data/habitat-lab-0.1.7 && python setup.py develop --all && echo DONE'",
     // Configure tool-specific properties.
     "customizations": {
         "vscode": {
