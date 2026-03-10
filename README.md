@@ -32,16 +32,8 @@ Create the conda environment and install dependencies:
 
 ```bash
 cd ETP-R1
-
-# 1. Create Conda environment
 conda env create -f environment.yaml
 conda activate etpr1
-
-# 2. Install PyTorch
-pip install torch==1.9.1+cu111 torchvision==0.10.1+cu111 torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
-
-# 3. Install Habitat-Sim (Headless version)
-conda install habitat-sim=0.1.7=py3.6_headless_linux_856d4b08c1a2632626bf0d205bf46471a99502b7 headless -c conda-forge -c aihabitat
 ```
 
 ### 3. Install Habitat-Lab
