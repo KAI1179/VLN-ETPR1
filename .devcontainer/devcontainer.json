@@ -1,0 +1,41 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/docker-existing-dockerfile
+{
+    "name": "ETP-R1 Dev Container",
+    "build": {
+        // Sets the run context to one level up instead of the .devcontainer folder.
+        "context": "..",
+        // Update the 'dockerFile' property if you aren't using the standard 'Dockerfile' filename.
+        "dockerfile": "Dockerfile"
+    },
+    "runArgs": [
+        // Enable GPU support
+        "--gpus",
+        "all",
+        // Increase shared memory size for PyTorch DataLoader
+        "--shm-size=16gb",
+        // Set IPC mode for better multi-process communication
+        "--ipc=host",
+        // Set network to host
+        "--network=host"
+    ],
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    "forwardPorts": [
+        // 7860 // Gradio default port
+    ],
+    "postCreateCommand": "bash -c 'source /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && cd /workspaces/ETP-R1 && echo DONE'",
+    // Configure tool-specific properties.
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.black-formatter", // Black Formatter
+                "ms-python.isort", // isort
+                "ms-python.vscode-pylance", // Pylance
+                "ms-python.python", // Python
+                "ms-python.debugpy" // Python Debugger
+            ]
+        }
+    },
+    // Uncomment to connect as an existing user other than the container default. More info: https://aka.ms/dev-containers-non-root.
+    "remoteUser": "vscode"
+}
