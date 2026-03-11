@@ -97,6 +97,102 @@ flag4="--exp_name release_r2r_grpo
       MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
       "
 
+flag5="--exp_name release_r2r_priorgt_dagger
+      --run-type dagger
+      --exp-config run_r2r/iter_train.yaml
+      SIMULATOR_GPU_IDS [0,1,2,3]
+      TORCH_GPU_IDS [0,1,2,3]
+      GPU_NUMBERS 4
+      NUM_ENVIRONMENTS 8
+      TRAINER_NAME SS-ETP-PriorGT
+      MODEL.policy_name PriorGTPolicy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
+      IL.iters 30000
+      IL.lr 1e-5
+      IL.log_every 200
+      IL.ml_weight 1.0
+      IL.sample_ratio 0.75
+      IL.decay_interval 2000
+      IL.warmup_iters 500
+      IL.min_lr_ratio 1.0
+      IL.load_from_ckpt False
+      IL.is_requeue False
+      IL.waypoint_aug  True
+      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+      TASK_CONFIG.DATASET.SUFFIX _90
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      "
+
+flag6="--exp_name release_r2r_priorgt_grpo
+      --run-type grpo
+      --exp-config run_r2r/iter_train.yaml
+      SIMULATOR_GPU_IDS [0,1,2,3]
+      TORCH_GPU_IDS [0,1,2,3]
+      GPU_NUMBERS 4
+      NUM_ENVIRONMENTS 8
+      ONLY_LAST_SAVEALL True
+      TRAINER_NAME GRPO-ETP-PriorGT
+      MODEL.policy_name PriorGTPolicy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
+      GRPO.iters 500
+      GRPO.lr 2e-5
+      GRPO.warmup_iters 0
+      GRPO.min_lr_ratio 0.25
+      GRPO.log_every 10
+      GRPO.load_from_ckpt True
+      GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter25000.pth
+      GRPO.is_requeue False
+      GRPO.waypoint_aug  True
+      GRPO.sample_num 8
+      GRPO.update_epochs 1
+      GRPO.grpo_beta 0.04
+      GRPO.grpo_epsilon 0.2
+      GRPO.enable_amp False
+      GRPO.enable_all_dropouts True
+      GRPO.dropout_in_sampling True
+      GRPO.dropout_rate 0.10
+      GRPO.max_grad_norm 2.0
+      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+      TASK_CONFIG.DATASET.SUFFIX _10
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      "
+
+flag7="--exp_name release_r2r_priorgt_dagger
+      --run-type eval
+      --exp-config run_r2r/iter_train.yaml
+      SIMULATOR_GPU_IDS [0,1,2,3]
+      TORCH_GPU_IDS [0,1,2,3]
+      GPU_NUMBERS 4
+      NUM_ENVIRONMENTS 8
+      TRAINER_NAME SS-ETP-PriorGT
+      MODEL.policy_name PriorGTPolicy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
+      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter25000.pth
+      IL.back_algo control
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      "
+
+flag8="--exp_name release_r2r_priorgt_grpo
+      --run-type eval
+      --exp-config run_r2r/iter_train.yaml
+      SIMULATOR_GPU_IDS [0,1,2,3]
+      TORCH_GPU_IDS [0,1,2,3]
+      GPU_NUMBERS 4
+      NUM_ENVIRONMENTS 8
+      TRAINER_NAME GRPO-ETP-PriorGT
+      MODEL.policy_name PriorGTPolicy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
+      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_grpo/store/ckpt.iter270.pth
+      IL.back_algo control
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      "
+
 mode=$1
 case $mode in 
       dagger)
@@ -115,6 +211,22 @@ case $mode in
       echo "###### infer mode ######"
       python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag4
       ;;
+      priorgt_dagger)
+      echo "###### priorgt dagger train mode ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag5
+      ;;
+      priorgt_grpo)
+      echo "###### priorgt grpo train mode ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag6
+      ;;
+      priorgt_eval_ss)
+      echo "###### priorgt eval mode (SS ckpt) ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag7
+      ;;
+      priorgt_eval_grpo)
+      echo "###### priorgt eval mode (GRPO ckpt) ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag8
+      ;;
 esac
 
 # 命令行运行：
@@ -122,3 +234,7 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash grpo 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash eval 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash infer 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_dagger 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_grpo 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_ss 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_grpo 2333
