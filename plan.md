@@ -75,21 +75,13 @@ Precomputed GT cog. map (.npy)                                │
 
 The GT cognitive map is **8–40× smaller** than pre-embedded maps, with the embedding method choice deferred to runtime.
 
-### Precomputation Script: `precompute_cognitive_maps.py` (new, at project root)
+### Precomputation Script: `data/prior/__main__.py`
 
-```
-For each scene_id in MP3D:
-    gt_maps = GroundTruthGridMap.from_scene_id(scene_id)
-    for level_idx, gt_map in enumerate(gt_maps):
-        np.save(f"data/cognitive_maps/{scene_id}_level{level_idx}.npy", gt_map.grid)
-        # gt_map.grid shape: (OBJECT_CATEGORIES + REGION_CATEGORIES, ROWS, COLS) = (37, 500, 500)
-        # Also save offsets for coordinate transforms:
-        np.savez(f"data/cognitive_maps/{scene_id}_level{level_idx}_meta.npz",
-                 offset_x=gt_map.offset_x, offset_z=gt_map.offset_z,
-                 range_y=gt_map.range_y)
-```
+**Output for each episode**:
+- `data/cognitive_maps/{scene_id}/episode_{episode_id}.npy` — shape `(37, 500, 500)` float32
+- `data/cognitive_maps/{scene_id}/episode_{episode_id}_meta.npz` — contains metadata
 
-**Output**: `data/cognitive_maps/{scene_id}_level{N}.npy` — shape `(37, 500, 500)` float32
+See `data/prior/README.md` for detailed information.
 
 ### Runtime Embedding Step (on GPU, in MapEncoder)
 
@@ -113,7 +105,7 @@ This matmul is fast on GPU (101×101×37 × 37×EMBEDDING_DIM ≈ 113K × EMBEDD
 
 ## Embedding Method Comparison
 
-The `data/prior/` code currently uses spaCy `en_core_web_lg` (300-dim GloVe vectors) to embed category names. This choice affects the embedding grid map dimension and quality. Here is a comparison of alternatives:
+The `data/prior/` code currently uses spaCy `en_core_web_lg` (300-dim GloVe vectors) to embed category names, although the code is not used when generating GT cognitive maps. Here is a comparison of alternatives:
 
 ### Option 1: spaCy GloVe (current, `en_core_web_lg`)
 
