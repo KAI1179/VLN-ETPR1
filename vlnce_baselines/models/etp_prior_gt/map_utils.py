@@ -1,11 +1,12 @@
 import os
+from typing import cast
 
 import numpy as np
 import torch
 
 
 class PrecomputedCognitiveMap:
-    """Lightweight wrapper for a precomputed cognitive grid map loaded from .npy."""
+    """Lightweight wrapper for a precomputed cognitive grid map loaded from .npz."""
 
     def __init__(self, grid: np.ndarray, offset_x: float, offset_z: float, cell_size: float = 0.1):
         self.grid = grid          # (CATEGORIES, ROWS, COLS)
@@ -25,21 +26,21 @@ def load_cognitive_map(
     """Load a precomputed cognitive map from disk.
 
     Maps are stored as:
-        {precomputed_dir}/{scene_id}/episode_{episode_id}.npy
-        {precomputed_dir}/{scene_id}/episode_{episode_id}_meta.npz
+        {precomputed_dir}/{scene_id}/episode_{episode_id}.npz
 
     Returns None if the file does not exist (some episodes produce empty maps).
     """
-    npy_path = os.path.join(precomputed_dir, scene_id, f"episode_{episode_id}.npy")
-    meta_path = os.path.join(precomputed_dir, scene_id, f"episode_{episode_id}_meta.npz")
-    if not os.path.exists(npy_path):
+    npz_path = os.path.join(precomputed_dir, scene_id, f"episode_{episode_id}.npz")
+    if not os.path.exists(npz_path):
         return None
-    grid = np.load(npy_path)
-    meta = np.load(meta_path, allow_pickle=True)
+    data = np.load(npz_path, allow_pickle=True)
+    grid = cast(np.ndarray, data["grid"])
+    offset_x = float(data["offset_x"])
+    offset_z = float(data["offset_z"])
     return PrecomputedCognitiveMap(
         grid=grid,
-        offset_x=float(meta["offset_x"]),
-        offset_z=float(meta["offset_z"]),
+        offset_x=offset_x,
+        offset_z=offset_z,
     )
 
 
