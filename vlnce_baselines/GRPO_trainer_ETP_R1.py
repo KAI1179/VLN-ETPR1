@@ -7,8 +7,6 @@ from collections import defaultdict
 from typing import Dict, List
 import jsonlines
 
-import lmdb
-import msgpack_numpy
 import numpy as np
 import math
 import time
@@ -69,14 +67,14 @@ class RLTrainer(BaseVLNCETrainer):
         self.max_len = int(config.GRPO.max_traj_len) #  * 0.97 transfered gt path got 0.96 spl
         self.illegal_episodes_count = 0
 
-        self.grpo_epsilon = config.GRPO.grpo_epsilon  
-        self.grpo_beta = config.GRPO.grpo_beta        
+        self.grpo_epsilon = config.GRPO.grpo_epsilon
+        self.grpo_beta = config.GRPO.grpo_beta
         if self.grpo_beta < 1e-6:
             self.need_ref_policy = False
         else:
             self.need_ref_policy = True
         self.max_grad_norm = config.GRPO.max_grad_norm
-        self.initial_num_envs = config.NUM_ENVIRONMENTS 
+        self.initial_num_envs = config.NUM_ENVIRONMENTS
         self.grpo_update_epochs = config.GRPO.update_epochs
         self.enable_amp = config.GRPO.enable_amp
         self.enable_all_dropouts = config.GRPO.enable_all_dropouts
@@ -96,8 +94,8 @@ class RLTrainer(BaseVLNCETrainer):
         if self.config.ONLY_LAST_SAVEALL and (not iteration == self.config.GRPO.iters):
             torch.save(
                         obj={
-                            "state_dict": self.policy.state_dict(), 
-                            "config": self.config, 
+                            "state_dict": self.policy.state_dict(),
+                            "config": self.config,
                             "iteration": iteration
                         },
                         f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
@@ -105,11 +103,11 @@ class RLTrainer(BaseVLNCETrainer):
         else:
             torch.save(
                 obj={
-                    "state_dict": self.policy.state_dict(), 
-                    "config": self.config, 
-                    "optim_state": self.optimizer.state_dict(), 
-                    "scheduler_state": self.scheduler.state_dict(), 
-                    "iteration": iteration, 
+                    "state_dict": self.policy.state_dict(),
+                    "config": self.config,
+                    "optim_state": self.optimizer.state_dict(),
+                    "scheduler_state": self.scheduler.state_dict(),
+                    "iteration": iteration,
                 },
                 f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
             )
@@ -198,11 +196,11 @@ class RLTrainer(BaseVLNCETrainer):
     def _init_envs(self):
         # for DDP to load different data
         self.config.defrost()
-        self.config.TASK_CONFIG.SEED = self.config.TASK_CONFIG.SEED + self.local_rank * 10 
+        self.config.TASK_CONFIG.SEED = self.config.TASK_CONFIG.SEED + self.local_rank * 10
         self.config.freeze()
 
         self.envs = construct_envs(
-            self.config, 
+            self.config,
             get_env_class(self.config.ENV_NAME),
             auto_reset_done=False
         )
@@ -257,7 +255,7 @@ class RLTrainer(BaseVLNCETrainer):
                 self.policy.eval()
             else:
                 raise ValueError("Mode must be 'train' or 'eval'.")
-            
+
     def _initialize_policy(
         self,
         config: Config,
@@ -277,13 +275,13 @@ class RLTrainer(BaseVLNCETrainer):
         from vlnce_baselines.waypoint_pred.TRM_net import BinaryDistPredictor_TRM
         self.waypoint_predictor = BinaryDistPredictor_TRM(device=self.device)
         cwp_fn = 'data/wp_pred/check_cwp_bestdist_hfov63' if self.config.MODEL.task_type == 'rxr' else 'data/wp_pred/check_cwp_bestdist_hfov90'
-        self.waypoint_predictor.load_state_dict(torch.load(cwp_fn, map_location = torch.device('cpu'))['predictor']['state_dict']) 
+        self.waypoint_predictor.load_state_dict(torch.load(cwp_fn, map_location = torch.device('cpu'))['predictor']['state_dict'])
         for param in self.waypoint_predictor.parameters():
             param.requires_grad_(False)
 
         self.policy.to(self.device)
         self.waypoint_predictor.to(self.device)
-        self.num_recurrent_layers = self.policy.net.num_recurrent_layers 
+        self.num_recurrent_layers = self.policy.net.num_recurrent_layers
 
         try:
             vln_bert_module = self.policy.net.vln_bert
@@ -326,7 +324,7 @@ class RLTrainer(BaseVLNCETrainer):
         else:
             self.optimizer = None
             print("Warning: No parameters were set to trainable. Optimizer not configured.")
-        
+
         num_warmup_steps = self.config.GRPO.warmup_iters
         num_training_steps = self.config.GRPO.iters
         min_lr_ratio = self.config.GRPO.min_lr_ratio
@@ -340,13 +338,13 @@ class RLTrainer(BaseVLNCETrainer):
             return decayed_lr_multiplier
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
-        if load_from_ckpt: 
-            if config.GRPO.is_requeue: 
+        if load_from_ckpt:
+            if config.GRPO.is_requeue:
                 import glob
                 search_pattern = os.path.join(config.CHECKPOINT_FOLDER, "*.pth")
                 ckpt_list = glob.glob(search_pattern)
                 ckpt_list.sort(key=os.path.getmtime)
-                ckpt_path = ckpt_list[-1] 
+                ckpt_path = ckpt_list[-1]
             else:
                 ckpt_path = config.GRPO.ckpt_to_load
             ckpt_dict = self.load_checkpoint(ckpt_path, map_location="cpu")
@@ -359,7 +357,7 @@ class RLTrainer(BaseVLNCETrainer):
                 self.policy.net = torch.nn.DataParallel(self.policy.net.to(self.device),
                     device_ids=[self.device], output_device=self.device)
                 incompatible_keys = self.policy.load_state_dict(ckpt_dict["state_dict"], strict=False)
-                self.policy.net = self.policy.net.module 
+                self.policy.net = self.policy.net.module
                 self.waypoint_predictor = torch.nn.DataParallel(self.waypoint_predictor.to(self.device),
                     device_ids=[self.device], output_device=self.device)
             elif 'module' not in list(ckpt_dict['state_dict'].keys())[0] and self.config.GPU_NUMBERS > 1:
@@ -397,7 +395,7 @@ class RLTrainer(BaseVLNCETrainer):
             else:
                 print("optimizer is initialized")
             logger.info(f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}")
-		
+
         if self.need_ref_policy:
             self.ref_policy = policy.from_config(
                 config=config,
@@ -405,7 +403,7 @@ class RLTrainer(BaseVLNCETrainer):
                 action_space=action_space,
             )
             self.ref_policy.to(self.device)
-            self.ref_policy.eval() 
+            self.ref_policy.eval()
             for param in self.ref_policy.parameters():
                 param.requires_grad = False
             if self.config.GPU_NUMBERS > 1:
@@ -435,7 +433,7 @@ class RLTrainer(BaseVLNCETrainer):
     def _vp_feature_variable(self, obs):
         batch_rgb_fts, batch_dep_fts, batch_loc_fts = [], [], []
         batch_nav_types, batch_view_lens = [], []
-        
+
         for i in range(self.envs.num_envs):
             rgb_fts, dep_fts, loc_fts , nav_types = [], [], [], []
             cand_idxes = np.zeros(12, dtype=np.bool)
@@ -450,7 +448,7 @@ class RLTrainer(BaseVLNCETrainer):
             dep_fts.append(obs['pano_depth'][i][~cand_idxes])
             loc_fts.append(obs['pano_angle_fts'][~cand_idxes])
             nav_types += [0] * (12-np.sum(cand_idxes))
-            
+
             batch_rgb_fts.append(torch.cat(rgb_fts, dim=0))
             batch_dep_fts.append(torch.cat(dep_fts, dim=0))
             batch_loc_fts.append(torch.cat(loc_fts, dim=0))
@@ -467,7 +465,7 @@ class RLTrainer(BaseVLNCETrainer):
             'rgb_fts': batch_rgb_fts, 'dep_fts': batch_dep_fts, 'loc_fts': batch_loc_fts,
             'nav_types': batch_nav_types, 'view_lens': batch_view_lens,
         }
-        
+
     def _nav_gmap_variable(self, cur_vp, cur_pos, cur_ori, task_type):
         batch_gmap_vp_ids, batch_gmap_step_ids, batch_gmap_lens = [], [], []
         batch_gmap_img_fts, batch_gmap_pos_fts = [], []
@@ -513,7 +511,7 @@ class RLTrainer(BaseVLNCETrainer):
                     else:
                         raise NotImplementedError
                     gmap_pair_dists[j, k] = gmap_pair_dists[k, j] = dist / MAX_DIST
-            
+
             batch_gmap_vp_ids.append(gmap_vp_ids)
             gmap_step_ids_tensor = torch.LongTensor(gmap_step_ids)
             batch_gmap_step_ids.append(gmap_step_ids_tensor)
@@ -523,7 +521,7 @@ class RLTrainer(BaseVLNCETrainer):
             batch_gmap_pos_fts.append(torch.from_numpy(gmap_pos_fts))
             batch_gmap_pair_dists.append(torch.from_numpy(gmap_pair_dists))
             batch_gmap_visited_masks.append(torch.BoolTensor(gmap_visited_masks))
-        
+
         batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).cuda()
         batch_gmap_task_embeddings = pad_sequence(batch_gmap_task_embeddings, batch_first=True).cuda()
         batch_gmap_img_fts = pad_tensors_wgrad(batch_gmap_img_fts)
@@ -541,7 +539,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         return {
             'gmap_vp_ids': batch_gmap_vp_ids, 'gmap_step_ids': batch_gmap_step_ids,
-            'gmap_img_fts': batch_gmap_img_fts, 'gmap_pos_fts': batch_gmap_pos_fts, 
+            'gmap_img_fts': batch_gmap_img_fts, 'gmap_pos_fts': batch_gmap_pos_fts,
             'gmap_masks': batch_gmap_masks, 'gmap_visited_masks': batch_gmap_visited_masks, 'gmap_pair_dists': gmap_pair_dists,
             'no_vp_left': batch_no_vp_left, 'gmap_task_embeddings': batch_gmap_task_embeddings
         }
@@ -566,8 +564,8 @@ class RLTrainer(BaseVLNCETrainer):
             action_space=action_space,
         )
 
-        total_iter = self.config.GRPO.iters 
-        log_every  = self.config.GRPO.log_every 
+        total_iter = self.config.GRPO.iters
+        log_every  = self.config.GRPO.log_every
         writer     = TensorboardWriter(self.config.TENSORBOARD_DIR if self.local_rank < 1 else None)
 
         if self.config.local_rank < 1:
@@ -577,18 +575,18 @@ class RLTrainer(BaseVLNCETrainer):
             logger.info(f"Configuration saved to {config_path}")
 
         logger.info('Traning Starts... GOOD LUCK!')
-        
+
         self.data_buffer = []
         for idx in range(start_iter, total_iter, log_every):
-            interval = min(log_every, max(total_iter-idx, 0)) 
-            cur_iter = idx + interval 
+            interval = min(log_every, max(total_iter-idx, 0))
+            cur_iter = idx + interval
 
             logs = self._train_interval(interval)
 
             final_logs = {}
             if self.world_size > 1:
                 for k, v_list in logs.items():
-                    if not v_list: 
+                    if not v_list:
                         local_sum = 0.0
                         local_count = 0
                     else:
@@ -601,8 +599,8 @@ class RLTrainer(BaseVLNCETrainer):
                         if global_count > 0:
                             final_logs[k] = global_sum / global_count
                         else:
-                            final_logs[k] = 0.0 
-            else: 
+                            final_logs[k] = 0.0
+            else:
                 for k, v_list in logs.items():
                     if not v_list: continue
                     final_logs[k] = np.mean(v_list)
@@ -612,13 +610,13 @@ class RLTrainer(BaseVLNCETrainer):
                 for k, avg_val in final_logs.items():
                     loss_str += f'{k}: {avg_val:.3f}, '
                     writer.add_scalar(f'grpo/{k}', avg_val, cur_iter)
-                
+
                 current_lr = self.optimizer.param_groups[0]['lr']
                 writer.add_scalar('train/lr', current_lr, cur_iter)
                 logger.info(loss_str)
                 logger.info(f"lr: {current_lr}")
                 self.save_checkpoint(cur_iter)
-        
+
     def _train_interval(self, interval):
         if self.world_size > 1:
             self.policy.net.module.rgb_encoder.eval()
@@ -644,7 +642,7 @@ class RLTrainer(BaseVLNCETrainer):
                 pbar.set_postfix({'iter': f'{idx+1}/{interval}'})
 
         return deepcopy(self.logs)
-    
+
 
     def update(self):
         if not self.data_buffer:
@@ -693,16 +691,16 @@ class RLTrainer(BaseVLNCETrainer):
         for epoch in range(self.grpo_update_epochs):
             accumulated_policy_loss_this_epoch = 0.0
             accumulated_kl_loss_this_epoch = 0.0
-            num_samples_processed_this_epoch = 0 
+            num_samples_processed_this_epoch = 0
 
-            self.optimizer.zero_grad() 
+            self.optimizer.zero_grad()
 
             for s_idx in range(self.config.GRPO.sample_num):
                 current_sample_trajectory_steps_data = self.data_buffer[s_idx]["data_buffer"]
 
                 initial_txt_embeds_cuda = self.data_buffer[s_idx]["initial_txt_embeds"].to(self.device, non_blocking=True)
                 initial_txt_masks_cuda = self.data_buffer[s_idx]["initial_txt_masks"].to(self.device, non_blocking=True)
-                
+
                 batch_total_policy_loss_for_this_sample = 0.0
                 batch_total_kl_loss_for_this_sample = 0.0
                 num_valid_steps_for_this_sample = 0
@@ -713,12 +711,12 @@ class RLTrainer(BaseVLNCETrainer):
                             nav_inputs_cpu = step_data["input"]
                             taken_actions_cpu = step_data["action"]
                             old_probs_at_sampling_cpu = step_data["probs"]
-                            active_indices_in_original_batch = step_data["indices"] 
+                            active_indices_in_original_batch = step_data["indices"]
 
                             if not active_indices_in_original_batch:
                                 print("ERROR!! NO active_indices_in_original_batch")
                                 continue
-                        
+
                             nav_inputs_cuda = {}
                             for key, value in nav_inputs_cpu.items():
                                 if isinstance(value, torch.Tensor):
@@ -729,10 +727,10 @@ class RLTrainer(BaseVLNCETrainer):
                             txt_masks_for_step = initial_txt_masks_cuda[active_indices_in_original_batch]
                             nav_inputs_cuda['txt_embeds'] = txt_embeds_for_step
                             nav_inputs_cuda['txt_masks'] = txt_masks_for_step
-                            nav_inputs_cuda['mode'] = 'navigation' 
+                            nav_inputs_cuda['mode'] = 'navigation'
 
                             taken_actions_cuda = taken_actions_cpu.to(self.device)
-                    
+
                         current_policy_outputs = self.policy.net(**nav_inputs_cuda)
                         if self.need_ref_policy:
                             with torch.no_grad():
@@ -758,11 +756,11 @@ class RLTrainer(BaseVLNCETrainer):
                                 old_log_probs_taken_action = torch.log(
                                     old_probs_at_sampling_cpu.to(self.device).gather(1, taken_actions_cuda.unsqueeze(1)).squeeze(1) + 1e-9
                                 )
-                            
+
                             ratio = torch.exp(current_log_probs_taken_action - old_log_probs_taken_action)
                             surr1 = ratio * step_advantages_for_active_envs
                             surr2 = torch.clamp(ratio, 1.0 - self.grpo_epsilon, 1.0 + self.grpo_epsilon) * step_advantages_for_active_envs
-                            policy_loss_this_step = -torch.min(surr1, surr2).mean() 
+                            policy_loss_this_step = -torch.min(surr1, surr2).mean()
 
                             unclipped_mask = (surr1 <= surr2)
                             total_unclipped_actions += unclipped_mask.sum().item()
@@ -772,12 +770,12 @@ class RLTrainer(BaseVLNCETrainer):
                                 ratio_ref_over_current = torch.exp(ref_log_probs_taken_action_no_grad - current_log_probs_taken_action)
                                 log_ratio_ref_over_current = ref_log_probs_taken_action_no_grad - current_log_probs_taken_action
                                 kl_div_this_step = (ratio_ref_over_current - log_ratio_ref_over_current - 1).mean()
-                            
+
                             batch_total_policy_loss_for_this_sample += policy_loss_this_step
                             if self.need_ref_policy:
                                 batch_total_kl_loss_for_this_sample += kl_div_this_step
                             num_valid_steps_for_this_sample += 1
-                
+
                 if num_valid_steps_for_this_sample > 0:
                     avg_policy_loss_for_sample = batch_total_policy_loss_for_this_sample / num_valid_steps_for_this_sample
                     if self.need_ref_policy:
@@ -801,7 +799,7 @@ class RLTrainer(BaseVLNCETrainer):
                     num_samples_processed_this_epoch +=1
                 else:
                     logger.info("ERROR! total_actions_in_this_sample is 0")
-            
+
             if num_samples_processed_this_epoch == self.config.GRPO.sample_num:
                 self.scaler.unscale_(self.optimizer)
 
@@ -809,7 +807,7 @@ class RLTrainer(BaseVLNCETrainer):
                 if trainable_params:
                     grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, self.max_grad_norm)
                     self.logs['grad_norm'].append(grad_norm.item())
-                
+
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
 
@@ -841,10 +839,10 @@ class RLTrainer(BaseVLNCETrainer):
             self.logs['kl_loss'].append(0.0)
             self.logs['total_loss'].append(0.0)
 
-        self.data_buffer.clear() 
+        self.data_buffer.clear()
         self.optimizer.zero_grad()
         self.scheduler.step()
-    
+
     def get_pos_ori(self):
         pos_ori = self.envs.call(['get_pos_ori']*self.envs.num_envs)
         pos = [x[0] for x in pos_ori]
@@ -861,7 +859,7 @@ class RLTrainer(BaseVLNCETrainer):
             elif isinstance(value, str):
                 copied_dict[key] = value
             else:
-                copied_dict[key] = copy.deepcopy(value) 
+                copied_dict[key] = copy.deepcopy(value)
         return copied_dict
 
     def sample_data(self, sample_num):
@@ -869,14 +867,14 @@ class RLTrainer(BaseVLNCETrainer):
             self.set_policy_mode("eval")
         else:
             self.set_policy_mode("train")
-        
+
         for i in range(sample_num):
             self.envs.resume_all()
             if i == 0:
                 observations = self.envs.reset()
             else:
                 observations = self.envs.call(['reset_current_episode']*self.envs.num_envs)
-            
+
             episodes_reset_ids = [ep.episode_id for i, ep in enumerate(self.envs.current_episodes())]
 
             data_this_sample = self.sample_once(observations)
@@ -894,13 +892,13 @@ class RLTrainer(BaseVLNCETrainer):
         else:
             print("self.config.MODEL.task_type Error")
 
-        observations = extract_instruction_tokens(initial_obs, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID, 
+        observations = extract_instruction_tokens(initial_obs, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
                                                   max_length=instr_max_len, pad_id=instr_pad_id, task_type=task_type)
-        batch = batch_obs(observations, self.device) 
-        batch = apply_obs_transforms_batch(batch, self.obs_transforms) 
+        batch = batch_obs(observations, self.device)
+        batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
         # encode instructions
-        all_txt_ids = batch['instruction'] 
+        all_txt_ids = batch['instruction']
         all_txt_task_encoding = batch['txt_task_encoding']
         all_txt_masks = (all_txt_ids != instr_pad_id)
         all_txt_embeds = self.policy.net(
@@ -918,21 +916,21 @@ class RLTrainer(BaseVLNCETrainer):
         }
 
         total_actions = 0.
-        
-        not_done_index = list(range(self.envs.num_envs)) 
-        have_real_pos = (mode == 'train' or self.config.VIDEO_OPTION) 
+
+        not_done_index = list(range(self.envs.num_envs))
+        have_real_pos = (mode == 'train' or self.config.VIDEO_OPTION)
         ghost_aug = self.config.GRPO.ghost_aug if mode == 'train' else 0
-        self.gmaps = [GraphMap(have_real_pos, 
-                               self.config.GRPO.loc_noise, 
-                               self.config.MODEL.merge_ghost, 
+        self.gmaps = [GraphMap(have_real_pos,
+                               self.config.GRPO.loc_noise,
+                               self.config.MODEL.merge_ghost,
                                ghost_aug) for _ in range(self.envs.num_envs)]
         prev_vp = [None] * self.envs.num_envs
 
-        for stepk in range(self.max_len): 
+        for stepk in range(self.max_len):
             total_actions += self.envs.num_envs
             txt_masks = all_txt_masks
             txt_embeds = all_txt_embeds
-            
+
             wp_outputs = self.policy.net(
                 mode = "waypoint",
                 waypoint_predictor = self.waypoint_predictor,
@@ -957,8 +955,8 @@ class RLTrainer(BaseVLNCETrainer):
                 )
                 cur_vp.append(cur_vp_i)
                 cand_vp.append(cand_vp_i)
-                cand_pos.append(cand_pos_i) 
-            
+                cand_pos.append(cand_pos_i)
+
             if mode == 'train' or self.config.VIDEO_OPTION:
                 cand_real_pos = []
                 for i in range(self.envs.num_envs):
@@ -972,7 +970,7 @@ class RLTrainer(BaseVLNCETrainer):
 
             for i in range(self.envs.num_envs):
                 cur_embeds = avg_pano_embeds[i]
-                cand_embeds = pano_embeds[i][vp_inputs['nav_types'][i]==1] 
+                cand_embeds = pano_embeds[i][vp_inputs['nav_types'][i]==1]
                 self.gmaps[i].update_graph(prev_vp[i], stepk+1,
                                         cur_vp[i], cur_pos[i], cur_embeds,
                                         cand_vp[i], cand_pos[i], cand_embeds,
@@ -982,7 +980,7 @@ class RLTrainer(BaseVLNCETrainer):
             nav_inputs.update({
                 'mode': 'navigation',
             })
-            no_vp_left = nav_inputs.pop('no_vp_left') 
+            no_vp_left = nav_inputs.pop('no_vp_left')
 
             nav_inputs_for_gpu = nav_inputs.copy()
             nav_inputs_for_gpu['txt_embeds'] = txt_embeds
@@ -994,33 +992,33 @@ class RLTrainer(BaseVLNCETrainer):
             nav_probs = F.softmax(nav_logits, 1)
 
             for i, gmap in enumerate(self.gmaps):
-                gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item() 
+                gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
 
             # determine action
             c = torch.distributions.Categorical(nav_probs)
             a_t = c.sample().detach()
             cpu_a_t = a_t.cpu().numpy()
 
-            # ------------------- start store data ------------------- 
+            # ------------------- start store data -------------------
             data_this_stepk = {}
-            data_this_stepk["input"] = nav_inputs_copy_for_cpu 
-            data_this_stepk["action"] = a_t.detach().cpu() 
-            data_this_stepk["probs"] = nav_probs.detach().cpu() 
-            data_this_stepk["indices"] = copy.deepcopy(not_done_index) 
+            data_this_stepk["input"] = nav_inputs_copy_for_cpu
+            data_this_stepk["action"] = a_t.detach().cpu()
+            data_this_stepk["probs"] = nav_probs.detach().cpu()
+            data_this_stepk["indices"] = copy.deepcopy(not_done_index)
             data_this_sample['data_buffer'].append(data_this_stepk)
-            # ------------------- end store data ------------------- 
+            # ------------------- end store data -------------------
 
             # make equiv action
             env_actions = []
-            use_tryout = (self.config.GRPO.tryout and not self.config.TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING) 
+            use_tryout = (self.config.GRPO.tryout and not self.config.TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING)
             for i, gmap in enumerate(self.gmaps):
-                if cpu_a_t[i] == 0 or stepk == self.max_len - 1 or no_vp_left[i]: 
+                if cpu_a_t[i] == 0 or stepk == self.max_len - 1 or no_vp_left[i]:
                     vp_stop_scores = [(vp, stop_score) for vp, stop_score in gmap.node_stop_scores.items()]
                     stop_scores = [s[1] for s in vp_stop_scores]
                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
                     stop_pos = gmap.node_pos[stop_vp]
 
-                    if self.config.GRPO.back_algo == 'control': 
+                    if self.config.GRPO.back_algo == 'control':
                         back_path = [(vp, gmap.node_pos[vp]) for vp in gmap.shortest_path[cur_vp[i]][stop_vp]]
                         back_path = back_path[1:]
                     else:
@@ -1042,11 +1040,11 @@ class RLTrainer(BaseVLNCETrainer):
                             'vis_info': vis_info,
                         }
                     )
-                    
+
                 else:
                     ghost_vp = nav_inputs['gmap_vp_ids'][i][cpu_a_t[i]]
                     ghost_pos = gmap.ghost_aug_pos[ghost_vp]
-                    _, front_vp = gmap.front_to_ghost_dist(ghost_vp) 
+                    _, front_vp = gmap.front_to_ghost_dist(ghost_vp)
                     front_pos = gmap.node_pos[front_vp]
                     vis_info = None
                     if self.config.GRPO.back_algo == 'control':
