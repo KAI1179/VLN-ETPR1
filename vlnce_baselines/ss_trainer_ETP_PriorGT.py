@@ -311,6 +311,15 @@ class RLTrainer(BaseVLNCETrainer):
                     self.scheduler.load_state_dict(ckpt_dict["scheduler_state"])
             logger.info(f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}")
 
+        # Probe mode: freeze everything except the map encoder so a short run
+        # (~3k IL steps) is enough to verify whether cognitive maps help.
+        map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
+        if map_cfg is not None and getattr(map_cfg, 'freeze_base', False):
+            for name, param in self.policy.named_parameters():
+                if 'map_encoder' not in name:
+                    param.requires_grad_(False)
+            logger.info("[PriorGT probe] Base model frozen — only map_encoder params are trainable.")
+
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(
             p.numel() for p in self.policy.parameters() if p.requires_grad

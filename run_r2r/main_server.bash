@@ -227,6 +227,56 @@ case $mode in
       echo "###### priorgt eval mode (GRPO ckpt) ######"
       python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag8
       ;;
+      priorgt_probe)
+      echo "###### priorgt probe: freeze base, train map encoder only ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py \
+            --exp_name release_r2r_priorgt_probe \
+            --run-type dagger \
+            --exp-config run_r2r/iter_train.yaml \
+            SIMULATOR_GPU_IDS [0,1,2,3] \
+            TORCH_GPU_IDS [0,1,2,3] \
+            GPU_NUMBERS 4 \
+            NUM_ENVIRONMENTS 8 \
+            TRAINER_NAME SS-ETP-PriorGT \
+            MODEL.policy_name PriorGTPolicy \
+            MODEL.MAP_ENCODER.enabled True \
+            MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
+            MODEL.MAP_ENCODER.freeze_base True \
+            IL.iters 3000 \
+            IL.lr 1e-4 \
+            IL.log_every 100 \
+            IL.ml_weight 1.0 \
+            IL.sample_ratio 0.75 \
+            IL.decay_interval 1000 \
+            IL.warmup_iters 200 \
+            IL.min_lr_ratio 0.1 \
+            IL.load_from_ckpt True \
+            IL.is_requeue False \
+            IL.waypoint_aug True \
+            IL.ckpt_to_load data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth \
+            TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
+            TASK_CONFIG.DATASET.SUFFIX _90 \
+            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      ;;
+      priorgt_probe_eval)
+      echo "###### priorgt probe eval ######"
+      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py \
+            --exp_name release_r2r_priorgt_probe \
+            --run-type eval \
+            --exp-config run_r2r/iter_train.yaml \
+            SIMULATOR_GPU_IDS [0,1,2,3] \
+            TORCH_GPU_IDS [0,1,2,3] \
+            GPU_NUMBERS 4 \
+            NUM_ENVIRONMENTS 8 \
+            TRAINER_NAME SS-ETP-PriorGT \
+            MODEL.policy_name PriorGTPolicy \
+            MODEL.MAP_ENCODER.enabled True \
+            MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
+            EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth \
+            IL.back_algo control \
+            TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
+            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      ;;
 esac
 
 # 命令行运行：
@@ -238,3 +288,5 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_grpo 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_ss 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_grpo 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe

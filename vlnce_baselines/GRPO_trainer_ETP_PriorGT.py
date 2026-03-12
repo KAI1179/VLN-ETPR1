@@ -426,6 +426,15 @@ class RLTrainer(BaseVLNCETrainer):
         else:
             logger.info("BETA == 0, Skip create ref_policy!")
 
+        # Probe mode: freeze everything except the map encoder so a short run
+        # is enough to verify whether cognitive maps help.
+        map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
+        if map_cfg is not None and getattr(map_cfg, 'freeze_base', False):
+            for name, param in self.policy.named_parameters():
+                if 'map_encoder' not in name:
+                    param.requires_grad_(False)
+            logger.info("[PriorGT probe] Base model frozen — only map_encoder params are trainable.")
+
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(
             p.numel() for p in self.policy.parameters() if p.requires_grad

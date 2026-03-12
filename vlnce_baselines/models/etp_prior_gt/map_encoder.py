@@ -45,6 +45,11 @@ class EmbeddingGridMapEncoder(nn.Module):
             nn.Linear(64 * 4 * 4, output_size),
             nn.LayerNorm(output_size),
         )
+        # Zero-init the output projection so map_embeds == 0 at the start of
+        # training, keeping navigation identical to the R1 baseline until the
+        # map encoder learns a useful signal.
+        nn.init.zeros_(self.encoder[-2].weight)
+        nn.init.zeros_(self.encoder[-2].bias)
 
     def forward(self, cognitive_crop: torch.Tensor) -> torch.Tensor:
         """Forward pass.

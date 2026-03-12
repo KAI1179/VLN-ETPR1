@@ -16,17 +16,56 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 
 You must have precomputed cognitive maps at:
 
-- `data/cognitive_maps/<scene_id>/episode_<episode_id>.npy`
-- optional meta: `data/cognitive_maps/<scene_id>/episode_<episode_id>_meta.npz`
+- `data/cognitive_maps/<scene_id>/episode_<episode_id>.npz`
+
+Each file is a single compressed NumPy archive (`np.savez_compressed`) containing:
+- `grid` — shape `(num_categories, H, W)` float32 category embeddings
+- `offset_x`, `offset_z` — world-space origin of the map grid
+- `range_y` — vertical slice used for 2-D projection
 
 Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.
 
-## Important Checkpoint Note
+## Checkpoint Compatibility
 
-Do not evaluate ETP PriorGT with a checkpoint trained by plain ETP-R1 trainer/policy.
+Both PriorGT trainers load checkpoints with `strict=False`, so **existing R1 checkpoints can be
+loaded directly** — `map_encoder.*` keys will be absent and are initialised from scratch.
 
-Reason: PriorGT has additional map-encoder parameters and uses different trainer/policy wiring.
-Use checkpoints produced by `SS-ETP-PriorGT` or `GRPO-ETP-PriorGT`.
+The map-encoder output linear layer is zero-initialised, so at step 0 `map_embeds ≡ 0` and
+the model behaves identically to the R1 baseline. Gradients teach the map encoder from there.
+
+For evaluation, use checkpoints produced by `SS-ETP-PriorGT` or `GRPO-ETP-PriorGT`.
+
+## Quick Verification (Probe Mode)
+
+You can verify whether cognitive maps improve performance **without full retraining** (~3 k
+steps vs 30 k) by freezing the base model and training only the map encoder.
+
+**Why this works:**
+- Zero-init guarantees the model is exactly R1 at step 0.
+- Only ~1.7 M new parameters are trained instead of the full ~200 M model.
+- 3 k IL steps give a clear signal whether the map encoder adds value.
+
+### Step 1 — Probe training (load R1 GRPO checkpoint, freeze base)
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe 2333
+```
+
+This sets:
+- `IL.ckpt_to_load data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth`
+- `MODEL.MAP_ENCODER.freeze_base True`
+- `IL.iters 3000`
+
+### Step 2 — Evaluate the probe checkpoint
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333
+```
+
+Compare `SR` / `SPL` against the R1 GRPO baseline. If the probe is better, proceed with full
+pipeline: `priorgt_dagger` → `priorgt_grpo` → `priorgt_eval_grpo`.
+
+---
 
 ## Quick Start (R2R)
 

@@ -202,6 +202,7 @@ _C.MODEL.MAP_ENCODER.output_size = 768                       # must match hidden
 _C.MODEL.MAP_ENCODER.crop_radius = 50                        # cells around agent (±5 m at 0.1 m/cell)
 _C.MODEL.MAP_ENCODER.precomputed_dir = "data/cognitive_maps" # path to precomputed cognitive maps
 _C.MODEL.MAP_ENCODER.category_embeds_path = ""               # path to (N, D) .npy; empty = learn from scratch
+_C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze all non-map-encoder params (probe mode)
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:
