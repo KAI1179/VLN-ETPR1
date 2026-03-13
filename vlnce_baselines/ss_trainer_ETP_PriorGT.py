@@ -222,20 +222,31 @@ class RLTrainer(BaseVLNCETrainer):
         self.waypoint_predictor.to(self.device)
         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
 
+        map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
+        freeze_base = map_cfg is not None and getattr(map_cfg, 'freeze_base', False)
+
+        # Probe mode: freeze everything except the map encoder so a short run
+        # (~3k IL steps) is enough to verify whether cognitive maps help.
+        if freeze_base:
+            for name, param in self.policy.named_parameters():
+                if 'map_encoder' not in name:
+                    param.requires_grad_(False)
+            logger.info("[PriorGT probe] Base model frozen - only map_encoder params are trainable.")
+
         if self.config.GPU_NUMBERS > 1:
             print('Using', self.config.GPU_NUMBERS,'GPU!')
-            # find_unused_parameters=False fix ddp bug
+            # In probe mode many params are intentionally unused/frozen.
             self.policy.net = DDP(self.policy.net.to(self.device), device_ids=[self.device],
-                output_device=self.device, find_unused_parameters=False, broadcast_buffers=False)
+                output_device=self.device, find_unused_parameters=freeze_base, broadcast_buffers=False)
 
         param_optimizer = list(self.policy.named_parameters())
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {'params': [p for n, p in param_optimizer
-                        if not any(nd in n for nd in no_decay)],
+                        if p.requires_grad and not any(nd in n for nd in no_decay)],
             'weight_decay': 0.01},
             {'params': [p for n, p in param_optimizer
-                        if any(nd in n for nd in no_decay)],
+                        if p.requires_grad and any(nd in n for nd in no_decay)],
             'weight_decay': 0.0}
         ]
 
@@ -310,15 +321,6 @@ class RLTrainer(BaseVLNCETrainer):
                 if "scheduler_state" in ckpt_dict:
                     self.scheduler.load_state_dict(ckpt_dict["scheduler_state"])
             logger.info(f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}")
-
-        # Probe mode: freeze everything except the map encoder so a short run
-        # (~3k IL steps) is enough to verify whether cognitive maps help.
-        map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
-        if map_cfg is not None and getattr(map_cfg, 'freeze_base', False):
-            for name, param in self.policy.named_parameters():
-                if 'map_encoder' not in name:
-                    param.requires_grad_(False)
-            logger.info("[PriorGT probe] Base model frozen - only map_encoder params are trainable.")
 
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(
