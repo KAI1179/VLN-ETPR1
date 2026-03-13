@@ -1,5 +1,14 @@
 # Integration Plan: Embedding Grid Map into ETP-R1 Navigation Pipeline
 
+## Runtime Hotfix (2026-03-13)
+
+- Fixed a training crash in PriorGT rollout caused by variable-width cognitive map crops.
+- Root cause: when agent coordinates fell outside map bounds, crop slicing could return
+    shapes smaller than `(CATEGORIES, 101, 101)`, causing `torch.stack` failure.
+- Fix applied in `vlnce_baselines/models/etp_prior_gt/map_utils.py`:
+    `crop_cognitive_map()` now always returns a fixed-size zero-padded crop and copies
+    only the valid overlap from source map.
+
 ## Goal
 
 Add an embedding grid map as an additional spatial representation to the ETP-R1 navigation pipeline. The embedding grid map (ROWS × COLS × EMBEDDING_DIM) is derived from a cognitive grid map (CATEGORIES × ROWS × COLS) by taking weighted sums of category embeddings. This supplements the existing graph-based spatial representation (`GraphMap`) with dense, instruction-aware semantic context.

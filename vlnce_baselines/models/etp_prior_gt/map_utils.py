@@ -57,18 +57,35 @@ def crop_cognitive_map(
     """
     row, col = cog_map.world_to_grid(agent_x, agent_z)
     grid = cog_map.grid  # (CATEGORIES, ROWS, COLS)
-    padded = np.pad(
-        grid,
-        ((0, 0), (crop_radius, crop_radius), (crop_radius, crop_radius)),
-        mode="constant",
-    )
-    pr, pc = row + crop_radius, col + crop_radius
-    crop = padded[
-        :,
-        pr - crop_radius : pr + crop_radius + 1,
-        pc - crop_radius : pc + crop_radius + 1,
-    ]
-    return torch.from_numpy(np.ascontiguousarray(crop)).float()
+    _, rows, cols = grid.shape
+
+    size = 2 * crop_radius + 1
+    crop = np.zeros((grid.shape[0], size, size), dtype=np.float32)
+
+    # Requested window in source map coordinates.
+    src_r0 = row - crop_radius
+    src_r1 = row + crop_radius + 1
+    src_c0 = col - crop_radius
+    src_c1 = col + crop_radius + 1
+
+    # Clamp to valid source range.
+    src_r0_clamped = max(0, src_r0)
+    src_r1_clamped = min(rows, src_r1)
+    src_c0_clamped = max(0, src_c0)
+    src_c1_clamped = min(cols, src_c1)
+
+    if src_r0_clamped < src_r1_clamped and src_c0_clamped < src_c1_clamped:
+        # Matching destination window in fixed-size output crop.
+        dst_r0 = src_r0_clamped - src_r0
+        dst_r1 = dst_r0 + (src_r1_clamped - src_r0_clamped)
+        dst_c0 = src_c0_clamped - src_c0
+        dst_c1 = dst_c0 + (src_c1_clamped - src_c0_clamped)
+
+        crop[:, dst_r0:dst_r1, dst_c0:dst_c1] = grid[
+            :, src_r0_clamped:src_r1_clamped, src_c0_clamped:src_c1_clamped
+        ]
+
+    return torch.from_numpy(np.ascontiguousarray(crop))
 
 
 def make_zero_crop(num_categories: int, crop_radius: int) -> torch.Tensor:
