@@ -318,7 +318,7 @@ class RLTrainer(BaseVLNCETrainer):
             for name, param in self.policy.named_parameters():
                 if 'map_encoder' not in name:
                     param.requires_grad_(False)
-            logger.info("[PriorGT probe] Base model frozen — only map_encoder params are trainable.")
+            logger.info("[PriorGT probe] Base model frozen - only map_encoder params are trainable.")
 
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(
