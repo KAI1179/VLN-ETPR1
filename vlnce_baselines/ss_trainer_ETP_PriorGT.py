@@ -578,6 +578,8 @@ class RLTrainer(BaseVLNCETrainer):
                 logger.info(loss_str)
                 logger.info(f"lr: {current_lr}")
                 self.save_checkpoint(cur_iter)
+                gc.collect()
+                torch.cuda.empty_cache()
 
     def _train_interval(self, interval, ml_weight, sample_ratio):
         self.policy.train()
