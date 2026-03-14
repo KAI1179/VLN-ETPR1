@@ -58,6 +58,8 @@ This sets:
 
 ### Step 2 — Evaluate the probe checkpoint
 
+You may have to move `data/logs/checkpoints/release_r2r_priorgt_probe/ckpt.iter3000.pth` to `data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth` first.
+
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333
 ```
