@@ -51,7 +51,7 @@ flag2="--exp_name release_r2r_grpo
       GRPO.lr 2e-5
       GRPO.warmup_iters 0
       GRPO.min_lr_ratio 0.25
-      GRPO.log_every 10
+      GRPO.log_every 100
       GRPO.load_from_ckpt True
       GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth
       GRPO.is_requeue False
@@ -140,7 +140,7 @@ flag6="--exp_name release_r2r_priorgt_grpo
       GRPO.lr 2e-5
       GRPO.warmup_iters 0
       GRPO.min_lr_ratio 0.25
-      GRPO.log_every 10
+      GRPO.log_every 100
       GRPO.load_from_ckpt True
       GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter25000.pth
       GRPO.is_requeue False
@@ -194,7 +194,7 @@ flag8="--exp_name release_r2r_priorgt_grpo
       "
 
 mode=$1
-case $mode in 
+case $mode in
       dagger)
       echo "###### dagger train mode ######"
       python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag1
