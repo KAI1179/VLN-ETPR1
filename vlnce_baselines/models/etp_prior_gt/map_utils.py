@@ -44,51 +44,34 @@ def load_cognitive_map(
     )
 
 
-def crop_cognitive_map(
+def full_cognitive_map(
     cog_map: PrecomputedCognitiveMap,
-    agent_x: float,
-    agent_z: float,
-    crop_radius: int = 50,
+    map_size: int = 100,
 ) -> torch.Tensor:
-    """Extract a local crop of the cognitive map centred on the agent.
+    """Return the full cognitive map tensor with fixed spatial size.
 
-    Returns a float32 tensor of shape (CATEGORIES, crop_size, crop_size)
-    where crop_size = 2 * crop_radius + 1.
+    If source map size differs from `map_size`, this function center-crops or
+    zero-pads to `(CATEGORIES, map_size, map_size)`.
     """
-    row, col = cog_map.world_to_grid(agent_x, agent_z)
-    grid = cog_map.grid  # (CATEGORIES, ROWS, COLS)
-    _, rows, cols = grid.shape
+    grid = cog_map.grid.astype(np.float32, copy=False)  # (CATEGORIES, ROWS, COLS)
+    c, rows, cols = grid.shape
 
-    size = 2 * crop_radius + 1
-    crop = np.zeros((grid.shape[0], size, size), dtype=np.float32)
+    out = np.zeros((c, map_size, map_size), dtype=np.float32)
 
-    # Requested window in source map coordinates.
-    src_r0 = row - crop_radius
-    src_r1 = row + crop_radius + 1
-    src_c0 = col - crop_radius
-    src_c1 = col + crop_radius + 1
+    src_r0 = max(0, (rows - map_size) // 2)
+    src_c0 = max(0, (cols - map_size) // 2)
+    src_r1 = min(rows, src_r0 + map_size)
+    src_c1 = min(cols, src_c0 + map_size)
 
-    # Clamp to valid source range.
-    src_r0_clamped = max(0, src_r0)
-    src_r1_clamped = min(rows, src_r1)
-    src_c0_clamped = max(0, src_c0)
-    src_c1_clamped = min(cols, src_c1)
+    dst_r0 = max(0, (map_size - rows) // 2)
+    dst_c0 = max(0, (map_size - cols) // 2)
+    dst_r1 = dst_r0 + (src_r1 - src_r0)
+    dst_c1 = dst_c0 + (src_c1 - src_c0)
 
-    if src_r0_clamped < src_r1_clamped and src_c0_clamped < src_c1_clamped:
-        # Matching destination window in fixed-size output crop.
-        dst_r0 = src_r0_clamped - src_r0
-        dst_r1 = dst_r0 + (src_r1_clamped - src_r0_clamped)
-        dst_c0 = src_c0_clamped - src_c0
-        dst_c1 = dst_c0 + (src_c1_clamped - src_c0_clamped)
-
-        crop[:, dst_r0:dst_r1, dst_c0:dst_c1] = grid[
-            :, src_r0_clamped:src_r1_clamped, src_c0_clamped:src_c1_clamped
-        ]
-
-    return torch.from_numpy(np.ascontiguousarray(crop))
+    out[:, dst_r0:dst_r1, dst_c0:dst_c1] = grid[:, src_r0:src_r1, src_c0:src_c1]
+    return torch.from_numpy(np.ascontiguousarray(out))
 
 
-def make_zero_crop(num_categories: int, crop_radius: int) -> torch.Tensor:
+def make_zero_map(num_categories: int, map_size: int) -> torch.Tensor:
     """Return a zero tensor when no cognitive map is available for an episode."""
-    size = 2 * crop_radius + 1
-    return torch.zeros(num_categories, size, size)
+    return torch.zeros(num_categories, map_size, map_size)

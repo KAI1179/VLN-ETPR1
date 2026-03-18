@@ -144,6 +144,8 @@ Start the pretraining process on the joint dataset:
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333
 ```
 
+<!-- Start from pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt -->
+
 ### 2. R2R-CE Benchmark
 
 Run the following commands for Supervised Fine-tuning (SFT), Reinforcement Fine-tuning (RFT), and Evaluation on R2R-CE:

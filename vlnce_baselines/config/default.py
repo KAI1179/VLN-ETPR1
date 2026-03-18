@@ -199,7 +199,8 @@ _C.MODEL.MAP_ENCODER.enabled = False                         # toggle on/off
 _C.MODEL.MAP_ENCODER.num_categories = 37                     # OBJECT_CATEGORIES + REGION_CATEGORIES
 _C.MODEL.MAP_ENCODER.embedding_dim = 512                     # CLIP=512, spaCy=300, BERT/XLM-R=768
 _C.MODEL.MAP_ENCODER.output_size = 768                       # must match hidden_size for additive fusion
-_C.MODEL.MAP_ENCODER.crop_radius = 50                        # cells around agent (±5 m at 0.1 m/cell)
+_C.MODEL.MAP_ENCODER.map_size = 100                          # full map side length (H=W=100)
+_C.MODEL.MAP_ENCODER.crop_radius = 50                        # deprecated in full-map mode
 _C.MODEL.MAP_ENCODER.precomputed_dir = "data/cognitive_maps" # path to precomputed cognitive maps
 _C.MODEL.MAP_ENCODER.category_embeds_path = ""               # path to (N, D) .npy; empty = learn from scratch
 _C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze all non-map-encoder params (probe mode)

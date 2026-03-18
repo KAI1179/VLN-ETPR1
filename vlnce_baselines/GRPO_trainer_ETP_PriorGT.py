@@ -60,7 +60,7 @@ from collections import OrderedDict
 import hashlib
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    load_cognitive_map, crop_cognitive_map, make_zero_crop,
+    load_cognitive_map, full_cognitive_map, make_zero_map,
 )
 import pickle
 
@@ -1014,15 +1014,15 @@ class RLTrainer(BaseVLNCETrainer):
             nav_inputs_for_gpu['txt_embeds'] = txt_embeds
             nav_inputs_for_gpu['txt_masks'] = txt_masks
 
-            # Cognitive map encoding
+            # Cognitive map encoding (use the full precomputed map directly)
             current_map_embeds = None
             if map_cfg.enabled and cognitive_maps is not None:
                 cognitive_crops = torch.stack([
-                    crop_cognitive_map(
-                        cognitive_maps[i], cur_pos[i][0], cur_pos[i][2],
-                        map_cfg.crop_radius
+                    full_cognitive_map(
+                        cognitive_maps[i],
+                        map_cfg.map_size,
                     ) if cognitive_maps[i] is not None
-                    else make_zero_crop(map_cfg.num_categories, map_cfg.crop_radius)
+                    else make_zero_map(map_cfg.num_categories, map_cfg.map_size)
                     for i in range(self.envs.num_envs)
                 ]).to(self.device)
                 current_map_embeds = self.policy.net(

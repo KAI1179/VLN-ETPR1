@@ -58,7 +58,7 @@ import cv2
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    load_cognitive_map, crop_cognitive_map, make_zero_crop,
+    load_cognitive_map, full_cognitive_map, make_zero_map,
 )
 
 @baseline_registry.register_trainer(name="SS-ETP-PriorGT")
@@ -1010,14 +1010,14 @@ class RLTrainer(BaseVLNCETrainer):
             })
             no_vp_left = nav_inputs.pop('no_vp_left')
 
-            # Cognitive map encoding
+            # Cognitive map encoding (use the full precomputed map directly)
             if map_cfg.enabled and cognitive_maps is not None:
                 cognitive_crops = torch.stack([
-                    crop_cognitive_map(
-                        cognitive_maps[i], cur_pos[i][0], cur_pos[i][2],
-                        map_cfg.crop_radius
+                    full_cognitive_map(
+                        cognitive_maps[i],
+                        map_cfg.map_size,
                     ) if cognitive_maps[i] is not None
-                    else make_zero_crop(map_cfg.num_categories, map_cfg.crop_radius)
+                    else make_zero_map(map_cfg.num_categories, map_cfg.map_size)
                     for i in range(self.envs.num_envs)
                 ]).to(self.device)
                 nav_inputs['map_embeds'] = self.policy.net(
