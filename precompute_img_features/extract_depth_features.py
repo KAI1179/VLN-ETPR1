@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ''' Script to precompute image features using a Pytorch ResNet CNN, using 36 discretized views
-    at each viewpoint in 30 degree increments, and the provided camera WIDTH, HEIGHT 
+    at each viewpoint in 30 degree increments, and the provided camera WIDTH, HEIGHT
     and VFOV parameters. '''
 
 import os
@@ -75,7 +75,7 @@ def process_features(proc_id, out_queue, scanvp_list, args):
     out_queue.put(None)
 
 def build_feature_file(args):
-    
+
     os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
 
     scanvp_list = load_viewpoint_ids(args.connectivity_dir)
@@ -95,7 +95,7 @@ def build_feature_file(args):
         )
         process.start()
         processes.append(process)
-    
+
     num_finished_workers = 0
     num_finished_vps = 0
 
@@ -125,7 +125,7 @@ def build_feature_file(args):
     progress_bar.finish()
     for process in processes:
         process.join()
-            
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -135,7 +135,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_db', default='pretrain_src/img_features/habitat_256x256_vfov60_depth.hdf5')
     parser.add_argument('--out_image_logits', action='store_true', default=False)
     parser.add_argument('--output_file', default='pretrain_src/img_features/ddppo_resnet50_depth_features.hdf5')
-    parser.add_argument('--batch_size', default=36, type=int)
+    parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--num_workers', type=int, default=1)
     args = parser.parse_args()
 
