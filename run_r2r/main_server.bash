@@ -103,7 +103,7 @@ flag5="--exp_name release_r2r_priorgt_dagger
       SIMULATOR_GPU_IDS [0,1,2,3]
       TORCH_GPU_IDS [0,1,2,3]
       GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
+      NUM_ENVIRONMENTS 4
       TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
