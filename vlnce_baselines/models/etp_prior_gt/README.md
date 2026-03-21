@@ -93,7 +93,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_grpo 2333
 
 By default this mode loads IL checkpoint:
 
-- `GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter25000.pth`
+- `GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter30000.pth`
 
 Update this path if your IL checkpoint name differs.
 
@@ -129,7 +129,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
   MODEL.policy_name PriorGTPolicy \
   MODEL.MAP_ENCODER.enabled True \
   MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
-  EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter25000.pth
+  EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter30000.pth
 ```
 
 ## Troubleshooting
