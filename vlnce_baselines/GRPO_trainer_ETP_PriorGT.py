@@ -742,7 +742,15 @@ class RLTrainer(BaseVLNCETrainer):
                             nav_inputs_cuda['txt_masks'] = txt_masks_for_step
                             nav_inputs_cuda['mode'] = 'navigation'
                             if "map_embeds" in step_data:
-                                nav_inputs_cuda['map_embeds'] = step_data["map_embeds"][active_indices_in_original_batch].to(self.device, non_blocking=True)
+                                step_map_embeds = step_data["map_embeds"]
+                                # map_embeds saved during rollout are typically in the
+                                # current active-env order already. Re-index only when
+                                # the stored tensor is in original-batch layout.
+                                if step_map_embeds.size(0) == len(active_indices_in_original_batch):
+                                    map_embeds_for_step = step_map_embeds
+                                else:
+                                    map_embeds_for_step = step_map_embeds[active_indices_in_original_batch]
+                                nav_inputs_cuda['map_embeds'] = map_embeds_for_step.to(self.device, non_blocking=True)
 
                             taken_actions_cuda = taken_actions_cpu.to(self.device)
 
