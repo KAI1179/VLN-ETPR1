@@ -142,3 +142,5 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
   - Check `MODEL.MAP_ENCODER.precomputed_dir` and per-episode map files.
 - Eval exits early with checkpoint issues
   - Confirm checkpoint was trained by PriorGT trainer/policy, not plain R1.
+- Cuda out of memory!
+  - Change `NUM_ENVIRONMENTS` in `main_server.bash` as needed.
