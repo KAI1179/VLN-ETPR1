@@ -130,7 +130,7 @@ flag6="--exp_name release_r2r_priorgt_grpo
       SIMULATOR_GPU_IDS [0,1,2,3]
       TORCH_GPU_IDS [0,1,2,3]
       GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
+      NUM_ENVIRONMENTS 4
       ONLY_LAST_SAVEALL True
       TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
@@ -165,7 +165,7 @@ flag7="--exp_name release_r2r_priorgt_dagger
       SIMULATOR_GPU_IDS [0,1,2,3]
       TORCH_GPU_IDS [0,1,2,3]
       GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
+      NUM_ENVIRONMENTS 4
       TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
@@ -182,7 +182,7 @@ flag8="--exp_name release_r2r_priorgt_grpo
       SIMULATOR_GPU_IDS [0,1,2,3]
       TORCH_GPU_IDS [0,1,2,3]
       GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
+      NUM_ENVIRONMENTS 4
       TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
