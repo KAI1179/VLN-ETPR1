@@ -126,7 +126,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 self.waypoint_predictor = torch.nn.DataParallel(self.waypoint_predictor.to(self.device),
                     device_ids=[self.device], output_device=self.device)
                 # self.waypoint_predictor.load_state_dict(ckpt_dict["waypoint_predictor_state_dict"])
-                # self.waypoint_predictor = self.waypoint_predictor.module 
+                # self.waypoint_predictor = self.waypoint_predictor.module
             else:
                 self.policy.load_state_dict(ckpt_dict["state_dict"])
                 # self.waypoint_predictor.load_state_dict(ckpt_dict["waypoint_predictor_state_dict"])
@@ -137,7 +137,7 @@ class BaseVLNCETrainer(BaseILTrainer):
             logger.info(f"Loaded weights from checkpoint: {ckpt_path}")
 
         self.waypoint_predictor.eval()
-			
+
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(
             p.numel() for p in self.policy.parameters() if p.requires_grad
@@ -295,12 +295,7 @@ class BaseVLNCETrainer(BaseILTrainer):
         config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = (
             -1
         )
-        # Route eval checkpoint to both trainer families.
-        # SS/IL trainers read IL.ckpt_to_load, while GRPO trainers read
-        # GRPO.ckpt_to_load in their _initialize_policy.
         config.IL.ckpt_to_load = checkpoint_path
-        if hasattr(config, "GRPO"):
-            config.GRPO.ckpt_to_load = checkpoint_path
         if len(config.VIDEO_OPTION) > 0:
             config.defrost()
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP_VLNCE")
@@ -338,15 +333,12 @@ class BaseVLNCETrainer(BaseILTrainer):
         self.policy.eval()
         self.waypoint_predictor.eval()
 
-        observations = envs.reset() 
+        observations = envs.reset()
         observations = extract_instruction_tokens(
             observations,
             config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
-            max_length=config.IL.max_text_len,
-            pad_id=1,
-            task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
         )
-        batch = batch_obs(observations, self.device) 
+        batch = batch_obs(observations, self.device)
         batch = apply_obs_transforms_batch(batch, obs_transforms)
 
         if 'CMA' in self.config.MODEL.policy_name:
@@ -365,7 +357,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 envs.num_envs, 80, 768,
                  device=self.device,
             )
-       
+
         not_done_masks = torch.zeros(
             envs.num_envs, 1, dtype=torch.uint8, device=self.device
         )
@@ -428,7 +420,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                         text_mask = all_lang_masks,
                         rnn_states = rnn_states,
                         headings = headings,
-                        cand_rgb = cand_rgb, 
+                        cand_rgb = cand_rgb,
                         cand_depth = cand_depth,
                         cand_direction = cand_direction,
                         cand_mask = cand_mask,
@@ -444,7 +436,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                         lang_lengths = lang_masks.sum(1)
                         lang_token_type_ids = torch.zeros_like(lang_masks,
                             dtype=torch.long, device=self.device)
-                        h_t_flag = h_t.sum(1)==0.0       
+                        h_t_flag = h_t.sum(1)==0.0
                         h_t_init, language_features = self.policy.net(
                             mode='language',
                             lang_idx_tokens=lang_idx_tokens,
@@ -453,7 +445,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                         to_be_masked = ((torch.abs(batch['rxr_instruction']) == 0)*1.).mean(-1)
                         lang_masks = torch.ones_like(to_be_masked) - to_be_masked
                         # lang_lengths = all_lang_masks.sum(1)
-                        h_t_flag = h_t.sum(1)==0.0       
+                        h_t_flag = h_t.sum(1)==0.0
                         h_t_init, language_features = self.policy.net(
                             mode='language',
                             observations=batch,
@@ -481,10 +473,10 @@ class BaseVLNCETrainer(BaseILTrainer):
                         lang_feats=language_features,
                         # lang_token_type_ids=lang_token_type_ids,
                         headings=headings,
-                        cand_rgb = cand_rgb, 
+                        cand_rgb = cand_rgb,
                         cand_depth = cand_depth,
                         cand_direction = cand_direction,
-                        cand_mask = cand_mask,                    
+                        cand_mask = cand_mask,
                         masks = not_done_masks,
                     )
                     logits = logits.masked_fill_(cand_mask, -float('inf'))
@@ -506,7 +498,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                         env_actions.append({'action':
                             {'action': 4,  # HIGHTOLOW
                             'action_args':{
-                                'angle': batch_angles[j][actions[j].item()], 
+                                'angle': batch_angles[j][actions[j].item()],
                                 'distance': batch_distances[j][actions[j].item()],
                             }}})
 
@@ -516,9 +508,9 @@ class BaseVLNCETrainer(BaseILTrainer):
                 if env_actions[j]['action']['action'] == 0:
                     continue
                 else:
-                    envs.call_at(j, 
+                    envs.call_at(j,
                         'change_current_path',    # to update and record low-level path
-                        {'new_path': ob.pop('positions'),   
+                        {'new_path': ob.pop('positions'),
                         'collisions': ob.pop('collisions')}
                     )
 
@@ -560,7 +552,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 except:
                     metric['collisions'] = 0
                     pass
-            
+
                 gt_length = distance[0]
                 metric['spl'] = metric['success']*gt_length/max(gt_length,metric['path_length'])
 
@@ -573,7 +565,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 stats_episodes[current_episodes[i].episode_id] = metric
 
                 observations[i] = envs.reset_at(i)[0] # envs[i] change to next episode
-                
+
                 if 'CMA' in self.config.MODEL.policy_name:
                     rnn_states[i] *= 0.
                 elif 'VLNBERT' in self.config.MODEL.policy_name:
@@ -617,9 +609,6 @@ class BaseVLNCETrainer(BaseILTrainer):
             observations = extract_instruction_tokens(
                 observations,
                 config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
-                max_length=config.IL.max_text_len,
-                pad_id=1,
-                task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
             )
             batch = batch_obs(observations, self.device)
             batch = apply_obs_transforms_batch(batch, obs_transforms)
@@ -628,7 +617,7 @@ class BaseVLNCETrainer(BaseILTrainer):
             next_episodes = envs.current_episodes()
 
             for i in range(envs.num_envs):
-                if next_episodes[i].episode_id in stats_episodes:  
+                if next_episodes[i].episode_id in stats_episodes:
                     envs_to_pause.append(i)
 
             if 'VLNBERT' in self.config.MODEL.policy_name:
@@ -830,7 +819,7 @@ class BaseVLNCETrainer(BaseILTrainer):
         self.config.TASK_CONFIG.TASK.NDTW.SPLIT = self.config.EVAL.SPLIT
         self.config.TASK_CONFIG.TASK.SDTW.SPLIT = self.config.EVAL.SPLIT
         self.config.use_pbar = not is_slurm_batch_job()
-        
+
         # if choosing image
         resize_config = self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES
         crop_config = self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS
@@ -858,7 +847,7 @@ class BaseVLNCETrainer(BaseILTrainer):
         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = crop_config
         self.config.TASK_CONFIG = config
         self.config.SENSORS = config.SIMULATOR.AGENT_0.SENSORS
-        
+
         self.config.freeze()
         torch.cuda.set_device(self.device)
         if world_size > 1:
@@ -872,7 +861,7 @@ class BaseVLNCETrainer(BaseILTrainer):
         # if self.config.EVAL.EPISODE_ID is not None:
         #     self.traj = self.config.EVAL.EPISODE_ID
 
-        
+
         with TensorboardWriter(
             self.config.TENSORBOARD_DIR, flush_secs=self.flush_secs
         ) as writer:
@@ -1007,9 +996,6 @@ class BaseVLNCETrainer(BaseILTrainer):
         observations = extract_instruction_tokens(
             observations,
             config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
-            max_length=config.IL.max_text_len,
-            pad_id=1,
-            task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
         )
         batch = batch_obs(observations, self.device)
         batch = apply_obs_transforms_batch(batch, obs_transforms)
@@ -1048,7 +1034,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 ep_id = current_episodes[i].episode_id
                 k = current_episodes[i].instruction.instruction_id
                 instruction_ids[ep_id] = int(k)
-        
+
         with tqdm.tqdm(
             total=sum(envs.count_episodes()),
             desc=f"[inference:{self.config.INFERENCE.SPLIT}]",
@@ -1060,7 +1046,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                     agent_state_i = envs.call_at(i,"get_agent_info", {})
                     positions.append(agent_state_i['position'])
                     headings.append(agent_state_i['heading'])
-                
+
                 with torch.no_grad():
                     if 'CMA' in self.config.MODEL.policy_name:
                         # instructions
@@ -1086,7 +1072,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                             text_mask = all_lang_masks,
                             rnn_states = rnn_states,
                             headings = headings,
-                            cand_rgb = cand_rgb, 
+                            cand_rgb = cand_rgb,
                             cand_depth = cand_depth,
                             cand_direction = cand_direction,
                             cand_mask = cand_mask,
@@ -1105,7 +1091,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                             env_actions.append({'action':
                                 {'action': 4,  # HIGHTOLOW
                                 'action_args':{
-                                    'angle': batch_angles[j][actions[j].item()], 
+                                    'angle': batch_angles[j][actions[j].item()],
                                     'distance': batch_distances[j][actions[j].item()],
                                 }}})
 
@@ -1129,7 +1115,7 @@ class BaseVLNCETrainer(BaseILTrainer):
                 for i in range(envs.num_envs):
                     if not dones[i]:
                         continue
-                    
+
                     ep_id = envs.current_episodes()[i].episode_id
                     if 'cur_path' in envs.current_episodes()[i].info:
                         episode_predictions[ep_id] += envs.current_episodes()[i].info['cur_path']
@@ -1147,9 +1133,6 @@ class BaseVLNCETrainer(BaseILTrainer):
                 observations = extract_instruction_tokens(
                     observations,
                     config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
-                    max_length=config.IL.max_text_len,
-                    pad_id=1,
-                    task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
                 )
                 batch = batch_obs(observations, self.device)
                 batch = apply_obs_transforms_batch(batch, obs_transforms)
