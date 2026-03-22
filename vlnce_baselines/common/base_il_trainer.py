@@ -489,6 +489,12 @@ class BaseVLNCETrainer(BaseILTrainer):
                     )
                     logits = logits.masked_fill_(cand_mask, -float('inf'))
 
+                else:
+                    raise NotImplementedError(
+                        f"BaseVLNCETrainer._eval_checkpoint does not support policy "
+                        f"{self.config.MODEL.policy_name}. Use a trainer with a custom eval rollout."
+                    )
+
                 # high-to-low actions in environments
                 actions = logits.argmax(dim=-1, keepdim=True)
                 env_actions = []

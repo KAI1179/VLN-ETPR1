@@ -10,6 +10,9 @@
 
 - Fixed eval checkpoint routing for GRPO trainers by propagating `EVAL.CKPT_PATH_DIR`
   to both `IL.ckpt_to_load` and `GRPO.ckpt_to_load` in base eval setup.
+- Fixed `UnboundLocalError: logits` during PriorGT GRPO evaluation by changing
+  launcher eval mode to use `SS-ETP-PriorGT` (which implements a custom
+  `_eval_checkpoint`/`rollout('eval')` path for ETP/PriorGT policies).
 - Fixed eval/inference token preprocessing crash (`RuntimeError: Could not infer dtype of dict`)
   by ensuring instruction dicts are always converted and `txt_task_encoding` is
   always present even when `task_type` is not passed explicitly.

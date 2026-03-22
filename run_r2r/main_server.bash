@@ -183,7 +183,7 @@ flag8="--exp_name release_r2r_priorgt_grpo
       TORCH_GPU_IDS [0,1,2,3]
       GPU_NUMBERS 4
       NUM_ENVIRONMENTS 4
-      TRAINER_NAME GRPO-ETP-PriorGT
+      TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
       MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
