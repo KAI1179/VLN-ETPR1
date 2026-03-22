@@ -188,7 +188,7 @@ flag8="--exp_name release_r2r_priorgt_grpo
       MODEL.MAP_ENCODER.enabled True
       MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_grpo/store/ckpt.iter270.pth
+      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_grpo/store/ckpt.iter500.pth
       IL.back_algo control
       MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
       "

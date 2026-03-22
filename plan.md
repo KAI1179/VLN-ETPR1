@@ -6,6 +6,16 @@
 - PriorGT now consumes precomputed cognitive maps directly from `data/cognitive_maps`.
 - PriorGT now feeds the full map (target size `100 x 100`) into the map encoder instead of per-step local crops.
 
+## Runtime Hotfixes (2026-03-22)
+
+- Fixed eval checkpoint routing for GRPO trainers by propagating `EVAL.CKPT_PATH_DIR`
+  to both `IL.ckpt_to_load` and `GRPO.ckpt_to_load` in base eval setup.
+- Fixed eval/inference token preprocessing crash (`RuntimeError: Could not infer dtype of dict`)
+  by ensuring instruction dicts are always converted and `txt_task_encoding` is
+  always present even when `task_type` is not passed explicitly.
+- Base eval/inference paths now pass explicit `task_type` (`r2r -> 1`, `rxr -> 2`)
+  and `max_text_len` into `extract_instruction_tokens`.
+
 ## Goal
 
 Use an episode-level cognitive map as an additional spatial signal for ETP-R1 navigation, with minimal changes to the original ETP-R1 code path.

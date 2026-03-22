@@ -295,7 +295,12 @@ class BaseVLNCETrainer(BaseILTrainer):
         config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = (
             -1
         )
+        # Route eval checkpoint to both trainer families.
+        # SS/IL trainers read IL.ckpt_to_load, while GRPO trainers read
+        # GRPO.ckpt_to_load in their _initialize_policy.
         config.IL.ckpt_to_load = checkpoint_path
+        if hasattr(config, "GRPO"):
+            config.GRPO.ckpt_to_load = checkpoint_path
         if len(config.VIDEO_OPTION) > 0:
             config.defrost()
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP_VLNCE")
@@ -335,7 +340,11 @@ class BaseVLNCETrainer(BaseILTrainer):
 
         observations = envs.reset() 
         observations = extract_instruction_tokens(
-            observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID
+            observations,
+            config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+            max_length=config.IL.max_text_len,
+            pad_id=1,
+            task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
         )
         batch = batch_obs(observations, self.device) 
         batch = apply_obs_transforms_batch(batch, obs_transforms)
@@ -601,7 +610,10 @@ class BaseVLNCETrainer(BaseILTrainer):
 
             observations = extract_instruction_tokens(
                 observations,
-                self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+                config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+                max_length=config.IL.max_text_len,
+                pad_id=1,
+                task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
             )
             batch = batch_obs(observations, self.device)
             batch = apply_obs_transforms_batch(batch, obs_transforms)
@@ -987,7 +999,11 @@ class BaseVLNCETrainer(BaseILTrainer):
 
         observations = envs.reset()
         observations = extract_instruction_tokens(
-            observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID
+            observations,
+            config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+            max_length=config.IL.max_text_len,
+            pad_id=1,
+            task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
         )
         batch = batch_obs(observations, self.device)
         batch = apply_obs_transforms_batch(batch, obs_transforms)
@@ -1124,7 +1140,10 @@ class BaseVLNCETrainer(BaseILTrainer):
 
                 observations = extract_instruction_tokens(
                     observations,
-                    self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+                    config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+                    max_length=config.IL.max_text_len,
+                    pad_id=1,
+                    task_type=1 if config.MODEL.task_type == 'r2r' else 2 if config.MODEL.task_type == 'rxr' else None,
                 )
                 batch = batch_obs(observations, self.device)
                 batch = apply_obs_transforms_batch(batch, obs_transforms)
