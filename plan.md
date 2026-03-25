@@ -41,6 +41,12 @@ Runtime behavior:
 - PriorGT uses `grid` as input features.
 - `offset_x`, `offset_z`, `range_y` are preserved for compatibility but are not required for full-map mode.
 
+## Pretraining Pipeline Integration (2026-03-25)
+
+- The pretraining pipeline (`pretrain_src`) has been extended to support `map_embeds` injection into the text-and-graph path `GlocalTextPathCMTPreTraining` architecture.
+- Introduced `--use_prior_gt` and `--cognitive_map_dir` parameters into the pretraining launcher (`mix_pretrain_server.json` / `train_r2r.py` / `parser.py`).
+- The `EmbeddingGridMapEncoder` was decoupled so it securely injects grid signals even during distributed unsupervised offline pretraining.
+
 ## Runtime Pipeline (Full-Map Mode)
 
 1. Load per-episode map (`grid`) at rollout start.

@@ -45,7 +45,7 @@ def create_dataloaders(
         tasks = data_cfg.val_tasks
     for k, task_name in enumerate(tasks):
         if task_name == 'mlm':
-            task_dataset = MlmDataset(nav_db, tok) 
+            task_dataset = MlmDataset(nav_db, tok)
             task_collate_fn = mlm_collate
         elif task_name == 'sap':
             task_dataset = SapDataset(nav_db, tok, end_vp_pos_ratio=0.15)
@@ -68,18 +68,18 @@ def create_dataloaders(
 
 
 def main(opts):
-    default_gpu, n_gpu, device = set_cuda(opts) 
+    default_gpu, n_gpu, device = set_cuda(opts)
     print(default_gpu, n_gpu, device)
-    
+
     if default_gpu:
         LOGGER.info(
             'device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}'.format(
                 device, n_gpu, bool(opts.local_rank != -1), opts.fp16
             )
         )
- 
+
     seed = opts.seed
-    if opts.local_rank != -1: 
+    if opts.local_rank != -1:
         seed += opts.rank
     set_random_seed(seed)
 
@@ -123,7 +123,7 @@ def main(opts):
             del tmp
         elif opts.init_pretrained == 'lxmert':
             tmp = torch.load(
-                'pretrain_src/datasets/pretrained/LXMERT/model_LXRT.pth', 
+                'pretrain_src/datasets/pretrained/LXMERT/model_LXRT.pth',
                 map_location=lambda storage, loc: storage
             )
             for param_name, param in tmp.items():
@@ -156,9 +156,9 @@ def main(opts):
             else:
                 print(f"No {ln_bias_key} found")
             del tmp
-    
+
     model_class = GlocalTextPathCMTPreTraining
-    
+
     # update some training configs
     model = model_class.from_pretrained(
         pretrained_model_name_or_path=None, config=model_config, state_dict=checkpoint
@@ -167,41 +167,46 @@ def main(opts):
     set_dropout(model, opts.dropout) # 0.1
     model = wrap_model(model, device, opts.local_rank)
     del checkpoint
-    
+
     # load data training set
     data_cfg = EasyDict(opts.train_datasets['R2R'])
     train_nav_db = R2RTextPathData(
         data_cfg.train_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
         data_cfg.scanvp_cands_file, data_cfg.connectivity_dir,
         image_prob_size=model_config.image_prob_size,
-        image_feat_size=model_config.image_feat_size, 
+        image_feat_size=model_config.image_feat_size,
         depth_feat_size=model_config.depth_feat_size,
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=None,
+        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
     )
     val_r2r_nav_db = R2RTextPathData(
         data_cfg.val_unseen_r2r_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
         data_cfg.scanvp_cands_file, data_cfg.connectivity_dir,
         image_prob_size=model_config.image_prob_size,
-        image_feat_size=model_config.image_feat_size, 
-        depth_feat_size=model_config.depth_feat_size, 
+        image_feat_size=model_config.image_feat_size,
+        depth_feat_size=model_config.depth_feat_size,
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
-        val_sample_num=opts.val_sample_num
+        val_sample_num=opts.val_sample_num,
+        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
         data_cfg.scanvp_cands_file, data_cfg.connectivity_dir,
         image_prob_size=model_config.image_prob_size,
-        image_feat_size=model_config.image_feat_size, 
-        depth_feat_size=model_config.depth_feat_size, 
+        image_feat_size=model_config.image_feat_size,
+        depth_feat_size=model_config.depth_feat_size,
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
-        val_sample_num=opts.val_sample_num
+        val_sample_num=opts.val_sample_num,
+        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
     )
-    
-    # Build data loaders
+
     train_dataloaders = create_dataloaders(
         data_cfg, train_nav_db, tokenizer, True, device, opts
     )
@@ -219,7 +224,7 @@ def main(opts):
         distributed=opts.local_rank != -1,
         device=device
     )
-    
+
     meta_loader = PrefetchLoader(meta_loader, device)
 
     # Prepare optimizer
@@ -228,7 +233,7 @@ def main(opts):
 
     if opts.fp16:
         grad_scaler = amp.GradScaler()
-    
+
     global_step = 0
     LOGGER.info(f"***** Running training with {opts.world_size} GPUs *****")
     LOGGER.info("  Batch size = %d", opts.train_batch_size if opts.local_rank == -1 else opts.train_batch_size * opts.world_size)
@@ -253,7 +258,7 @@ def main(opts):
     for step, (name, batch) in enumerate(meta_loader):
         n_examples[name] += batch['txt_ids'].size(0)
         n_in_units[name] += batch['txt_lens'].sum().item()
-        task = name.split('_')[0] 
+        task = name.split('_')[0]
         if opts.fp16:
             with amp.autocast():
                 loss = model(batch, task=task, compute_loss=True)
@@ -261,7 +266,7 @@ def main(opts):
             loss = model(batch, task=task, compute_loss=True)
 
         n_loss_units[name] += loss.size(0)
-        loss = loss.mean() 
+        loss = loss.mean()
 
         # backward pass
         if opts.gradient_accumulation_steps > 1:
@@ -281,7 +286,7 @@ def main(opts):
 
         # optimizer update and logging
         if (step + 1) % opts.gradient_accumulation_steps == 0:
-            global_step += 1 
+            global_step += 1
 
             # learning rate scheduling
             lr_this_step = get_lr_sched(global_step, opts)
@@ -348,8 +353,8 @@ def main(opts):
         validate(model, val_r2r_dataloaders, setname='_unseen')
         LOGGER.info(f'------Step {global_step}: start validation RxR unseen------')
         validate(model, val_rxr_dataloaders, setname='_unseen')
-        model_saver.save(model, global_step)   
-    
+        model_saver.save(model, global_step)
+
 
 def validate(model, val_dataloaders, setname=''):
     model.eval()
@@ -398,10 +403,10 @@ def validate_mlm(model, val_loader):
 
 def compute_accuracy_for_soft_targets(out, labels):
     outputs = out.max(dim=-1)[1]
-    labels = labels.max(dim=-1)[1] 
+    labels = labels.max(dim=-1)[1]
     n_correct = (outputs == labels).sum().item()
     return n_correct
-    
+
 @torch.no_grad()
 def validate_sap(model, val_loader):
     LOGGER.info("start running SAP validation...")
@@ -418,7 +423,7 @@ def validate_sap(model, val_loader):
     n_data = sum(all_gather(n_data))
     val_gloss = sum(all_gather(val_gloss)) / n_data
     gacc = sum(all_gather(n_gcorrect)) / n_data
-    
+
     tot_time = time.time()-st
     val_log = {'gloss': val_gloss, 'gacc': gacc, 'tok_per_s': n_data/tot_time}
     LOGGER.info(f"validation finished in {int(tot_time)} seconds, "

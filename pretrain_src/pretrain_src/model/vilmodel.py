@@ -640,12 +640,18 @@ class GlobalMapEncoder(nn.Module):
     def forward(
         self, txt_embeds, txt_masks,
         split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
-        gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=None
+        gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=None,
+        map_embeds=None
     ):
         gmap_embeds, gmap_masks = self.gmap_input_embedding(
             split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens
         )
+        
+        # Fuse embedding grid map context
+        if map_embeds is not None:
+            gmap_embeds = gmap_embeds + map_embeds.unsqueeze(1)
+            
         if self.sprel_linear is not None:
             graph_sprels = self.sprel_linear(graph_sprels.unsqueeze(3)).squeeze(3).unsqueeze(1) 
         else:
@@ -674,7 +680,8 @@ class GlocalTextPathCMT(BertPreTrainedModel):
     def forward(
         self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
         traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-        gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids
+        gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
+        map_embeds=None
     ):        
         # text embedding
         txt_token_type_ids = torch.zeros_like(txt_ids)
@@ -693,8 +700,8 @@ class GlocalTextPathCMT(BertPreTrainedModel):
             txt_embeds, txt_masks,
             split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=gmap_pair_dists,
+            map_embeds=map_embeds
         )
-
-        return txt_embeds, gmap_embeds 
+        return txt_embeds, gmap_embeds
 
     

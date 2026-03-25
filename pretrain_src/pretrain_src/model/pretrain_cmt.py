@@ -81,6 +81,19 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             self.graph_query_text = BertOutAttention(config)
             self.graph_attentioned_txt_embeds_transform = ResidualTransformBlock(self.config, self.config.hidden_size, self.config.hidden_dropout_prob)
             self.global_sap_head = NextActionPrediction(self.config, self.config.hidden_size, self.config.pred_head_dropout_prob)
+            
+        try:
+            import sys, os
+            if 'vlnce_baselines' not in sys.modules:
+                sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../..')))
+            from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
+            self.map_encoder = EmbeddingGridMapEncoder(
+                num_categories=37,
+                embedding_dim=512,
+                output_size=self.config.hidden_size
+            )
+        except ImportError:
+            self.map_encoder = None
 
         self.init_weights()
         self.tie_weights()
@@ -92,39 +105,44 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
 
     def forward(self, batch, task, compute_loss=True):
         batch = defaultdict(lambda: None, batch)
+        
+        map_embeds = None
+        if 'cognitive_maps' in batch and batch['cognitive_maps'] is not None and getattr(self, 'map_encoder', None) is not None:
+            map_embeds = self.map_encoder(batch['cognitive_maps'])
+
         if task.startswith('mlm'):
             return self.forward_mlm(
-                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
+                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'], 
                 batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'], 
                 batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'], 
                 batch['traj_vpids'], batch['traj_cand_vpids'], 
                 batch['gmap_lens'], batch['gmap_step_ids'], batch['gmap_task_embeddings'], batch['gmap_pos_fts'], 
                 batch['gmap_pair_dists'], batch['gmap_vpids'],
-                batch['txt_labels'], compute_loss
+                batch['txt_labels'], compute_loss, map_embeds=map_embeds
             )
         elif task.startswith('sap'):
             return self.forward_sap(
-                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
+                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'], 
                 batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'], 
                 batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'], 
                 batch['traj_vpids'], batch['traj_cand_vpids'], 
                 batch['gmap_lens'], batch['gmap_step_ids'], batch['gmap_task_embeddings'], batch['gmap_pos_fts'], 
                 batch['gmap_pair_dists'], batch['gmap_vpids'], batch['gmap_visited_masks'],
-                batch['global_act_labels'], batch['local_act_labels'], compute_loss
+                batch['global_act_labels'], batch['local_act_labels'], compute_loss, map_embeds=map_embeds
             )
         else:
             raise ValueError('invalid task')
 
     def forward_mlm(
-        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
+        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
         traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
         gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-        txt_labels, compute_loss
+        txt_labels, compute_loss, map_embeds=None
     ):
         txt_embeds, _ = self.bert(
-            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
+            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
             traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
+            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids, map_embeds=map_embeds
         )
 
         masked_output = self._compute_masked_hidden(txt_embeds, txt_labels != -1)
@@ -145,16 +163,16 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         return hidden_masked
 
     def forward_sap(
-        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
+        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
         traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
         gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-        gmap_visited_masks, global_act_labels, local_act_labels, compute_loss
+        gmap_visited_masks, global_act_labels, local_act_labels, compute_loss, map_embeds=None
     ):
         batch_size = txt_ids.size(0)
         txt_embeds, gmap_embeds = self.bert(
-            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
+            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
             traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
+            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids, map_embeds=map_embeds
         )
 
         txt_masks = gen_seq_masks(txt_lens)

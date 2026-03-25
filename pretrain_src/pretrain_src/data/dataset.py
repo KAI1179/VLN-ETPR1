@@ -24,7 +24,10 @@ class ReverieTextPathData(object):
         obj_feat_size=None, obj_prob_size=None, max_objects=20,
         max_txt_len=100, in_memory=True, act_visited_node=False,
         val_sample_num=None,
+        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps'
     ):
+        self.use_prior_gt = use_prior_gt
+        self.cognitive_map_dir = cognitive_map_dir
         self.img_ft_file = img_ft_file
         self.dep_ft_file = dep_ft_file
         self.obj_ft_file = obj_ft_file
@@ -356,14 +359,16 @@ class R2RTextPathData(ReverieTextPathData):
         self, anno_files, img_ft_file, dep_ft_file, scanvp_cands_file, connectivity_dir,
         image_feat_size=2048, image_prob_size=1000, depth_feat_size=128, angle_feat_size=4,
         max_txt_len=100, in_memory=True, act_visited_node=False,
-        val_sample_num=None, start_vp_file=None
+        val_sample_num=None, start_vp_file=None,
+        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps'
     ):
         super().__init__(
             anno_files, img_ft_file, dep_ft_file, None, scanvp_cands_file, connectivity_dir,
             image_feat_size=image_feat_size, image_prob_size=image_prob_size, depth_feat_size=depth_feat_size,
-            angle_feat_size=angle_feat_size, obj_feat_size=0, obj_prob_size=0, 
+            angle_feat_size=angle_feat_size, obj_feat_size=0, obj_prob_size=0,
             max_objects=0, max_txt_len=max_txt_len, in_memory=in_memory,
-            act_visited_node=act_visited_node, val_sample_num=val_sample_num
+            act_visited_node=act_visited_node, val_sample_num=val_sample_num,
+            use_prior_gt=use_prior_gt, cognitive_map_dir=cognitive_map_dir
         )
 
     def get_scanvp_feature(self, scan, viewpoint):
@@ -466,6 +471,24 @@ class R2RTextPathData(ReverieTextPathData):
 
         if return_img_probs:
             outs['vp_view_probs'] = softmax(traj_view_img_fts[-1][:, self.image_feat_size:], dim=1)
+            
+        if getattr(self, 'use_prior_gt', False):
+            import torch
+            try:
+                from vlnce_baselines.models.etp_prior_gt.map_utils import full_cognitive_map, load_cognitive_map, make_zero_map
+                scan_dir = os.path.join(self.cognitive_map_dir, scan)
+                map_tensor = make_zero_map(37, 100)
+                if os.path.isdir(scan_dir):
+                    files = os.listdir(scan_dir)
+                    if len(files) > 0:
+                        # use the first map if ID is missing or just guess an episode
+                        ep_id = files[0].split('_')[1].split('.')[0]
+                        cog_map = load_cognitive_map(self.cognitive_map_dir, scan, ep_id)
+                        if cog_map is not None:
+                            map_tensor = full_cognitive_map(cog_map, 100)
+                outs['cognitive_maps'] = map_tensor
+            except ImportError:
+                outs['cognitive_maps'] = torch.zeros(37, 100, 100)
         
         return outs
 

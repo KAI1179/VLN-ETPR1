@@ -144,3 +144,18 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
   - Confirm checkpoint was trained by PriorGT trainer/policy, not plain R1.
 - Cuda out of memory!
   - Change `NUM_ENVIRONMENTS` in `main_server.bash` as needed.
+
+## Pretraining Support
+
+Prior GT maps are also integrated into the pretraining phase for learning continuous-level visual map priors offline.
+
+To run pretraining incorporating PriorGT maps:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+    --use_prior_gt \
+    --cognitive_map_dir data/cognitive_maps
+```
+
+- When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.
+- Maps are zero-padded or fully masked if not found for a specific instance.

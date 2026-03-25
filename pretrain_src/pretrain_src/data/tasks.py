@@ -115,6 +115,9 @@ def mlm_collate(inputs):
         k: [x[k] for x in inputs] for k in inputs[0].keys()
     }
     
+    if 'cognitive_maps' in batch:
+        batch['cognitive_maps'] = torch.stack(batch['cognitive_maps'])
+    
     batch['txt_lens'] = torch.LongTensor([len(x) for x in batch['txt_ids']])
     batch['txt_ids'] = pad_sequence(batch['txt_ids'], batch_first=True, padding_value=1)
     batch['txt_labels'] = pad_sequence(batch['txt_labels'], batch_first=True, padding_value=-1)
@@ -219,6 +222,9 @@ def sap_collate(inputs):
     batch = {
         k: [x[k] for x in inputs] for k in inputs[0].keys()
     }
+
+    if 'cognitive_maps' in batch:
+        batch['cognitive_maps'] = torch.stack(batch['cognitive_maps'])
 
     batch['txt_lens'] = torch.LongTensor([len(x) for x in batch['txt_ids']])
     batch['txt_ids'] = pad_sequence(batch['txt_ids'], batch_first=True, padding_value=1)
