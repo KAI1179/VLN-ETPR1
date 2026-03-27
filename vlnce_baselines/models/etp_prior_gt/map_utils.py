@@ -21,18 +21,22 @@ class PrecomputedCognitiveMap:
 
 
 def load_cognitive_map(
-    precomputed_dir: str, scene_id: str, episode_id
+    precomputed_dir: str, scene_id: str, episode_id: str, dataset_name: str = "R2R"
 ) -> "PrecomputedCognitiveMap | None":
     """Load a precomputed cognitive map from disk.
 
     Maps are stored as:
-        {precomputed_dir}/{scene_id}/episode_{episode_id}.npz
+        {precomputed_dir}/{scene_id}/{dataset_name}_{episode_id}.npz
 
     Returns None if the file does not exist (some episodes produce empty maps).
     """
-    npz_path = os.path.join(precomputed_dir, scene_id, f"episode_{episode_id}.npz")
+    npz_path = os.path.join(
+        precomputed_dir, scene_id, f"{dataset_name}_{episode_id}.npz"
+    )
+    
     if not os.path.exists(npz_path):
         return None
+        
     data = np.load(npz_path, allow_pickle=True)
     grid = cast(np.ndarray, data["grid"])
     offset_x = float(data["offset_x"])

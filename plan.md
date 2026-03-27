@@ -27,7 +27,8 @@ Use an episode-level cognitive map as an additional spatial signal for ETP-R1 na
 
 Each episode map is loaded from:
 
-- `data/cognitive_maps/{scene_id}/episode_{episode_id}.npz`
+- `data/cognitive_maps/{scene_id}/R2R_{episode_id}.npz` for R2R dataset
+- `data/cognitive_maps/{scene_id}/RxR_{episode_id}.npz` for RxR dataset
 
 Expected keys inside each `.npz`:
 

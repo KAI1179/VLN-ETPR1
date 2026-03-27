@@ -14,9 +14,12 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 
 ## Data Requirement
 
+### Cognitive maps
+
 You must have precomputed cognitive maps at:
 
-- `data/cognitive_maps/<scene_id>/episode_<episode_id>.npz`
+- `data/cognitive_maps/<scene_id>/R2R_<episode_id>.npz`
+- `data/cognitive_maps/<scene_id>/RxR_<episode_id>.npz`
 
 Each file is a single compressed NumPy archive (`np.savez_compressed`) containing:
 - `grid` — shape `(num_categories, H, W)` float32 category embeddings
@@ -24,6 +27,10 @@ Each file is a single compressed NumPy archive (`np.savez_compressed`) containin
 - `range_y` — vertical slice used for 2-D projection
 
 Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.
+
+### Annotations
+
+You must have enriched annotations WITH episode id. To do that, run `pretrain_src/enrich_episode_ids.py`.
 
 ## Checkpoint Compatibility
 
@@ -158,4 +165,5 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 ```
 
 - When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.
-- Maps are zero-padded or fully masked if not found for a specific instance.
+- The loader uses the injected annotation fields `dataset_name` and `episode_id` to resolve `{dataset}_{episode_id}.npz`.
+- If `episode_id == -1` or the map file is missing, the loader falls back to an all-zero cognitive map for that sample.

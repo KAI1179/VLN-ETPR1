@@ -954,10 +954,13 @@ class RLTrainer(BaseVLNCETrainer):
         if map_cfg.enabled:
             _cur_eps = self.envs.current_episodes()
             cognitive_maps = []
+            dataset_flag = getattr(self.config.MODEL, "task_type", "R2R").upper()
+            if dataset_flag == "RXR":
+                dataset_flag = "RxR"
             for ep in _cur_eps:
                 _scene_id = os.path.splitext(os.path.basename(ep.scene_id))[0]
                 cognitive_maps.append(
-                    load_cognitive_map(map_cfg.precomputed_dir, _scene_id, ep.episode_id)
+                    load_cognitive_map(map_cfg.precomputed_dir, _scene_id, ep.episode_id, dataset_name=dataset_flag)
                 )
         else:
             cognitive_maps = None

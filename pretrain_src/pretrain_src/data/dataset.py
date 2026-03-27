@@ -54,16 +54,18 @@ class ReverieTextPathData(object):
 
         self.scanvp_cands = json.load(open(scanvp_cands_file))
 
-        
-        self.graphs, self.shortest_distances, self.shortest_paths = load_nav_graphs(connectivity_dir) 
-        self.all_point_rel_angles = [get_view_rel_angles(baseViewId=i) for i in range(36)] 
-        self.all_point_angle_fts = [get_angle_fts(x[:, 0], x[:, 1], self.angle_feat_size) for x in self.all_point_rel_angles] 
+
+        self.graphs, self.shortest_distances, self.shortest_paths = load_nav_graphs(connectivity_dir)
+        self.all_point_rel_angles = [get_view_rel_angles(baseViewId=i) for i in range(36)]
+        self.all_point_angle_fts = [get_angle_fts(x[:, 0], x[:, 1], self.angle_feat_size) for x in self.all_point_rel_angles]
 
         self.data = []
-        
+
         for anno_file in anno_files:
             with jsonlines.open(anno_file, 'r') as f:
                 for item in f:
+                    if "dataset_name" not in item:
+                        item["dataset_name"] = self._infer_dataset_name(anno_file, item)
                     self.data.append(item)
 
         if val_sample_num:
@@ -73,6 +75,37 @@ class ReverieTextPathData(object):
 
     def __len__(self):
         return len(self.data)
+
+    def _infer_dataset_name(self, anno_file, item):
+        fname = os.path.basename(anno_file).lower()
+        if fname.startswith("r2r_") or item.get("task_type_encoding") in [1, 3]:
+            return "R2R"
+        if fname.startswith("rxr_") or item.get("task_type_encoding") == 2:
+            return "RxR"
+        raise ValueError("Unexpected dataset")
+
+    def _load_pretrain_cognitive_map(self, item, scan):
+        import torch
+        from vlnce_baselines.models.etp_prior_gt.map_utils import (
+            full_cognitive_map,
+            load_cognitive_map,
+            make_zero_map,
+        )
+
+        map_tensor = make_zero_map(37, 100)
+        episode_id = item.get("episode_id", -1)
+        if episode_id in [None, -1, "-1"]:
+            return map_tensor
+
+        cog_map = load_cognitive_map(
+            self.cognitive_map_dir,
+            scan,
+            str(episode_id),
+            dataset_name=item["dataset_name"],
+        )
+        if cog_map is not None:
+            map_tensor = full_cognitive_map(cog_map, 100)
+        return map_tensor
 
     def get_scanvp_feature(self, scan, viewpoint):
         key = '%s_%s' % (scan, viewpoint)
@@ -104,7 +137,7 @@ class ReverieTextPathData(object):
                 obj_label = k
                 break
         else:
-            obj_label = -100 # ignore 
+            obj_label = -100 # ignore
         return obj_label
 
     def get_act_labels(self, end_vp, item, gmap_vpids, gmap_visited_masks, traj_cand_vpids):
@@ -123,7 +156,7 @@ class ReverieTextPathData(object):
                     if min_dist < cand_min_dist:
                         cand_min_dist = min_dist
                         global_act_label = k # [stop] is 0
-            # local: 
+            # local:
             cand_min_dist = float('inf')
             for k, cand_vp in enumerate(traj_cand_vpids[-1]):
                 min_dist = min([self.shortest_distances[scan][end_vp][cand_vp] \
@@ -134,7 +167,7 @@ class ReverieTextPathData(object):
         return global_act_label, local_act_label
 
     def get_input(
-        self, idx, end_vp_type, return_img_probs=False, return_act_label=False, 
+        self, idx, end_vp_type, return_img_probs=False, return_act_label=False,
         return_obj_label=False, end_vp=None
     ):
         item = self.data[idx]
@@ -163,7 +196,7 @@ class ReverieTextPathData(object):
         if len(gt_path) > TRAIN_MAX_STEP:
             # truncate trajectory
             gt_path = gt_path[:TRAIN_MAX_STEP] + [end_vp]
-            
+
         traj_view_img_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, traj_cand_vpids, \
             last_vp_angles, last_vp_objids = self.get_traj_pano_fts(scan, gt_path)
 
@@ -178,7 +211,7 @@ class ReverieTextPathData(object):
         outs = {
             'instr_id': item['instr_id'],
             'instr_encoding': item['instr_encoding'][:self.max_txt_len],
-            
+
             'traj_view_img_fts': [x[:, :self.image_feat_size] for x in traj_view_img_fts],
             'traj_obj_img_fts': [x[:, :self.obj_feat_size] for x in traj_obj_img_fts],
             'traj_loc_fts': traj_loc_fts,
@@ -248,11 +281,11 @@ class ReverieTextPathData(object):
             view_img_fts.extend([view_fts[idx] for idx in range(36) if idx not in used_viewidxs])
             view_angles.extend([self.all_point_rel_angles[12][idx] for idx in range(36) if idx not in used_viewidxs])
             # combine cand views and noncand views
-            view_img_fts = np.stack(view_img_fts, 0) 
+            view_img_fts = np.stack(view_img_fts, 0)
             view_angles = np.stack(view_angles, 0)
             view_ang_fts = get_angle_fts(view_angles[:, 0], view_angles[:, 1], self.angle_feat_size)
             view_box_fts = np.array([[1, 1, 1]] * len(view_img_fts)).astype(np.float32)
-            
+
             # object features
             num_objs = obj_img_fts.shape[0]
             obj_angles = np.zeros((num_objs, 2), dtype=np.float32)
@@ -261,7 +294,7 @@ class ReverieTextPathData(object):
             if num_objs > 0:
                 for k, (w, h) in enumerate(obj_attrs['sizes']):
                     obj_angles[k] = obj_attrs['directions'][k]
-                    obj_box_fts[k] = [h/self.obj_image_h, w/self.obj_image_w, (h*w)/self.obj_image_size]           
+                    obj_box_fts[k] = [h/self.obj_image_h, w/self.obj_image_w, (h*w)/self.obj_image_size]
                 obj_ang_fts = get_angle_fts(obj_angles[:, 0], obj_angles[:, 1], self.angle_feat_size)
 
             # combine pano features
@@ -283,7 +316,7 @@ class ReverieTextPathData(object):
 
         return traj_view_img_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, traj_cand_vpids, \
                last_vp_angles, last_vp_objids
-        
+
     def get_gmap_inputs(self, scan, path, cur_heading, cur_elevation):
         scan_graph = self.graphs[scan]
         cur_vp = path[-1]
@@ -297,9 +330,9 @@ class ReverieTextPathData(object):
                 if next_vp not in visited_vpids:
                     unvisited_vpids[next_vp] = 0
         # add [stop] token
-        gmap_vpids = [None] + list(visited_vpids.keys()) + list(unvisited_vpids.keys()) 
+        gmap_vpids = [None] + list(visited_vpids.keys()) + list(unvisited_vpids.keys())
         gmap_step_ids = [0] + list(visited_vpids.values()) + list(unvisited_vpids.values())
-        if self.act_visited_node: 
+        if self.act_visited_node:
             gmap_visited_masks = [0]
             for vp in gmap_vpids[1:]:
                 if vp == path[-1]:
@@ -310,14 +343,14 @@ class ReverieTextPathData(object):
             gmap_visited_masks = [0] + [1] * len(visited_vpids) + [0] * len(unvisited_vpids)
 
         gmap_pos_fts = self.get_gmap_pos_fts(scan, cur_vp, gmap_vpids, cur_heading, cur_elevation)
-        
+
         gmap_pair_dists = np.zeros((len(gmap_vpids), len(gmap_vpids)), dtype=np.float32)
         for i in range(1, len(gmap_vpids)):
             for j in range(i+1, len(gmap_vpids)):
                 gmap_pair_dists[i, j] = gmap_pair_dists[j, i] = \
                     self.shortest_distances[scan][gmap_vpids[i]][gmap_vpids[j]] / MAX_DIST
         return gmap_vpids, gmap_step_ids, gmap_visited_masks, gmap_pos_fts, gmap_pair_dists
-    
+
     def get_gmap_pos_fts(self, scan, cur_vp, gmap_vpids, cur_heading, cur_elevation):
         rel_angles, rel_dists = [], []
         for vp in gmap_vpids:
@@ -326,7 +359,7 @@ class ReverieTextPathData(object):
                 rel_dists.append([0, 0, 0])
             else:
                 rel_heading, rel_elevation, rel_dist = calculate_vp_rel_pos_fts(
-                    self.graphs[scan].nodes[cur_vp]['position'], 
+                    self.graphs[scan].nodes[cur_vp]['position'],
                     self.graphs[scan].nodes[vp]['position'],
                     base_heading=cur_heading, base_elevation=cur_elevation,
                 )
@@ -339,20 +372,20 @@ class ReverieTextPathData(object):
         rel_dists = np.array(rel_dists).astype(np.float32)
         rel_ang_fts = get_angle_fts(rel_angles[:, 0], rel_angles[:, 1], self.angle_feat_size)
         return np.concatenate([rel_ang_fts, rel_dists], 1)
-        
+
     def get_vp_pos_fts(self, scan, start_vp, cur_vp, cand_vpids, cur_heading, cur_elevation, vp_ft_len):
         cur_cand_pos_fts = self.get_gmap_pos_fts(scan, cur_vp, cand_vpids, cur_heading, cur_elevation)
         cur_start_pos_fts = self.get_gmap_pos_fts(scan, cur_vp, [start_vp], cur_heading, cur_elevation)
-                
+
         # add [stop] token at beginning
         vp_pos_fts = np.zeros((vp_ft_len+1, 14), dtype=np.float32)
         vp_pos_fts[:, :7] = cur_start_pos_fts
         vp_pos_fts[1:len(cur_cand_pos_fts)+1, 7:] = cur_cand_pos_fts
 
         return vp_pos_fts
-       
 
-       
+
+
 
 class R2RTextPathData(ReverieTextPathData):
     def __init__(
@@ -387,7 +420,7 @@ class R2RTextPathData(ReverieTextPathData):
         return view_fts, dep_fts
 
     def get_act_labels(self, end_vp, end_idx, item, gmap_vpids, traj_cand_vpids):
-        if end_vp == item['path'][-1]: 
+        if end_vp == item['path'][-1]:
             global_act_label = local_act_label = 0
         else:
             global_act_label = local_act_label = -100
@@ -397,7 +430,7 @@ class R2RTextPathData(ReverieTextPathData):
                 if cand_vp == gt_next_vp:
                     global_act_label = k
                     break
-            # local: 
+            # local:
             for k, cand_vp in enumerate(traj_cand_vpids[-1]):
                 if cand_vp == gt_next_vp:
                     local_act_label = k + 1 # [stop] is 0
@@ -414,25 +447,25 @@ class R2RTextPathData(ReverieTextPathData):
         gt_path = item['path']
 
         if end_vp is None:
-            if end_vp_type == 'pos': 
+            if end_vp_type == 'pos':
                 # name convention with REVERIE (last vp)
                 end_idx = len(gt_path) - 1
                 end_vp = gt_path[-1]
             elif end_vp_type in ['neg_in_gt_path', 'neg_others']:
                 # name convention with REVERIE (mid vps in the path)
-                end_vps = gt_path[:-1] 
-                end_idx = np.random.randint(len(end_vps)) 
+                end_vps = gt_path[:-1]
+                end_idx = np.random.randint(len(end_vps))
                 end_vp = end_vps[end_idx]
         else:
             assert end_vp in gt_path
             end_idx = gt_path.index(end_vp)
-            
+
         gt_path = gt_path[:end_idx+1]
-        cur_heading, cur_elevation = self.get_cur_angle(scan, gt_path, start_heading) 
+        cur_heading, cur_elevation = self.get_cur_angle(scan, gt_path, start_heading)
 
         if len(gt_path) > TRAIN_MAX_STEP:
             gt_path = gt_path[:TRAIN_MAX_STEP] + [end_vp]
-            
+
         traj_view_img_fts, traj_view_dep_fts, traj_loc_fts, traj_nav_types, traj_cand_vpids, \
             last_vp_angles = self.get_traj_pano_fts(scan, gt_path)
 
@@ -447,7 +480,7 @@ class R2RTextPathData(ReverieTextPathData):
             'instr_id': item['instr_id'],
             'instr_encoding': item['instr_encoding'][:self.max_txt_len], # ID
             'task_type_encoding': item['task_type_encoding'],
-            
+
             'traj_view_img_fts': [x[:, :self.image_feat_size] for x in traj_view_img_fts],
             'traj_view_dep_fts': [x[:, :self.depth_feat_size] for x in traj_view_dep_fts],
             'traj_loc_fts': traj_loc_fts,
@@ -462,7 +495,7 @@ class R2RTextPathData(ReverieTextPathData):
             'gmap_pair_dists': gmap_pair_dists,
         }
 
-        if return_act_label: 
+        if return_act_label:
             global_act_label, local_act_label = self.get_act_labels(
                 end_vp, end_idx, item, gmap_vpids, traj_cand_vpids
             )
@@ -471,25 +504,14 @@ class R2RTextPathData(ReverieTextPathData):
 
         if return_img_probs:
             outs['vp_view_probs'] = softmax(traj_view_img_fts[-1][:, self.image_feat_size:], dim=1)
-            
+
         if getattr(self, 'use_prior_gt', False):
             import torch
             try:
-                from vlnce_baselines.models.etp_prior_gt.map_utils import full_cognitive_map, load_cognitive_map, make_zero_map
-                scan_dir = os.path.join(self.cognitive_map_dir, scan)
-                map_tensor = make_zero_map(37, 100)
-                if os.path.isdir(scan_dir):
-                    files = os.listdir(scan_dir)
-                    if len(files) > 0:
-                        # use the first map if ID is missing or just guess an episode
-                        ep_id = files[0].split('_')[1].split('.')[0]
-                        cog_map = load_cognitive_map(self.cognitive_map_dir, scan, ep_id)
-                        if cog_map is not None:
-                            map_tensor = full_cognitive_map(cog_map, 100)
-                outs['cognitive_maps'] = map_tensor
+                outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item, scan)
             except ImportError:
                 outs['cognitive_maps'] = torch.zeros(37, 100, 100)
-        
+
         return outs
 
     def get_traj_pano_fts(self, scan, path):
@@ -500,36 +522,36 @@ class R2RTextPathData(ReverieTextPathData):
         traj_view_img_fts, traj_view_dep_fts, traj_loc_fts, traj_nav_types, traj_cand_vpids = [], [], [], [], []
 
         for vp in path:
-            view_fts, dep_fts = self.get_scanvp_feature(scan, vp) 
+            view_fts, dep_fts = self.get_scanvp_feature(scan, vp)
 
             view_img_fts, view_dep_fts, view_angles, cand_vpids = [], [], [], []
             # cand views
-            nav_cands = self.scanvp_cands['%s_%s'%(scan, vp)] 
+            nav_cands = self.scanvp_cands['%s_%s'%(scan, vp)]
             used_viewidxs = set()
-            for k, v in nav_cands.items(): 
+            for k, v in nav_cands.items():
                 used_viewidxs.add(v[0])
-                view_img_fts.append(view_fts[v[0]]) 
-                view_dep_fts.append(dep_fts[v[0]]) 
+                view_img_fts.append(view_fts[v[0]])
+                view_dep_fts.append(dep_fts[v[0]])
                 view_angle = self.all_point_rel_angles[12][v[0]]
-                view_angles.append([view_angle[0] + v[2], view_angle[1] + v[3]]) 
-                cand_vpids.append(k) 
+                view_angles.append([view_angle[0] + v[2], view_angle[1] + v[3]])
+                cand_vpids.append(k)
             # non cand views
             view_img_fts.extend([view_fts[idx] for idx in range(36) if idx not in used_viewidxs])
             view_dep_fts.extend([dep_fts[idx] for idx in range(36) if idx not in used_viewidxs])
-            view_angles.extend([self.all_point_rel_angles[12][idx] for idx in range(36) if idx not in used_viewidxs]) 
+            view_angles.extend([self.all_point_rel_angles[12][idx] for idx in range(36) if idx not in used_viewidxs])
 
-            view_img_fts = np.stack(view_img_fts, 0) 
-            view_dep_fts = np.stack(view_dep_fts, 0) 
-            view_angles = np.stack(view_angles, 0) 
-            view_ang_fts = get_angle_fts(view_angles[:, 0], view_angles[:, 1], self.angle_feat_size) 
-            
+            view_img_fts = np.stack(view_img_fts, 0)
+            view_dep_fts = np.stack(view_dep_fts, 0)
+            view_angles = np.stack(view_angles, 0)
+            view_ang_fts = get_angle_fts(view_angles[:, 0], view_angles[:, 1], self.angle_feat_size)
+
             # combine pano features
             traj_view_img_fts.append(view_img_fts)
             traj_view_dep_fts.append(view_dep_fts)
             traj_loc_fts.append(view_ang_fts)
             traj_nav_types.append([1] * len(cand_vpids) + [0] * (36 - len(used_viewidxs)))
             traj_cand_vpids.append(cand_vpids)
-            
-            last_vp_angles = view_angles 
+
+            last_vp_angles = view_angles
 
         return traj_view_img_fts, traj_view_dep_fts, traj_loc_fts, traj_nav_types, traj_cand_vpids, last_vp_angles
