@@ -161,7 +161,7 @@ To run pretraining incorporating PriorGT maps:
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
     --use_prior_gt \
-    --cognitive_map_dir data/cognitive_maps
+    --pretrain_skip_unmatched
 ```
 
 - When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.

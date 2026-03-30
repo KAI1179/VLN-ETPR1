@@ -24,10 +24,12 @@ class ReverieTextPathData(object):
         obj_feat_size=None, obj_prob_size=None, max_objects=20,
         max_txt_len=100, in_memory=True, act_visited_node=False,
         val_sample_num=None,
-        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps'
+        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps',
+        skip_unmatched=False
     ):
         self.use_prior_gt = use_prior_gt
         self.cognitive_map_dir = cognitive_map_dir
+        self.skip_unmatched = skip_unmatched
         self.img_ft_file = img_ft_file
         self.dep_ft_file = dep_ft_file
         self.obj_ft_file = obj_ft_file
@@ -60,18 +62,29 @@ class ReverieTextPathData(object):
         self.all_point_angle_fts = [get_angle_fts(x[:, 0], x[:, 1], self.angle_feat_size) for x in self.all_point_rel_angles]
 
         self.data = []
+        unmatched_count = 0
 
         for anno_file in anno_files:
             with jsonlines.open(anno_file, 'r') as f:
                 for item in f:
                     if "dataset_name" not in item:
                         item["dataset_name"] = self._infer_dataset_name(anno_file, item)
+                    item["dataset_name"] = self._normalize_dataset_name(item["dataset_name"])
+                    if self.skip_unmatched and item.get("episode_id", -1) in [None, -1, "-1"]:
+                        unmatched_count += 1
+                        continue
                     self.data.append(item)
 
         if val_sample_num:
             # cannot evaluate all the samples as it takes too much time
             sel_idxs = np.random.permutation(len(self.data))[:val_sample_num]
             self.data = [self.data[sidx] for sidx in sel_idxs]
+
+        if unmatched_count:
+            print(
+                "Filtered pretraining annotations: "
+                f"unmatched={unmatched_count}, kept={len(self.data)}"
+            )
 
     def __len__(self):
         return len(self.data)
@@ -83,6 +96,14 @@ class ReverieTextPathData(object):
         if fname.startswith("rxr_") or item.get("task_type_encoding") == 2:
             return "RxR"
         raise ValueError("Unexpected dataset")
+
+    def _normalize_dataset_name(self, name):
+        name = str(name).strip().lower()
+        if name == "r2r":
+            return "R2R"
+        if name == "rxr":
+            return "RxR"
+        raise ValueError(f"Unexpected dataset name: {name}")
 
     def _load_pretrain_cognitive_map(self, item, scan):
         import torch
@@ -393,7 +414,8 @@ class R2RTextPathData(ReverieTextPathData):
         image_feat_size=2048, image_prob_size=1000, depth_feat_size=128, angle_feat_size=4,
         max_txt_len=100, in_memory=True, act_visited_node=False,
         val_sample_num=None, start_vp_file=None,
-        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps'
+        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps',
+        skip_unmatched=False
     ):
         super().__init__(
             anno_files, img_ft_file, dep_ft_file, None, scanvp_cands_file, connectivity_dir,
@@ -401,7 +423,8 @@ class R2RTextPathData(ReverieTextPathData):
             angle_feat_size=angle_feat_size, obj_feat_size=0, obj_prob_size=0,
             max_objects=0, max_txt_len=max_txt_len, in_memory=in_memory,
             act_visited_node=act_visited_node, val_sample_num=val_sample_num,
-            use_prior_gt=use_prior_gt, cognitive_map_dir=cognitive_map_dir
+            use_prior_gt=use_prior_gt, cognitive_map_dir=cognitive_map_dir,
+            skip_unmatched=skip_unmatched
         )
 
     def get_scanvp_feature(self, scan, viewpoint):
