@@ -1,7 +1,7 @@
 
 NODE_RANK=0
 NUM_GPUS=4
-outdir=pretrained/r2r_rxr_ce/mlm.sap_habitat_depth
+outdir=pretrained/r2r_rxr_ce/baseline
 PORT=$1
 shift
 
