@@ -121,7 +121,7 @@ flag5="--exp_name release_r2r_priorgt_dagger
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       "
 
 flag6="--exp_name release_r2r_priorgt_grpo
@@ -156,7 +156,7 @@ flag6="--exp_name release_r2r_priorgt_grpo
       GRPO.max_grad_norm 2.0
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _10
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       "
 
 flag7="--exp_name release_r2r_priorgt_dagger
@@ -173,7 +173,7 @@ flag7="--exp_name release_r2r_priorgt_dagger
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter28800.pth
       IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       "
 
 flag8="--exp_name release_r2r_priorgt_grpo
@@ -190,7 +190,7 @@ flag8="--exp_name release_r2r_priorgt_grpo
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_grpo/store/ckpt.iter350.pth
       IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       "
 
 mode=$1
@@ -256,7 +256,7 @@ case $mode in
             IL.ckpt_to_load data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth \
             TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
             TASK_CONFIG.DATASET.SUFFIX _90 \
-            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       ;;
       priorgt_probe_eval)
       echo "###### priorgt probe eval ######"
@@ -275,7 +275,7 @@ case $mode in
             EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth \
             IL.back_algo control \
             TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
-            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/partial_397500.pt
+            MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/skip_415000.pt
       ;;
 esac
 
