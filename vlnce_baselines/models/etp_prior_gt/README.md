@@ -167,3 +167,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 - When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.
 - The loader uses the injected annotation fields `dataset_name` and `episode_id` to resolve `{dataset}_{episode_id}.npz`.
 - If `episode_id == -1` or the map file is missing, the loader falls back to an all-zero cognitive map for that sample.
+
+## TODO
+
+- Cognitive map in topological form
+- Failure case display, reason analysis and method justification
