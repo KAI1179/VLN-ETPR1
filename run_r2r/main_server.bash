@@ -35,7 +35,7 @@ flag1="--exp_name release_r2r_dagger
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
       "
 
 flag2="--exp_name release_r2r_grpo
@@ -67,7 +67,7 @@ flag2="--exp_name release_r2r_grpo
       GRPO.max_grad_norm 2.0
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _10
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
       "
 
 flag3=" --exp_name release_r2r_grpo
@@ -80,7 +80,7 @@ flag3=" --exp_name release_r2r_grpo
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth
       IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
       "
 
 flag4="--exp_name release_r2r_grpo
@@ -94,7 +94,7 @@ flag4="--exp_name release_r2r_grpo
       INFERENCE.CKPT_PATH data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth
       INFERENCE.PREDICTIONS_FILE preds.json
       IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt
+      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
       "
 
 flag5="--exp_name release_r2r_priorgt_dagger
