@@ -30,8 +30,8 @@ flag1="--exp_name release_r2r_dagger
       IL.decay_interval 2000
       IL.warmup_iters 500
       IL.min_lr_ratio 1.0
-      IL.load_from_ckpt False
-      IL.is_requeue False
+      IL.load_from_ckpt True
+      IL.is_requeue True
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90
@@ -116,8 +116,8 @@ flag5="--exp_name release_r2r_priorgt_dagger
       IL.decay_interval 2000
       IL.warmup_iters 500
       IL.min_lr_ratio 1.0
-      IL.load_from_ckpt False
-      IL.is_requeue False
+      IL.load_from_ckpt True
+      IL.is_requeue True
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90

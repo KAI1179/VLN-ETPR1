@@ -2,6 +2,7 @@ import gc
 import os
 import sys
 import random
+import re
 import warnings
 from collections import defaultdict
 from typing import Dict, List
@@ -56,6 +57,25 @@ from vlnce_baselines.common.ops import pad_tensors_wgrad, gen_seq_masks
 from torch.nn.utils.rnn import pad_sequence
 import cv2
 from collections import OrderedDict
+
+
+def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
+    import glob
+
+    search_pattern = os.path.join(checkpoint_dir, "*.pth")
+    ckpt_list = glob.glob(search_pattern)
+    if not ckpt_list:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+
+    def _sort_key(path: str):
+        basename = os.path.basename(path)
+        match = re.search(r"ckpt\.iter(\d+)\.pth$", basename)
+        if match is not None:
+            return (0, int(match.group(1)), basename)
+        return (1, int(os.path.getmtime(path)), basename)
+
+    ckpt_list.sort(key=_sort_key)
+    return ckpt_list[-1]
 
 @baseline_registry.register_trainer(name="SS-ETP-R1")
 class RLTrainer(BaseVLNCETrainer):
@@ -253,11 +273,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         if load_from_ckpt:
             if config.IL.is_requeue:
-                import glob
-                search_pattern = os.path.join(config.CHECKPOINT_FOLDER, "*.pth")
-                ckpt_list = glob.glob(search_pattern)
-                ckpt_list.sort(key=os.path.getmtime)
-                ckpt_path = ckpt_list[-1]
+                ckpt_path = _get_latest_iter_checkpoint(config.CHECKPOINT_FOLDER)
             else:
                 ckpt_path = config.IL.ckpt_to_load
             ckpt_dict = self.load_checkpoint(ckpt_path, map_location="cpu")
@@ -302,9 +318,24 @@ class RLTrainer(BaseVLNCETrainer):
                 print("="*75 + "\n")
 
             if config.IL.is_requeue:
-                self.optimizer.load_state_dict(ckpt_dict["optim_state"])
-                if "scheduler_state" in ckpt_dict:
-                    self.scheduler.load_state_dict(ckpt_dict["scheduler_state"])
+                if "optim_state" in ckpt_dict:
+                    self.optimizer.load_state_dict(ckpt_dict["optim_state"])
+                    if "scheduler_state" in ckpt_dict:
+                        self.scheduler.load_state_dict(ckpt_dict["scheduler_state"])
+                    else:
+                        logger.warning(
+                            "Checkpoint %s has no scheduler_state. "
+                            "Resuming from iteration %s with a fresh scheduler state.",
+                            ckpt_path,
+                            start_iter,
+                        )
+                else:
+                    logger.warning(
+                        "Checkpoint %s has no optim_state. "
+                        "Resuming from iteration %s with fresh optimizer/scheduler state.",
+                        ckpt_path,
+                        start_iter,
+                    )
             logger.info(f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}")
 
         params = sum(param.numel() for param in self.policy.parameters())
