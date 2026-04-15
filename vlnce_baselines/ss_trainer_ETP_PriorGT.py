@@ -96,26 +96,16 @@ class RLTrainer(BaseVLNCETrainer):
                 self._make_results_dir()
 
     def save_checkpoint(self, iteration: int):
-        if self.config.ONLY_LAST_SAVEALL and (not iteration == self.config.IL.iters):
-            torch.save(
-                        obj={
-                            "state_dict": self.policy.state_dict(),
-                            "config": self.config,
-                            "iteration": iteration
-                        },
-                        f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
-                    )
-        else:
-            torch.save(
-                obj={
-                    "state_dict": self.policy.state_dict(),
-                    "config": self.config,
-                    "optim_state": self.optimizer.state_dict(),
-                    "scheduler_state": self.scheduler.state_dict(),
-                    "iteration": iteration,
-                },
-                f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
-            )
+        torch.save(
+            obj={
+                "state_dict": self.policy.state_dict(),
+                "config": self.config,
+                "optim_state": self.optimizer.state_dict(),
+                "scheduler_state": self.scheduler.state_dict(),
+                "iteration": iteration,
+            },
+            f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
+        )
 
     def _set_config(self):
         self.split = self.config.TASK_CONFIG.DATASET.SPLIT
