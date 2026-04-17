@@ -1,8 +1,29 @@
+#!/bin/bash
+
+# Source - https://stackoverflow.com/a/56431189
+# Posted by Lyn, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-04-17, License - CC BY-SA 4.0
+
+has_param() {
+    local term="$1"
+    shift
+    for arg; do
+        if [[ $arg == "$term" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 NODE_RANK=0
 NUM_GPUS=4
-outdir=pretrained/r2r_rxr_ce/baseline
 PORT=$1
+if has_param '--use_prior_gt' "$@"; then
+    outdir=pretrained/r2r_rxr_ce/prior_gt
+else
+    outdir=pretrained/r2r_rxr_ce/mlm.sap_habitat_depth
+fi
+echo "Output dir: $outdir"
 shift
 
 python -m torch.distributed.launch \
