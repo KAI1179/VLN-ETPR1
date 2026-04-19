@@ -14,6 +14,7 @@ export MAGNUM_LOG=quiet
 # NUM_ENVIRONMENTS：num_envs_per_gpu
 # 只有当IL.load_from_ckpt为True时,IL.is_requeue为True才会起作用;而后者的作用是,改写IL.ckpt_to_load,将其设置为权重文件夹下iteration次数最多的那个权重
 
+# Continue from previous checkpoints: Set IL.load_from_ckpt and IL.is_requeue to True
 
 flag1="--exp_name release_r2r_dagger
       --run-type dagger
@@ -30,8 +31,8 @@ flag1="--exp_name release_r2r_dagger
       IL.decay_interval 2000
       IL.warmup_iters 500
       IL.min_lr_ratio 1.0
-      IL.load_from_ckpt True
-      IL.is_requeue True
+      IL.load_from_ckpt False
+      IL.is_requeue False
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90
@@ -116,8 +117,8 @@ flag5="--exp_name release_r2r_priorgt_dagger
       IL.decay_interval 2000
       IL.warmup_iters 500
       IL.min_lr_ratio 1.0
-      IL.load_from_ckpt True
-      IL.is_requeue True
+      IL.load_from_ckpt False
+      IL.is_requeue False
       IL.waypoint_aug  True
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
       TASK_CONFIG.DATASET.SUFFIX _90
