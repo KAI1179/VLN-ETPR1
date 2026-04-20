@@ -22,7 +22,7 @@ def load_parser():
         type=str,
         help="The output directory where the model checkpoints will be written.",
     )
-    
+
     # Cognitive map arguments
     parser.add_argument("--use_prior_gt", action="store_true", help="Enable cognitive map encoder")
     parser.add_argument("--cognitive_map_dir", default="data/cognitive_maps", type=str, help="Path to cognitive maps")
@@ -140,7 +140,7 @@ def load_parser():
 
 
 def parse_with_config(parser):
-    args = parser.parse_args() 
+    args = parser.parse_args()
     if args.config is not None:
         config_args = json.load(open(args.config))
         # override_keys = {'output_dir', 'model_config', 'world_size', 'vlnbert', 'config', 'local_rank'}
