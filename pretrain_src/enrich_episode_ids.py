@@ -3,7 +3,8 @@ import json
 import shutil
 from collections import defaultdict
 from pathlib import Path
-
+from typing import Dict, List
+from jsonlines import Reader, Writer
 
 ANNOTATION_DIR = Path("pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR")
 
@@ -16,14 +17,16 @@ TARGET_FILES = [
 
 R2R_SPLIT_FILES = {
     "train": Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train.json.gz"),
-    "val_unseen": Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"),
+    "test": Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/test/test.json.gz"),
     "val_seen": Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen/val_seen.json.gz"),
+    "val_unseen": Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"),
 }
 
 RXR_SPLIT_FILES = {
     "train": Path("data/datasets/RxR_VLNCE_v0_enc_xlmr/train/train_guide.json.gz"),
-    "val_unseen": Path("data/datasets/RxR_VLNCE_v0_enc_xlmr/val_unseen/val_unseen_guide.json.gz"),
+    "test": Path("data/datasets/RxR_VLNCE_v0_enc_xlmr/test_challenge/test_challenge_guide.json.gz"),
     "val_seen": Path("data/datasets/RxR_VLNCE_v0_enc_xlmr/val_seen/val_seen_guide.json.gz"),
+    "val_unseen": Path("data/datasets/RxR_VLNCE_v0_enc_xlmr/val_unseen/val_unseen_guide.json.gz"),
 }
 
 
@@ -32,20 +35,10 @@ def load_json_gz(path: Path):
         return json.load(f)
 
 
-def load_jsonl(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
-
-
 def dump_jsonl(path: Path, rows):
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    tmp_path.replace(path)
+    with path.open("w", encoding="utf-8") as f:
+        w = Writer(f)
+        w.write_all(rows)
 
 
 def backup_once(path: Path):
@@ -54,38 +47,34 @@ def backup_once(path: Path):
         shutil.copy2(path, backup)
 
 
-def infer_split(filename: str):
-    lower = filename.lower()
-    if "val_unseen" in lower:
-        return "val_unseen"
-    if "val_seen" in lower:
-        return "val_seen"
-    return "train"
-
-
-def build_r2r_index():
-    index = {}
+def build_r2r_index() -> Dict[int, List[Dict]]:
+    index = defaultdict(list) # trajectory_id -> [episode_id & split]
     for split, path in R2R_SPLIT_FILES.items():
         data = load_json_gz(path)
-        groups = defaultdict(list)
         for ep in data["episodes"]:
-            groups[str(ep["trajectory_id"])].append(int(ep["episode_id"]))
-        for traj_id, episode_ids in groups.items():
-            index[(split, traj_id)] = sorted(episode_ids)
+            traj_id = int(ep["trajectory_id"])
+            index[traj_id].append({
+                "episode_id": int(ep["episode_id"]),
+                "split": split,
+            })
     return index
 
 
-def build_rxr_index():
-    index = {}
+def build_rxr_index() -> Dict[int, Dict]:
+    index = {} # instruction_id -> episode_id & split
     for split, path in RXR_SPLIT_FILES.items():
         data = load_json_gz(path)
         for ep in data["episodes"]:
-            instr_id = str(ep["instruction"]["instruction_id"])
-            index[(split, instr_id)] = int(ep["episode_id"])
+            instr_id = int(ep["instruction"]["instruction_id"])
+            assert index.get(instr_id) is None, f"Instruction id already exists: {instr_id}"
+            index[instr_id] = {
+                "episode_id": int(ep["episode_id"]),
+                "split": split,
+            }
     return index
 
 
-def inject_r2r(row, split, r2r_index):
+def inject_r2r(row, r2r_index: Dict[int, List[Dict]]):
     row["dataset_name"] = "R2R"
     row["episode_id"] = -1
     row["episode_id_source"] = "missing"
@@ -96,10 +85,10 @@ def inject_r2r(row, split, r2r_index):
         return row
 
     traj_id, idx = parts
-    if not idx.isdigit():
-        return row
+    traj_id = int(traj_id)
+    idx = int(idx)
 
-    candidates = r2r_index.get((split, traj_id))
+    candidates = r2r_index.get(traj_id)
     if candidates is None:
         return row
 
@@ -108,50 +97,49 @@ def inject_r2r(row, split, r2r_index):
         return row
 
     row["trajectory_id"] = traj_id
-    row["episode_id"] = candidates[idx]
-    row["episode_id_source"] = "trajectory_id+index"
+    row["episode_id"] = candidates[idx]["episode_id"]
+    row["episode_id_source"] = "trajectory_id+index/" + candidates[idx]["split"]
     return row
 
 
-def inject_rxr(row, split, rxr_index):
+def inject_rxr(row, rxr_index: Dict[int, Dict]):
     row["dataset_name"] = "RxR"
     row["episode_id"] = -1
     row["episode_id_source"] = "missing"
 
-    instr_id = str(row["instr_id"])
-    if not instr_id.isdigit():
-        return row
+    instr_id = int(row["instr_id"])
 
     row["instruction_id"] = instr_id
-    ep_id = rxr_index.get((split, instr_id))
-    if ep_id is None:
+    data = rxr_index.get(instr_id)
+    if data is None:
         return row
 
-    row["episode_id"] = ep_id
-    row["episode_id_source"] = "instruction_id"
+    row["episode_id"] = data["episode_id"]
+    row["episode_id_source"] = "instruction_id/" + data["split"]
     return row
 
 
 def enrich_file(path: Path, r2r_index, rxr_index):
-    split = infer_split(path.name)
     rows = []
     matched = 0
     missing = 0
 
-    for row in load_jsonl(path):
-        if path.name.lower().startswith("r2r_"):
-            row = inject_r2r(row, split, r2r_index)
-        elif path.name.lower().startswith("rxr"):
-            row = inject_rxr(row, split, rxr_index)
-        else:
-            row["episode_id"] = -1
-            row["episode_id_source"] = "missing"
+    with path.open("r", encoding="utf-8") as f:
+        reader = Reader(f)
+        for row in reader:
+            if path.name.lower().startswith("r2r_"):
+                row = inject_r2r(row, r2r_index)
+            elif path.name.lower().startswith("rxr"):
+                row = inject_rxr(row, rxr_index)
+            else:
+                row["episode_id"] = -1
+                row["episode_id_source"] = "missing"
 
-        if row["episode_id"] == -1:
-            missing += 1
-        else:
-            matched += 1
-        rows.append(row)
+            if row["episode_id"] == -1:
+                missing += 1
+            else:
+                matched += 1
+            rows.append(row)
 
     return rows, matched, missing
 
