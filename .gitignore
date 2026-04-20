@@ -19,3 +19,5 @@ __pycache__/
 /bert-base-uncased
 *.bin
 /extra_files
+
+skills

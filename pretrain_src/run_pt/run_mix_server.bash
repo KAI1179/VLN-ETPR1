@@ -21,7 +21,7 @@ PORT=$1
 if has_param '--use_prior_gt' "$@"; then
     outdir=pretrained/r2r_rxr_ce/prior_gt
 else
-    outdir=pretrained/r2r_rxr_ce/mlm.sap_habitat_depth
+    outdir=pretrained/r2r_rxr_ce/baseline
 fi
 echo "Output dir: $outdir"
 shift
