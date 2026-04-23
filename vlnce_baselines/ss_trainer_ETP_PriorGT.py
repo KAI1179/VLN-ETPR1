@@ -1,19 +1,16 @@
 import gc
 import os
-import sys
 import random
 import re
 import warnings
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 import jsonlines
 
 import numpy as np
 import math
-import time
 import torch
 import torch.nn.functional as F
-from torch.autograd import Variable
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import tqdm
@@ -29,19 +26,14 @@ from habitat_baselines.common.obs_transformers import (
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
 from habitat_baselines.utils.common import batch_obs
 
-from vlnce_baselines.common.aux_losses import AuxLosses
 from vlnce_baselines.common.base_il_trainer import BaseVLNCETrainer
-from vlnce_baselines.common.env_utils import construct_envs, construct_envs_for_rl, is_slurm_batch_job
+from vlnce_baselines.common.env_utils import construct_envs, is_slurm_batch_job
 from vlnce_baselines.common.utils import extract_instruction_tokens
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
-from vlnce_baselines.utils import reduce_loss
 
 from .utils import get_camera_orientations12
-from .utils import (
-    length2mask, dir_angle_feature_with_ele,
-)
-from vlnce_baselines.common.utils import dis_to_con, gather_list_and_concat
-from habitat_extensions.measures import NDTW, StepsTaken
+from vlnce_baselines.common.utils import gather_list_and_concat
+from habitat_extensions.measures import NDTW
 from fastdtw import fastdtw
 
 with warnings.catch_warnings():
@@ -59,7 +51,7 @@ import cv2
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    load_cognitive_map, full_cognitive_map, make_zero_map,
+    PrecomputedCognitiveMap,
 )
 
 
@@ -964,14 +956,14 @@ class RLTrainer(BaseVLNCETrainer):
         map_cfg = self.config.MODEL.MAP_ENCODER
         if map_cfg.enabled:
             _cur_eps = self.envs.current_episodes()
-            cognitive_maps = []
+            cognitive_maps: Optional[List[Optional[PrecomputedCognitiveMap]]] = []
             dataset_flag = getattr(self.config.MODEL, "task_type", "R2R").upper()
             if dataset_flag == "RXR":
                 dataset_flag = "RxR"
             for ep in _cur_eps:
                 _scene_id = os.path.splitext(os.path.basename(ep.scene_id))[0]
                 cognitive_maps.append(
-                    load_cognitive_map(map_cfg.precomputed_dir, _scene_id, ep.episode_id, dataset_name=dataset_flag)
+                    PrecomputedCognitiveMap.from_dataset_scene_episode_id(dataset_flag, _scene_id, ep.episode_id)
                 )
         else:
             cognitive_maps = None
@@ -1037,12 +1029,8 @@ class RLTrainer(BaseVLNCETrainer):
             # Cognitive map encoding (use the full precomputed map directly)
             if map_cfg.enabled and cognitive_maps is not None:
                 cognitive_crops = torch.stack([
-                    full_cognitive_map(
-                        cognitive_maps[i],
-                        map_cfg.map_size,
-                    ) if cognitive_maps[i] is not None
-                    else make_zero_map(map_cfg.num_categories, map_cfg.map_size)
-                    for i in range(self.envs.num_envs)
+                    cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
+                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
                 nav_inputs['map_embeds'] = self.policy.net(
                     mode='map_encoding', cognitive_crops=cognitive_crops

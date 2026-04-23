@@ -9,6 +9,7 @@ import math
 from typing import List, TypedDict
 
 from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
+from vlnce_baselines.models.etp_prior_gt.map_utils import PrecomputedCognitiveMap
 
 MAX_DIST = 30   # normalize
 MAX_STEP = 10   # normalize
@@ -83,8 +84,6 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: AnnotateItem):
-        from vlnce_baselines.models.etp_prior_gt.map_utils import PrecomputedCognitiveMap
-
         cognitive_map = PrecomputedCognitiveMap.from_scene_instr_id(item["scan"], item["instr_id"])
         if cognitive_map is None:
             return PrecomputedCognitiveMap.empty_grid()
