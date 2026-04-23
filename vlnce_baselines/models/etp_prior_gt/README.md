@@ -28,9 +28,9 @@ Each file is a single compressed NumPy archive (`np.savez_compressed`) containin
 
 Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.
 
-### Annotations
+### Cognitive maps for pretraining
 
-You must have enriched annotations WITH episode id. To do that, run `pretrain_src/enrich_episode_ids.py`.
+You must have precomputed cognitive maps at `data/cognitive_maps_etp_r1/<scene_id>/<instr_id>.npz`, with the same file structure.
 
 ## Checkpoint Compatibility
 
