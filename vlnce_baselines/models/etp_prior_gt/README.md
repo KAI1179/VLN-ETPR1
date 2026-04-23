@@ -161,7 +161,6 @@ To run pretraining incorporating PriorGT maps:
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
     --use_prior_gt \
-    --pretrain_skip_unmatched \
     --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.full.pt
 ```
 

@@ -181,7 +181,6 @@ def main(opts):
         val_sample_num=None,
         use_prior_gt=getattr(opts, 'use_prior_gt', False),
         cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
-        skip_unmatched=getattr(opts, 'pretrain_skip_unmatched', False),
     )
     val_r2r_nav_db = R2RTextPathData(
         data_cfg.val_unseen_r2r_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -194,7 +193,6 @@ def main(opts):
         val_sample_num=opts.val_sample_num,
         use_prior_gt=getattr(opts, 'use_prior_gt', False),
         cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
-        skip_unmatched=getattr(opts, 'pretrain_skip_unmatched', False),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -207,7 +205,6 @@ def main(opts):
         val_sample_num=opts.val_sample_num,
         use_prior_gt=getattr(opts, 'use_prior_gt', False),
         cognitive_map_dir=getattr(opts, 'cognitive_map_dir', 'data/cognitive_maps'),
-        skip_unmatched=getattr(opts, 'pretrain_skip_unmatched', False),
     )
 
     train_dataloaders = create_dataloaders(
