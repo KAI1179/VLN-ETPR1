@@ -1,21 +1,26 @@
 '''
 Instruction and trajectory (view and object features) dataset
 '''
-import os
 import json
 import jsonlines
 import numpy as np
 import h5py
 import math
+from typing import List, TypedDict
 
-from .common import load_nav_graphs
-from .common import get_angle_fts, get_view_rel_angles
-from .common import calculate_vp_rel_pos_fts
-from .common import softmax
+from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
 
 MAX_DIST = 30   # normalize
 MAX_STEP = 10   # normalize
 TRAIN_MAX_STEP = 20
+
+class AnnotateItem(TypedDict):
+    instr_id: str
+    scan: str
+    path: List[str]
+    heading: float
+    instr_encoding: List[int]
+    task_type_encoding: int
 
 class ReverieTextPathData(object):
     def __init__(
@@ -61,18 +66,11 @@ class ReverieTextPathData(object):
         self.all_point_rel_angles = [get_view_rel_angles(baseViewId=i) for i in range(36)]
         self.all_point_angle_fts = [get_angle_fts(x[:, 0], x[:, 1], self.angle_feat_size) for x in self.all_point_rel_angles]
 
-        self.data = []
-        unmatched_count = 0
+        self.data: List[AnnotateItem] = []
 
         for anno_file in anno_files:
             with jsonlines.open(anno_file, 'r') as f:
                 for item in f:
-                    if "dataset_name" not in item:
-                        item["dataset_name"] = self._infer_dataset_name(anno_file, item)
-                    item["dataset_name"] = self._normalize_dataset_name(item["dataset_name"])
-                    if self.skip_unmatched and item.get("episode_id", -1) in [None, -1, "-1"]:
-                        unmatched_count += 1
-                        continue
                     self.data.append(item)
 
         if val_sample_num:
@@ -80,53 +78,19 @@ class ReverieTextPathData(object):
             sel_idxs = np.random.permutation(len(self.data))[:val_sample_num]
             self.data = [self.data[sidx] for sidx in sel_idxs]
 
-        if unmatched_count:
-            print(
-                "Filtered pretraining annotations: "
-                f"unmatched={unmatched_count}, kept={len(self.data)}"
-            )
 
     def __len__(self):
         return len(self.data)
 
-    def _infer_dataset_name(self, anno_file, item):
-        fname = os.path.basename(anno_file).lower()
-        if fname.startswith("r2r_") or item.get("task_type_encoding") in [1, 3]:
-            return "R2R"
-        if fname.startswith("rxr_") or item.get("task_type_encoding") == 2:
-            return "RxR"
-        raise ValueError("Unexpected dataset")
+    def _load_pretrain_cognitive_map(self, item: AnnotateItem):
+        from vlnce_baselines.models.etp_prior_gt.map_utils import PrecomputedCognitiveMap
 
-    def _normalize_dataset_name(self, name):
-        name = str(name).strip().lower()
-        if name == "r2r":
-            return "R2R"
-        if name == "rxr":
-            return "RxR"
-        raise ValueError(f"Unexpected dataset name: {name}")
+        cognitive_map = PrecomputedCognitiveMap.from_scene_instr_id(item["scan"], item["instr_id"])
+        if cognitive_map is None:
+            return PrecomputedCognitiveMap.empty_grid()
+        else:
+            return cognitive_map.grid
 
-    def _load_pretrain_cognitive_map(self, item, scan):
-        import torch
-        from vlnce_baselines.models.etp_prior_gt.map_utils import (
-            full_cognitive_map,
-            load_cognitive_map,
-            make_zero_map,
-        )
-
-        map_tensor = make_zero_map(37, 100)
-        episode_id = item.get("episode_id", -1)
-        if episode_id in [None, -1, "-1"]:
-            return map_tensor
-
-        cog_map = load_cognitive_map(
-            self.cognitive_map_dir,
-            scan,
-            str(episode_id),
-            dataset_name=item["dataset_name"],
-        )
-        if cog_map is not None:
-            map_tensor = full_cognitive_map(cog_map, 100)
-        return map_tensor
 
     def get_scanvp_feature(self, scan, viewpoint):
         key = '%s_%s' % (scan, viewpoint)
@@ -188,7 +152,7 @@ class ReverieTextPathData(object):
         return global_act_label, local_act_label
 
     def get_input(
-        self, idx, end_vp_type, return_img_probs=False, return_act_label=False,
+        self, idx: int, end_vp_type, return_img_probs=False, return_act_label=False,
         return_obj_label=False, end_vp=None
     ):
         item = self.data[idx]
@@ -528,12 +492,8 @@ class R2RTextPathData(ReverieTextPathData):
         if return_img_probs:
             outs['vp_view_probs'] = softmax(traj_view_img_fts[-1][:, self.image_feat_size:], dim=1)
 
-        if getattr(self, 'use_prior_gt', False):
-            import torch
-            try:
-                outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item, scan)
-            except ImportError:
-                outs['cognitive_maps'] = torch.zeros(37, 100, 100)
+        if self.use_prior_gt:
+            outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item, scan)
 
         return outs
 
