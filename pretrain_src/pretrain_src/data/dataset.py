@@ -488,7 +488,7 @@ class R2RTextPathData(ReverieTextPathData):
             outs['vp_view_probs'] = softmax(traj_view_img_fts[-1][:, self.image_feat_size:], dim=1)
 
         if self.use_prior_gt:
-            outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item, scan)
+            outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item)
 
         return outs
 

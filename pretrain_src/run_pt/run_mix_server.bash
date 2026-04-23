@@ -26,7 +26,7 @@ fi
 echo "Output dir: $outdir"
 shift
 
-python -m torch.distributed.launch \
+PYTHONPATH=$PYTHONPATH:. python -m torch.distributed.launch \
     --nproc_per_node=${NUM_GPUS} --node_rank $NODE_RANK --master_port=$PORT \
     pretrain_src/pretrain_src/train_r2r.py --world_size ${NUM_GPUS} \
     --vlnbert cmt \
