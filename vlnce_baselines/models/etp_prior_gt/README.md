@@ -35,10 +35,13 @@ You must have precomputed cognitive maps at `data/cognitive_maps_etp_r1/<scene_i
 ## Checkpoint Compatibility
 
 Both PriorGT trainers load checkpoints with `strict=False`, so **existing R1 checkpoints can be
-loaded directly** — `map_encoder.*` keys will be absent and are initialised from scratch.
+loaded directly** — `map_encoder.*` keys will be absent and are initialised from the new map-encoder defaults.
 
 The map-encoder output linear layer is zero-initialised, so at step 0 `map_embeds ≡ 0` and
 the model behaves identically to the R1 baseline. Gradients teach the map encoder from there.
+
+The map encoder initializes its category projection from built-in CLIP text
+embeddings for the 37 object+region labels.
 
 For evaluation, use checkpoints produced by `SS-ETP-PriorGT` or `GRPO-ETP-PriorGT`.
 

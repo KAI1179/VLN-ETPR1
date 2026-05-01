@@ -134,13 +134,9 @@ class ETP_PriorGT(Net):
         self.map_encoder_enabled = map_cfg is not None and getattr(map_cfg, 'enabled', False)
         if self.map_encoder_enabled:
             self.map_encoder = EmbeddingGridMapEncoder(
-                num_categories=map_cfg.num_categories,
-                embedding_dim=map_cfg.embedding_dim,
                 output_size=map_cfg.output_size,
-                category_embeds_path=map_cfg.category_embeds_path,
             )
-            print(f'  Map encoder enabled: {map_cfg.num_categories} categories, '
-                  f'{map_cfg.embedding_dim}-dim embeddings -> {map_cfg.output_size}-dim output')
+            print(f'  Map encoder enabled: CLIP 37-category init -> {map_cfg.output_size}-dim output')
 
     @property
     def output_size(self):
