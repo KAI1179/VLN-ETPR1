@@ -1,4 +1,4 @@
-from typing import Optional, cast
+from typing import List, Optional, Tuple, cast
 from pathlib import Path
 
 import numpy as np
@@ -12,11 +12,13 @@ SIZE = 100
 class PrecomputedCognitiveMap:
     """Lightweight wrapper for a precomputed cognitive grid map loaded from .npz."""
 
-    def __init__(self, grid: np.ndarray, offset_x: float, offset_z: float):
+    def __init__(self, grid: np.ndarray, offset_x: float, offset_z: float, direction_vectors: List[Tuple[float, float]], start_position: Tuple[float, float]):
         assert grid.shape == (CATEGORIES, SIZE, SIZE), "Map dimension mismatch"
         self.grid = torch.from_numpy(grid)          # (CATEGORIES, ROWS, COLS)
         self.offset_x = offset_x
         self.offset_z = offset_z
+        self.direction_vectors = direction_vectors
+        self.start_position = start_position
 
     @staticmethod
     def from_scene_instr_id(scene_id: str, instr_id: str) -> Optional["PrecomputedCognitiveMap"]:
@@ -29,10 +31,16 @@ class PrecomputedCognitiveMap:
         grid = cast(np.ndarray, data["grid"])
         offset_x = float(data["offset_x"])
         offset_z = float(data["offset_z"])
+        direction_vectors = cast(np.ndarray, data["direction_vectors"])
+        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors] # type: ignore
+        start_position = cast(np.ndarray, data["start_position"])
+        start_position = (float(start_position[0]), float(start_position[1]))
         return PrecomputedCognitiveMap(
             grid,
             offset_x,
             offset_z,
+            direction_vectors,
+            start_position,
         )
 
     @staticmethod
@@ -48,10 +56,16 @@ class PrecomputedCognitiveMap:
         grid = cast(np.ndarray, data["grid"])
         offset_x = float(data["offset_x"])
         offset_z = float(data["offset_z"])
+        direction_vectors = cast(np.ndarray, data["direction_vectors"])
+        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors] # type: ignore
+        start_position = cast(np.ndarray, data["start_position"])
+        start_position = (float(start_position[0]), float(start_position[1]))
         return PrecomputedCognitiveMap(
             grid,
             offset_x,
             offset_z,
+            direction_vectors,
+            start_position,
         )
 
     @staticmethod
