@@ -5,12 +5,50 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 ## What Is Added
 
 - Cognitive-map encoder: `EmbeddingGridMapEncoder`
-- Map loading and crop utilities for precomputed episode maps
+- Map loading utilities for precomputed episode maps
 - Additive fusion into global map embeddings in navigation forward
 - New policy: `PriorGTPolicy`
 - New trainers:
   - `SS-ETP-PriorGT`
   - `GRPO-ETP-PriorGT`
+
+## Current Map Encoder
+
+The current PriorGT map encoder outputs a single `(B, 768)` vector per episode map,
+which is then broadcast-added to all global-map node embeddings in the navigation
+branch.
+
+Architecture:
+
+1. Category projection
+   - Input grid shape: `(B, 37, H, W)`
+   - A `1x1` conv projects the 37 semantic channels into CLIP text space `(512)`
+   - The `1x1` conv weights are initialized from CLIP text embeddings of the fixed
+     37 object + region labels
+
+2. Visual map backbone
+   - `1x1 conv -> GroupNorm -> GELU`
+   - 5 custom residual CNN blocks
+   - two stride-2 downsampling stages
+   - global average pooling
+
+3. Metadata branch
+   - Extra map metadata is encoded alongside the grid:
+     - `direction_vectors`: shape `(B, 5, 2)`
+     - `start_position`: shape `(B, 2)`
+   - These are flattened to `(B, 12)` and passed through a small MLP
+
+4. Fusion and output
+   - Concatenate pooled visual feature and metadata feature
+   - `Linear -> LayerNorm -> 768`
+   - The final linear layer is zero-initialized so `map_embeds == 0` at step 0
+
+Notes:
+
+- The old explicit weighted-average matmul is now implemented as the CLIP-initialized
+  `1x1` convolution over category channels.
+- The CLIP text encoder is used only once during initialization to build the category
+  projection weights. It is not used in the map forward pass.
 
 ## Data Requirement
 
@@ -22,9 +60,10 @@ You must have precomputed cognitive maps at:
 - `data/cognitive_maps/<scene_id>/RxR_<episode_id>.npz`
 
 Each file is a single compressed NumPy archive (`np.savez_compressed`) containing:
-- `grid` — shape `(num_categories, H, W)` float32 category embeddings
+- `grid` — shape `(37, H, W)` float32 semantic grid
 - `offset_x`, `offset_z` — world-space origin of the map grid
-- `range_y` — vertical slice used for 2-D projection
+- `direction_vectors` — shape `(5, 2)` float32 unit vectors
+- `start_position` — shape `(2,)` float32 normalized continuous grid coordinates
 
 Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.
 
@@ -41,7 +80,7 @@ The map-encoder output linear layer is zero-initialised, so at step 0 `map_embed
 the model behaves identically to the R1 baseline. Gradients teach the map encoder from there.
 
 The map encoder initializes its category projection from built-in CLIP text
-embeddings for the 37 object+region labels.
+embeddings for the fixed 37 object+region labels.
 
 For evaluation, use checkpoints produced by `SS-ETP-PriorGT` or `GRPO-ETP-PriorGT`.
 
@@ -52,7 +91,7 @@ steps vs 30 k) by freezing the base model and training only the map encoder.
 
 **Why this works:**
 - Zero-init guarantees the model is exactly R1 at step 0.
-- Only ~1.7 M new parameters are trained instead of the full ~200 M model.
+- Only the map encoder parameters are trained instead of the full model.
 - 3 k IL steps give a clear signal whether the map encoder adds value.
 
 ### Step 1 — Probe training (load R1 GRPO checkpoint, freeze base)
@@ -168,10 +207,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 ```
 
 - When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.
-- The loader uses the injected annotation fields `dataset_name` and `episode_id` to resolve `{dataset}_{episode_id}.npz`.
-- If `episode_id == -1` or the map file is missing, the loader falls back to an all-zero cognitive map for that sample.
-
-## TODO
-
-- Cognitive map in topological form
-- Failure case display, reason analysis and method justification
+- If the map file is missing, the loader falls back to an all-zero cognitive map and zero metadata for that sample.
