@@ -64,6 +64,7 @@ class PrecomputedCognitiveMap:
 
     def __init__(self, grid: np.ndarray, offset_x: float, offset_z: float, direction_vectors: List[Tuple[float, float]], start_position: Tuple[float, float]):
         assert grid.shape == (NUM_MAP_CATEGORIES, SIZE, SIZE), "Map dimension mismatch"
+        assert len(direction_vectors) == DIRECTION_VECTOR_CNT, "Direction vector count mismatch"
         self.grid = torch.from_numpy(grid)          # (NUM_MAP_CATEGORIES, SIZE, SIZE)
         self.offset_x = offset_x
         self.offset_z = offset_z
@@ -121,3 +122,11 @@ class PrecomputedCognitiveMap:
     @staticmethod
     def empty_grid() -> torch.Tensor:
         return torch.zeros(NUM_MAP_CATEGORIES, SIZE, SIZE)
+
+    @staticmethod
+    def empty_direction_vectors() -> torch.Tensor:
+        return torch.zeros(DIRECTION_VECTOR_CNT, 2)
+
+    @staticmethod
+    def empty_start_position() -> torch.Tensor:
+        return torch.zeros(2)

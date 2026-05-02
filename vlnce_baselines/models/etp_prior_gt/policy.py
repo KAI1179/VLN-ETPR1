@@ -159,7 +159,7 @@ class ETP_PriorGT(Net):
                 gmap_img_fts=None, gmap_pos_fts=None,
                 gmap_masks=None, gmap_visited_masks=None, gmap_pair_dists=None,
                 gmap_task_embeddings=None,
-                cognitive_crops=None, map_embeds=None):
+                cognitive_crops=None, direction_vectors=None, start_positions=None, map_embeds=None):
 
         if mode == 'language':
             encoded_sentence = self.vln_bert.forward_txt(
@@ -313,7 +313,7 @@ class ETP_PriorGT(Net):
         elif mode == 'map_encoding':
             # cognitive_crops: (B, CATEGORIES, H, W) -> (B, output_size)
             assert self.map_encoder_enabled, "map_encoding mode requires MAP_ENCODER.enabled=True"
-            return self.map_encoder(cognitive_crops)
+            return self.map_encoder(cognitive_crops, direction_vectors, start_positions)
 
         elif mode == 'navigation':
             outs = self.vln_bert.forward_navigation(

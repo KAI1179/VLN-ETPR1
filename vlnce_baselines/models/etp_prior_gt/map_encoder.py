@@ -1,6 +1,11 @@
 import logging
 from typing import List
-from .map_utils import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, NUM_MAP_CATEGORIES
+from .map_utils import (
+    DIRECTION_VECTOR_CNT,
+    MAPPED_OBJECT_NAMES,
+    MAPPED_REGION_NAMES,
+    NUM_MAP_CATEGORIES,
+)
 
 import clip
 import torch
@@ -10,10 +15,12 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIM = 512
+MAP_METADATA_DIM = DIRECTION_VECTOR_CNT * 2 + 2
 
 DEFAULT_CATEGORY_NAMES = MAPPED_OBJECT_NAMES + MAPPED_REGION_NAMES
 
-CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME)
+CLIP_DEVICE = "cpu"
+CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME, device=CLIP_DEVICE)
 CLIP_MODEL.eval()
 for param in CLIP_MODEL.parameters():
     param.requires_grad_(False)
@@ -42,7 +49,7 @@ def _load_clip_text_embeddings(category_names: List[str]) -> torch.Tensor:
     prompts = _default_category_prompts(category_names, len(MAPPED_OBJECT_NAMES))
 
     with torch.no_grad():
-        tokens = clip.tokenize(prompts)
+        tokens = clip.tokenize(prompts).to(CLIP_DEVICE)
         text_features = CLIP_MODEL.encode_text(tokens).float()
         text_features = text_features / text_features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
@@ -114,6 +121,7 @@ class EmbeddingGridMapEncoder(nn.Module):
         self,
         output_size: int = 768,
         hidden_size: int = 128,
+        metadata_hidden_size: int = 128,
     ):
         super().__init__()
 
@@ -125,7 +133,7 @@ class EmbeddingGridMapEncoder(nn.Module):
             self.category_projection.weight.copy_(init_embeds.t().unsqueeze(-1).unsqueeze(-1))
 
         reduced_size = max(hidden_size, output_size // 6)
-        self.encoder = nn.Sequential(
+        self.visual_encoder = nn.Sequential(
             nn.Conv2d(CLIP_EMBEDDING_DIM, reduced_size, kernel_size=1, bias=False),
             _group_norm(reduced_size),
             nn.GELU(),
@@ -136,20 +144,44 @@ class EmbeddingGridMapEncoder(nn.Module):
             ResidualConvBlock(reduced_size * 4, reduced_size * 4, stride=1),
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
-            nn.Linear(reduced_size * 4, output_size),
+        )
+        self.metadata_encoder = nn.Sequential(
+            nn.Linear(MAP_METADATA_DIM, metadata_hidden_size),
+            nn.LayerNorm(metadata_hidden_size),
+            nn.GELU(),
+            nn.Linear(metadata_hidden_size, metadata_hidden_size),
+            nn.LayerNorm(metadata_hidden_size),
+            nn.GELU(),
+        )
+        self.output_head = nn.Sequential(
+            nn.Linear(reduced_size * 4 + metadata_hidden_size, output_size),
             nn.LayerNorm(output_size),
         )
 
         # Keep navigation behavior identical to the R1 baseline at step 0.
-        nn.init.zeros_(self.encoder[-2].weight)
-        nn.init.zeros_(self.encoder[-2].bias)
+        nn.init.zeros_(self.output_head[-2].weight)
+        nn.init.zeros_(self.output_head[-2].bias)
 
-    def forward(self, cognitive_crop: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        cognitive_crop: torch.Tensor,
+        direction_vectors: torch.Tensor,
+        start_position: torch.Tensor,
+    ) -> torch.Tensor:
         """Args:
         cognitive_crop: (B, CATEGORIES, H, W)
+        direction_vectors: (B, DIRECTION_VECTOR_CNT, 2)
+        start_position: (B, 2)
 
         Returns:
         (B, output_size)
         """
         embedding_map = self.category_projection(cognitive_crop)
-        return self.encoder(embedding_map)
+        visual_feat = self.visual_encoder(embedding_map)
+        metadata = torch.cat(
+            [direction_vectors.flatten(start_dim=1), start_position],
+            dim=1,
+        )
+        metadata_feat = self.metadata_encoder(metadata)
+        fused_feat = torch.cat([visual_feat, metadata_feat], dim=1)
+        return self.output_head(fused_feat)
