@@ -89,8 +89,6 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
             print("Successfully imported EmbeddingGridMapEncoder, initializing map encoder...")
             self.map_encoder = EmbeddingGridMapEncoder(
-                num_categories=37,
-                embedding_dim=512,
                 output_size=self.config.hidden_size
             )
         except ImportError:
