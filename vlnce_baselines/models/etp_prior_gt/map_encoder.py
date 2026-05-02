@@ -1,5 +1,6 @@
 import logging
 from typing import List
+from .map_utils import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, NUM_MAP_CATEGORIES
 
 import clip
 import torch
@@ -10,51 +11,7 @@ logger = logging.getLogger(__name__)
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIM = 512
 
-MAPPED_OBJECT_NAMES = [
-    "void",
-    "chair",
-    "door",
-    "table",
-    "cushion",
-    "sofa",
-    "bed",
-    "plant",
-    "sink",
-    "toilet",
-    "tv_monitor",
-    "shower",
-    "bathtub",
-    "counter",
-    "appliances",
-    "structure",
-    "other",
-    "free-space",
-    "picture",
-    "cabinet",
-    "chest_of_drawers",
-    "stool",
-    "towel",
-    "fireplace",
-    "gym_equipment",
-    "seating",
-    "clothes",
-]
-
-MAPPED_REGION_NAMES = [
-    "outdoor/semi-outdoor",
-    "living/social space",
-    "recreation/fitness",
-    "utility/service",
-    "work/study",
-    "circulation",
-    "private room",
-    "bathroom/sanitary",
-    "dining/food",
-    "other/miscellaneous",
-]
-
 DEFAULT_CATEGORY_NAMES = MAPPED_OBJECT_NAMES + MAPPED_REGION_NAMES
-NUM_MAP_CATEGORIES = len(DEFAULT_CATEGORY_NAMES)
 
 
 def _normalize_category_name(name: str) -> str:

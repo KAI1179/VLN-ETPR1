@@ -6,18 +6,68 @@ import torch
 
 PRE_COMPUTED_DIR_R2R_RxR = Path("data/cognitive_maps")
 PRE_COMPUTED_DIR_ETP_R1 = Path("data/cognitive_maps_etp_r1")
-CATEGORIES = 37
+
+
+MAPPED_OBJECT_NAMES = [
+    "void",
+    "chair",
+    "door",
+    "table",
+    "cushion",
+    "sofa",
+    "bed",
+    "plant",
+    "sink",
+    "toilet",
+    "tv_monitor",
+    "shower",
+    "bathtub",
+    "counter",
+    "appliances",
+    "structure",
+    "other",
+    "free-space",
+    "picture",
+    "cabinet",
+    "chest_of_drawers",
+    "stool",
+    "towel",
+    "fireplace",
+    "gym_equipment",
+    "seating",
+    "clothes",
+]
+
+MAPPED_REGION_NAMES = [
+    "outdoor/semi-outdoor",
+    "living/social space",
+    "recreation/fitness",
+    "utility/service",
+    "work/study",
+    "circulation",
+    "private room",
+    "bathroom/sanitary",
+    "dining/food",
+    "other/miscellaneous",
+]
+
+NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
+
 SIZE = 100
+"""Number of rows and cols in the grid map."""
+
+DIRECTION_VECTOR_CNT = 5
+"""Number of direction vectors."""
 
 class PrecomputedCognitiveMap:
     """Lightweight wrapper for a precomputed cognitive grid map loaded from .npz."""
 
     def __init__(self, grid: np.ndarray, offset_x: float, offset_z: float, direction_vectors: List[Tuple[float, float]], start_position: Tuple[float, float]):
-        assert grid.shape == (CATEGORIES, SIZE, SIZE), "Map dimension mismatch"
-        self.grid = torch.from_numpy(grid)          # (CATEGORIES, ROWS, COLS)
+        assert grid.shape == (NUM_MAP_CATEGORIES, SIZE, SIZE), "Map dimension mismatch"
+        self.grid = torch.from_numpy(grid)          # (NUM_MAP_CATEGORIES, SIZE, SIZE)
         self.offset_x = offset_x
         self.offset_z = offset_z
-        self.direction_vectors = direction_vectors
+        self.direction_vectors = direction_vectors # DIRECTION_VECTOR_CNT
         self.start_position = start_position
 
     @staticmethod
@@ -70,4 +120,4 @@ class PrecomputedCognitiveMap:
 
     @staticmethod
     def empty_grid() -> torch.Tensor:
-        return torch.zeros(CATEGORIES, SIZE, SIZE)
+        return torch.zeros(NUM_MAP_CATEGORIES, SIZE, SIZE)
