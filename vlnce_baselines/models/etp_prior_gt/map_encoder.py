@@ -13,6 +13,10 @@ CLIP_EMBEDDING_DIM = 512
 
 DEFAULT_CATEGORY_NAMES = MAPPED_OBJECT_NAMES + MAPPED_REGION_NAMES
 
+CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME)
+CLIP_MODEL.eval()
+for param in CLIP_MODEL.parameters():
+    param.requires_grad_(False)
 
 def _normalize_category_name(name: str) -> str:
     return (
@@ -36,18 +40,11 @@ def _default_category_prompts(category_names: List[str], num_object_categories: 
 
 def _load_clip_text_embeddings(category_names: List[str]) -> torch.Tensor:
     prompts = _default_category_prompts(category_names, len(MAPPED_OBJECT_NAMES))
-    device = "cpu"
-    model, _ = clip.load(CLIP_MODEL_NAME, device=device)
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad_(False)
 
     with torch.no_grad():
         tokens = clip.tokenize(prompts)
-        text_features = model.encode_text(tokens).float()
+        text_features = CLIP_MODEL.encode_text(tokens).float()
         text_features = text_features / text_features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-
-    del model
 
     if text_features.shape != (len(category_names), CLIP_EMBEDDING_DIM):
         raise ValueError(
