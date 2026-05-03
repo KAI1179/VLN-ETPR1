@@ -24,7 +24,7 @@ from utils.distributed import all_gather
 from optim import get_lr_sched
 from optim.misc import build_optimizer
 
-from .parser import load_parser, parse_with_config
+from parser import load_parser, parse_with_config
 
 from data.loader import MetaLoader, PrefetchLoader, build_dataloader
 from data.dataset import R2RTextPathData
