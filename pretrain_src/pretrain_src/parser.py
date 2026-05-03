@@ -25,7 +25,6 @@ def load_parser():
 
     # Cognitive map arguments
     parser.add_argument("--use_prior_gt", action="store_true", help="Enable cognitive map encoder")
-    parser.add_argument("--cognitive_map_dir", default="data/cognitive_maps", type=str, help="Path to cognitive maps")
     # training parameters
     parser.add_argument(
         "--train_batch_size",

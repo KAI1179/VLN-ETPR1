@@ -30,10 +30,9 @@ class ReverieTextPathData(object):
         obj_feat_size=None, obj_prob_size=None, max_objects=20,
         max_txt_len=100, in_memory=True, act_visited_node=False,
         val_sample_num=None,
-        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps',
+        use_prior_gt=False
     ):
         self.use_prior_gt = use_prior_gt
-        self.cognitive_map_dir = cognitive_map_dir
         self.img_ft_file = img_ft_file
         self.dep_ft_file = dep_ft_file
         self.obj_ft_file = obj_ft_file
@@ -375,7 +374,7 @@ class R2RTextPathData(ReverieTextPathData):
         image_feat_size=2048, image_prob_size=1000, depth_feat_size=128, angle_feat_size=4,
         max_txt_len=100, in_memory=True, act_visited_node=False,
         val_sample_num=None, start_vp_file=None,
-        use_prior_gt=False, cognitive_map_dir='data/cognitive_maps',
+        use_prior_gt=False
     ):
         super().__init__(
             anno_files, img_ft_file, dep_ft_file, None, scanvp_cands_file, connectivity_dir,
@@ -383,7 +382,7 @@ class R2RTextPathData(ReverieTextPathData):
             angle_feat_size=angle_feat_size, obj_feat_size=0, obj_prob_size=0,
             max_objects=0, max_txt_len=max_txt_len, in_memory=in_memory,
             act_visited_node=act_visited_node, val_sample_num=val_sample_num,
-            use_prior_gt=use_prior_gt, cognitive_map_dir=cognitive_map_dir,
+            use_prior_gt=use_prior_gt
         )
 
     def get_scanvp_feature(self, scan, viewpoint):
