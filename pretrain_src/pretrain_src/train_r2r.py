@@ -106,6 +106,7 @@ def main(opts):
     # Prepare model
     if opts.checkpoint:
         checkpoint = torch.load(opts.checkpoint, map_location=lambda storage, loc: storage)
+        print(f"Loaded ckpt: {opts.checkpoint}")
     else:
         checkpoint = {}
         if opts.init_pretrained == 'roberta':
