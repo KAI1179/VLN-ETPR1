@@ -15,7 +15,7 @@ click==8.0.3
 openai-clip==1.0.1
 cloudpickle==2.0.0
 conda-pack==0.6.0
-dataclasses==0.8
+dataclasses==0.8; python_version < "3.7"
 decorator==4.4.2
 distlib==0.3.4
 dtw==1.4.0
@@ -63,8 +63,8 @@ objectio==0.2.29
 omegaconf==2.3.0
 opencv-python==4.5.5.62
 packaging==21.3
-pickle5==0.0.12
-platformdirs==2.4.0
+pickle5==0.0.12; python_version < "3.8"
+platformdirs==2.5.4
 pre-commit==2.16.0
 proglog==0.1.9
 progressbar2==3.55.0
@@ -99,8 +99,8 @@ tensorboard==1.13.1
 tensorboard-data-server==0.6.1
 tensorboard-plugin-wit==1.8.1
 tensorboardx==2.4.1
-tensorflow==1.13.1
-tensorflow-estimator==1.13.0
+tensorflow==1.13.1; python_version < "3.8"
+tensorflow-estimator==1.13.0; python_version < "3.8"
 termcolor==1.1.0
 texttable==1.6.7
 thop==0.1.1-2209072238
