@@ -38,7 +38,7 @@ RUN . /opt/conda/etc/profile.d/conda.sh && \
 
 # Install additional Python packages using pip
 COPY --chown=vscode:vscode requirements.txt /home/vscode/requirements.txt
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && \
+RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1-new && \
     pip install -i https://mirrors.aliyun.com/pypi/simple --retries 50 -r /home/vscode/requirements.txt && \
     rm /home/vscode/requirements.txt
 

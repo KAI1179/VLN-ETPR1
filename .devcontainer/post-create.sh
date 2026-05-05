@@ -13,6 +13,7 @@ if [[ ! -d "${HABITAT_LAB_DIR}" ]]; then
     exit 0
 fi
 
+# Patch habitat-lab requirements
 if [[ -f "${RL_REQUIREMENTS}" ]]; then
     python - <<'PY'
 from pathlib import Path
@@ -32,9 +33,11 @@ if old in text and new not in text:
 PY
 fi
 
+# Install habitat-lab
 cd "${HABITAT_LAB_DIR}"
 python setup.py develop --all --no-deps
 
+# Verification
 python -m pip check
 python - <<'PY'
 import habitat
