@@ -4,7 +4,7 @@ This documentation provides a way to setup the environment with Dev Containers, 
 
 ## Habitat-Lab Download
 
-Download [habitat-lab@0.1.7](https://github.com/facebookresearch/habitat-lab/archive/refs/tags/v0.1.7.zip) and unzip it under `data/`:
+Download [habitat-lab@0.1.7](https://github.com/facebookresearch/habitat-lab/archive/refs/tags/v0.1.7.zip) and unzip it under `data/` before reopening in the devcontainer:
 
 ```bash
 cd data/
@@ -13,13 +13,21 @@ unzip v0.1.7.zip
 rm v0.1.7.zip
 ```
 
+The devcontainer post-create step installs this checkout into `etpr1-new` with:
+
+```bash
+python setup.py develop --all --no-deps
+```
+
+It also patches Habitat-Lab's local `habitat_baselines/rl/requirements.txt` so `tensorflow==1.13.1` is only requested on Python versions below 3.8. This avoids the unavailable TensorFlow 1.13.1 wheel on Python 3.8 while keeping the rest of the Habitat-Lab baseline package installed.
+
 ## Build Image
 
 1. Install Visual Studio Code
 2. Install [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 3. Open this folder in VSCode, reopen in devcontainer and wait for the image to build
 
-Note: You may continue to the next section while the image is building.
+The image creates and activates the `etpr1-new` conda environment.
 
 ## Dataset Download
 

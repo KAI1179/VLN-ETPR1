@@ -6,6 +6,7 @@ channels:
 dependencies:
   - python=3.8
   - pip<24.1
+  - setuptools<71.0.0
   - numpy
   - scipy
   - matplotlib
@@ -19,5 +20,7 @@ dependencies:
   - quaternion
   - tqdm
   - lerc=3.0
+  - habitat-sim=0.1.7=py3.8_headless_linux_856d4b08c1a2632626bf0d205bf46471a99502b7
+  - habitat-sim-mutex=1.0=headless_nobullet
 variables:
   LD_LIBRARY_PATH: /home/vscode/.conda/envs/etpr1-new/lib

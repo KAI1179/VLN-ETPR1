@@ -43,4 +43,4 @@ RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1 && \
     rm /home/vscode/requirements.txt
 
 # Ensure the environment is activated on shell startup
-RUN echo "conda activate etpr1" >> ~/.bashrc
+RUN echo "conda activate etpr1-new" >> ~/.bashrc
