@@ -99,8 +99,8 @@ tensorboard==1.13.1
 tensorboard-data-server==0.6.1
 tensorboard-plugin-wit==1.8.1
 tensorboardx==2.4.1
-tensorflow==1.13.1; python_version < "3.8"
-tensorflow-estimator==1.13.0; python_version < "3.8"
+tensorflow==2.11.0
+tensorflow-estimator==2.11.0
 termcolor==1.1.0
 texttable==1.6.7
 thop==0.1.1-2209072238

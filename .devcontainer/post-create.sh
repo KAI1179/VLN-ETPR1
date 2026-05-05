@@ -25,7 +25,7 @@ if old in text and new not in text:
     text = text.replace(
         "# full tensorflow required for tensorboard video support\n"
         "tensorflow==1.13.1",
-        "# TensorFlow 1.13.1 has no Python 3.8 wheel; ETP-R1 uses torch.utils.tensorboard.\n"
+        "# TensorFlow 1.13.1 has no Python 3.8 wheel\n"
         f"{new}",
     )
     path.write_text(text)
