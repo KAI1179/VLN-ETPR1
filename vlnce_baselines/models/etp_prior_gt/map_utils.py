@@ -83,7 +83,7 @@ class PrecomputedCognitiveMap:
         offset_x = float(data["offset_x"])
         offset_z = float(data["offset_z"])
         direction_vectors = cast(np.ndarray, data["direction_vectors"])
-        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors] # type: ignore
+        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors]
         start_position = cast(np.ndarray, data["start_position"])
         start_position = (float(start_position[0]), float(start_position[1]))
         return PrecomputedCognitiveMap(
@@ -108,7 +108,7 @@ class PrecomputedCognitiveMap:
         offset_x = float(data["offset_x"])
         offset_z = float(data["offset_z"])
         direction_vectors = cast(np.ndarray, data["direction_vectors"])
-        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors] # type: ignore
+        direction_vectors = [(float(x), float(y)) for x, y in direction_vectors]
         start_position = cast(np.ndarray, data["start_position"])
         start_position = (float(start_position[0]), float(start_position[1]))
         return PrecomputedCognitiveMap(
