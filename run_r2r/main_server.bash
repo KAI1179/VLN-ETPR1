@@ -1,5 +1,6 @@
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0
 
 # 代码运行架构：
 # 节点：指的是一台独立的物理计算机或服务器，内部可能包含多个gpu。若节点为1则是单机多卡训练，若为1以上，则是多机多卡训练
