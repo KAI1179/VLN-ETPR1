@@ -15,8 +15,9 @@ if [[ ! -d "${HABITAT_LAB_DIR}" ]]; then
     exit 0
 fi
 
-# Patch habitat-lab calls to np.float
+# Patch habitat calls to np.float
 find data/habitat-lab-0.1.7 -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
+find $CONDA_PREFIX/lib/python3.8/site-packages/habitat_sim/ -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
 
 # Patch habitat-lab requirements
 if [[ -f "${RL_REQUIREMENTS}" ]]; then
