@@ -402,7 +402,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         for i in range(self.envs.num_envs):
             rgb_fts, dep_fts, loc_fts , nav_types = [], [], [], []
-            cand_idxes = np.zeros(12, dtype=np.bool)
+            cand_idxes = np.zeros(12, dtype=bool)
             cand_idxes[obs['cand_img_idxes'][i]] = True
 
             rgb_fts.append(obs['cand_rgb'][i])
