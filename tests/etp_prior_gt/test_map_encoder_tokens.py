@@ -88,6 +88,23 @@ def test_map_encoder_returns_101_tokens_and_mask(monkeypatch):
     assert map_token_masks.all().item()
 
 
+def test_map_encoder_emits_finite_tokens_for_empty_map_metadata(monkeypatch):
+    map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
+    encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
+    batch_size = 2
+    grid = torch.zeros(batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE)
+    directions = torch.zeros(batch_size, map_utils.DIRECTION_VECTOR_CNT, 2)
+    starts = torch.zeros(batch_size, 2)
+
+    map_tokens, map_token_masks = encoder(grid, directions, starts)
+
+    assert map_tokens.shape == (batch_size, 101, 768)
+    assert torch.isfinite(map_tokens).all()
+    assert map_token_masks.shape == (batch_size, 101)
+    assert map_token_masks.dtype == torch.bool
+    assert map_token_masks.all().item()
+
+
 def test_map_encoder_rejects_bad_grid_shape(monkeypatch):
     map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
     encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)

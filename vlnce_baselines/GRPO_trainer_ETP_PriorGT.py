@@ -70,6 +70,13 @@ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
     ckpt_list.sort(key=_sort_key)
     return ckpt_list[-1]
 
+
+def select_replay_map_inputs(step_map_tokens, step_map_token_masks, active_indices):
+    """Select map token replay rows while keeping token/mask batches aligned."""
+    if step_map_tokens.size(0) == len(active_indices):
+        return step_map_tokens, step_map_token_masks
+    return step_map_tokens[active_indices], step_map_token_masks[active_indices]
+
 @baseline_registry.register_trainer(name="GRPO-ETP-PriorGT")
 class RLTrainer(BaseVLNCETrainer):
     def __init__(self, config=None):
@@ -754,12 +761,11 @@ class RLTrainer(BaseVLNCETrainer):
                                 # Map tokens saved during rollout are typically in the
                                 # current active-env order already. Re-index only when
                                 # the stored tensor is in original-batch layout.
-                                if step_map_tokens.size(0) == len(active_indices_in_original_batch):
-                                    map_tokens_for_step = step_map_tokens
-                                    map_token_masks_for_step = step_map_token_masks
-                                else:
-                                    map_tokens_for_step = step_map_tokens[active_indices_in_original_batch]
-                                    map_token_masks_for_step = step_map_token_masks[active_indices_in_original_batch]
+                                map_tokens_for_step, map_token_masks_for_step = select_replay_map_inputs(
+                                    step_map_tokens,
+                                    step_map_token_masks,
+                                    active_indices_in_original_batch,
+                                )
                                 nav_inputs_cuda['map_tokens'] = map_tokens_for_step.to(self.device, non_blocking=True)
                                 nav_inputs_cuda['map_token_masks'] = map_token_masks_for_step.to(self.device, non_blocking=True)
 
