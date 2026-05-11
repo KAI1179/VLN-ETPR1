@@ -1,10 +1,11 @@
 import logging
-from typing import List
+from typing import List, Tuple
 from .map_utils import (
     DIRECTION_VECTOR_CNT,
     MAPPED_OBJECT_NAMES,
     MAPPED_REGION_NAMES,
     NUM_MAP_CATEGORIES,
+    SIZE,
 )
 
 import clip
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIM = 512
 MAP_METADATA_DIM = DIRECTION_VECTOR_CNT * 2 + 2
+MAP_TOKEN_GRID_SIZE = 10
+MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
+MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
+MAP_TRANSFORMER_LAYERS = 2
+MAP_TRANSFORMER_HEADS = 8
 
 DEFAULT_CATEGORY_NAMES = MAPPED_OBJECT_NAMES + MAPPED_REGION_NAMES
 
@@ -69,61 +75,61 @@ def _build_category_projection_weights() -> torch.Tensor:
         raise RuntimeError("CLIP-based map category initialization failed") from exc
 
 
-def _group_norm(num_channels: int) -> nn.GroupNorm:
-    num_groups = min(8, num_channels)
-    while num_channels % num_groups != 0:
-        num_groups -= 1
-    return nn.GroupNorm(num_groups, num_channels)
+class NormFirstTransformerEncoderLayer(nn.Module):
+    """PyTorch 1.9-compatible pre-norm transformer encoder layer."""
 
-
-class ResidualConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+    def __init__(self, hidden_size: int):
         super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
+        self.self_attn = nn.MultiheadAttention(
+            hidden_size,
+            MAP_TRANSFORMER_HEADS,
+            dropout=0.0,
+            batch_first=True,
         )
-        self.norm1 = _group_norm(out_channels)
-        self.act = nn.GELU()
-        self.conv2 = nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.linear1 = nn.Linear(hidden_size, hidden_size * 4)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(0.0)
+        self.linear2 = nn.Linear(hidden_size * 4, hidden_size)
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: torch.Tensor = None,
+        src_key_padding_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        attn_input = self.norm1(src)
+        attn_output, _ = self.self_attn(
+            attn_input,
+            attn_input,
+            attn_input,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+            need_weights=False,
         )
-        self.norm2 = _group_norm(out_channels)
-
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                _group_norm(out_channels),
-            )
-        else:
-            self.shortcut = nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.shortcut(x)
-        x = self.conv1(x)
-        x = self.norm1(x)
-        x = self.act(x)
-        x = self.conv2(x)
-        x = self.norm2(x)
-        x = x + residual
-        return self.act(x)
+        src = src + self.dropout(attn_output)
+        ff_input = self.norm2(src)
+        ff_output = self.linear2(self.dropout(self.activation(self.linear1(ff_input))))
+        return src + self.dropout(ff_output)
 
 
 class EmbeddingGridMapEncoder(nn.Module):
-    """Encode a dense cognitive map into the VLN hidden space.
+    """Encode a dense cognitive map into map tokens for VLN fusion.
 
     The category channels are first projected with a 1x1 convolution whose
-    weights are initialized from semantic category embeddings. A residual CNN
-    then aggregates spatial structure before global pooling and projection into
-    the 768-d navigation hidden space.
+    weights are initialized from fixed CLIP category text embeddings. A spatial
+    tokenizer emits a 10x10 token grid, and a metadata token is appended before
+    transformer encoding.
     """
 
-    def __init__(
-        self,
-        output_size: int = 768,
-        hidden_size: int = 128,
-        metadata_hidden_size: int = 128,
-    ):
+    def __init__(self, hidden_size: int = 768):
         super().__init__()
+        if hidden_size % MAP_TRANSFORMER_HEADS != 0:
+            raise ValueError(
+                f"hidden_size must be divisible by {MAP_TRANSFORMER_HEADS}, got {hidden_size}"
+            )
+        self.hidden_size = hidden_size
 
         self.category_projection = nn.Conv2d(
             NUM_MAP_CATEGORIES, CLIP_EMBEDDING_DIM, kernel_size=1, bias=False
@@ -132,56 +138,109 @@ class EmbeddingGridMapEncoder(nn.Module):
         with torch.no_grad():
             self.category_projection.weight.copy_(init_embeds.t().unsqueeze(-1).unsqueeze(-1))
 
-        reduced_size = max(hidden_size, output_size // 6)
-        self.visual_encoder = nn.Sequential(
-            nn.Conv2d(CLIP_EMBEDDING_DIM, reduced_size, kernel_size=1, bias=False),
-            _group_norm(reduced_size),
-            nn.GELU(),
-            ResidualConvBlock(reduced_size, reduced_size, stride=1),
-            ResidualConvBlock(reduced_size, reduced_size * 2, stride=2),
-            ResidualConvBlock(reduced_size * 2, reduced_size * 2, stride=1),
-            ResidualConvBlock(reduced_size * 2, reduced_size * 4, stride=2),
-            ResidualConvBlock(reduced_size * 4, reduced_size * 4, stride=1),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
+        self.spatial_tokenizer = nn.Conv2d(
+            CLIP_EMBEDDING_DIM,
+            hidden_size,
+            kernel_size=10,
+            stride=10,
         )
+        self.spatial_token_norm = nn.LayerNorm(hidden_size)
         self.metadata_encoder = nn.Sequential(
-            nn.Linear(MAP_METADATA_DIM, metadata_hidden_size),
-            nn.LayerNorm(metadata_hidden_size),
+            nn.Linear(MAP_METADATA_DIM, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
-            nn.Linear(metadata_hidden_size, metadata_hidden_size),
-            nn.LayerNorm(metadata_hidden_size),
-            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
         )
-        self.output_head = nn.Sequential(
-            nn.Linear(reduced_size * 4 + metadata_hidden_size, output_size),
-            nn.LayerNorm(output_size),
+        try:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_size,
+                nhead=MAP_TRANSFORMER_HEADS,
+                dim_feedforward=hidden_size * 4,
+                dropout=0.0,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+        except TypeError:
+            encoder_layer = NormFirstTransformerEncoderLayer(hidden_size)
+        self.token_transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=MAP_TRANSFORMER_LAYERS,
         )
+        self.output_norm = nn.LayerNorm(hidden_size)
 
-        # Keep navigation behavior identical to the R1 baseline at step 0.
-        nn.init.zeros_(self.output_head[-2].weight)
-        nn.init.zeros_(self.output_head[-2].bias)
+    def _validate_inputs(
+        self,
+        cognitive_crop: torch.Tensor,
+        direction_vectors: torch.Tensor,
+        start_positions: torch.Tensor,
+    ) -> int:
+        if cognitive_crop.dim() != 4 or cognitive_crop.shape[1:] != (
+            NUM_MAP_CATEGORIES,
+            SIZE,
+            SIZE,
+        ):
+            raise ValueError(
+                "cognitive_crop must have shape "
+                f"(B, {NUM_MAP_CATEGORIES}, {SIZE}, {SIZE}), got {tuple(cognitive_crop.shape)}"
+            )
+        batch_size = cognitive_crop.shape[0]
+        if direction_vectors.dim() != 3 or direction_vectors.shape[1:] != (
+            DIRECTION_VECTOR_CNT,
+            2,
+        ):
+            raise ValueError(
+                "direction_vectors must have shape "
+                f"(B, {DIRECTION_VECTOR_CNT}, 2), got {tuple(direction_vectors.shape)}"
+            )
+        if start_positions.dim() != 2 or start_positions.shape[1:] != (2,):
+            raise ValueError(
+                f"start_positions must have shape (B, 2), got {tuple(start_positions.shape)}"
+            )
+        if (
+            cognitive_crop.shape[0] != direction_vectors.shape[0]
+            or cognitive_crop.shape[0] != start_positions.shape[0]
+        ):
+            raise ValueError(
+                "batch sizes must match for cognitive_crop, direction_vectors, and start_positions"
+            )
+        return batch_size
 
     def forward(
         self,
         cognitive_crop: torch.Tensor,
         direction_vectors: torch.Tensor,
-        start_position: torch.Tensor,
-    ) -> torch.Tensor:
+        start_positions: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Args:
         cognitive_crop: (B, CATEGORIES, H, W)
         direction_vectors: (B, DIRECTION_VECTOR_CNT, 2)
-        start_position: (B, 2)
+        start_positions: (B, 2)
 
         Returns:
-        (B, output_size)
+        map_tokens: (B, MAP_TOKEN_COUNT, hidden_size)
+        map_token_masks: (B, MAP_TOKEN_COUNT)
         """
+        batch_size = self._validate_inputs(cognitive_crop, direction_vectors, start_positions)
+
         embedding_map = self.category_projection(cognitive_crop)
-        visual_feat = self.visual_encoder(embedding_map)
+        spatial_tokens = self.spatial_tokenizer(embedding_map)
+        spatial_tokens = spatial_tokens.flatten(start_dim=2).transpose(1, 2)
+        spatial_tokens = self.spatial_token_norm(spatial_tokens)
+
         metadata = torch.cat(
-            [direction_vectors.flatten(start_dim=1), start_position],
+            [direction_vectors.flatten(start_dim=1), start_positions],
             dim=1,
         )
-        metadata_feat = self.metadata_encoder(metadata)
-        fused_feat = torch.cat([visual_feat, metadata_feat], dim=1)
-        return self.output_head(fused_feat)
+        metadata_token = self.metadata_encoder(metadata).unsqueeze(1)
+
+        map_tokens = torch.cat([spatial_tokens, metadata_token], dim=1)
+        map_tokens = self.token_transformer(map_tokens)
+        map_tokens = self.output_norm(map_tokens)
+        map_token_masks = torch.ones(
+            batch_size,
+            MAP_TOKEN_COUNT,
+            dtype=torch.bool,
+            device=cognitive_crop.device,
+        )
+        return map_tokens, map_token_masks
