@@ -1042,12 +1042,14 @@ class RLTrainer(BaseVLNCETrainer):
                     if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
-                nav_inputs['map_embeds'] = self.policy.net(
+                map_tokens, map_token_masks = self.policy.net(
                     mode='map_encoding',
                     cognitive_crops=cognitive_crops,
                     direction_vectors=direction_vectors,
                     start_positions=start_positions,
                 )
+                nav_inputs['map_tokens'] = map_tokens
+                nav_inputs['map_token_masks'] = map_token_masks
 
             nav_outs = self.policy.net(**nav_inputs)
             nav_logits = nav_outs['global_logits']
