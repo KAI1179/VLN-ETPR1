@@ -39,8 +39,10 @@ RUN . /opt/conda/etc/profile.d/conda.sh && \
 # Install additional Python packages using pip
 COPY --chown=vscode:vscode requirements.txt /home/vscode/requirements.txt
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1-new && \
-    pip install -i https://mirrors.aliyun.com/pypi/simple --retries 50 -r /home/vscode/requirements.txt && \
+    pip install -i https://mirrors.aliyun.com/pypi/simple --retries 50 -r /home/vscode/requirements.txt &&
+    pip install nvidia-tensorrt==7.2.3.4 \
     rm /home/vscode/requirements.txt
+# nvidia-tensorrt: https://github.com/tensorflow/tensorflow/issues/57679#issuecomment-1249197802
 
 # Ensure the environment is activated on shell startup
 RUN echo "conda activate etpr1-new" >> ~/.bashrc

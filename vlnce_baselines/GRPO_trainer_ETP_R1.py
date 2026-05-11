@@ -457,7 +457,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         for i in range(self.envs.num_envs):
             rgb_fts, dep_fts, loc_fts , nav_types = [], [], [], []
-            cand_idxes = np.zeros(12, dtype=np.bool)
+            cand_idxes = np.zeros(12, dtype=bool)
             cand_idxes[obs['cand_img_idxes'][i]] = True
 
             rgb_fts.append(obs['cand_rgb'][i])
@@ -1123,7 +1123,7 @@ class RLTrainer(BaseVLNCETrainer):
                         continue
                     info = infos[i]
                     ep_id = curr_eps[i].episode_id
-                    gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(np.float)
+                    gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(float)
                     pred_path = np.array(info['position_train']['position'])
                     distances = np.array(info['position_train']['distance'])
                     gt_length = max(self.gt_data[str(ep_id)]['forward_steps']*0.25, distances[0])

@@ -3,7 +3,7 @@
 This module is a self-contained copy of vlnce_baselines/models/R1Policy.py with
 two additions:
   1. ETP_PriorGT.forward() has a new 'map_encoding' mode that calls EmbeddingGridMapEncoder.
-  2. ETP_PriorGT.forward() passes map_embeds to forward_navigation().
+  2. ETP_PriorGT.forward() passes map_tokens/map_token_masks to forward_navigation().
 
 The author's R1Policy.py and etp/ directory are not modified.
 """
@@ -133,10 +133,11 @@ class ETP_PriorGT(Net):
         map_cfg = getattr(model_config, 'MAP_ENCODER', None)
         self.map_encoder_enabled = map_cfg is not None and getattr(map_cfg, 'enabled', False)
         if self.map_encoder_enabled:
+            map_hidden_size = self.vln_bert.config.hidden_size
             self.map_encoder = EmbeddingGridMapEncoder(
-                output_size=map_cfg.output_size,
+                hidden_size=map_hidden_size,
             )
-            print(f'  Map encoder enabled: CLIP 37-category init -> {map_cfg.output_size}-dim output')
+            print(f'  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})')
 
     @property
     def output_size(self):
@@ -159,7 +160,8 @@ class ETP_PriorGT(Net):
                 gmap_img_fts=None, gmap_pos_fts=None,
                 gmap_masks=None, gmap_visited_masks=None, gmap_pair_dists=None,
                 gmap_task_embeddings=None,
-                cognitive_crops=None, direction_vectors=None, start_positions=None, map_embeds=None):
+                cognitive_crops=None, direction_vectors=None, start_positions=None,
+                map_tokens=None, map_token_masks=None):
 
         if mode == 'language':
             encoded_sentence = self.vln_bert.forward_txt(
@@ -311,7 +313,7 @@ class ETP_PriorGT(Net):
             return outs
 
         elif mode == 'map_encoding':
-            # cognitive_crops: (B, CATEGORIES, H, W) -> (B, output_size)
+            # cognitive_crops: (B, CATEGORIES, H, W) -> tokens (B, 101, H), masks (B, 101)
             assert self.map_encoder_enabled, "map_encoding mode requires MAP_ENCODER.enabled=True"
             return self.map_encoder(cognitive_crops, direction_vectors, start_positions)
 
@@ -321,6 +323,6 @@ class ETP_PriorGT(Net):
                 gmap_vp_ids, gmap_step_ids,
                 gmap_img_fts, gmap_pos_fts,
                 gmap_masks, gmap_visited_masks, gmap_pair_dists, gmap_task_embeddings,
-                map_embeds=map_embeds,
+                map_tokens=map_tokens, map_token_masks=map_token_masks,
             )
             return outs

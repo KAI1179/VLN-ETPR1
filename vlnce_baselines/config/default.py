@@ -196,7 +196,6 @@ _C.MODEL.PROGRESS_MONITOR.alpha = 1.0  # loss multiplier
 # MAP_ENCODER: embedding grid map module (used by PriorGTPolicy / ETP_PriorGT only)
 _C.MODEL.MAP_ENCODER = CN()
 _C.MODEL.MAP_ENCODER.enabled = False                         # toggle on/off
-_C.MODEL.MAP_ENCODER.output_size = 768                       # must match hidden_size for additive fusion
 _C.MODEL.MAP_ENCODER.map_size = 100                          # full map side length (H=W=100)
 _C.MODEL.MAP_ENCODER.crop_radius = 50                        # deprecated in full-map mode
 _C.MODEL.MAP_ENCODER.precomputed_dir = "data/cognitive_maps" # path to precomputed cognitive maps

@@ -6,7 +6,7 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 
 - Cognitive-map encoder: `EmbeddingGridMapEncoder`
 - Map loading utilities for precomputed episode maps
-- Additive fusion into global map embeddings in navigation forward
+- Token-level graph-to-map cross-attention in navigation forward
 - New policy: `PriorGTPolicy`
 - New trainers:
   - `SS-ETP-PriorGT`
@@ -14,41 +14,58 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 
 ## Current Map Encoder
 
-The current PriorGT map encoder outputs a single `(B, 768)` vector per episode map,
-which is then broadcast-added to all global-map node embeddings in the navigation
-branch.
+The PriorGT map encoder outputs spatial map tokens, not a single pooled vector:
+
+- `map_tokens`: `(B, 101, hidden_size)`
+- `map_token_masks`: `(B, 101)`, bool, `True` means valid
+
+The 101 tokens are 100 spatial tokens from a fixed `10x10` grid over the `100x100`
+cognitive map plus one metadata token from `direction_vectors` and `start_position`.
 
 Architecture:
 
 1. Category projection
-   - Input grid shape: `(B, 37, H, W)`
+   - Input grid shape: `(B, 37, 100, 100)`
    - A `1x1` conv projects the 37 semantic channels into CLIP text space `(512)`
    - The `1x1` conv weights are initialized from CLIP text embeddings of the fixed
      37 object + region labels
 
-2. Visual map backbone
-   - `1x1 conv -> GroupNorm -> GELU`
-   - 5 custom residual CNN blocks
-   - two stride-2 downsampling stages
-   - global average pooling
+2. Spatial tokenizer
+   - `Conv2d(512, hidden_size, kernel_size=10, stride=10)`
+   - Produces `10x10 = 100` spatial tokens
+   - Applies token `LayerNorm`
 
 3. Metadata branch
    - Extra map metadata is encoded alongside the grid:
      - `direction_vectors`: shape `(B, 5, 2)`
      - `start_position`: shape `(B, 2)`
-   - These are flattened to `(B, 12)` and passed through a small MLP
+   - These are flattened to `(B, 12)` and passed through a small MLP to produce
+     one metadata token
 
-4. Fusion and output
-   - Concatenate pooled visual feature and metadata feature
-   - `Linear -> LayerNorm -> 768`
-   - The final linear layer is zero-initialized so `map_embeds == 0` at step 0
+4. Token encoder
+   - Concatenates 100 spatial tokens plus metadata token
+   - Runs a 2-layer Transformer encoder
+   - Applies final `LayerNorm`
 
 Notes:
 
-- The old explicit weighted-average matmul is now implemented as the CLIP-initialized
-  `1x1` convolution over category channels.
+- The old weighted-average / pooled map embedding path has been removed from PriorGT
+  policy and trainers.
 - The CLIP text encoder is used only once during initialization to build the category
   projection weights. It is not used in the map forward pass.
+
+## Navigation Fusion
+
+`GlocalTextPathNavCMT.forward_navigation()` now accepts:
+
+- `map_tokens`
+- `map_token_masks`
+
+Graph node embeddings query map tokens through `GraphMapCrossAttention` before the
+existing global encoder. The fusion module uses `nn.MultiheadAttention` with graph
+nodes as queries and map tokens as keys/values. Its residual projection is
+zero-initialized, so initial behavior is identity when map tokens are present and
+also no-op when map tokens are absent.
 
 ## Data Requirement
 
@@ -74,10 +91,12 @@ You must have precomputed cognitive maps at `data/cognitive_maps_etp_r1/<scene_i
 ## Checkpoint Compatibility
 
 Both PriorGT trainers load checkpoints with `strict=False`, so **existing R1 checkpoints can be
-loaded directly** — `map_encoder.*` keys will be absent and are initialised from the new map-encoder defaults.
+loaded directly**. New `map_encoder.*` and `graph_map_attention.*` keys will be absent
+and are initialised from defaults.
 
-The map-encoder output linear layer is zero-initialised, so at step 0 `map_embeds ≡ 0` and
-the model behaves identically to the R1 baseline. Gradients teach the map encoder from there.
+`GraphMapCrossAttention` has a zero-initialized residual projection, so map-token fusion
+starts as an identity operation. This keeps initial navigation behavior aligned with the
+R1 baseline while still allowing gradients to train map fusion.
 
 The map encoder initializes its category projection from built-in CLIP text
 embeddings for the fixed 37 object+region labels.
@@ -196,15 +215,12 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
 
 ## Pretraining Support
 
-Prior GT maps are also integrated into the pretraining phase for learning continuous-level visual map priors offline.
+Pretraining support has not yet been migrated to the token map interface. Current token
+fusion is implemented for PriorGT navigation training/evaluation (`SS-ETP-PriorGT` and
+`GRPO-ETP-PriorGT`).
 
-To run pretraining incorporating PriorGT maps:
+Old pretraining code still contains pooled map embedding references and should not be
+used with this token map encoder until it is updated to pass `map_tokens` and
+`map_token_masks`.
 
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
-    --use_prior_gt \
-    --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
-```
-
-- When enabled via `--use_prior_gt`, the dataloader will fetch map contexts matching the target scans and forward them through the map encoder, fusing `map_embeds` into the `GlocalTextPathCMTPreTraining` architecture.
 - If the map file is missing, the loader falls back to an all-zero cognitive map and zero metadata for that sample.

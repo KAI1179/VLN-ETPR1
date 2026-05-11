@@ -70,6 +70,13 @@ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
     ckpt_list.sort(key=_sort_key)
     return ckpt_list[-1]
 
+
+def select_replay_map_inputs(step_map_tokens, step_map_token_masks, active_indices):
+    """Select map token replay rows while keeping token/mask batches aligned."""
+    if step_map_tokens.size(0) == len(active_indices):
+        return step_map_tokens, step_map_token_masks
+    return step_map_tokens[active_indices], step_map_token_masks[active_indices]
+
 @baseline_registry.register_trainer(name="GRPO-ETP-PriorGT")
 class RLTrainer(BaseVLNCETrainer):
     def __init__(self, config=None):
@@ -456,7 +463,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         for i in range(self.envs.num_envs):
             rgb_fts, dep_fts, loc_fts , nav_types = [], [], [], []
-            cand_idxes = np.zeros(12, dtype=np.bool)
+            cand_idxes = np.zeros(12, dtype=bool)
             cand_idxes[obs['cand_img_idxes'][i]] = True
 
             rgb_fts.append(obs['cand_rgb'][i])
@@ -748,16 +755,19 @@ class RLTrainer(BaseVLNCETrainer):
                             nav_inputs_cuda['txt_embeds'] = txt_embeds_for_step
                             nav_inputs_cuda['txt_masks'] = txt_masks_for_step
                             nav_inputs_cuda['mode'] = 'navigation'
-                            if "map_embeds" in step_data:
-                                step_map_embeds = step_data["map_embeds"]
-                                # map_embeds saved during rollout are typically in the
+                            if "map_tokens" in step_data:
+                                step_map_tokens = step_data["map_tokens"]
+                                step_map_token_masks = step_data["map_token_masks"]
+                                # Map tokens saved during rollout are typically in the
                                 # current active-env order already. Re-index only when
                                 # the stored tensor is in original-batch layout.
-                                if step_map_embeds.size(0) == len(active_indices_in_original_batch):
-                                    map_embeds_for_step = step_map_embeds
-                                else:
-                                    map_embeds_for_step = step_map_embeds[active_indices_in_original_batch]
-                                nav_inputs_cuda['map_embeds'] = map_embeds_for_step.to(self.device, non_blocking=True)
+                                map_tokens_for_step, map_token_masks_for_step = select_replay_map_inputs(
+                                    step_map_tokens,
+                                    step_map_token_masks,
+                                    active_indices_in_original_batch,
+                                )
+                                nav_inputs_cuda['map_tokens'] = map_tokens_for_step.to(self.device, non_blocking=True)
+                                nav_inputs_cuda['map_token_masks'] = map_token_masks_for_step.to(self.device, non_blocking=True)
 
                             taken_actions_cuda = taken_actions_cpu.to(self.device)
 
@@ -1033,7 +1043,8 @@ class RLTrainer(BaseVLNCETrainer):
             nav_inputs_for_gpu['txt_masks'] = txt_masks
 
             # Cognitive map encoding (use the full precomputed map directly)
-            current_map_embeds = None
+            current_map_tokens = None
+            current_map_token_masks = None
             if map_cfg.enabled and cognitive_maps is not None:
                 cognitive_crops = torch.stack([
                     cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
@@ -1049,13 +1060,14 @@ class RLTrainer(BaseVLNCETrainer):
                     if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
-                current_map_embeds = self.policy.net(
+                current_map_tokens, current_map_token_masks = self.policy.net(
                     mode='map_encoding',
                     cognitive_crops=cognitive_crops,
                     direction_vectors=direction_vectors,
                     start_positions=start_positions,
                 )
-                nav_inputs_for_gpu['map_embeds'] = current_map_embeds
+                nav_inputs_for_gpu['map_tokens'] = current_map_tokens
+                nav_inputs_for_gpu['map_token_masks'] = current_map_token_masks
 
             nav_inputs_copy_for_cpu = self.copy_nav_inputs_dict(nav_inputs)
             nav_outs = self.policy.net(**nav_inputs_for_gpu)
@@ -1073,8 +1085,9 @@ class RLTrainer(BaseVLNCETrainer):
             # ------------------- start store data -------------------
             data_this_stepk = {}
             data_this_stepk["input"] = nav_inputs_copy_for_cpu
-            if current_map_embeds is not None:
-                data_this_stepk["map_embeds"] = current_map_embeds.detach().cpu()
+            if current_map_tokens is not None:
+                data_this_stepk["map_tokens"] = current_map_tokens.detach().cpu()
+                data_this_stepk["map_token_masks"] = current_map_token_masks.detach().cpu()
             data_this_stepk["action"] = a_t.detach().cpu()
             data_this_stepk["probs"] = nav_probs.detach().cpu()
             data_this_stepk["indices"] = copy.deepcopy(not_done_index)
@@ -1175,7 +1188,7 @@ class RLTrainer(BaseVLNCETrainer):
                         continue
                     info = infos[i]
                     ep_id = curr_eps[i].episode_id
-                    gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(np.float)
+                    gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(float)
                     pred_path = np.array(info['position_train']['position'])
                     distances = np.array(info['position_train']['distance'])
                     gt_length = max(self.gt_data[str(ep_id)]['forward_steps']*0.25, distances[0])
