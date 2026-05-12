@@ -1037,6 +1037,11 @@ class RLTrainer(BaseVLNCETrainer):
                     if cognitive_map else PrecomputedCognitiveMap.empty_direction_vectors()
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
+                start_direction_vectors = torch.stack([
+                    torch.tensor(cognitive_map.start_direction_vector, dtype=torch.float32)
+                    if cognitive_map else PrecomputedCognitiveMap.empty_start_direction_vector()
+                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
+                ]).to(self.device)
                 start_positions = torch.stack([
                     torch.tensor(cognitive_map.start_position, dtype=torch.float32)
                     if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
@@ -1046,6 +1051,7 @@ class RLTrainer(BaseVLNCETrainer):
                     mode='map_encoding',
                     cognitive_crops=cognitive_crops,
                     direction_vectors=direction_vectors,
+                    start_direction_vectors=start_direction_vectors,
                     start_positions=start_positions,
                 )
                 nav_inputs['map_tokens'] = map_tokens

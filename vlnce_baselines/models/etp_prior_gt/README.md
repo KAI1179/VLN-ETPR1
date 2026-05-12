@@ -20,7 +20,8 @@ The PriorGT map encoder outputs spatial map tokens, not a single pooled vector:
 - `map_token_masks`: `(B, 101)`, bool, `True` means valid
 
 The 101 tokens are 100 spatial tokens from a fixed `10x10` grid over the `100x100`
-cognitive map plus one metadata token from `direction_vectors` and `start_position`.
+cognitive map plus one metadata token from `direction_vectors`, `start_direction_vector`,
+and `start_position`.
 
 Architecture:
 
@@ -38,8 +39,9 @@ Architecture:
 3. Metadata branch
    - Extra map metadata is encoded alongside the grid:
      - `direction_vectors`: shape `(B, 5, 2)`
+     - `start_direction_vector`: shape `(B, 2)`
      - `start_position`: shape `(B, 2)`
-   - These are flattened to `(B, 12)` and passed through a small MLP to produce
+   - These are flattened to `(B, 14)` and passed through a small MLP to produce
      one metadata token
 
 4. Token encoder
@@ -80,6 +82,7 @@ Each file is a single compressed NumPy archive (`np.savez_compressed`) containin
 - `grid` — shape `(37, H, W)` float32 semantic grid
 - `offset_x`, `offset_z` — world-space origin of the map grid
 - `direction_vectors` — shape `(5, 2)` float32 unit vectors
+- `start_direction_vector` — shape `(2,)` float32 unit vector for initial heading
 - `start_position` — shape `(2,)` float32 normalized continuous grid coordinates
 
 Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.

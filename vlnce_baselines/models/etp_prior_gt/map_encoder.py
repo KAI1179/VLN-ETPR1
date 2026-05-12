@@ -16,7 +16,7 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIM = 512
-MAP_METADATA_DIM = DIRECTION_VECTOR_CNT * 2 + 2
+MAP_METADATA_DIM = DIRECTION_VECTOR_CNT * 2 + 2 + 2
 MAP_TOKEN_GRID_SIZE = 10
 MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
 MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
@@ -173,6 +173,7 @@ class EmbeddingGridMapEncoder(nn.Module):
         self,
         cognitive_crop: torch.Tensor,
         direction_vectors: torch.Tensor,
+        start_direction_vectors: torch.Tensor,
         start_positions: torch.Tensor,
     ) -> int:
         if cognitive_crop.dim() != 4 or cognitive_crop.shape[1:] != (
@@ -193,16 +194,23 @@ class EmbeddingGridMapEncoder(nn.Module):
                 "direction_vectors must have shape "
                 f"(B, {DIRECTION_VECTOR_CNT}, 2), got {tuple(direction_vectors.shape)}"
             )
+        if start_direction_vectors.dim() != 2 or start_direction_vectors.shape[1:] != (2,):
+            raise ValueError(
+                "start_direction_vectors must have shape "
+                f"(B, 2), got {tuple(start_direction_vectors.shape)}"
+            )
         if start_positions.dim() != 2 or start_positions.shape[1:] != (2,):
             raise ValueError(
                 f"start_positions must have shape (B, 2), got {tuple(start_positions.shape)}"
             )
         if (
             cognitive_crop.shape[0] != direction_vectors.shape[0]
+            or cognitive_crop.shape[0] != start_direction_vectors.shape[0]
             or cognitive_crop.shape[0] != start_positions.shape[0]
         ):
             raise ValueError(
-                "batch sizes must match for cognitive_crop, direction_vectors, and start_positions"
+                "batch sizes must match for cognitive_crop, direction_vectors, "
+                "start_direction_vectors, and start_positions"
             )
         return batch_size
 
@@ -210,18 +218,25 @@ class EmbeddingGridMapEncoder(nn.Module):
         self,
         cognitive_crop: torch.Tensor,
         direction_vectors: torch.Tensor,
+        start_direction_vectors: torch.Tensor,
         start_positions: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Args:
         cognitive_crop: (B, CATEGORIES, H, W)
         direction_vectors: (B, DIRECTION_VECTOR_CNT, 2)
+        start_direction_vectors: (B, 2)
         start_positions: (B, 2)
 
         Returns:
         map_tokens: (B, MAP_TOKEN_COUNT, hidden_size)
         map_token_masks: (B, MAP_TOKEN_COUNT)
         """
-        batch_size = self._validate_inputs(cognitive_crop, direction_vectors, start_positions)
+        batch_size = self._validate_inputs(
+            cognitive_crop,
+            direction_vectors,
+            start_direction_vectors,
+            start_positions,
+        )
 
         embedding_map = self.category_projection(cognitive_crop)
         spatial_tokens = self.spatial_tokenizer(embedding_map)
@@ -229,7 +244,11 @@ class EmbeddingGridMapEncoder(nn.Module):
         spatial_tokens = self.spatial_token_norm(spatial_tokens)
 
         metadata = torch.cat(
-            [direction_vectors.flatten(start_dim=1), start_positions],
+            [
+                direction_vectors.flatten(start_dim=1),
+                start_direction_vectors,
+                start_positions,
+            ],
             dim=1,
         )
         metadata_token = self.metadata_encoder(metadata).unsqueeze(1)

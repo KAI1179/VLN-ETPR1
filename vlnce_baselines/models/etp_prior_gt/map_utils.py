@@ -123,3 +123,7 @@ class PrecomputedCognitiveMap:
     @staticmethod
     def empty_start_position() -> torch.Tensor:
         return torch.zeros(2)
+
+    @staticmethod
+    def empty_start_direction_vector() -> torch.Tensor:
+        return torch.zeros(2)
