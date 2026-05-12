@@ -117,6 +117,9 @@ def mlm_collate(inputs):
     
     if 'cognitive_maps' in batch:
         batch['cognitive_maps'] = torch.stack(batch['cognitive_maps'])
+        batch['direction_vectors'] = torch.stack(batch['direction_vectors'])
+        batch['start_direction_vectors'] = torch.stack(batch['start_direction_vectors'])
+        batch['start_positions'] = torch.stack(batch['start_positions'])
     
     batch['txt_lens'] = torch.LongTensor([len(x) for x in batch['txt_ids']])
     batch['txt_ids'] = pad_sequence(batch['txt_ids'], batch_first=True, padding_value=1)
@@ -225,6 +228,9 @@ def sap_collate(inputs):
 
     if 'cognitive_maps' in batch:
         batch['cognitive_maps'] = torch.stack(batch['cognitive_maps'])
+        batch['direction_vectors'] = torch.stack(batch['direction_vectors'])
+        batch['start_direction_vectors'] = torch.stack(batch['start_direction_vectors'])
+        batch['start_positions'] = torch.stack(batch['start_positions'])
 
     batch['txt_lens'] = torch.LongTensor([len(x) for x in batch['txt_ids']])
     batch['txt_ids'] = pad_sequence(batch['txt_ids'], batch_first=True, padding_value=1)
@@ -260,4 +266,3 @@ def sap_collate(inputs):
     batch['global_act_labels'] = torch.LongTensor(batch['global_act_labels'])
 
     return batch
-

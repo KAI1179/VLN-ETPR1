@@ -119,7 +119,7 @@ steps vs 30 k) by freezing the base model and training only the map encoder.
 ### Step 1 — Probe training (load R1 GRPO checkpoint, freeze base)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe 2333
 ```
 
 This sets:
@@ -132,7 +132,7 @@ This sets:
 You may have to move `data/logs/checkpoints/release_r2r_priorgt_probe/ckpt.iter3000.pth` to `data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth` first.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe_eval 2333
 ```
 
 Compare `SR` / `SPL` against the R1 GRPO baseline. If the probe is better, proceed with full
@@ -218,12 +218,26 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
 
 ## Pretraining Support
 
-Pretraining support has not yet been migrated to the token map interface. Current token
-fusion is implemented for PriorGT navigation training/evaluation (`SS-ETP-PriorGT` and
-`GRPO-ETP-PriorGT`).
+PriorGT maps are integrated into pretraining through the same token map interface used
+by navigation training.
 
-Old pretraining code still contains pooled map embedding references and should not be
-used with this token map encoder until it is updated to pass `map_tokens` and
-`map_token_masks`.
+To run pretraining with PriorGT maps:
 
-- If the map file is missing, the loader falls back to an all-zero cognitive map and zero metadata for that sample.
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+    --use_prior_gt \
+    --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
+```
+
+When `--use_prior_gt` is enabled:
+
+- The dataset loads `data/cognitive_maps_etp_r1/<scene_id>/<instr_id>.npz`.
+- The collate path stacks `grid`, `direction_vectors`, `start_direction_vector`, and
+  `start_position`.
+- `EmbeddingGridMapEncoder` emits `map_tokens` and `map_token_masks`.
+- Pretraining `GlocalTextPathCMT` fuses map tokens into global graph embeddings through
+  zero-initialized graph-to-map cross-attention.
+
+The pretraining loader intentionally does not fallback for missing map metadata. Missing
+map files or missing keys such as `start_direction_vector` should fail loudly rather
+than silently training on incorrect zero metadata.

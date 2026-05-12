@@ -6,6 +6,7 @@ import jsonlines
 import numpy as np
 import h5py
 import math
+import torch
 from typing import List, TypedDict
 
 from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
@@ -82,10 +83,14 @@ class ReverieTextPathData(object):
 
     def _load_pretrain_cognitive_map(self, item: AnnotateItem):
         cognitive_map = PrecomputedCognitiveMap.from_scene_instr_id(item["scan"], item["instr_id"])
-        if cognitive_map is None:
-            return PrecomputedCognitiveMap.empty_grid()
-        else:
-            return cognitive_map.grid
+        return {
+            "cognitive_maps": cognitive_map.grid,
+            "direction_vectors": torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32),
+            "start_direction_vectors": torch.tensor(
+                cognitive_map.start_direction_vector, dtype=torch.float32
+            ),
+            "start_positions": torch.tensor(cognitive_map.start_position, dtype=torch.float32),
+        }
 
 
     def get_scanvp_feature(self, scan, viewpoint):
@@ -487,7 +492,7 @@ class R2RTextPathData(ReverieTextPathData):
             outs['vp_view_probs'] = softmax(traj_view_img_fts[-1][:, self.image_feat_size:], dim=1)
 
         if self.use_prior_gt:
-            outs['cognitive_maps'] = self._load_pretrain_cognitive_map(item)
+            outs.update(self._load_pretrain_cognitive_map(item))
 
         return outs
 

@@ -564,6 +564,40 @@ class LocalVPEncoder(nn.Module):
         vp_embeds = self.encoder(txt_embeds, txt_masks, vp_embeds, vp_masks)
         return vp_embeds
 
+class GraphMapCrossAttention(nn.Module):
+    def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            hidden_size, num_heads, dropout=dropout, batch_first=True
+        )
+        self.residual_projection = nn.Linear(hidden_size, hidden_size)
+        self._zero_residual_projection()
+
+    def _zero_residual_projection(self):
+        nn.init.zeros_(self.residual_projection.weight)
+        nn.init.zeros_(self.residual_projection.bias)
+
+    def forward(self, gmap_embeds, map_tokens, map_token_masks):
+        if map_tokens is None:
+            return gmap_embeds
+
+        key_padding_mask = None
+        if map_token_masks is not None:
+            if map_token_masks.any(dim=1).logical_not().any():
+                map_token_masks = map_token_masks.clone()
+                map_token_masks[map_token_masks.any(dim=1).logical_not(), 0] = True
+            key_padding_mask = map_token_masks.logical_not()
+
+        map_context, _ = self.attention(
+            gmap_embeds,
+            map_tokens,
+            map_tokens,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        return gmap_embeds + self.residual_projection(map_context)
+
+
 class GlobalMapEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -574,6 +608,11 @@ class GlobalMapEncoder(nn.Module):
         self.gmap_step_embeddings = nn.Embedding(config.max_action_steps, config.hidden_size)
         self.gmap_task_embeddings = nn.Embedding(config.max_gmap_task_embeddings, config.hidden_size, padding_idx=0)
         self.encoder = CrossmodalEncoder(config)
+        self.graph_map_attention = GraphMapCrossAttention(
+            config.hidden_size,
+            config.num_attention_heads,
+            config.hidden_dropout_prob,
+        )
         
         if config.graph_sprels: 
             self.sprel_linear = nn.Linear(1, 1)
@@ -641,16 +680,16 @@ class GlobalMapEncoder(nn.Module):
         self, txt_embeds, txt_masks,
         split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
         gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=None,
-        map_embeds=None
+        map_tokens=None, map_token_masks=None
     ):
         gmap_embeds, gmap_masks = self.gmap_input_embedding(
             split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens
         )
-        
-        # Fuse embedding grid map context
-        if map_embeds is not None:
-            gmap_embeds = gmap_embeds + map_embeds.unsqueeze(1)
+
+        gmap_embeds = self.graph_map_attention(
+            gmap_embeds, map_tokens, map_token_masks
+        )
             
         if self.sprel_linear is not None:
             graph_sprels = self.sprel_linear(graph_sprels.unsqueeze(3)).squeeze(3).unsqueeze(1) 
@@ -676,12 +715,13 @@ class GlocalTextPathCMT(BertPreTrainedModel):
         self.global_encoder = GlobalMapEncoder(config)
         
         self.init_weights()
+        self.global_encoder.graph_map_attention._zero_residual_projection()
 
     def forward(
         self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types, 
         traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
         gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-        map_embeds=None
+        map_tokens=None, map_token_masks=None
     ):        
         # text embedding
         txt_token_type_ids = torch.zeros_like(txt_ids)
@@ -700,7 +740,7 @@ class GlocalTextPathCMT(BertPreTrainedModel):
             txt_embeds, txt_masks,
             split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=gmap_pair_dists,
-            map_embeds=map_embeds
+            map_tokens=map_tokens, map_token_masks=map_token_masks
         )
         return txt_embeds, gmap_embeds
 
