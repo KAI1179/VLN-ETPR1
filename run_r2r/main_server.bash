@@ -157,10 +157,6 @@ case $mode in
       echo "###### imagined eval mode (SS ckpt) ######"
       launch "--exp_name release_r2r_imagined_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_DAGGER_CKPT} IL.back_algo control"
       ;;
-      imagined_predictor_probe)
-      echo "###### imagined predictor probe: freeze base/map encoder, train predictor only ######"
-      launch "--exp_name release_r2r_imagined_predictor_probe --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} MODEL.MAP_ENCODER.freeze_base True MODEL.MAP_ENCODER.freeze_map_encoder True IL.iters 3000 IL.lr 1e-4 IL.log_every 100 IL.ml_weight 1.0 IL.sample_ratio 0.75 IL.decay_interval 1000 IL.warmup_iters 200 IL.min_lr_ratio 0.1 IL.load_from_ckpt False IL.is_requeue False IL.waypoint_aug True TASK_CONFIG.DATASET.SUFFIX _90"
-      ;;
       imagined_grpo)
       warn_unimplemented "GRPO for imagined cognitive maps"
       ;;
@@ -171,7 +167,7 @@ case $mode in
       warn_unimplemented "inference path for imagined cognitive maps"
       ;;
       *)
-      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_predictor_probe|imagined_grpo|imagined_eval_grpo|imagined_infer} [master_port]" >&2
+      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer} [master_port]" >&2
       exit 1
       ;;
 esac
@@ -189,4 +185,3 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_predictor_probe 2333

@@ -226,27 +226,13 @@ class RLTrainer(BaseVLNCETrainer):
 
         map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
         freeze_base = map_cfg is not None and getattr(map_cfg, 'freeze_base', False)
-        freeze_map_encoder = freeze_base and getattr(map_cfg, 'freeze_map_encoder', False)
 
-        # Probe modes: freeze the base VLN stack. PriorGT trains map_encoder;
-        # Imagined may additionally freeze map_encoder and train map_predictor.
+        # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
             for name, param in self.policy.named_parameters():
-                is_map_encoder = 'map_encoder' in name
-                is_map_predictor = 'map_predictor' in name
-                should_freeze = (
-                    (not is_map_encoder and not is_map_predictor)
-                    or (freeze_map_encoder and is_map_encoder)
-                )
-                if should_freeze:
+                if 'map_encoder' not in name and 'map_predictor' not in name:
                     param.requires_grad_(False)
-            if freeze_map_encoder:
-                logger.info(
-                    "[Map probe] Base model and map encoder frozen - "
-                    "map predictor is trainable."
-                )
-            else:
-                logger.info("[Map probe] Base model frozen - map modules are trainable.")
+            logger.info("[Map probe] Base model frozen - map modules are trainable.")
 
         if self.config.GPU_NUMBERS > 1:
             print('Using', self.config.GPU_NUMBERS,'GPU!')

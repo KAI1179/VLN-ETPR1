@@ -80,30 +80,35 @@ data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth
 Update `IMAGINED_DAGGER_CKPT` in `run_r2r/main_server.bash` if the saved
 checkpoint name differs.
 
-### Predictor-Only Probe
+### Predictor-Only Training
 
-For quick verification, train only the instruction-to-map predictor while the
-base VLN model and PriorGT map encoder stay frozen:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_predictor_probe 2333
-```
-
-This mode sets:
+Predictor-only training should not use the VLN rollout trainer. The predictor
+only needs paired instructions and ground-truth cognitive maps:
 
 ```text
-MODEL.MAP_ENCODER.freeze_base True
-MODEL.MAP_ENCODER.freeze_map_encoder True
-IL.iters 3000
-IL.lr 1e-4
+instruction text -> frozen VLN language encoder -> txt_embeds/txt_masks
+txt_embeds/txt_masks -> InstructionCognitiveMapPredictor -> map logits
+map logits + GT cognitive map -> BCEWithLogitsLoss
 ```
 
-`freeze_base=True` freezes the base VLN stack. `freeze_map_encoder=True` also
-freezes the fixed CLIP-category map encoder, leaving `map_predictor` as the only
-trainable imagined-map module.
+That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
+rollout. It should save predictor weights that the full imagined policy can load
+before SS/DAgger fine-tuning.
+
+A standalone predictor trainer is the intended entry point, for example:
+
+```bash
+python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --exp-config run_r2r/iter_train.yaml \
+  --cognitive-map-dir data/cognitive_maps \
+  --output data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt
+```
+
+This standalone trainer is not implemented yet. Until it exists, use
+`imagined_dagger` for end-to-end training.
 
 ## Scope
 
-Current implementation covers SS/DAgger and predictor-only probe training. GRPO,
-GRPO eval, and inference launcher paths currently print warnings because they
-are not yet migrated to the imagined-map path.
+Current implementation covers SS/DAgger. Predictor-only offline training, GRPO,
+GRPO eval, and inference launcher paths are not yet migrated to the imagined-map
+path.
