@@ -17,14 +17,35 @@ export LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu
 
 # Continue from previous checkpoints: Set IL.load_from_ckpt and IL.is_requeue to True
 
-flag1="--exp_name release_r2r_dagger
-      --run-type dagger
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
-      IL.iters 30000
+NPROC_PER_NODE=4
+MASTER_PORT=${2:-2333}
+
+EXP_CONFIG="run_r2r/iter_train.yaml"
+GPU_IDS="[0,1,2,3]"
+GPU_NUMBERS=4
+BASE_NUM_ENVS=8
+MAP_NUM_ENVS=4
+
+BASE_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt"
+BASE_DAGGER_CKPT="data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth"
+BASE_GRPO_CKPT="data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth"
+
+GT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt"
+GT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/new-model-full.iter27800.pth"
+GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/new-model-full.iter270.pth"
+GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
+
+IMAGINED_PRETRAINED_CKPT="${GT_PRETRAINED_CKPT}"
+IMAGINED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth"
+IMAGINED_GRPO_CKPT="data/logs/checkpoints/release_r2r_imagined_grpo/store/ckpt.iter270.pth"
+
+COMMON_ARGS="--exp-config ${EXP_CONFIG}
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
+      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True"
+
+DAGGER_ARGS="IL.iters 30000
       IL.lr 1e-5
       IL.log_every 200
       IL.ml_weight 1.0
@@ -34,30 +55,18 @@ flag1="--exp_name release_r2r_dagger
       IL.min_lr_ratio 1.0
       IL.load_from_ckpt False
       IL.is_requeue False
-      IL.waypoint_aug  True
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      TASK_CONFIG.DATASET.SUFFIX _90
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
-      "
+      IL.waypoint_aug True
+      TASK_CONFIG.DATASET.SUFFIX _90"
 
-flag2="--exp_name release_r2r_grpo
-      --run-type grpo
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
-      ONLY_LAST_SAVEALL True
-      TRAINER_NAME GRPO-R1
+GRPO_ARGS="ONLY_LAST_SAVEALL True
       GRPO.iters 500
       GRPO.lr 2e-5
       GRPO.warmup_iters 0
       GRPO.min_lr_ratio 0.25
       GRPO.log_every 100
       GRPO.load_from_ckpt True
-      GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth
       GRPO.is_requeue False
-      GRPO.waypoint_aug  True
+      GRPO.waypoint_aug True
       GRPO.sample_num 8
       GRPO.update_epochs 1
       GRPO.grpo_beta 0.04
@@ -67,217 +76,103 @@ flag2="--exp_name release_r2r_grpo
       GRPO.dropout_in_sampling True
       GRPO.dropout_rate 0.10
       GRPO.max_grad_norm 2.0
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      TASK_CONFIG.DATASET.SUFFIX _10
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
-      "
+      TASK_CONFIG.DATASET.SUFFIX _10"
 
-flag3=" --exp_name release_r2r_grpo
-      --run-type eval
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth
-      IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
-      "
+BASE_MODEL_ARGS="MODEL.pretrained_path ${BASE_PRETRAINED_CKPT}"
 
-flag4="--exp_name release_r2r_grpo
-      --run-type inference
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 8
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      INFERENCE.CKPT_PATH data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth
-      INFERENCE.PREDICTIONS_FILE preds.json
-      IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
-      "
-
-flag5="--exp_name release_r2r_priorgt_dagger
-      --run-type dagger
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 4
-      TRAINER_NAME SS-ETP-PriorGT
+GT_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
       MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
-      IL.iters 30000
-      IL.lr 1e-5
-      IL.log_every 200
-      IL.ml_weight 1.0
-      IL.sample_ratio 0.75
-      IL.decay_interval 2000
-      IL.warmup_iters 500
-      IL.min_lr_ratio 1.0
-      IL.load_from_ckpt False
-      IL.is_requeue False
-      IL.waypoint_aug  True
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      TASK_CONFIG.DATASET.SUFFIX _90
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
-      "
+      MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
-flag6="--exp_name release_r2r_priorgt_grpo
-      --run-type grpo
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 4
-      ONLY_LAST_SAVEALL True
-      TRAINER_NAME GRPO-ETP-PriorGT
+GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
       MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
-      GRPO.iters 500
-      GRPO.lr 2e-5
-      GRPO.warmup_iters 0
-      GRPO.min_lr_ratio 0.25
-      GRPO.log_every 10
-      GRPO.load_from_ckpt True
-      GRPO.ckpt_to_load data/logs/checkpoints/release_r2r_priorgt_dagger/store/new-model-full.iter27800.pth
-      GRPO.is_requeue False
-      GRPO.waypoint_aug  True
-      GRPO.sample_num 8
-      GRPO.update_epochs 1
-      GRPO.grpo_beta 0.04
-      GRPO.grpo_epsilon 0.2
-      GRPO.enable_amp False
-      GRPO.enable_all_dropouts True
-      GRPO.dropout_in_sampling True
-      GRPO.dropout_rate 0.10
-      GRPO.max_grad_norm 2.0
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      TASK_CONFIG.DATASET.SUFFIX _10
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
-      "
+      MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
-flag7="--exp_name release_r2r_priorgt_dagger
-      --run-type eval
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 4
-      TRAINER_NAME SS-ETP-PriorGT
-      MODEL.policy_name PriorGTPolicy
+IMAGINED_MODEL_ARGS="TRAINER_NAME SS-ETP-Imagined
+      MODEL.policy_name ImaginedPolicy
       MODEL.MAP_ENCODER.enabled True
       MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/new-model-full.iter27800.pth
-      IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
-      "
+      MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
-flag8="--exp_name release_r2r_priorgt_grpo
-      --run-type eval
-      --exp-config run_r2r/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
-      NUM_ENVIRONMENTS 4
-      TRAINER_NAME SS-ETP-PriorGT
-      MODEL.policy_name PriorGTPolicy
-      MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
-      TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_grpo/store/new-model-full.iter270.pth
-      IL.back_algo control
-      MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
-      "
+launch() {
+      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $1
+}
+
+warn_unimplemented() {
+      echo "WARNING: $1 is not implemented yet." >&2
+      exit 2
+}
 
 mode=$1
 case $mode in
       dagger)
       echo "###### dagger train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag1
+      launch "--exp_name release_r2r_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} ${DAGGER_ARGS} ${BASE_MODEL_ARGS}"
       ;;
       grpo)
       echo "###### grpo train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag2
+      launch "--exp_name release_r2r_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} TRAINER_NAME GRPO-R1 ${GRPO_ARGS} GRPO.ckpt_to_load ${BASE_DAGGER_CKPT} ${BASE_MODEL_ARGS}"
       ;;
       eval)
       echo "###### eval mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag3
+      launch "--exp_name release_r2r_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} EVAL.CKPT_PATH_DIR ${BASE_GRPO_CKPT} IL.back_algo control ${BASE_MODEL_ARGS}"
       ;;
       infer)
       echo "###### infer mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag4
+      launch "--exp_name release_r2r_grpo --run-type inference ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} INFERENCE.CKPT_PATH ${BASE_GRPO_CKPT} INFERENCE.PREDICTIONS_FILE preds.json IL.back_algo control ${BASE_MODEL_ARGS}"
       ;;
       priorgt_dagger)
       echo "###### priorgt dagger train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag5
+      launch "--exp_name release_r2r_priorgt_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
       priorgt_grpo)
       echo "###### priorgt grpo train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag6
+      launch "--exp_name release_r2r_priorgt_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${GT_DAGGER_CKPT}"
       ;;
       priorgt_eval_ss)
       echo "###### priorgt eval mode (SS ckpt) ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag7
+      launch "--exp_name release_r2r_priorgt_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_DAGGER_CKPT} IL.back_algo control"
       ;;
       priorgt_eval_grpo)
       echo "###### priorgt eval mode (GRPO ckpt) ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag8
+      launch "--exp_name release_r2r_priorgt_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_GRPO_CKPT} IL.back_algo control"
       ;;
       priorgt_probe)
       echo "###### priorgt probe: freeze base, train map encoder only ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py \
-            --exp_name release_r2r_priorgt_probe \
-            --run-type dagger \
-            --exp-config run_r2r/iter_train.yaml \
-            SIMULATOR_GPU_IDS [0,1,2,3] \
-            TORCH_GPU_IDS [0,1,2,3] \
-            GPU_NUMBERS 4 \
-            NUM_ENVIRONMENTS 8 \
-            TRAINER_NAME SS-ETP-PriorGT \
-            MODEL.policy_name PriorGTPolicy \
-            MODEL.MAP_ENCODER.enabled True \
-            MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
-            MODEL.MAP_ENCODER.freeze_base True \
-            IL.iters 3000 \
-            IL.lr 1e-4 \
-            IL.log_every 100 \
-            IL.ml_weight 1.0 \
-            IL.sample_ratio 0.75 \
-            IL.decay_interval 1000 \
-            IL.warmup_iters 200 \
-            IL.min_lr_ratio 0.1 \
-            IL.load_from_ckpt True \
-            IL.is_requeue False \
-            IL.waypoint_aug True \
-            IL.ckpt_to_load data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth \
-            TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
-            TASK_CONFIG.DATASET.SUFFIX _90 \
-            MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
+      launch "--exp_name release_r2r_priorgt_probe --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} ${GT_MODEL_ARGS} MODEL.MAP_ENCODER.freeze_base True IL.iters 3000 IL.lr 1e-4 IL.log_every 100 IL.ml_weight 1.0 IL.sample_ratio 0.75 IL.decay_interval 1000 IL.warmup_iters 200 IL.min_lr_ratio 0.1 IL.load_from_ckpt True IL.is_requeue False IL.waypoint_aug True IL.ckpt_to_load ${BASE_GRPO_CKPT} TASK_CONFIG.DATASET.SUFFIX _90"
       ;;
       priorgt_probe_eval)
       echo "###### priorgt probe eval ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py \
-            --exp_name release_r2r_priorgt_probe \
-            --run-type eval \
-            --exp-config run_r2r/iter_train.yaml \
-            SIMULATOR_GPU_IDS [0,1,2,3] \
-            TORCH_GPU_IDS [0,1,2,3] \
-            GPU_NUMBERS 4 \
-            NUM_ENVIRONMENTS 8 \
-            TRAINER_NAME SS-ETP-PriorGT \
-            MODEL.policy_name PriorGTPolicy \
-            MODEL.MAP_ENCODER.enabled True \
-            MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
-            EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth \
-            IL.back_algo control \
-            TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
-            MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
+      launch "--exp_name release_r2r_priorgt_probe --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_PROBE_CKPT} IL.back_algo control"
+      ;;
+      imagined_dagger)
+      echo "###### imagined dagger train mode ######"
+      launch "--exp_name release_r2r_imagined_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} ${DAGGER_ARGS}"
+      ;;
+      imagined_eval_ss)
+      echo "###### imagined eval mode (SS ckpt) ######"
+      launch "--exp_name release_r2r_imagined_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_DAGGER_CKPT} IL.back_algo control"
+      ;;
+      imagined_predictor_probe)
+      echo "###### imagined predictor probe: freeze base/map encoder, train predictor only ######"
+      launch "--exp_name release_r2r_imagined_predictor_probe --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} MODEL.MAP_ENCODER.freeze_base True MODEL.MAP_ENCODER.freeze_map_encoder True IL.iters 3000 IL.lr 1e-4 IL.log_every 100 IL.ml_weight 1.0 IL.sample_ratio 0.75 IL.decay_interval 1000 IL.warmup_iters 200 IL.min_lr_ratio 0.1 IL.load_from_ckpt False IL.is_requeue False IL.waypoint_aug True TASK_CONFIG.DATASET.SUFFIX _90"
+      ;;
+      imagined_grpo)
+      warn_unimplemented "GRPO for imagined cognitive maps"
+      ;;
+      imagined_eval_grpo)
+      warn_unimplemented "GRPO checkpoint eval for imagined cognitive maps (${IMAGINED_GRPO_CKPT})"
+      ;;
+      imagined_infer)
+      warn_unimplemented "inference path for imagined cognitive maps"
+      ;;
+      *)
+      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_predictor_probe|imagined_grpo|imagined_eval_grpo|imagined_infer} [master_port]" >&2
+      exit 1
       ;;
 esac
 
@@ -292,3 +187,6 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_grpo 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_predictor_probe 2333

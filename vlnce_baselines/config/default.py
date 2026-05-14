@@ -199,7 +199,8 @@ _C.MODEL.MAP_ENCODER.enabled = False                         # toggle on/off
 _C.MODEL.MAP_ENCODER.map_size = 100                          # full map side length (H=W=100)
 _C.MODEL.MAP_ENCODER.crop_radius = 50                        # deprecated in full-map mode
 _C.MODEL.MAP_ENCODER.precomputed_dir = "data/cognitive_maps" # path to precomputed cognitive maps
-_C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze all non-map-encoder params (probe mode)
+_C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze base VLN params (map modules remain trainable)
+_C.MODEL.MAP_ENCODER.freeze_map_encoder = False              # with freeze_base, train only imagined map predictor
 _C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE auxiliary loss weight
 
 
