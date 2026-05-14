@@ -95,20 +95,28 @@ That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
 rollout. It should save predictor weights that the full imagined policy can load
 before SS/DAgger fine-tuning.
 
-A standalone predictor trainer is the intended entry point, for example:
+A standalone predictor trainer is provided for this:
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
-  --exp-config run_r2r/iter_train.yaml \
-  --cognitive-map-dir data/cognitive_maps \
-  --output data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt
+  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
 ```
 
-This standalone trainer is not implemented yet. Until it exists, use
-`imagined_dagger` for end-to-end training.
+The trainer freezes the same VLN language encoder used by the navigation model,
+so the predictor sees text embeddings aligned with `ImaginedPolicy`. It saves:
+
+```text
+map_predictor       # raw InstructionCognitiveMapPredictor state dict
+state_dict          # same weights with map_predictor.* keys for policy loading
+optimizer
+metrics
+args
+```
+
+Use `--limit N` and `--val-limit N` for quick smoke runs.
 
 ## Scope
 
-Current implementation covers SS/DAgger. Predictor-only offline training, GRPO,
-GRPO eval, and inference launcher paths are not yet migrated to the imagined-map
-path.
+Current implementation covers SS/DAgger and offline predictor-only training.
+GRPO, GRPO eval, and inference launcher paths are not yet migrated to the
+imagined-map path.
