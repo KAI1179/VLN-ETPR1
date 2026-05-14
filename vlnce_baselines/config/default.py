@@ -200,6 +200,7 @@ _C.MODEL.MAP_ENCODER.map_size = 100                          # full map side len
 _C.MODEL.MAP_ENCODER.crop_radius = 50                        # deprecated in full-map mode
 _C.MODEL.MAP_ENCODER.precomputed_dir = "data/cognitive_maps" # path to precomputed cognitive maps
 _C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze all non-map-encoder params (probe mode)
+_C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE auxiliary loss weight
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

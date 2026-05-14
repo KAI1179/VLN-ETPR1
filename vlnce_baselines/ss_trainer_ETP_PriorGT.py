@@ -231,9 +231,9 @@ class RLTrainer(BaseVLNCETrainer):
         # (~3k IL steps) is enough to verify whether cognitive maps help.
         if freeze_base:
             for name, param in self.policy.named_parameters():
-                if 'map_encoder' not in name:
+                if 'map_encoder' not in name and 'map_predictor' not in name:
                     param.requires_grad_(False)
-            logger.info("[PriorGT probe] Base model frozen - only map_encoder params are trainable.")
+            logger.info("[PriorGT probe] Base model frozen - map modules are trainable.")
 
         if self.config.GPU_NUMBERS > 1:
             print('Using', self.config.GPU_NUMBERS,'GPU!')
@@ -888,6 +888,52 @@ class RLTrainer(BaseVLNCETrainer):
         ori = [x[1] for x in pos_ori]
         return pos, ori
 
+    def _prepare_map_inputs(
+        self,
+        nav_inputs,
+        txt_embeds,
+        txt_masks,
+        cognitive_maps,
+        map_cfg,
+        mode,
+        stepk,
+    ):
+        # PriorGT uses the full precomputed cognitive map directly.
+        if not map_cfg.enabled or cognitive_maps is None:
+            return None
+        cognitive_crops = torch.stack([
+            cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        direction_vectors = torch.stack([
+            torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32)
+            if cognitive_map else PrecomputedCognitiveMap.empty_direction_vectors()
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        start_direction_vectors = torch.stack([
+            torch.tensor(cognitive_map.start_direction_vector, dtype=torch.float32)
+            if cognitive_map else PrecomputedCognitiveMap.empty_start_direction_vector()
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        start_positions = torch.stack([
+            torch.tensor(cognitive_map.start_position, dtype=torch.float32)
+            if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        map_tokens, map_token_masks = self.policy.net(
+            mode='map_encoding',
+            cognitive_crops=cognitive_crops,
+            direction_vectors=direction_vectors,
+            start_direction_vectors=start_direction_vectors,
+            start_positions=start_positions,
+        )
+        nav_inputs['map_tokens'] = map_tokens
+        nav_inputs['map_token_masks'] = map_token_masks
+        return None
+
+    def _should_load_cognitive_maps(self, mode, map_cfg):
+        return map_cfg.enabled
+
     def rollout(self, mode, ml_weight=None, sample_ratio=None):
         if mode == 'train':
             feedback = 'sample'
@@ -941,6 +987,7 @@ class RLTrainer(BaseVLNCETrainer):
         )
 
         loss = 0.
+        map_aux_loss_total = None
         total_actions = 0.
 
         not_done_index = list(range(self.envs.num_envs))
@@ -954,7 +1001,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         # Load cognitive maps for current episodes (per-episode, keyed by scene_id + episode_id)
         map_cfg = self.config.MODEL.MAP_ENCODER
-        if map_cfg.enabled:
+        if self._should_load_cognitive_maps(mode, map_cfg):
             _cur_eps = self.envs.current_episodes()
             cognitive_maps: Optional[List[Optional[PrecomputedCognitiveMap]]] = []
             dataset_flag = getattr(self.config.MODEL, "task_type", "R2R").upper()
@@ -1026,36 +1073,15 @@ class RLTrainer(BaseVLNCETrainer):
             })
             no_vp_left = nav_inputs.pop('no_vp_left')
 
-            # Cognitive map encoding (use the full precomputed map directly)
-            if map_cfg.enabled and cognitive_maps is not None:
-                cognitive_crops = torch.stack([
-                    cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                direction_vectors = torch.stack([
-                    torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_direction_vectors()
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                start_direction_vectors = torch.stack([
-                    torch.tensor(cognitive_map.start_direction_vector, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_start_direction_vector()
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                start_positions = torch.stack([
-                    torch.tensor(cognitive_map.start_position, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                map_tokens, map_token_masks = self.policy.net(
-                    mode='map_encoding',
-                    cognitive_crops=cognitive_crops,
-                    direction_vectors=direction_vectors,
-                    start_direction_vectors=start_direction_vectors,
-                    start_positions=start_positions,
-                )
-                nav_inputs['map_tokens'] = map_tokens
-                nav_inputs['map_token_masks'] = map_token_masks
+            map_aux_loss = self._prepare_map_inputs(
+                nav_inputs,
+                txt_embeds,
+                txt_masks,
+                cognitive_maps,
+                map_cfg,
+                mode,
+                stepk,
+            )
 
             nav_outs = self.policy.net(**nav_inputs)
             nav_logits = nav_outs['global_logits']
@@ -1067,6 +1093,12 @@ class RLTrainer(BaseVLNCETrainer):
                 teacher_actions = self._teacher_action_new(nav_inputs['gmap_vp_ids'], no_vp_left, mode == 'train')
             if mode == 'train':
                 loss += F.cross_entropy(nav_logits, teacher_actions, reduction='sum', ignore_index=-100)
+                if map_aux_loss is not None:
+                    map_aux_loss_total = (
+                        map_aux_loss
+                        if map_aux_loss_total is None
+                        else map_aux_loss_total + map_aux_loss
+                    )
 
             # determine action
             if feedback == 'sample':
@@ -1242,5 +1274,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         if mode == 'train':
             loss = ml_weight * loss / total_actions
+            if map_aux_loss_total is not None:
+                loss = loss + map_aux_loss_total
             self.loss += loss
             self.logs['IL_loss'].append(loss.item())
