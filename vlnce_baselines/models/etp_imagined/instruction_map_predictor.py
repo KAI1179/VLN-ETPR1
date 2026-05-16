@@ -12,16 +12,16 @@ MAP_QUERY_GRID_SIZE = 10
 MAP_QUERY_COUNT = MAP_QUERY_GRID_SIZE * MAP_QUERY_GRID_SIZE
 
 
-class InstructionMapDecoderLayer(nn.Module):
+class InstructionLatentMapBlock(nn.Module):
     def __init__(self, hidden_size: int, num_heads: int, dropout: float):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
+        self.cross_attn = nn.MultiheadAttention(
             hidden_size,
             num_heads,
             dropout=dropout,
             batch_first=True,
         )
-        self.cross_attn = nn.MultiheadAttention(
+        self.self_attn = nn.MultiheadAttention(
             hidden_size,
             num_heads,
             dropout=dropout,
@@ -44,13 +44,6 @@ class InstructionMapDecoderLayer(nn.Module):
         txt_embeds: torch.Tensor,
         txt_key_padding_mask: torch.Tensor,
     ) -> torch.Tensor:
-        attn_out, _ = self.self_attn(
-            map_queries,
-            map_queries,
-            map_queries,
-            need_weights=False,
-        )
-        map_queries = self.norm1(map_queries + self.dropout(attn_out))
         txt_out, _ = self.cross_attn(
             map_queries,
             txt_embeds,
@@ -58,12 +51,40 @@ class InstructionMapDecoderLayer(nn.Module):
             key_padding_mask=txt_key_padding_mask,
             need_weights=False,
         )
-        map_queries = self.norm2(map_queries + self.dropout(txt_out))
+        map_queries = self.norm1(map_queries + self.dropout(txt_out))
+        attn_out, _ = self.self_attn(
+            map_queries,
+            map_queries,
+            map_queries,
+            need_weights=False,
+        )
+        map_queries = self.norm2(map_queries + self.dropout(attn_out))
         return self.norm3(map_queries + self.dropout(self.ffn(map_queries)))
 
 
+class UpsampleBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, dropout: float):
+        super().__init__()
+        norm_groups = min(8, out_channels)
+        while out_channels % norm_groups != 0:
+            norm_groups -= 1
+        self.block = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(norm_groups, out_channels),
+            nn.GELU(),
+            nn.Dropout2d(dropout),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(norm_groups, out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
 class InstructionCognitiveMapPredictor(nn.Module):
-    """Predict a dense cognitive-map prior from instruction text embeddings."""
+    """OccWorld-style latent map prior from instruction text embeddings."""
 
     def __init__(
         self,
@@ -71,25 +92,46 @@ class InstructionCognitiveMapPredictor(nn.Module):
         num_heads: int = 8,
         num_layers: int = 2,
         dropout: float = 0.0,
+        latent_grid_size: int = MAP_QUERY_GRID_SIZE,
+        decoder_channels: int = 256,
     ):
         super().__init__()
         if hidden_size % num_heads != 0:
             raise ValueError(f"hidden_size must be divisible by num_heads, got {hidden_size}, {num_heads}")
+        if latent_grid_size <= 0:
+            raise ValueError(f"latent_grid_size must be positive, got {latent_grid_size}")
+        if decoder_channels % 8 != 0:
+            raise ValueError(f"decoder_channels must be divisible by 8, got {decoder_channels}")
         self.hidden_size = hidden_size
-        self.map_queries = nn.Parameter(torch.zeros(1, MAP_QUERY_COUNT, hidden_size))
-        self.map_pos = nn.Parameter(torch.zeros(1, MAP_QUERY_COUNT, hidden_size))
+        self.latent_grid_size = latent_grid_size
+        self.latent_count = latent_grid_size * latent_grid_size
+        self.map_queries = nn.Parameter(torch.zeros(1, self.latent_count, hidden_size))
+        self.map_pos = nn.Parameter(torch.zeros(1, self.latent_count, hidden_size))
         self.layers = nn.ModuleList(
             [
-                InstructionMapDecoderLayer(hidden_size, num_heads, dropout)
+                InstructionLatentMapBlock(hidden_size, num_heads, dropout)
                 for _ in range(num_layers)
             ]
         )
         self.output_norm = nn.LayerNorm(hidden_size)
-        self.coarse_head = nn.Linear(hidden_size, NUM_MAP_CATEGORIES)
-        self.refine_head = nn.Sequential(
-            nn.Conv2d(NUM_MAP_CATEGORIES, NUM_MAP_CATEGORIES, kernel_size=3, padding=1),
+        self.latent_projection = nn.Sequential(
+            nn.Linear(hidden_size, decoder_channels),
             nn.GELU(),
-            nn.Conv2d(NUM_MAP_CATEGORIES, NUM_MAP_CATEGORIES, kernel_size=1),
+            nn.LayerNorm(decoder_channels),
+        )
+        upsample_blocks = []
+        channels = decoder_channels
+        current_size = latent_grid_size
+        while current_size < SIZE:
+            next_channels = max(NUM_MAP_CATEGORIES * 2, channels // 2)
+            upsample_blocks.append(UpsampleBlock(channels, next_channels, dropout))
+            channels = next_channels
+            current_size *= 2
+        self.decoder = nn.Sequential(*upsample_blocks)
+        self.output_head = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(channels, NUM_MAP_CATEGORIES, kernel_size=1),
         )
         nn.init.normal_(self.map_queries, std=0.02)
         nn.init.normal_(self.map_pos, std=0.02)
@@ -115,17 +157,14 @@ class InstructionCognitiveMapPredictor(nn.Module):
         for layer in self.layers:
             queries = layer(queries, txt_embeds, txt_key_padding_mask)
         queries = self.output_norm(queries)
-        coarse_logits = self.coarse_head(queries)
-        coarse_logits = coarse_logits.transpose(1, 2).reshape(
+        latent = self.latent_projection(queries)
+        latent = latent.transpose(1, 2).reshape(
             batch_size,
-            NUM_MAP_CATEGORIES,
-            MAP_QUERY_GRID_SIZE,
-            MAP_QUERY_GRID_SIZE,
+            -1,
+            self.latent_grid_size,
+            self.latent_grid_size,
         )
-        logits = F.interpolate(
-            coarse_logits,
-            size=(SIZE, SIZE),
-            mode="bilinear",
-            align_corners=False,
-        )
-        return self.refine_head(logits)
+        logits = self.output_head(self.decoder(latent))
+        if logits.shape[-2:] != (SIZE, SIZE):
+            logits = F.interpolate(logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False)
+        return logits

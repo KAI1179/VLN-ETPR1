@@ -16,9 +16,19 @@ soft grid -> PriorGT map_encoding / EmbeddingGridMapEncoder
 map tokens -> GraphMapCrossAttention -> navigation logits
 ```
 
-`InstructionCognitiveMapPredictor` uses 100 learned `10x10` map queries. The
-queries self-attend, cross-attend to instruction tokens, then produce 37-channel
-coarse map logits that are upsampled to `100x100`.
+`InstructionCognitiveMapPredictor` uses an OccWorld-style latent map prior:
+
+```text
+VLN text embeddings
+-> learned 10x10 latent map tokens
+-> repeated cross-attention to text + latent self-attention + FFN blocks
+-> latent-to-CNN projection
+-> progressive upsample decoder
+-> 37-channel 100x100 map logits
+```
+
+The output is still logits, not probabilities. Callers use `sigmoid(logits)`
+before passing the soft map to `EmbeddingGridMapEncoder`.
 
 ## Training
 
@@ -88,7 +98,7 @@ only needs paired instructions and ground-truth cognitive maps:
 ```text
 instruction text -> frozen VLN language encoder -> txt_embeds/txt_masks
 txt_embeds/txt_masks -> InstructionCognitiveMapPredictor -> map logits
-map logits + GT cognitive map -> BCEWithLogitsLoss
+map logits + GT cognitive map -> weighted BCE/focal loss
 ```
 
 That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
@@ -103,7 +113,23 @@ python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
 ```
 
 The trainer freezes the same VLN language encoder used by the navigation model,
-so the predictor sees text embeddings aligned with `ImaginedPolicy`. It saves:
+so the predictor sees text embeddings aligned with `ImaginedPolicy`. When
+multiple GPUs are visible, it wraps the frozen text encoder and predictor in one
+`DataParallel` module. Restrict cards with `CUDA_VISIBLE_DEVICES`, for example:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --epochs 3 --batch-size 32 --limit 1024 --val-limit 256 \
+  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
+```
+
+The trainer reports sparse-map metrics across configurable thresholds:
+`pred_pos@t`, `iou@t`, `precision@t`, `recall@t`, `top1pct_recall`, and
+`top5pct_recall`. Best checkpoint selection uses the best validation IoU across
+thresholds, not loss, because loss can improve while the predictor over-expands
+positive cells.
+
+It saves:
 
 ```text
 map_predictor       # raw InstructionCognitiveMapPredictor state dict

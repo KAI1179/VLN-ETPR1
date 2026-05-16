@@ -12,7 +12,7 @@ import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -125,6 +125,27 @@ class CognitiveMapPredictorDataset(Dataset):
         }
 
 
+class CognitiveMapPredictionModel(torch.nn.Module):
+    def __init__(
+        self,
+        vln_bert: torch.nn.Module,
+        predictor: InstructionCognitiveMapPredictor,
+    ) -> None:
+        super().__init__()
+        self.vln_bert = vln_bert
+        self.predictor = predictor
+
+    def forward(
+        self,
+        txt_ids: torch.Tensor,
+        txt_task_encoding: torch.Tensor,
+        txt_masks: torch.Tensor,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            txt_embeds = self.vln_bert.forward_txt(txt_ids, txt_task_encoding, txt_masks)
+        return self.predictor(txt_embeds, txt_masks)
+
+
 def collate_predictor_batch(batch: Sequence[Dict], max_text_len: int, pad_id: int = PAD_ID) -> Dict:
     batch_size = len(batch)
     txt_ids = torch.full((batch_size, max_text_len), pad_id, dtype=torch.long)
@@ -151,73 +172,152 @@ def _move_batch(batch: Dict, device: torch.device) -> Dict:
     return moved
 
 
-def compute_metrics(logits: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
+def _parse_thresholds(thresholds: str) -> Tuple[float, ...]:
+    parsed = tuple(float(item) for item in thresholds.split(",") if item)
+    if not parsed:
+        raise ValueError("at least one threshold is required")
+    return parsed
+
+
+def _topk_recall(probs: torch.Tensor, target_mask: torch.Tensor, fraction: float) -> float:
+    flat_probs = probs.flatten()
+    flat_target = target_mask.flatten()
+    positives = int(flat_target.sum().item())
+    if positives == 0:
+        return 0.0
+    k = max(1, int(flat_probs.numel() * fraction))
+    topk_idx = torch.topk(flat_probs, k=min(k, flat_probs.numel()), largest=True).indices
+    return (flat_target[topk_idx].sum().float() / flat_target.sum().float().clamp_min(1.0)).item()
+
+
+def compute_metrics(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    thresholds: Sequence[float],
+) -> Dict[str, float]:
     probs = torch.sigmoid(logits)
-    mae = torch.mean(torch.abs(probs - target)).item()
-    pred_mask = probs > 0.5
     target_mask = target > 0.5
-    intersection = torch.logical_and(pred_mask, target_mask).sum().float()
-    union = torch.logical_or(pred_mask, target_mask).sum().float()
-    iou = (intersection / union.clamp_min(1.0)).item()
-    return {"mae": mae, "iou@0.5": iou}
+    metrics: Dict[str, float] = {
+        "mae": torch.mean(torch.abs(probs - target)).item(),
+        "target_pos": target_mask.float().mean().item(),
+        "prob_mean": probs.mean().item(),
+        "prob_max": probs.max().item(),
+        "prob_pos": probs[target_mask].mean().item() if target_mask.any() else 0.0,
+        "prob_neg": probs[target_mask.logical_not()].mean().item()
+        if target_mask.logical_not().any()
+        else 0.0,
+        "top1pct_recall": _topk_recall(probs, target_mask, 0.01),
+        "top5pct_recall": _topk_recall(probs, target_mask, 0.05),
+    }
+    for threshold in thresholds:
+        pred_mask = probs > threshold
+        intersection = torch.logical_and(pred_mask, target_mask).sum().float()
+        union = torch.logical_or(pred_mask, target_mask).sum().float()
+        pred_pos = pred_mask.float().mean()
+        precision = intersection / pred_mask.sum().float().clamp_min(1.0)
+        recall = intersection / target_mask.sum().float().clamp_min(1.0)
+        metrics[f"pred_pos@{threshold:g}"] = pred_pos.item()
+        metrics[f"iou@{threshold:g}"] = (intersection / union.clamp_min(1.0)).item()
+        metrics[f"precision@{threshold:g}"] = precision.item()
+        metrics[f"recall@{threshold:g}"] = recall.item()
+    return metrics
+
+
+def compute_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    loss_type: str,
+    max_pos_weight: float,
+    focal_gamma: float,
+) -> torch.Tensor:
+    target_mask = target > 0.5
+    pos = target_mask.sum(dim=(0, 2, 3)).float()
+    neg = target_mask.logical_not().sum(dim=(0, 2, 3)).float()
+    pos_weight = (neg / pos.clamp_min(1.0)).clamp(max=max_pos_weight).to(logits.device)
+    bce = F.binary_cross_entropy_with_logits(
+        logits,
+        target,
+        pos_weight=pos_weight.view(1, -1, 1, 1),
+        reduction="none",
+    )
+    if loss_type == "bce":
+        return bce.mean()
+    if loss_type == "focal":
+        probs = torch.sigmoid(logits)
+        pt = torch.where(target_mask, probs, 1.0 - probs)
+        return ((1.0 - pt).pow(focal_gamma) * bce).mean()
+    raise ValueError(f"loss_type must be bce or focal, got {loss_type}")
+
+
+def initialize_output_prior(predictor: InstructionCognitiveMapPredictor, positive_prob: float) -> None:
+    if not 0.0 < positive_prob < 1.0:
+        raise ValueError(f"--init-positive-prob must be in (0, 1), got {positive_prob}")
+    final_head = predictor.output_head[-1]
+    if not isinstance(final_head, torch.nn.Conv2d) or final_head.bias is None:
+        return
+    prior_logit = float(np.log(positive_prob / (1.0 - positive_prob)))
+    torch.nn.init.constant_(final_head.bias, prior_logit)
+
+
+def _best_iou(metrics: Dict[str, float]) -> float:
+    ious = [value for key, value in metrics.items() if key.startswith("iou@")]
+    return max(ious) if ious else 0.0
 
 
 def _iterate_batches(
     dataloader: DataLoader,
-    vln_bert: torch.nn.Module,
-    predictor: InstructionCognitiveMapPredictor,
+    model: torch.nn.Module,
     device: torch.device,
     optimizer: Optional[torch.optim.Optimizer] = None,
     max_batches: Optional[int] = None,
+    thresholds: Sequence[float] = (0.1, 0.2, 0.3, 0.5),
+    loss_type: str = "bce",
+    max_pos_weight: float = 100.0,
+    focal_gamma: float = 2.0,
 ) -> Dict[str, float]:
     is_train = optimizer is not None
-    predictor.train(is_train)
-    total_loss = 0.0
-    total_mae = 0.0
-    total_iou = 0.0
+    model.train(is_train)
+    totals: Dict[str, float] = {}
     total_batches = 0
 
     for batch_idx, batch in enumerate(dataloader):
         if max_batches is not None and batch_idx >= max_batches:
             break
         batch = _move_batch(batch, device)
-        with torch.no_grad():
-            txt_embeds = vln_bert.forward_txt(
-                batch["txt_ids"],
-                batch["txt_task_encoding"],
-                batch["txt_masks"],
-            )
-        logits = predictor(txt_embeds, batch["txt_masks"])
-        loss = F.binary_cross_entropy_with_logits(logits, batch["grids"], reduction="mean")
+        logits = model(batch["txt_ids"], batch["txt_task_encoding"], batch["txt_masks"])
+        loss = compute_loss(
+            logits,
+            batch["grids"],
+            loss_type=loss_type,
+            max_pos_weight=max_pos_weight,
+            focal_gamma=focal_gamma,
+        )
         if is_train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-        metrics = compute_metrics(logits.detach(), batch["grids"])
-        total_loss += loss.item()
-        total_mae += metrics["mae"]
-        total_iou += metrics["iou@0.5"]
+        metrics = compute_metrics(logits.detach(), batch["grids"], thresholds=thresholds)
+        metrics["loss"] = loss.item()
+        for key, value in metrics.items():
+            totals[key] = totals.get(key, 0.0) + value
         total_batches += 1
 
     if total_batches == 0:
-        return {"loss": 0.0, "mae": 0.0, "iou@0.5": 0.0}
-    return {
-        "loss": total_loss / total_batches,
-        "mae": total_mae / total_batches,
-        "iou@0.5": total_iou / total_batches,
-    }
+        return {"loss": 0.0, "mae": 0.0}
+    return {key: value / total_batches for key, value in totals.items()}
 
 
 def save_checkpoint(
     output_path: Path,
-    predictor: InstructionCognitiveMapPredictor,
+    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: Dict[str, float],
     args: argparse.Namespace,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    map_predictor = predictor.state_dict()
+    unwrapped_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+    map_predictor = unwrapped_model.predictor.state_dict()
     torch.save(
         {
             "epoch": epoch,
@@ -278,6 +378,11 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--loss", choices=["bce", "focal"], default="bce")
+    parser.add_argument("--max-pos-weight", type=float, default=20.0)
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--init-positive-prob", type=float, default=0.002)
+    parser.add_argument("--thresholds", default="0.001,0.002,0.005,0.01,0.02,0.05")
     parser.add_argument("--max-text-len", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
@@ -298,6 +403,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     config = get_config(args.exp_config, args.opts)
     max_text_len = args.max_text_len or config.IL.max_text_len
     device = torch.device(args.device)
+    thresholds = _parse_thresholds(args.thresholds)
 
     pretrained_path = getattr(config.MODEL, "pretrained_path", None)
     if pretrained_path and not Path(pretrained_path).exists():
@@ -317,6 +423,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         num_layers=2,
         dropout=0.0,
     ).to(device)
+    initialize_output_prior(predictor, args.init_positive_prob)
+    model = CognitiveMapPredictionModel(vln_bert=vln_bert, predictor=predictor).to(device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"Using {torch.cuda.device_count()} CUDA devices for text encoder + predictor DataParallel")
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=0.01)
 
     train_loader = _build_dataloader(
@@ -348,21 +459,38 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     best_metric = float("inf")
     for epoch in range(1, args.epochs + 1):
-        train_metrics = _iterate_batches(train_loader, vln_bert, predictor, device, optimizer)
+        train_metrics = _iterate_batches(
+            train_loader,
+            model,
+            device,
+            optimizer,
+            thresholds=thresholds,
+            loss_type=args.loss,
+            max_pos_weight=args.max_pos_weight,
+            focal_gamma=args.focal_gamma,
+        )
         metrics = {"train_" + key: value for key, value in train_metrics.items()}
         if val_loader is not None:
-            val_metrics = _iterate_batches(val_loader, vln_bert, predictor, device)
+            val_metrics = _iterate_batches(
+                val_loader,
+                model,
+                device,
+                thresholds=thresholds,
+                loss_type=args.loss,
+                max_pos_weight=args.max_pos_weight,
+                focal_gamma=args.focal_gamma,
+            )
             metrics.update({"val_" + key: value for key, value in val_metrics.items()})
-            selection_metric = val_metrics["loss"]
+            selection_metric = -_best_iou(val_metrics)
         else:
-            selection_metric = train_metrics["loss"]
+            selection_metric = -_best_iou(train_metrics)
         if epoch % args.log_every == 0:
             metric_text = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
             print(f"epoch={epoch} {metric_text}")
-        save_checkpoint(args.output, predictor, optimizer, epoch, metrics, args)
+        save_checkpoint(args.output, model, optimizer, epoch, metrics, args)
         if selection_metric < best_metric:
             best_metric = selection_metric
-            save_checkpoint(args.output.with_suffix(".best.pt"), predictor, optimizer, epoch, metrics, args)
+            save_checkpoint(args.output.with_suffix(".best.pt"), model, optimizer, epoch, metrics, args)
 
 
 if __name__ == "__main__":
