@@ -1,19 +1,17 @@
 from __future__ import annotations
 from _io import BytesIO
 import _magnum
-from habitat_sim._ext.habitat_sim_bindings.core import orthonormalize_rotation_shear
 import magnum as mn
 import math as math
-import numpy
 import numpy as np
-import quaternion as qt
-import quaternion
+import numpy
+import quaternion as quaternion
 from urllib.request import urlopen
 from zipfile import ZipFile
-__all__: list[str] = ['BytesIO', 'ZipFile', 'angle_between_quats', 'colorize_ids', 'd3_40_colors_hex', 'd3_40_colors_rgb', 'download_and_unzip', 'math', 'mn', 'np', 'orthonormalize_rotation_shear', 'qt', 'quat_from_angle_axis', 'quat_from_coeffs', 'quat_from_magnum', 'quat_from_two_vectors', 'quat_rotate_vector', 'quat_to_angle_axis', 'quat_to_coeffs', 'quat_to_magnum', 'random_quaternion', 'urlopen']
-def angle_between_quats(q1: _magnum.Quaternion, q2: _magnum.Quaternion) -> float:
+__all__: list[str] = ['BytesIO', 'ZipFile', 'angle_between_quats', 'colorize_ids', 'd3_40_colors_hex', 'd3_40_colors_rgb', 'download_and_unzip', 'math', 'mn', 'np', 'quat_from_angle_axis', 'quat_from_coeffs', 'quat_from_magnum', 'quat_from_two_vectors', 'quat_rotate_vector', 'quat_to_angle_axis', 'quat_to_coeffs', 'quat_to_magnum', 'quaternion', 'random_quaternion', 'urlopen']
+def angle_between_quats(q1: quaternion.quaternion, q2: quaternion.quaternion) -> float:
     """
-    Computes the angular distance between two magnum quaternions
+    Computes the angular distance between two quaternions
     
         :return: The angular distance between q1 and q2 in radians
         
@@ -31,7 +29,7 @@ def quat_from_angle_axis(theta: float, axis: numpy.ndarray) -> quaternion.quater
         :return: The quaternion
         
     """
-def quat_from_coeffs(coeffs: typing.Union[typing.Sequence[float], numpy.ndarray]) -> quaternion.quaternion:
+def quat_from_coeffs(coeffs: typing.Sequence[float]) -> quaternion.quaternion:
     """
     Creates a quaternion from the coeffs returned by the simulator backend
     
@@ -69,7 +67,7 @@ def quat_rotate_vector(q: quaternion.quaternion, v: numpy.ndarray) -> numpy.ndar
     
         .. code:: py
     
-            v = (q * qt.quaternion(0, *v) * q.inverse()).imag
+            v = (q * np.quaternion(0, *v) * q.inverse()).imag
         
     """
 def quat_to_angle_axis(quat: quaternion.quaternion) -> typing.Tuple[float, numpy.ndarray]:
@@ -80,7 +78,7 @@ def quat_to_angle_axis(quat: quaternion.quaternion) -> typing.Tuple[float, numpy
         :return:
             -   `float` --- The angle to rotate about the axis by
             -   `numpy.ndarray` --- The axis to rotate about. If :math:`\\theta = 0`,
-                then this is hardcoded to be the +x axis
+                then this is harded coded to be the +x axis
         
     """
 def quat_to_coeffs(quat: quaternion.quaternion) -> numpy.ndarray:

@@ -1,36 +1,22 @@
 from __future__ import annotations
 import builtins as builtins
-from habitat_sim._ext.habitat_sim_bindings import AudioSensor
-from habitat_sim._ext.habitat_sim_bindings import AudioSensorSpec
-from habitat_sim._ext.habitat_sim_bindings import CameraSensorSpec
-from habitat_sim._ext.habitat_sim_bindings import EquirectangularSensor
-from habitat_sim._ext.habitat_sim_bindings import EquirectangularSensorSpec
-from habitat_sim._ext.habitat_sim_bindings import FisheyeSensorDoubleSphereSpec
-from habitat_sim._ext.habitat_sim_bindings import FisheyeSensorModelType
-from habitat_sim._ext.habitat_sim_bindings import FisheyeSensorSpec
 from habitat_sim._ext.habitat_sim_bindings import GreedyFollowerCodes
 from habitat_sim._ext.habitat_sim_bindings import HitRecord
 from habitat_sim._ext.habitat_sim_bindings import MapStringString
 from habitat_sim._ext.habitat_sim_bindings import MultiGoalShortestPath
 from habitat_sim._ext.habitat_sim_bindings import NavMeshSettings
 from habitat_sim._ext.habitat_sim_bindings import PathFinder
-from habitat_sim._ext.habitat_sim_bindings import RLRAudioPropagationChannelLayout
-from habitat_sim._ext.habitat_sim_bindings import RLRAudioPropagationConfiguration
-from habitat_sim._ext.habitat_sim_bindings import ReplayRenderer
-from habitat_sim._ext.habitat_sim_bindings import ReplayRendererConfiguration
 from habitat_sim._ext.habitat_sim_bindings import RigidState
 from habitat_sim._ext.habitat_sim_bindings import SceneGraph
 from habitat_sim._ext.habitat_sim_bindings import SceneNode
 from habitat_sim._ext.habitat_sim_bindings import SceneNodeType
 from habitat_sim._ext.habitat_sim_bindings import Sensor
-from habitat_sim._ext.habitat_sim_bindings import SensorFactory
 from habitat_sim._ext.habitat_sim_bindings import SensorSpec
 from habitat_sim._ext.habitat_sim_bindings import SensorSubType
 from habitat_sim._ext.habitat_sim_bindings import SensorType
 from habitat_sim._ext.habitat_sim_bindings import ShortestPath
 from habitat_sim._ext.habitat_sim_bindings import SimulatorConfiguration
 from habitat_sim._ext.habitat_sim_bindings import VectorGreedyCodes
-from habitat_sim._ext.habitat_sim_bindings import VisualSensorSpec
 from habitat_sim.agent.agent import ActionSpec
 from habitat_sim.agent.agent import Agent
 from habitat_sim.agent.agent import AgentConfiguration
@@ -66,11 +52,6 @@ from . import sim
 from . import simulator
 from . import utils
 __all__: list = ['agent', 'attributes', 'attributes_managers', 'metadata', 'nav', 'sensors', 'errors', 'geo', 'gfx', 'logging', 'nav', 'physics', 'scene', 'sensor', 'sim', 'simulator', 'utils', 'MapStringString', 'registry']
-RLRAudioPropagationChannelLayoutType = None
-__version__: str = '0.3.3'
-audio_enabled: bool = False
-built_with_bullet: bool = False
+__version__: str = '0.1.7'
 cuda_enabled: bool = False
 registry: registry._Registry  # value = <habitat_sim.registry._Registry object>
-stage_id: int = 0
-habitat_sim = 
