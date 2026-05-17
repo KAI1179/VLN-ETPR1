@@ -45,16 +45,12 @@ def _grid_center_index_range(
 
 
 def _aabb_min(aabb) -> Vector3:
-    """Return AABB minimum corner for both Habitat 0.1.x and 0.3.x bindings."""
-    if hasattr(aabb, "min"):
-        return Vector3(aabb.min)
+    """Return AABB minimum corner."""
     return Vector3(aabb.center - (aabb.sizes / 2.0))
 
 
 def _aabb_max(aabb) -> Vector3:
-    """Return AABB maximum corner for both Habitat 0.1.x and 0.3.x bindings."""
-    if hasattr(aabb, "max"):
-        return Vector3(aabb.max)
+    """Return AABB maximum corner."""
     return Vector3(aabb.center + (aabb.sizes / 2.0))
 
 
