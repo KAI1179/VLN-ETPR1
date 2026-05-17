@@ -1,7 +1,7 @@
 """Export cognitive grid maps to NumPy arrays."""
 
 from prior import DATA_DIR
-from prior.grid_map import GroundTruthGridMap
+from prior.grid_map import GroundTruthGridMap, first_encountered_level
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
 
 OUTPUT_DIR = DATA_DIR / "cognitive_maps"
@@ -34,17 +34,7 @@ for i, entry in enumerate(data):
         continue
 
     gt_grid_maps = GroundTruthGridMap.from_scene_id(scene_id)
-    selected_map = gt_grid_maps[0]
-    for position in entry.positions:
-        y = float(position[1])
-        for gt_grid_map in gt_grid_maps:
-            lower, upper = gt_grid_map.range_y
-            if (lower is None or y >= lower) and (upper is None or y < upper):
-                selected_map = gt_grid_map
-                break
-        else:
-            continue
-        break
+    _, selected_map = first_encountered_level(gt_grid_maps, entry.positions)
 
     cognitive_map = selected_map.to_cognitive_map(
         entry.instruction,

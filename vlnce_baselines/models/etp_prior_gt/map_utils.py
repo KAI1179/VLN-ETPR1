@@ -10,7 +10,7 @@ from prior.constants import (
     ROWS,
 )
 from prior.directions import start_rotation_to_direction_vector
-from prior.grid_map import CognitiveGridMap, GroundTruthGridMap
+from prior.grid_map import CognitiveGridMap, GroundTruthGridMap, first_encountered_level
 
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
 
@@ -27,29 +27,6 @@ def _scene_key(scene_id: str) -> str:
 def _instruction_text(episode) -> str:
     instruction = episode.instruction
     return getattr(instruction, "instruction_text", instruction)
-
-
-def _contains_y(gt_map: GroundTruthGridMap, y: float) -> bool:
-    lower, upper = gt_map.range_y
-    if lower is not None and y < lower:
-        return False
-    if upper is not None and y >= upper:
-        return False
-    return True
-
-
-def _first_encountered_level(
-    gt_maps: List[GroundTruthGridMap],
-    positions: List[List[float]],
-) -> GroundTruthGridMap:
-    for position in positions:
-        y = float(position[1])
-        for gt_map in gt_maps:
-            if _contains_y(gt_map, y):
-                return gt_map
-    if len(gt_maps) == 0:
-        raise ValueError("GroundTruthGridMap.from_scene_id returned no levels")
-    return gt_maps[0]
 
 
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
@@ -69,7 +46,7 @@ def build_cognitive_map(
     positions: List[List[float]],
     start_direction_vector,
 ) -> CognitiveGridMap:
-    gt_map = _first_encountered_level(
+    _, gt_map = first_encountered_level(
         GroundTruthGridMap.from_scene_id(_scene_key(scene_id)),
         positions,
     )
@@ -86,4 +63,21 @@ def build_cognitive_map_for_episode(episode) -> CognitiveGridMap:
         _instruction_text(episode),
         episode.reference_path,
         start_rotation_to_direction_vector(episode.start_rotation),
+    )
+
+
+def build_cognitive_map_for_annotation(
+    annotation,
+    connectivity_dir=None,
+) -> CognitiveGridMap:
+    positions = (
+        annotation.positions()
+        if connectivity_dir is None
+        else annotation.positions(connectivity_dir)
+    )
+    return build_cognitive_map(
+        annotation.scan,
+        annotation.instruction,
+        positions,
+        annotation.start_direction_vector,
     )

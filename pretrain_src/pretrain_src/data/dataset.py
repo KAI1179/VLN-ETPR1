@@ -2,19 +2,16 @@
 Instruction and trajectory (view and object features) dataset
 '''
 import json
-import os
 import jsonlines
 import numpy as np
 import h5py
 import math
-from typing import List, TypedDict
-from functools import lru_cache
+from typing import Any, Dict, List
 
 from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
-from prior.directions import heading_to_direction_vector
-from prior.etp_r1 import decode_tokens
+from prior.etp_r1 import AnnotationEntry
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    build_cognitive_map,
+    build_cognitive_map_for_annotation,
     cognitive_map_to_tensors,
 )
 
@@ -22,22 +19,6 @@ MAX_DIST = 30   # normalize
 MAX_STEP = 10   # normalize
 TRAIN_MAX_STEP = 20
 
-
-@lru_cache(maxsize=100)
-def _connectivity_map(connectivity_dir: str, scan: str):
-    with open(os.path.join(connectivity_dir, f"{scan}_connectivity.json")) as f:
-        return {
-            entry["image_id"]: entry
-            for entry in json.load(f)
-        }
-
-class AnnotateItem(TypedDict):
-    instr_id: str
-    scan: str
-    path: List[str]
-    heading: float
-    instr_encoding: List[int]
-    task_type_encoding: int
 
 class ReverieTextPathData(object):
     def __init__(
@@ -81,7 +62,7 @@ class ReverieTextPathData(object):
         self.all_point_rel_angles = [get_view_rel_angles(baseViewId=i) for i in range(36)]
         self.all_point_angle_fts = [get_angle_fts(x[:, 0], x[:, 1], self.angle_feat_size) for x in self.all_point_rel_angles]
 
-        self.data: List[AnnotateItem] = []
+        self.data: List[Dict[str, Any]] = []
 
         for anno_file in anno_files:
             with jsonlines.open(anno_file, 'r') as f:
@@ -97,13 +78,10 @@ class ReverieTextPathData(object):
     def __len__(self):
         return len(self.data)
 
-    def _load_pretrain_cognitive_map(self, item: AnnotateItem):
-        positions = self._prior_positions(item["scan"], item["path"])
-        cognitive_map = build_cognitive_map(
-            item["scan"],
-            decode_tokens(item["instr_encoding"]),
-            positions,
-            heading_to_direction_vector(item["heading"]),
+    def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
+        cognitive_map = build_cognitive_map_for_annotation(
+            AnnotationEntry.from_dict(item),
+            self.connectivity_dir,
         )
         tensors = cognitive_map_to_tensors(cognitive_map)
         return {
@@ -112,18 +90,6 @@ class ReverieTextPathData(object):
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
         }
-
-    def _prior_positions(self, scan: str, path: List[str]) -> List[List[float]]:
-        connectivity = _connectivity_map(self.connectivity_dir, scan)
-        positions = []
-        for viewpoint in path:
-            entry = connectivity[viewpoint]
-            positions.append([
-                entry["pose"][3],
-                entry["pose"][11] - entry["height"],
-                -entry["pose"][7],
-            ])
-        return positions
 
 
     def get_scanvp_feature(self, scan, viewpoint):

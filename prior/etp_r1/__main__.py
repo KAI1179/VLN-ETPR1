@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sys import argv
 from prior import DATA_DIR, VISUALIZATIONS_DIR
-from prior.grid_map import GroundTruthGridMap
+from prior.grid_map import GroundTruthGridMap, first_encountered_level
 
 from . import (
     ANNOTATION_FILES,
@@ -36,19 +36,7 @@ def generate_cognitive_map(annotation_file: str):
 
         gt_maps = GroundTruthGridMap.from_scene_id(scene_id)
         positions = entry.positions()
-        selected_level = 0
-        selected_map = gt_maps[0]
-        for position in positions:
-            y = float(position[1])
-            for level, gt_grid_map in enumerate(gt_maps):
-                lower, upper = gt_grid_map.range_y
-                if (lower is None or y >= lower) and (upper is None or y < upper):
-                    selected_level = level
-                    selected_map = gt_grid_map
-                    break
-            else:
-                continue
-            break
+        selected_level, selected_map = first_encountered_level(gt_maps, positions)
 
         cognitive_map = selected_map.to_cognitive_map(
             entry.instruction,

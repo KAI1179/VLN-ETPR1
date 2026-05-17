@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from json import load, loads
 from pathlib import Path
+from typing import Any, Mapping
 
 from sentencepiece import SentencePieceProcessor
 
@@ -61,17 +62,28 @@ class AnnotationEntry:
         with open(path) as f:
             for line in f:
                 entry = loads(line)
-                entry = AnnotationEntry(**entry)
-                yield entry
+                yield AnnotationEntry.from_dict(entry)
+
+    @staticmethod
+    def from_dict(entry: Mapping[str, Any]) -> "AnnotationEntry":
+        """Build an annotation entry from raw ETP-R1 jsonl data."""
+        return AnnotationEntry(
+            instr_id=entry["instr_id"],
+            scan=entry["scan"],
+            path=entry["path"],
+            heading=entry["heading"],
+            instr_encoding=entry["instr_encoding"],
+            task_type_encoding=entry["task_type_encoding"],
+        )
 
     @property
     def instruction(self) -> str:
         return decode_tokens(self.instr_encoding)
 
-    def positions(self) -> list[list[float]]:
+    def positions(self, connectivity_dir: str = str(CONNECTIVITY_DIR)) -> list[list[float]]:
         """Get a list of positions."""
         # `ConnectivityEntry.map_for` is cached, so this is efficient even if called multiple times.
-        connectivity = ConnectivityEntry.map_for(self.scan)
+        connectivity = ConnectivityEntry.map_for(self.scan, connectivity_dir)
         result = []
         for image_id in self.path:
             entry = connectivity[image_id]
@@ -95,10 +107,13 @@ class ConnectivityEntry:
 
     @staticmethod
     @lru_cache(maxsize=100)
-    def map_for(scene_id: str) -> dict[str, "ConnectivityEntry"]:
+    def map_for(
+        scene_id: str,
+        connectivity_dir: str = str(CONNECTIVITY_DIR),
+    ) -> dict[str, "ConnectivityEntry"]:
         """Get a map from image_id to ConnectivityEntry for the scene."""
         connectivity_map = {}
-        with open(CONNECTIVITY_DIR / f"{scene_id}_connectivity.json") as f:
+        with open(Path(connectivity_dir) / f"{scene_id}_connectivity.json") as f:
             scene_connectivity = load(f)
         for entry in scene_connectivity:
             entry = ConnectivityEntry(**entry)

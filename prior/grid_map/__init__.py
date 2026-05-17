@@ -344,8 +344,27 @@ class CognitiveGridMap(BaseGridMap):
         return super().validate()
 
 
+def first_encountered_level(
+    grid_maps: List[GroundTruthGridMap],
+    positions: List[List[float]],
+) -> Tuple[int, GroundTruthGridMap]:
+    """Select the first map level encountered by a waypoint path."""
+    if len(grid_maps) == 0:
+        raise ValueError("GroundTruthGridMap.from_scene_id returned no levels")
+
+    for position in positions:
+        y = float(position[1])
+        for level, grid_map in enumerate(grid_maps):
+            lower, upper = grid_map.range_y
+            if (lower is None or y >= lower) and (upper is None or y < upper):
+                return level, grid_map
+
+    return 0, grid_maps[0]
+
+
 __all__ = [
     "BaseGridMap",
     "GroundTruthGridMap",
     "CognitiveGridMap",
+    "first_encountered_level",
 ]
