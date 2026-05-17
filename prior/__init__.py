@@ -11,27 +11,19 @@ _WORKSPACE_ROOT = _PACKAGE_ROOT.parent
 DATA_DIR = _WORKSPACE_ROOT / "data"
 """Data directory for the project."""
 
-MP3D_DIR = DATA_DIR / "scene_datasets" / "mp3d" / "v1" / "mp3d"
+MP3D_DIR = DATA_DIR / "scene_datasets" / "mp3d"
 """MP3D dataset directory."""
 
-R2R_DIR = DATA_DIR / "R2R_VLNCE_v1-3_preprocessed"
+R2R_DIR = DATA_DIR / "datasets" / "R2R_VLNCE_v1-3_preprocessed"
 """R2R dataset directory."""
 
-RxR_DIR = DATA_DIR / "RxR_VLNCE_v0"
+RxR_DIR = DATA_DIR / "datasets" / "RxR_VLNCE_v0"
 """RxR dataset directory."""
 
-ANALYZE_RESULTS_DIR = DATA_DIR / "analyze"
-"""Directory to save analysis results."""
-
-VISUALIZATIONS_DIR = DATA_DIR / "visualizations"
-"""Directory to save visualizations."""
-
 __all__ = [
-    "ANALYZE_RESULTS_DIR",
     "DATA_DIR",
     "MP3D_DIR",
     "R2R_DIR",
     "RxR_DIR",
-    "VISUALIZATIONS_DIR",
     "_WORKSPACE_ROOT",
 ]

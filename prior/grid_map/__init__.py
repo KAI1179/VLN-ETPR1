@@ -209,49 +209,6 @@ class BaseGridMap:
         self.grid[region_category_index, row, col] = value
         return True
 
-    def visualize(
-        self,
-        save_path: str | Path,
-        title: Optional[str] = None,
-        figsize: tuple[int, int] = (16, 6),
-        auto_crop: bool = True,
-        crop_margin: int = 5,
-    ) -> None:
-        """Visualize the grid map using matplotlib.
-
-        Creates separate visualizations for object and region categories, showing
-        the dominant category at each grid cell.
-
-        Args:
-            save_path: Path to save the figure.
-            title: Optional title for the figure. If None, uses class name.
-            show_objects: Whether to show object categories visualization.
-            show_regions: Whether to show region categories visualization.
-            figsize: Figure size as (width, height) in inches.
-            auto_crop: Whether to automatically crop to data bounding box.
-            crop_margin: Number of cells to add as margin around data (only used if auto_crop=True).
-        """
-        from ._visualize import visualize
-
-        visualize(
-            self,
-            save_path,
-            title=title,
-            figsize=figsize,
-            auto_crop=auto_crop,
-            crop_margin=crop_margin,
-        )
-
-    def print_summary(self) -> None:
-        """Print a text summary of the grid map to terminal.
-
-        Shows which grid cells contain objects or regions using ASCII characters.
-        Useful for quick inspection without matplotlib.
-        """
-        from ._visualize import print_summary
-
-        print_summary(self)
-
     def is_empty(self) -> bool:
         """Check if the grid map is empty (all zeros)."""
         return cast(bool, np.all(self.grid == 0.0))
@@ -362,41 +319,6 @@ class CognitiveGridMap(BaseGridMap):
         super().__init__()
         self.positions = []
         self.direction_vectors = []
-
-    def visualize(
-        self,
-        save_path: str | Path,
-        title: str | None = None,
-        figsize: tuple[int, int] = (16, 6),
-        auto_crop: bool = True,
-        crop_margin: int = 5,
-    ) -> None:
-        """Visualize the cognitive grid map using matplotlib.
-        Creates separate visualizations for object and region categories, showing
-        the dominant category at each grid cell, along with the path positions.
-
-        Args:
-            save_path: Path to save the figure.
-            title: Optional title for the figure. If None, uses class name.
-            show_objects: Whether to show object categories visualization.
-            show_regions: Whether to show region categories visualization.
-            figsize: Figure size as (width, height) in inches.
-            auto_crop: Whether to automatically crop to data bounding box.
-            crop_margin: Number of cells to add as margin around data (only used if auto_crop=True).
-        """
-        from ._visualize import visualize
-
-        visualize(
-            self,
-            save_path,
-            title=title,
-            figsize=figsize,
-            auto_crop=auto_crop,
-            crop_margin=crop_margin,
-            positions=self.positions,
-            direction_vectors=self.direction_vectors,
-            start_direction_vector=self.start_direction_vector,
-        )
 
     def save(self, save_path: str | PathLike[str] | np._SupportsWrite[bytes]):
         """Save the cognitive map data with direction vectors."""
