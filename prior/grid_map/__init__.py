@@ -12,7 +12,6 @@ This module provides:
 from __future__ import annotations
 
 from os import PathLike
-from pathlib import Path
 from typing import List, Optional, Tuple, cast
 from copy import deepcopy
 
