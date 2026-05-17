@@ -83,19 +83,16 @@ BASE_MODEL_ARGS="MODEL.pretrained_path ${BASE_PRETRAINED_CKPT}"
 GT_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
       MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
 GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
       MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
 IMAGINED_MODEL_ARGS="TRAINER_NAME SS-ETP-Imagined
       MODEL.policy_name ImaginedPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
       MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
 launch() {

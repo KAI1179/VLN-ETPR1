@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from json import load, loads
+from pathlib import Path
 
 from sentencepiece import SentencePieceProcessor
 
@@ -13,6 +16,14 @@ from prior.directions import DirectionVector, heading_to_direction_vector
 
 ETP_R1_DIR = DATA_DIR / "ETP-R1"
 """ETP-R1 data directory."""
+
+SENTENCEPIECE_MODEL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "bert_config"
+    / "xlm-roberta-base"
+    / "sentencepiece.bpe.model"
+)
+"""SentencePiece model used by ETP-R1 instruction encodings."""
 
 ANNOTATION_DIR = ETP_R1_DIR / "annotations" / "pretrain_R2R_RxR"
 """ETP-R1 annotation directory."""
@@ -105,7 +116,7 @@ class ConnectivityEntry:
 
 SPECIAL_TOKENS = {0, 1, 2, 3}
 SP = SentencePieceProcessor()
-SP.LoadFromFile(str(ETP_R1_DIR / "sentencepiece.bpe.model"))
+SP.LoadFromFile(str(SENTENCEPIECE_MODEL_PATH))
 
 
 def decode_tokens(tokens: list[int]) -> str:
@@ -116,6 +127,7 @@ def decode_tokens(tokens: list[int]) -> str:
 
 __all__ = [
     "ETP_R1_DIR",
+    "SENTENCEPIECE_MODEL_PATH",
     "ANNOTATION_DIR",
     "CONNECTIVITY_DIR",
     "ANNOTATION_FILES",

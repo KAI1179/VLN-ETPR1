@@ -51,7 +51,8 @@ import cv2
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    PrecomputedCognitiveMap,
+    build_cognitive_map_for_episode,
+    cognitive_map_to_tensors,
 )
 
 
@@ -897,26 +898,23 @@ class RLTrainer(BaseVLNCETrainer):
         mode,
         stepk,
     ):
-        # PriorGT uses the full precomputed cognitive map directly.
+        # PriorGT uses the full dynamically generated cognitive map directly.
         if not map_cfg.enabled or cognitive_maps is None:
             return None
         cognitive_crops = torch.stack([
-            cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
+            cognitive_map["grid"]
             for cognitive_map in cognitive_maps[:self.envs.num_envs]
         ]).to(self.device)
         direction_vectors = torch.stack([
-            torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32)
-            if cognitive_map else PrecomputedCognitiveMap.empty_direction_vectors()
+            cognitive_map["direction_vectors"]
             for cognitive_map in cognitive_maps[:self.envs.num_envs]
         ]).to(self.device)
         start_direction_vectors = torch.stack([
-            torch.tensor(cognitive_map.start_direction_vector, dtype=torch.float32)
-            if cognitive_map else PrecomputedCognitiveMap.empty_start_direction_vector()
+            cognitive_map["start_direction_vector"]
             for cognitive_map in cognitive_maps[:self.envs.num_envs]
         ]).to(self.device)
         start_positions = torch.stack([
-            torch.tensor(cognitive_map.start_position, dtype=torch.float32)
-            if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
+            cognitive_map["start_position"]
             for cognitive_map in cognitive_maps[:self.envs.num_envs]
         ]).to(self.device)
         map_tokens, map_token_masks = self.policy.net(
@@ -932,6 +930,12 @@ class RLTrainer(BaseVLNCETrainer):
 
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
+
+    def _build_cognitive_maps(self):
+        return [
+            cognitive_map_to_tensors(build_cognitive_map_for_episode(ep))
+            for ep in self.envs.current_episodes()
+        ]
 
     def rollout(self, mode, ml_weight=None, sample_ratio=None):
         if mode == 'train':
@@ -998,19 +1002,10 @@ class RLTrainer(BaseVLNCETrainer):
                                ghost_aug) for _ in range(self.envs.num_envs)]
         prev_vp = [None] * self.envs.num_envs
 
-        # Load cognitive maps for current episodes (per-episode, keyed by scene_id + episode_id)
+        # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
         if self._should_load_cognitive_maps(mode, map_cfg):
-            _cur_eps = self.envs.current_episodes()
-            cognitive_maps: Optional[List[Optional[PrecomputedCognitiveMap]]] = []
-            dataset_flag = getattr(self.config.MODEL, "task_type", "R2R").upper()
-            if dataset_flag == "RXR":
-                dataset_flag = "RxR"
-            for ep in _cur_eps:
-                _scene_id = os.path.splitext(os.path.basename(ep.scene_id))[0]
-                cognitive_maps.append(
-                    PrecomputedCognitiveMap.from_dataset_scene_episode_id(dataset_flag, _scene_id, ep.episode_id)
-                )
+            cognitive_maps = self._build_cognitive_maps()
         else:
             cognitive_maps = None
 

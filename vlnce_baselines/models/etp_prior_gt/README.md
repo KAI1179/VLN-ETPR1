@@ -71,25 +71,18 @@ also no-op when map tokens are absent.
 
 ## Data Requirement
 
-### Cognitive maps
+### Dynamic cognitive maps
 
-You must have precomputed cognitive maps at:
+PriorGT no longer loads precomputed cognitive-map `.npz` files during navigation
+training/evaluation. Instead, it builds maps on the fly:
 
-- `data/cognitive_maps/<scene_id>/R2R_<episode_id>.npz`
-- `data/cognitive_maps/<scene_id>/RxR_<episode_id>.npz`
+- `GroundTruthGridMap.from_scene_id(scene_id)` builds/caches MP3D semantic maps.
+- The first level encountered by the instruction reference path is selected.
+- `GroundTruthGridMap.to_cognitive_map(...)` creates the instruction cognitive map.
+- The resulting `grid`, `direction_vectors`, `start_direction_vector`, and
+  `start_position` are passed directly to the map encoder.
 
-Each file is a single compressed NumPy archive (`np.savez_compressed`) containing:
-- `grid` — shape `(37, H, W)` float32 semantic grid
-- `offset_x`, `offset_z` — world-space origin of the map grid
-- `direction_vectors` — shape `(5, 2)` float32 unit vectors
-- `start_direction_vector` — shape `(2,)` float32 unit vector for initial heading
-- `start_position` — shape `(2,)` float32 normalized continuous grid coordinates
-
-Default config path is `MODEL.MAP_ENCODER.precomputed_dir = data/cognitive_maps`.
-
-### Cognitive maps for pretraining
-
-You must have precomputed cognitive maps at `data/cognitive_maps_etp_r1/<scene_id>/<instr_id>.npz`, with the same file structure.
+This path reuses classes, constants, and map construction logic from `prior`.
 
 ## Checkpoint Compatibility
 
@@ -199,7 +192,6 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
   TRAINER_NAME SS-ETP-PriorGT \
   MODEL.policy_name PriorGTPolicy \
   MODEL.MAP_ENCODER.enabled True \
-  MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps \
   EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_r2r_priorgt_dagger/store/ckpt.iter28800.pth
 ```
 
@@ -209,8 +201,8 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
   - Ensure imports are present in `vlnce_baselines/__init__.py`.
 - Error: policy not found
   - Ensure `MODEL.policy_name` is `PriorGTPolicy`.
-- Error: map files missing
-  - Check `MODEL.MAP_ENCODER.precomputed_dir` and per-episode map files.
+- Error: map construction fails
+  - Check MP3D scene assets, connectivity data, and instruction metadata.
 - Eval exits early with checkpoint issues
   - Confirm checkpoint was trained by PriorGT trainer/policy, not plain R1.
 - Cuda out of memory!
@@ -231,13 +223,13 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 
 When `--use_prior_gt` is enabled:
 
-- The dataset loads `data/cognitive_maps_etp_r1/<scene_id>/<instr_id>.npz`.
+- The dataset generates cognitive maps on the fly from `prior`.
 - The collate path stacks `grid`, `direction_vectors`, `start_direction_vector`, and
   `start_position`.
 - `EmbeddingGridMapEncoder` emits `map_tokens` and `map_token_masks`.
 - Pretraining `GlocalTextPathCMT` fuses map tokens into global graph embeddings through
   zero-initialized graph-to-map cross-attention.
 
-The pretraining loader intentionally does not fallback for missing map metadata. Missing
-map files or missing keys such as `start_direction_vector` should fail loudly rather
-than silently training on incorrect zero metadata.
+The pretraining loader intentionally does not fallback for missing map data. Missing
+scene assets, bad instruction metadata, or failed map construction should fail loudly
+rather than silently training on incorrect zero metadata.

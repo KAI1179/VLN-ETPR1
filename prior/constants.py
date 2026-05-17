@@ -1,8 +1,6 @@
 """Constants used in prior-based mapping and navigation."""
 
-from magnum import Quaternion, Vector4
-from habitat_sim.geo import FRONT, GRAVITY
-from typing import cast
+from magnum import Vector4
 
 # OBJECT MAPPING
 
@@ -317,6 +315,5 @@ DIRECTION_VECTOR_SIM = 0.8
 
 # INTERNAL UTILITY CONSTANTS
 
-_HABITAT_MP3D_ROTATION_QUATERNION = Quaternion.rotation(FRONT, GRAVITY)  # type: ignore
-HABITAT_MP3D_ROTATION_VECTOR = cast(Vector4, _HABITAT_MP3D_ROTATION_QUATERNION.xyzw)  # type: ignore
+HABITAT_MP3D_ROTATION_VECTOR = Vector4(-0.707107, 0.0, 0.0, 0.707107)
 """Rotation vector used for MP3D scenes. Translated from [CPP source](https://github.com/facebookresearch/habitat-sim/blob/6c26c4f9ae10ad7f534aa9e59a84dff00782741e/src/esp/scene/SemanticScene.h#L157-L161), which evaluates to `Vector(-0.707107, 0, 0, 0.707107)`."""

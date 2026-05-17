@@ -1,9 +1,7 @@
 """Export cognitive grid maps to NumPy arrays."""
 
-from typing import Optional
-
 from prior import DATA_DIR
-from prior.grid_map import CognitiveGridMap, GroundTruthGridMap
+from prior.grid_map import GroundTruthGridMap
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
 
 OUTPUT_DIR = DATA_DIR / "cognitive_maps"
@@ -36,25 +34,25 @@ for i, entry in enumerate(data):
         continue
 
     gt_grid_maps = GroundTruthGridMap.from_scene_id(scene_id)
-    non_empty_map: Optional[CognitiveGridMap] = None
+    selected_map = gt_grid_maps[0]
+    for position in entry.positions:
+        y = float(position[1])
+        for gt_grid_map in gt_grid_maps:
+            lower, upper = gt_grid_map.range_y
+            if (lower is None or y >= lower) and (upper is None or y < upper):
+                selected_map = gt_grid_map
+                break
+        else:
+            continue
+        break
 
-    for gt_grid_map in gt_grid_maps:
-        cognitive_map = gt_grid_map.to_cognitive_map(
-            entry.instruction,
-            entry.positions,
-            start_direction_vector=entry.start_direction_vector,
-        )
-        if not cognitive_map.is_empty():
-            non_empty_map = cognitive_map
-            break
+    cognitive_map = selected_map.to_cognitive_map(
+        entry.instruction,
+        entry.positions,
+        start_direction_vector=entry.start_direction_vector,
+    )
 
-    if non_empty_map is None:
-        print(
-            f"[{dataset}] No non-empty cognitive map found for episode {episode_id} in scene {scene_id}"
-        )
-    else:
-        # Save the non-empty cognitive map as a NumPy array
-        non_empty_map.save(save_path)
-        print(
-            f"[{dataset}] Saved cognitive map for episode {episode_id} in scene {scene_id}"
-        )
+    cognitive_map.save(save_path)
+    print(
+        f"[{dataset}] Saved cognitive map for episode {episode_id} in scene {scene_id}"
+    )

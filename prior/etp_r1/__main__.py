@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from sys import argv
-from typing import Optional
-
 from prior import DATA_DIR, VISUALIZATIONS_DIR
-from prior.grid_map import CognitiveGridMap, GroundTruthGridMap
+from prior.grid_map import GroundTruthGridMap
 
 from . import (
     ANNOTATION_FILES,
@@ -37,26 +35,28 @@ def generate_cognitive_map(annotation_file: str):
             continue
 
         gt_maps = GroundTruthGridMap.from_scene_id(scene_id)
-        non_empty_map: Optional[CognitiveGridMap] = None
+        positions = entry.positions()
+        selected_level = 0
+        selected_map = gt_maps[0]
+        for position in positions:
+            y = float(position[1])
+            for level, gt_grid_map in enumerate(gt_maps):
+                lower, upper = gt_grid_map.range_y
+                if (lower is None or y >= lower) and (upper is None or y < upper):
+                    selected_level = level
+                    selected_map = gt_grid_map
+                    break
+            else:
+                continue
+            break
 
-        for level, gt_grid_map in enumerate(gt_maps):
-            positions = entry.positions()
-            cognitive_map = gt_grid_map.to_cognitive_map(
-                entry.instruction,
-                positions,
-                start_direction_vector=entry.start_direction_vector,
-            )
-            if not cognitive_map.is_empty():
-                non_empty_map = cognitive_map
-                break
-
-        if non_empty_map is None:
-            print(
-                f"[{annotation_file}] No non-empty cognitive map found for instruction ID {instr_id} in scene {scene_id}"
-            )
-            continue
+        cognitive_map = selected_map.to_cognitive_map(
+            entry.instruction,
+            positions,
+            start_direction_vector=entry.start_direction_vector,
+        )
         # Save the non-empty cognitive map as a NumPy array
-        non_empty_map.save(save_path)
+        cognitive_map.save(save_path)
         print(
             f"[{annotation_file}] Saved cognitive map for instruction ID {instr_id} in scene {scene_id}",
             end="\r",
@@ -67,9 +67,9 @@ def generate_cognitive_map(annotation_file: str):
             print("Instruction:", entry.instruction)
             vis_path = VISUALIZATIONS_DIR / "cognitive_maps" / scene_id
             vis_path.mkdir(parents=True, exist_ok=True)
-            save_path_png = vis_path / f"level_{level}.instruction.{instr_id}.png"
-            non_empty_map.visualize(
-                title=f"Cognitive - Scene {scene_id} - Level {level}",
+            save_path_png = vis_path / f"level_{selected_level}.instruction.{instr_id}.png"
+            cognitive_map.visualize(
+                title=f"Cognitive - Scene {scene_id} - Level {selected_level}",
                 save_path=save_path_png,
             )
             print(f"-> {save_path_png}")

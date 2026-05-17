@@ -4,7 +4,6 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DIRECTION_VECTOR_CNT,
-    PrecomputedCognitiveMap,
 )
 from vlnce_baselines.ss_trainer_ETP_PriorGT import RLTrainer as PriorGTRLTrainer
 
@@ -47,7 +46,7 @@ class RLTrainer(PriorGTRLTrainer):
             return None
 
         target_grid = torch.stack([
-            cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
+            cognitive_map["grid"]
             for cognitive_map in cognitive_maps[:self.envs.num_envs]
         ]).to(self.device)
         map_loss_weight = getattr(map_cfg, "map_loss_weight", 0.1)

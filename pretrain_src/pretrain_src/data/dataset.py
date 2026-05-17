@@ -2,19 +2,34 @@
 Instruction and trajectory (view and object features) dataset
 '''
 import json
+import os
 import jsonlines
 import numpy as np
 import h5py
 import math
-import torch
 from typing import List, TypedDict
+from functools import lru_cache
 
 from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
-from vlnce_baselines.models.etp_prior_gt.map_utils import PrecomputedCognitiveMap
+from prior.directions import heading_to_direction_vector
+from prior.etp_r1 import decode_tokens
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    build_cognitive_map,
+    cognitive_map_to_tensors,
+)
 
 MAX_DIST = 30   # normalize
 MAX_STEP = 10   # normalize
 TRAIN_MAX_STEP = 20
+
+
+@lru_cache(maxsize=100)
+def _connectivity_map(connectivity_dir: str, scan: str):
+    with open(os.path.join(connectivity_dir, f"{scan}_connectivity.json")) as f:
+        return {
+            entry["image_id"]: entry
+            for entry in json.load(f)
+        }
 
 class AnnotateItem(TypedDict):
     instr_id: str
@@ -34,6 +49,7 @@ class ReverieTextPathData(object):
         use_prior_gt=False
     ):
         self.use_prior_gt = use_prior_gt
+        self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
         self.dep_ft_file = dep_ft_file
         self.obj_ft_file = obj_ft_file
@@ -82,15 +98,32 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: AnnotateItem):
-        cognitive_map = PrecomputedCognitiveMap.from_scene_instr_id(item["scan"], item["instr_id"])
+        positions = self._prior_positions(item["scan"], item["path"])
+        cognitive_map = build_cognitive_map(
+            item["scan"],
+            decode_tokens(item["instr_encoding"]),
+            positions,
+            heading_to_direction_vector(item["heading"]),
+        )
+        tensors = cognitive_map_to_tensors(cognitive_map)
         return {
-            "cognitive_maps": cognitive_map.grid,
-            "direction_vectors": torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32),
-            "start_direction_vectors": torch.tensor(
-                cognitive_map.start_direction_vector, dtype=torch.float32
-            ),
-            "start_positions": torch.tensor(cognitive_map.start_position, dtype=torch.float32),
+            "cognitive_maps": tensors["grid"],
+            "direction_vectors": tensors["direction_vectors"],
+            "start_direction_vectors": tensors["start_direction_vector"],
+            "start_positions": tensors["start_position"],
         }
+
+    def _prior_positions(self, scan: str, path: List[str]) -> List[List[float]]:
+        connectivity = _connectivity_map(self.connectivity_dir, scan)
+        positions = []
+        for viewpoint in path:
+            entry = connectivity[viewpoint]
+            positions.append([
+                entry["pose"][3],
+                entry["pose"][11] - entry["height"],
+                -entry["pose"][7],
+            ])
+        return positions
 
 
     def get_scanvp_feature(self, scan, viewpoint):

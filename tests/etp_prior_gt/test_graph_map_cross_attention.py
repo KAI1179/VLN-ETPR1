@@ -97,7 +97,9 @@ def _load_grpo_replay_helper(monkeypatch):
     ops.gen_seq_masks = lambda lengths: torch.ones(len(lengths), int(torch.max(lengths).item()), dtype=torch.bool)
     sys.modules["habitat_extensions.measures"].NDTW = object
     sys.modules["fastdtw"].fastdtw = lambda *args, **kwargs: None
-    sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"].PrecomputedCognitiveMap = object
+    map_utils = sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"]
+    map_utils.build_cognitive_map_for_episode = lambda *args, **kwargs: None
+    map_utils.cognitive_map_to_tensors = lambda *args, **kwargs: {}
     sys.modules["vlnce_baselines.utils"].get_camera_orientations12 = lambda *args, **kwargs: None
 
     package = types.ModuleType("vlnce_baselines")

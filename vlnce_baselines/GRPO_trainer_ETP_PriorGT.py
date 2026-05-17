@@ -48,7 +48,10 @@ import copy
 from collections import OrderedDict
 import hashlib
 
-from vlnce_baselines.models.etp_prior_gt.map_utils import PrecomputedCognitiveMap
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    build_cognitive_map_for_episode,
+    cognitive_map_to_tensors,
+)
 import pickle
 
 
@@ -76,6 +79,13 @@ def select_replay_map_inputs(step_map_tokens, step_map_token_masks, active_indic
     if step_map_tokens.size(0) == len(active_indices):
         return step_map_tokens, step_map_token_masks
     return step_map_tokens[active_indices], step_map_token_masks[active_indices]
+
+
+def _build_cognitive_maps_for_episodes(episodes):
+    return [
+        cognitive_map_to_tensors(build_cognitive_map_for_episode(ep))
+        for ep in episodes
+    ]
 
 @baseline_registry.register_trainer(name="GRPO-ETP-PriorGT")
 class RLTrainer(BaseVLNCETrainer):
@@ -966,19 +976,10 @@ class RLTrainer(BaseVLNCETrainer):
                                ghost_aug) for _ in range(self.envs.num_envs)]
         prev_vp = [None] * self.envs.num_envs
 
-        # Load cognitive maps for current episodes
+        # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
         if map_cfg.enabled:
-            _cur_eps = self.envs.current_episodes()
-            cognitive_maps: Optional[List[Optional[PrecomputedCognitiveMap]]] = []
-            dataset_flag = getattr(self.config.MODEL, "task_type", "R2R").upper()
-            if dataset_flag == "RXR":
-                dataset_flag = "RxR"
-            for ep in _cur_eps:
-                _scene_id = os.path.splitext(os.path.basename(ep.scene_id))[0]
-                cognitive_maps.append(
-                    PrecomputedCognitiveMap.from_dataset_scene_episode_id(dataset_flag, _scene_id, ep.episode_id)
-                )
+            cognitive_maps = _build_cognitive_maps_for_episodes(self.envs.current_episodes())
         else:
             cognitive_maps = None
 
@@ -1042,27 +1043,24 @@ class RLTrainer(BaseVLNCETrainer):
             nav_inputs_for_gpu['txt_embeds'] = txt_embeds
             nav_inputs_for_gpu['txt_masks'] = txt_masks
 
-            # Cognitive map encoding (use the full precomputed map directly)
+            # Cognitive map encoding (use the full dynamically generated map directly)
             current_map_tokens = None
             current_map_token_masks = None
             if map_cfg.enabled and cognitive_maps is not None:
                 cognitive_crops = torch.stack([
-                    cognitive_map.grid if cognitive_map else PrecomputedCognitiveMap.empty_grid()
+                    cognitive_map["grid"]
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
                 direction_vectors = torch.stack([
-                    torch.tensor(cognitive_map.direction_vectors, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_direction_vectors()
+                    cognitive_map["direction_vectors"]
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
                 start_direction_vectors = torch.stack([
-                    torch.tensor(cognitive_map.start_direction_vector, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_start_direction_vector()
+                    cognitive_map["start_direction_vector"]
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
                 start_positions = torch.stack([
-                    torch.tensor(cognitive_map.start_position, dtype=torch.float32)
-                    if cognitive_map else PrecomputedCognitiveMap.empty_start_position()
+                    cognitive_map["start_position"]
                     for cognitive_map in cognitive_maps[:self.envs.num_envs]
                 ]).to(self.device)
                 current_map_tokens, current_map_token_masks = self.policy.net(

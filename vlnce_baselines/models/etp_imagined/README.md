@@ -71,7 +71,6 @@ PriorGT map encoder together. The launcher uses:
 TRAINER_NAME SS-ETP-Imagined
 MODEL.policy_name ImaginedPolicy
 MODEL.MAP_ENCODER.enabled True
-MODEL.MAP_ENCODER.precomputed_dir data/cognitive_maps
 MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
 ```
 
