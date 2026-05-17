@@ -44,6 +44,20 @@ def _grid_center_index_range(
     return max(0, start), min(limit - 1, end)
 
 
+def _aabb_min(aabb) -> Vector3:
+    """Return AABB minimum corner for both Habitat 0.1.x and 0.3.x bindings."""
+    if hasattr(aabb, "min"):
+        return Vector3(aabb.min)
+    return Vector3(aabb.center - (aabb.sizes / 2.0))
+
+
+def _aabb_max(aabb) -> Vector3:
+    """Return AABB maximum corner for both Habitat 0.1.x and 0.3.x bindings."""
+    if hasattr(aabb, "max"):
+        return Vector3(aabb.max)
+    return Vector3(aabb.center + (aabb.sizes / 2.0))
+
+
 @lru_cache(maxsize=100)
 def construct_grid_maps_from_scene_id(scene_id: str) -> List[GroundTruthGridMap]:
     """Constructs grid maps from the given MP3D scene ID. The return value is cached to improve performance, but not copied, so DO NOT MUTATE it."""
@@ -65,14 +79,14 @@ def construct_grid_maps_from_scene(
     every map is set so that, when building a cognitive map, only waypoints that
     physically lie on that level contribute to it.
 
-    Floor boundaries are derived from ``region.aabb.min.y``, which maps to the
-    floor-surface Y after the MP3D coordinate rotation and is available even
+    Floor boundaries are derived from the region AABB minimum Y, which maps to
+    the floor-surface Y after the MP3D coordinate rotation and is available even
     though ``region.floor_height`` / ``region.extrusion_height`` are not
     populated for the ``.house`` format.
 
     Algorithm
     ---------
-    1. For each level, compute ``floor_y = min(region.aabb.min.y)`` across all
+    1. For each level, compute ``floor_y = min(region AABB min Y)`` across all
        its regions.  This is the lowest floor surface in that level and is
        always ≤ any waypoint Y on that level.
     2. Sort levels by ``floor_y`` (ascending) so that level ordering is
@@ -87,14 +101,14 @@ def construct_grid_maps_from_scene(
         return []
 
     # Compute the representative floor Y for each level.
-    # region.aabb.min.y reliably gives the floor surface height because the
+    # Region AABB min Y reliably gives the floor surface height because the
     # MP3D .house loader sets the AABB (but NOT floor_height/extrusion_height).
-    # level.aabb.min.y is unreliable for some scenes (identical across levels).
+    # Level AABB min Y is unreliable for some scenes (identical across levels).
     def _level_floor_y(level) -> float:
         if level.regions:
-            return min(region.aabb.min.y for region in level.regions)
+            return min(_aabb_min(region.aabb).y for region in level.regions)
         # Fallback: use the level AABB when no regions exist
-        return float(level.aabb.min.y)
+        return float(_aabb_min(level.aabb).y)
 
     # Build (floor_y, semantic_level) pairs and sort bottom-to-top
     level_pairs = sorted(
@@ -133,8 +147,9 @@ def construct_grid_map_from_level(
     # Calculate the offset to transform world coordinates to grid coordinates
     # The level's AABB defines the world space bounds
     level_aabb = semantic_level.aabb
-    offset_x = level_aabb.min.x
-    offset_z = level_aabb.min.z
+    level_aabb_min = _aabb_min(level_aabb)
+    offset_x = level_aabb_min.x
+    offset_z = level_aabb_min.z
     gt_grid_map.offset_x = offset_x
     gt_grid_map.offset_z = offset_z
 
@@ -151,8 +166,8 @@ def construct_grid_map_from_level(
         mapped_category = REGION_MAPPING[category.index()]
 
         # Set region value to 1 of mapped category in grid map.
-        aabb_min = region.aabb.min
-        aabb_max = region.aabb.max
+        aabb_min = _aabb_min(region.aabb)
+        aabb_max = _aabb_max(region.aabb)
 
         # Fill the exact index window whose cell centers lie in the region AABB.
         row_range = _grid_center_index_range(aabb_min.x, aabb_max.x, offset_x, ROWS)
@@ -176,8 +191,8 @@ def construct_grid_map_from_level(
             mapped_category = OBJECT_MAPPING[category.index()]
 
             # Set object value to 1 of mapped category in grid map.
-            aabb_min = obj.aabb.min
-            aabb_max = obj.aabb.max
+            aabb_min = _aabb_min(obj.aabb)
+            aabb_max = _aabb_max(obj.aabb)
 
             row_range = _grid_center_index_range(aabb_min.x, aabb_max.x, offset_x, ROWS)
             col_range = _grid_center_index_range(aabb_min.z, aabb_max.z, offset_z, COLS)

@@ -6282,6 +6282,13 @@ class SemanticAttributesManager(BaseSemanticAbstractAttributesManager):
     Manages SemanticAttributes which define semantic mappings and files applicable to a scene instance,
     such as semantic screen descriptor files and semantic regions. Can import .semantic_config.json files.
     """
+class BBox:
+    @property
+    def center(self) -> numpy.ndarray:
+        ...
+    @property
+    def sizes(self) -> numpy.ndarray:
+        ...
 class SemanticCategory:
     def index(self, mapping: str = '') -> int:
         ...
@@ -6289,7 +6296,7 @@ class SemanticCategory:
         ...
 class SemanticLevel:
     @property
-    def aabb(self) -> _magnum.Range3D:
+    def aabb(self) -> BBox:
         ...
     @property
     def id(self) -> str:
@@ -6302,7 +6309,7 @@ class SemanticLevel:
         ...
 class SemanticObject:
     @property
-    def aabb(self) -> _magnum.Range3D:
+    def aabb(self) -> BBox:
         ...
     @property
     def category(self) -> SemanticCategory:
@@ -6327,7 +6334,7 @@ class SemanticRegion:
         Check whether the given point is contained in the given region.
         """
     @property
-    def aabb(self) -> _magnum.Range3D:
+    def aabb(self) -> BBox:
         ...
     @property
     def category(self) -> SemanticCategory:
