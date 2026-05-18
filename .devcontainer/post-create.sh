@@ -2,7 +2,7 @@
 set -euo pipefail
 
 source /opt/conda/etc/profile.d/conda.sh
-conda activate etpr1-new
+conda activate etpr1-uv
 
 # ===== Habitat Fix =====
 
@@ -65,5 +65,5 @@ python3 -c "import tensorrt; print(tensorrt.__version__); assert tensorrt.Builde
 echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/python3.8/site-packages/tensorrt/' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
 
 # Tensorflow Verification
-conda activate etpr1-new
+conda activate etpr1-uv
 python3 -c "import tensorflow as tf; assert tf.config.list_physical_devices('GPU'), 'Failed to setup Tensorflow properly, or maybe you do not have GPU'"

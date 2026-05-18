@@ -5,6 +5,9 @@ FROM nvidia/cudagl:11.4.0-devel-ubuntu20.04
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
+ARG CONDA_ENV_NAME=etpr1-uv
+ARG MINICONDA_VERSION=py310_25.11.1-1
+ARG MINICONDA_SHA256=f6174765edd75e1ef2bb3f16e99266d291deebf6532f2f7e800569afc084d0eb
 
 # Set up basic utilities
 RUN apt-get update && \
@@ -12,9 +15,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
-    /bin/bash ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh && \
+RUN wget --quiet "https://repo.anaconda.com/miniconda/Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh" -O /tmp/miniconda.sh && \
+    echo "${MINICONDA_SHA256}  /tmp/miniconda.sh" | sha256sum -c - && \
+    /bin/bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh && \
     /opt/conda/bin/conda clean -all
 
 # Add conda to path
@@ -29,20 +33,24 @@ WORKDIR /home/vscode
 # Accept conda ToS and initialize conda
 RUN conda tos accept && conda init bash
 
-# Create conda environment from environment.yaml (uses channels aihabitat + conda-forge)
-COPY --chown=vscode:vscode environment.yaml /home/vscode/environment.yaml
+# Create conda environment from an explicit linux-64 lock.
+COPY --chown=vscode:vscode conda-linux-64.lock /home/vscode/conda-linux-64.lock
 RUN . /opt/conda/etc/profile.d/conda.sh && \
-    conda env create -f /home/vscode/environment.yaml && \
+    conda create -n "${CONDA_ENV_NAME}" --file /home/vscode/conda-linux-64.lock -y && \
+    mkdir -p "/home/vscode/.conda/envs/${CONDA_ENV_NAME}/etc/conda/activate.d" && \
+    echo 'export LD_LIBRARY_PATH=$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' > "/home/vscode/.conda/envs/${CONDA_ENV_NAME}/etc/conda/activate.d/env_vars.sh" && \
     conda clean -afy && \
-    rm /home/vscode/environment.yaml
+    rm /home/vscode/conda-linux-64.lock
 
-# Install additional Python packages using pip
-COPY --chown=vscode:vscode requirements.txt /home/vscode/requirements.txt
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate etpr1-new && \
-    pip install -i https://mirrors.aliyun.com/pypi/simple --retries 50 -r /home/vscode/requirements.txt &&
-    pip install nvidia-tensorrt==7.2.3.4 \
-    rm /home/vscode/requirements.txt
+# Install additional Python packages using uv's pip-compatible interface.
+# Use install, not sync, so uv does not remove packages owned by Conda.
+COPY --chown=vscode:vscode requirements-uv.txt /home/vscode/requirements-uv.txt
+COPY --chown=vscode:vscode build-constraints.txt /home/vscode/build-constraints.txt
+RUN . /opt/conda/etc/profile.d/conda.sh && conda activate "${CONDA_ENV_NAME}" && \
+    uv pip install --python "$CONDA_PREFIX/bin/python" --index-url https://mirrors.aliyun.com/pypi/simple --build-constraints /home/vscode/build-constraints.txt --no-build-isolation-package nvidia-pyindex -r /home/vscode/requirements-uv.txt && \
+    python -m pip install nvidia-tensorrt==7.2.3.4 && \
+    rm /home/vscode/requirements-uv.txt /home/vscode/build-constraints.txt
 # nvidia-tensorrt: https://github.com/tensorflow/tensorflow/issues/57679#issuecomment-1249197802
 
 # Ensure the environment is activated on shell startup
-RUN echo "conda activate etpr1-new" >> ~/.bashrc
+RUN echo "conda activate ${CONDA_ENV_NAME}" >> ~/.bashrc

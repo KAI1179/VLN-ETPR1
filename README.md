@@ -32,9 +32,14 @@ Create the conda environment and install dependencies:
 
 ```bash
 cd ETP-R1
-conda env create -f environment.yaml
-conda activate etpr1
-pip install -r requirements.txt
+conda create -n etpr1-uv --file conda-linux-64.lock
+conda activate etpr1-uv
+uv pip install --python "$CONDA_PREFIX/bin/python" \
+  --index-url https://mirrors.aliyun.com/pypi/simple \
+  --build-constraints build-constraints.txt \
+  --no-build-isolation-package nvidia-pyindex \
+  -r requirements-uv.txt
+python -m pip install nvidia-tensorrt==7.2.3.4
 ```
 
 ### 3. Install Habitat-Lab

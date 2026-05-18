@@ -13,7 +13,7 @@ unzip v0.1.7.zip
 rm v0.1.7.zip
 ```
 
-The devcontainer post-create step installs this checkout into `etpr1-new` with:
+The devcontainer post-create step installs this checkout into `etpr1-uv` with:
 
 ```bash
 python setup.py develop --all --no-deps
@@ -27,7 +27,14 @@ It also patches Habitat-Lab's local `habitat_baselines/rl/requirements.txt` so `
 2. Install [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 3. Open this folder in VSCode, reopen in devcontainer and wait for the image to build
 
-The image creates and activates the `etpr1-new` conda environment.
+The image creates and activates the `etpr1-uv` conda environment from
+`conda-linux-64.lock`. Conda owns Python, Habitat-Sim, Gym 0.21.0, and
+binary/system-level packages, while uv installs the Python package layer from
+`requirements-uv.txt`. Gym stays in Conda because its published PyPI extras metadata
+is invalid under modern package parsers. The `build-constraints.txt` file keeps any
+remaining source builds for older packages on compatible packaging tools.
+TensorRT remains a pip exception because NVIDIA's `nvidia-pyindex` package configures
+pip-specific index settings for `nvidia-tensorrt==7.2.3.4`.
 
 ## Dataset Download
 
