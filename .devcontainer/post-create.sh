@@ -16,8 +16,8 @@ if [[ ! -d "${HABITAT_LAB_DIR}" ]]; then
 fi
 
 # Patch habitat calls to np.float
-find data/habitat-lab-0.1.7 -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
-find $CONDA_PREFIX/lib/python3.8/site-packages/habitat_sim/ -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
+find "${HABITAT_LAB_DIR}" -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
+find "$CONDA_PREFIX/lib/python3.8/site-packages/habitat_sim/" -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
 
 # Patch habitat-lab requirements
 if [[ -f "${RL_REQUIREMENTS}" ]]; then
@@ -39,6 +39,10 @@ if old in text and new not in text:
 PY
 fi
 
+# Install habitat-lab
+cd "${HABITAT_LAB_DIR}"
+python setup.py develop --all --no-deps
+
 # Verification
 python -m pip check
 python - <<'PY'
@@ -50,10 +54,6 @@ print("habitat", getattr(habitat, "__version__", "unknown"))
 print("habitat_baselines import ok")
 print("baseline_registry", type(baseline_registry).__name__)
 PY
-
-# Install habitat-lab
-cd "${HABITAT_LAB_DIR}"
-python setup.py develop --all --no-deps
 
 # ===== Tensorflow Fix =====
 # See https://github.com/tensorflow/tensorflow/issues/57679#issuecomment-1249197802
