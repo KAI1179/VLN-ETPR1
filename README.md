@@ -42,7 +42,7 @@ uv pip install --python "$CONDA_PREFIX/bin/python" \
   --directory . \
   --index-url https://mirrors.aliyun.com/pypi/simple \
   -r /tmp/etpr1-uv-requirements.txt
-python -m pip install nvidia-tensorrt==7.2.3.4
+bash .devcontainer/install-tensorrt.sh
 ```
 
 ### 3. Install Habitat-Lab

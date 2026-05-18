@@ -36,8 +36,12 @@ Gym stays in Conda because its published PyPI extras metadata is invalid under
 modern package parsers. The `[tool.uv]` settings in `pyproject.toml` keep the
 PyTorch CUDA wheel source and legacy build constraints next to the dependency
 manifest.
-TensorRT remains a pip exception because NVIDIA's `nvidia-pyindex` package configures
-pip-specific index settings for `nvidia-tensorrt==7.2.3.4`.
+TensorRT remains outside uv because NVIDIA serves the 7.2.3.4 wheels from its
+own binary host. `.devcontainer/install-tensorrt.sh` downloads exact wheel files
+from `developer.download.nvidia.com`, verifies their SHA-256 hashes, and installs
+them with `pip --no-deps`. This avoids the `nvidia-pyindex` redirect through
+`developer.nvidia.com/w/`, which can return corrupt wheel bytes on some network
+routes.
 
 ## Dataset Download
 
