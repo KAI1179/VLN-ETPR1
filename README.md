@@ -34,11 +34,14 @@ Create the conda environment and install dependencies:
 cd ETP-R1
 conda create -n etpr1-uv --file conda-linux-64.lock
 conda activate etpr1-uv
-uv pip install --python "$CONDA_PREFIX/bin/python" \
+uv export --frozen --no-emit-project --format requirements.txt \
+  --no-hashes --no-annotate --no-header \
   --index-url https://mirrors.aliyun.com/pypi/simple \
-  --build-constraints build-constraints.txt \
-  --no-build-isolation-package nvidia-pyindex \
-  -r requirements-uv.txt
+  --output-file /tmp/etpr1-uv-requirements.txt
+uv pip install --python "$CONDA_PREFIX/bin/python" \
+  --directory . \
+  --index-url https://mirrors.aliyun.com/pypi/simple \
+  -r /tmp/etpr1-uv-requirements.txt
 python -m pip install nvidia-tensorrt==7.2.3.4
 ```
 

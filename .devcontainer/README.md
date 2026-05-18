@@ -29,10 +29,13 @@ It also patches Habitat-Lab's local `habitat_baselines/rl/requirements.txt` so `
 
 The image creates and activates the `etpr1-uv` conda environment from
 `conda-linux-64.lock`. Conda owns Python, Habitat-Sim, Gym 0.21.0, and
-binary/system-level packages, while uv installs the Python package layer from
-`requirements-uv.txt`. Gym stays in Conda because its published PyPI extras metadata
-is invalid under modern package parsers. The `build-constraints.txt` file keeps any
-remaining source builds for older packages on compatible packaging tools.
+binary/system-level packages, while uv installs the Python package layer from a
+temporary export of `uv.lock`. Human-edited Python dependencies live in the PEP 621
+dependency list in `pyproject.toml`; the lockfile records the resolved artifacts.
+Gym stays in Conda because its published PyPI extras metadata is invalid under
+modern package parsers. The `[tool.uv]` settings in `pyproject.toml` keep the
+PyTorch CUDA wheel source and legacy build constraints next to the dependency
+manifest.
 TensorRT remains a pip exception because NVIDIA's `nvidia-pyindex` package configures
 pip-specific index settings for `nvidia-tensorrt==7.2.3.4`.
 

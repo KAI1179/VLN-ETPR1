@@ -42,14 +42,15 @@ RUN . /opt/conda/etc/profile.d/conda.sh && \
     conda clean -afy && \
     rm /home/vscode/conda-linux-64.lock
 
-# Install additional Python packages using uv's pip-compatible interface.
-# Use install, not sync, so uv does not remove packages owned by Conda.
-COPY --chown=vscode:vscode requirements-uv.txt /home/vscode/requirements-uv.txt
-COPY --chown=vscode:vscode build-constraints.txt /home/vscode/build-constraints.txt
+# Install additional Python packages from the project dependency manifest.
+# Use pip install, not sync, so uv does not remove packages owned by Conda.
+COPY --chown=vscode:vscode pyproject.toml /home/vscode/pyproject.toml
+COPY --chown=vscode:vscode uv.lock /home/vscode/uv.lock
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate "${CONDA_ENV_NAME}" && \
-    uv pip install --python "$CONDA_PREFIX/bin/python" --index-url https://mirrors.aliyun.com/pypi/simple --build-constraints /home/vscode/build-constraints.txt --no-build-isolation-package nvidia-pyindex -r /home/vscode/requirements-uv.txt && \
+    uv export --directory /home/vscode --frozen --no-emit-project --format requirements.txt --no-hashes --no-annotate --no-header --index-url https://mirrors.aliyun.com/pypi/simple --output-file /tmp/etpr1-uv-requirements.txt && \
+    uv pip install --python "$CONDA_PREFIX/bin/python" --directory /home/vscode --index-url https://mirrors.aliyun.com/pypi/simple -r /tmp/etpr1-uv-requirements.txt && \
     python -m pip install nvidia-tensorrt==7.2.3.4 && \
-    rm /home/vscode/requirements-uv.txt /home/vscode/build-constraints.txt
+    rm /home/vscode/pyproject.toml /home/vscode/uv.lock /tmp/etpr1-uv-requirements.txt
 # nvidia-tensorrt: https://github.com/tensorflow/tensorflow/issues/57679#issuecomment-1249197802
 
 # Ensure the environment is activated on shell startup
