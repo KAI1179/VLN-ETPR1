@@ -3,8 +3,11 @@
 import argparse
 import random
 import os
+from typing import Iterable, List, Optional
+
 import numpy as np
 import torch
+from tap import Tap
 from habitat import logger
 from habitat_baselines.common.baseline_registry import baseline_registry
 
@@ -13,36 +16,43 @@ import vlnce_baselines  # noqa: F401
 from vlnce_baselines.config.default import get_config
 
 
+class RunArgs(Tap):
+    exp_name: str
+    run_type: str
+    exp_config: str
+    opts: Optional[List[str]] = None
+    local_rank: int = 0
+
+    def configure(self) -> None:
+        self.add_argument(
+            "--exp_name",
+            help="experiment id that matches to exp-id in Notion log",
+        )
+        self.add_argument(
+            "--run-type",
+            choices=["dagger", "grpo", "eval", "inference"],
+            help="run type of the experiment (dagger, grpo, eval, inference)",
+        )
+        self.add_argument(
+            "--exp-config",
+            help="path to config yaml containing info about experiment",
+        )
+        self.add_argument(
+            "opts",
+            default=None,
+            nargs=argparse.REMAINDER,
+            help="Modify config options from command line",
+        )
+        self.add_argument("--local_rank", help="local gpu id")
+
+
+def parse_args(argv: Optional[Iterable[str]] = None) -> RunArgs:
+    return RunArgs().parse_args(argv)
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--exp_name",
-        type=str,
-        default="test",
-        required=True,
-        help="experiment id that matches to exp-id in Notion log",
-    )
-    parser.add_argument(
-        "--run-type",
-        choices=["dagger", "grpo", "eval", "inference"],
-        required=True,
-        help="run type of the experiment (dagger, grpo, eval, inference)",
-    )
-    parser.add_argument(
-        "--exp-config",
-        type=str,
-        required=True,
-        help="path to config yaml containing info about experiment",
-    )
-    parser.add_argument(
-        "opts",
-        default=None,
-        nargs=argparse.REMAINDER,
-        help="Modify config options from command line",
-    )
-    parser.add_argument('--local_rank', type=int, default=0, help="local gpu id")
-    args = parser.parse_args()
-    run_exp(**vars(args))
+    args = parse_args()
+    run_exp(**args.as_dict())
 
 
 def run_exp(exp_name: str, exp_config: str, 

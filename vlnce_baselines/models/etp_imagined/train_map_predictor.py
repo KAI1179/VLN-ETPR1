@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from tap import Tap
 
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
@@ -401,13 +402,19 @@ def _iterate_batches(
     return {key: value / total_batches for key, value in totals.items()}
 
 
+def _args_to_dict(args: object) -> Dict[str, object]:
+    if hasattr(args, "as_dict"):
+        return args.as_dict()
+    return vars(args)
+
+
 def save_checkpoint(
     output_path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: Dict[str, float],
-    args: argparse.Namespace,
+    args: object,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     unwrapped_model = model.module if isinstance(model, torch.nn.DataParallel) else model
@@ -417,7 +424,7 @@ def save_checkpoint(
         {
             "epoch": epoch,
             "metrics": metrics,
-            "args": vars(args),
+            "args": _args_to_dict(args),
             "map_predictor": map_predictor,
             "state_dict": {f"map_predictor.{key}": value for key, value in map_predictor.items()},
             "optimizer": optimizer.state_dict(),
@@ -451,40 +458,73 @@ def _build_dataloader(
     )
 
 
-def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--exp-config", default="run_r2r/iter_train.yaml")
-    parser.add_argument(
-        "--train-dataset",
-        nargs="+",
-        type=Path,
-        default=[Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")],
-    )
-    parser.add_argument("--val-dataset", nargs="+", type=Path, default=[Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")])
-    parser.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt"),
-    )
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--loss", choices=["bce", "focal"], default="bce")
-    parser.add_argument("--max-pos-weight", type=float, default=20.0)
-    parser.add_argument("--focal-gamma", type=float, default=2.0)
-    parser.add_argument("--direction-loss-weight", type=float, default=0.1)
-    parser.add_argument("--init-positive-prob", type=float, default=0.002)
-    parser.add_argument("--thresholds", default="0.001,0.002,0.005,0.01,0.02,0.05")
-    parser.add_argument("--max-text-len", type=int, default=None)
-    parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--val-limit", type=int, default=None)
-    parser.add_argument("--log-every", type=int, default=1)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--opts", nargs=argparse.REMAINDER, default=None)
-    return parser.parse_args(argv)
+class TrainMapPredictorArgs(Tap):
+    exp_config: str = "run_r2r/iter_train.yaml"
+    train_dataset: List[Path] = [
+        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")
+    ]
+    val_dataset: List[Path] = [
+        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")
+    ]
+    dataset: Optional[str] = None
+    output: Path = Path("data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt")
+    batch_size: int = 8
+    epochs: int = 5
+    lr: float = 1e-4
+    loss: str = "bce"
+    max_pos_weight: float = 20.0
+    focal_gamma: float = 2.0
+    direction_loss_weight: float = 0.1
+    init_positive_prob: float = 0.002
+    thresholds: str = "0.001,0.002,0.005,0.01,0.02,0.05"
+    max_text_len: Optional[int] = None
+    num_workers: int = 2
+    seed: int = 0
+    limit: Optional[int] = None
+    val_limit: Optional[int] = None
+    log_every: int = 1
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    opts: Optional[List[str]] = None
+
+    def configure(self) -> None:
+        self.add_argument("--exp-config", default=TrainMapPredictorArgs.exp_config)
+        self.add_argument(
+            "--train-dataset",
+            nargs="+",
+            type=Path,
+            default=TrainMapPredictorArgs.train_dataset,
+        )
+        self.add_argument(
+            "--val-dataset",
+            nargs="+",
+            type=Path,
+            default=TrainMapPredictorArgs.val_dataset,
+        )
+        self.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
+        self.add_argument("--output", type=Path, default=TrainMapPredictorArgs.output)
+        self.add_argument("--batch-size", type=int, default=TrainMapPredictorArgs.batch_size)
+        self.add_argument("--loss", choices=["bce", "focal"], default=TrainMapPredictorArgs.loss)
+        self.add_argument("--max-pos-weight", type=float, default=TrainMapPredictorArgs.max_pos_weight)
+        self.add_argument("--focal-gamma", type=float, default=TrainMapPredictorArgs.focal_gamma)
+        self.add_argument(
+            "--direction-loss-weight",
+            type=float,
+            default=TrainMapPredictorArgs.direction_loss_weight,
+        )
+        self.add_argument(
+            "--init-positive-prob",
+            type=float,
+            default=TrainMapPredictorArgs.init_positive_prob,
+        )
+        self.add_argument("--max-text-len", type=int, default=None)
+        self.add_argument("--num-workers", type=int, default=TrainMapPredictorArgs.num_workers)
+        self.add_argument("--val-limit", type=int, default=None)
+        self.add_argument("--log-every", type=int, default=TrainMapPredictorArgs.log_every)
+        self.add_argument("--opts", nargs=argparse.REMAINDER, default=None)
+
+
+def parse_args(argv: Optional[Iterable[str]] = None) -> TrainMapPredictorArgs:
+    return TrainMapPredictorArgs().parse_args(argv)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
