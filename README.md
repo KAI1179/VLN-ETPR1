@@ -43,6 +43,7 @@ uv pip install --python "$CONDA_PREFIX/bin/python" \
   --index-url https://mirrors.aliyun.com/pypi/simple \
   -r /tmp/etpr1-uv-requirements.txt
 bash .devcontainer/install-tensorrt.sh
+bash .devcontainer/post-create.sh
 ```
 
 ### 3. Install Habitat-Lab

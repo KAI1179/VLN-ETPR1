@@ -15,9 +15,8 @@ if [[ ! -d "${HABITAT_LAB_DIR}" ]]; then
     exit 0
 fi
 
-# Patch habitat calls to np.float
-find "${HABITAT_LAB_DIR}" -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
-find "$CONDA_PREFIX/lib/python3.8/site-packages/habitat_sim/" -type f -name '*.py' -exec sed -Ei 's/\bnp\.float\b/float/g' {} +
+# Restore removed NumPy aliases for legacy Habitat-Lab/Habitat-Sim code.
+cp /workspaces/ETP-R1/.devcontainer/sitecustomize.py "$CONDA_PREFIX/lib/python3.8/site-packages/sitecustomize.py"
 
 # Patch habitat-lab requirements
 if [[ -f "${RL_REQUIREMENTS}" ]]; then
@@ -48,11 +47,13 @@ python -m pip check
 python - <<'PY'
 import habitat
 import habitat_baselines
+import numpy as np
 from habitat_baselines.common.baseline_registry import baseline_registry
 
 print("habitat", getattr(habitat, "__version__", "unknown"))
 print("habitat_baselines import ok")
 print("baseline_registry", type(baseline_registry).__name__)
+assert np.float is float
 PY
 
 # ===== Tensorflow Fix =====

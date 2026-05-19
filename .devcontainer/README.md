@@ -21,6 +21,11 @@ python setup.py develop --all --no-deps
 
 It also patches Habitat-Lab's local `habitat_baselines/rl/requirements.txt` so `tensorflow==1.13.1` is only requested on Python versions below 3.8. This avoids the unavailable TensorFlow 1.13.1 wheel on Python 3.8 while keeping the rest of the Habitat-Lab baseline package installed.
 
+The post-create step also installs `.devcontainer/sitecustomize.py` into the
+environment's `site-packages` directory. Python imports this file at startup, so
+legacy Habitat-Lab and Habitat-Sim worker processes see `np.float` mapped to the
+builtin `float` without rewriting files under `data/` or `site-packages`.
+
 ## Build Image
 
 1. Install Visual Studio Code
