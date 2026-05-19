@@ -35,12 +35,14 @@ RUN conda tos accept && conda init bash
 
 # Create conda environment from an explicit linux-64 lock.
 COPY --chown=vscode:vscode conda-linux-64.lock /home/vscode/conda-linux-64.lock
+COPY --chown=vscode:vscode scripts/install-conda-activation-hooks.sh /tmp/install-conda-activation-hooks.sh
 RUN . /opt/conda/etc/profile.d/conda.sh && \
     conda create -n "${CONDA_ENV_NAME}" --file /home/vscode/conda-linux-64.lock -y && \
-    mkdir -p "/home/vscode/.conda/envs/${CONDA_ENV_NAME}/etc/conda/activate.d" && \
-    echo 'export LD_LIBRARY_PATH=$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' > "/home/vscode/.conda/envs/${CONDA_ENV_NAME}/etc/conda/activate.d/env_vars.sh" && \
+    conda activate "${CONDA_ENV_NAME}" && \
+    bash /tmp/install-conda-activation-hooks.sh && \
+    conda deactivate && \
     conda clean -afy && \
-    rm /home/vscode/conda-linux-64.lock
+    rm /home/vscode/conda-linux-64.lock /tmp/install-conda-activation-hooks.sh
 
 # Install additional Python packages from the project dependency manifest.
 # Use pip install, not sync, so uv does not remove packages owned by Conda.

@@ -43,6 +43,9 @@ The image creates and activates the `etpr1-uv` conda environment from
 binary/system-level packages, while uv installs the Python package layer from a
 temporary export of `uv.lock`. Human-edited Python dependencies live in the PEP 621
 dependency list in `pyproject.toml`; the lockfile records the resolved artifacts.
+`scripts/install-conda-activation-hooks.sh` installs activation hooks that put
+`$CONDA_PREFIX/lib` first in `LD_LIBRARY_PATH`; this makes compiled Conda packages
+such as `llvmlite` load Conda's `libstdc++.so.6` instead of an older system copy.
 Gym stays in Conda because its published PyPI extras metadata is invalid under
 modern package parsers. The `[tool.uv]` settings in `pyproject.toml` keep the
 PyTorch CUDA wheel source and legacy build constraints next to the dependency

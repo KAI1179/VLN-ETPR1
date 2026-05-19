@@ -36,6 +36,9 @@ Create the conda environment and install dependencies:
 cd ETP-R1
 conda create -n etpr1-uv --file conda-linux-64.lock
 conda activate etpr1-uv
+bash scripts/install-conda-activation-hooks.sh
+conda deactivate
+conda activate etpr1-uv
 uv export --frozen --no-emit-project --format requirements.txt \
   --no-hashes --no-annotate --no-header \
   --index-url https://mirrors.aliyun.com/pypi/simple \

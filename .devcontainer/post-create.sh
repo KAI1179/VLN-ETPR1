@@ -62,8 +62,8 @@ PY
 # TensorRT Verification
 python3 -c "import tensorrt; print(tensorrt.__version__); assert tensorrt.Builder(tensorrt.Logger())"
 
-# Patch LD_LIBRARY_PATH
-echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/python3.8/site-packages/tensorrt/' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+# Refresh activation hooks now that the TensorRT package is installed.
+bash /workspaces/ETP-R1/scripts/install-conda-activation-hooks.sh
 
 # Tensorflow Verification
 conda activate etpr1-uv
