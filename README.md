@@ -37,6 +37,7 @@ cd ETP-R1
 conda create -n etpr1-uv --file conda-linux-64.lock
 conda activate etpr1-uv
 bash scripts/install-conda-activation-hooks.sh
+cp .devcontainer/sitecustomize.py "$CONDA_PREFIX/lib/python3.8/site-packages/sitecustomize.py"
 conda deactivate
 conda activate etpr1-uv
 uv export --frozen --no-emit-project --format requirements.txt \

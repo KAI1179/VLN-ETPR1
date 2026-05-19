@@ -14,6 +14,11 @@ cat > "${activate_dir}/etpr1-env-vars.sh" <<'EOF'
 #!/usr/bin/env bash
 
 export ETPR1_BACKUP_LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
+export ETPR1_BACKUP_GLOG_MINLOGLEVEL="${GLOG_minloglevel-}"
+export ETPR1_BACKUP_MAGNUM_LOG="${MAGNUM_LOG-}"
+
+export GLOG_minloglevel="${GLOG_minloglevel:-2}"
+export MAGNUM_LOG="${MAGNUM_LOG:-quiet}"
 
 case ":${LD_LIBRARY_PATH:-}:" in
     *":${CONDA_PREFIX}/lib:"*) ;;
@@ -35,6 +40,16 @@ cat > "${deactivate_dir}/etpr1-env-vars.sh" <<'EOF'
 if [[ -n "${ETPR1_BACKUP_LD_LIBRARY_PATH+x}" ]]; then
     export LD_LIBRARY_PATH="${ETPR1_BACKUP_LD_LIBRARY_PATH}"
     unset ETPR1_BACKUP_LD_LIBRARY_PATH
+fi
+
+if [[ -n "${ETPR1_BACKUP_GLOG_MINLOGLEVEL+x}" ]]; then
+    export GLOG_minloglevel="${ETPR1_BACKUP_GLOG_MINLOGLEVEL}"
+    unset ETPR1_BACKUP_GLOG_MINLOGLEVEL
+fi
+
+if [[ -n "${ETPR1_BACKUP_MAGNUM_LOG+x}" ]]; then
+    export MAGNUM_LOG="${ETPR1_BACKUP_MAGNUM_LOG}"
+    unset ETPR1_BACKUP_MAGNUM_LOG
 fi
 EOF
 

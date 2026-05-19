@@ -26,7 +26,9 @@ It also patches Habitat-Lab's local `habitat_baselines/rl/requirements.txt` so `
 The post-create step also installs `.devcontainer/sitecustomize.py` into the
 environment's `site-packages` directory. Python imports this file at startup, so
 legacy Habitat-Lab and Habitat-Sim worker processes see `np.float` mapped to the
-builtin `float` without rewriting files under `data/` or `site-packages`.
+builtin `float` without rewriting files under `data/` or `site-packages`. It also
+sets default Habitat-Sim native logging controls, `GLOG_minloglevel=2` and
+`MAGNUM_LOG=quiet`, before Habitat-Sim is imported.
 
 </details>
 
@@ -46,6 +48,8 @@ dependency list in `pyproject.toml`; the lockfile records the resolved artifacts
 `scripts/install-conda-activation-hooks.sh` installs activation hooks that put
 `$CONDA_PREFIX/lib` first in `LD_LIBRARY_PATH`; this makes compiled Conda packages
 such as `llvmlite` load Conda's `libstdc++.so.6` instead of an older system copy.
+The same hook sets default native Habitat-Sim logging controls so shell-launched
+training does not print C++ INFO messages such as `SemanticScene.h` teardown logs.
 Gym stays in Conda because its published PyPI extras metadata is invalid under
 modern package parsers. The `[tool.uv]` settings in `pyproject.toml` keep the
 PyTorch CUDA wheel source and legacy build constraints next to the dependency
