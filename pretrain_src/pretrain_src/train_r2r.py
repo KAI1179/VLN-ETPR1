@@ -100,6 +100,9 @@ def main(opts):
     for train_dataset_config in opts.train_datasets.values():
         model_config.pretrain_tasks.extend(train_dataset_config['tasks'])
     model_config.pretrain_tasks = set(model_config.pretrain_tasks)
+    model_config.use_prior_gt = getattr(opts, 'use_prior_gt', False)
+    model_config.use_imagined = getattr(opts, 'use_imagined', False)
+    model_config.map_loss_weight = getattr(opts, 'map_loss_weight', 0.1)
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 
@@ -180,7 +183,7 @@ def main(opts):
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=None,
-        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
     )
     val_r2r_nav_db = R2RTextPathData(
         data_cfg.val_unseen_r2r_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -191,7 +194,7 @@ def main(opts):
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=opts.val_sample_num,
-        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -202,7 +205,7 @@ def main(opts):
         angle_feat_size=model_config.angle_feat_size,
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=opts.val_sample_num,
-        use_prior_gt=getattr(opts, 'use_prior_gt', False),
+        use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
     )
 
     train_dataloaders = create_dataloaders(

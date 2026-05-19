@@ -65,6 +65,20 @@ Default: `0.1`.
 
 ### Full Imagined Model
 
+Pretrain the imagined model on the joint R2R/RxR pretraining data:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+  --use_imagined \
+  --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
+```
+
+The helper writes checkpoints under:
+
+```text
+pretrained/r2r_rxr_ce/imagined/ckpts/
+```
+
 Train the normal SS/DAgger imagined model through the shared R2R launcher:
 
 ```bash

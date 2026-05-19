@@ -9,6 +9,11 @@ for arg in "$@"; do
     case "$arg" in
         --use_prior_gt)
             outdir=pretrained/r2r_rxr_ce/prior_gt
+            args+=("$arg")
+            ;;
+        --use_imagined)
+            outdir=pretrained/r2r_rxr_ce/imagined
+            args+=("$arg")
             ;;
         *)
             args+=("$arg")

@@ -74,6 +74,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
 
         self.config = config
         self.bert = GlocalTextPathCMT(config)
+        self.use_imagined = getattr(config, "use_imagined", False)
+        self.use_prior_gt = getattr(config, "use_prior_gt", False)
+        self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
 
         if 'mlm' in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
@@ -91,8 +94,20 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=self.config.hidden_size
             )
+            if self.use_imagined:
+                from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
+                    InstructionCognitiveMapPredictor,
+                )
+                self.map_predictor = InstructionCognitiveMapPredictor(
+                    hidden_size=self.config.hidden_size,
+                    num_heads=self.config.num_attention_heads,
+                    num_layers=2,
+                    dropout=0.0,
+                )
+                print("Successfully initialized InstructionCognitiveMapPredictor for imagined pretraining")
         except ImportError:
             self.map_encoder = None
+            self.map_predictor = None
 
         self.init_weights()
         self.tie_weights()
@@ -105,18 +120,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
     def forward(self, batch, task, compute_loss=True):
         batch = defaultdict(lambda: None, batch)
 
-        map_tokens = None
-        map_token_masks = None
-        if 'cognitive_maps' in batch and batch['cognitive_maps'] is not None and getattr(self, 'map_encoder', None) is not None:
-            map_tokens, map_token_masks = self.map_encoder(
-                batch['cognitive_maps'],
-                batch['direction_vectors'],
-                batch['start_direction_vectors'],
-                batch['start_positions'],
-            )
+        map_tokens, map_token_masks, map_loss = self._prepare_map_inputs(batch, compute_loss)
 
         if task.startswith('mlm'):
-            return self.forward_mlm(
+            losses = self.forward_mlm(
                 batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
                 batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'],
                 batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'],
@@ -126,8 +133,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch['txt_labels'], compute_loss,
                 map_tokens=map_tokens, map_token_masks=map_token_masks
             )
+            return losses + map_loss if compute_loss and map_loss is not None else losses
         elif task.startswith('sap'):
-            return self.forward_sap(
+            losses = self.forward_sap(
                 batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
                 batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'],
                 batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'],
@@ -137,8 +145,63 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch['global_act_labels'], batch['local_act_labels'], compute_loss,
                 map_tokens=map_tokens, map_token_masks=map_token_masks
             )
+            return losses + map_loss if compute_loss and map_loss is not None else losses
         else:
             raise ValueError('invalid task')
+
+    def _prepare_map_inputs(self, batch, compute_loss=True):
+        if (
+            'cognitive_maps' not in batch
+            or batch['cognitive_maps'] is None
+            or getattr(self, 'map_encoder', None) is None
+        ):
+            return None, None, None
+
+        if self.use_imagined:
+            txt_token_type_ids = torch.zeros_like(batch['txt_ids'])
+            txt_embeds = self.bert.embeddings(
+                batch['txt_ids'],
+                batch['txt_task_encoding'],
+                token_type_ids=txt_token_type_ids,
+            )
+            txt_masks = gen_seq_masks(batch['txt_lens'])
+            txt_embeds = self.bert.lang_encoder(txt_embeds, txt_masks)
+            map_logits, pred_direction_vectors = self.map_predictor(
+                txt_embeds,
+                txt_masks,
+                start_direction_vectors=batch['start_direction_vectors'],
+                start_positions=batch['start_positions'],
+            )
+            map_tokens, map_token_masks = self.map_encoder(
+                torch.sigmoid(map_logits),
+                pred_direction_vectors,
+                batch['start_direction_vectors'],
+                batch['start_positions'],
+            )
+            map_loss = None
+            if compute_loss:
+                map_loss = F.binary_cross_entropy_with_logits(
+                    map_logits,
+                    batch['cognitive_maps'],
+                    reduction='mean',
+                )
+                direction_loss = F.mse_loss(
+                    pred_direction_vectors,
+                    batch['direction_vectors'],
+                )
+                map_loss = self.map_loss_weight * (map_loss + 0.1 * direction_loss)
+            return map_tokens, map_token_masks, map_loss
+
+        if self.use_prior_gt:
+            map_tokens, map_token_masks = self.map_encoder(
+                batch['cognitive_maps'],
+                batch['direction_vectors'],
+                batch['start_direction_vectors'],
+                batch['start_positions'],
+            )
+            return map_tokens, map_token_masks, None
+
+        return None, None, None
 
     def forward_mlm(
         self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,

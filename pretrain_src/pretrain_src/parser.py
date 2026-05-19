@@ -25,6 +25,8 @@ def load_parser():
 
     # Cognitive map arguments
     parser.add_argument("--use_prior_gt", action="store_true", help="Enable cognitive map encoder")
+    parser.add_argument("--use_imagined", action="store_true", help="Enable instruction-imagined cognitive map predictor")
+    parser.add_argument("--map_loss_weight", default=0.1, type=float, help="Auxiliary imagined-map loss weight")
     # training parameters
     parser.add_argument(
         "--train_batch_size",
@@ -145,5 +147,7 @@ def parse_with_config(parser):
             if k not in override_keys:
                 setattr(args, k, v)
     del args.config
+    if getattr(args, "use_prior_gt", False) and getattr(args, "use_imagined", False):
+        raise ValueError("--use_prior_gt and --use_imagined are mutually exclusive")
     print("args:\n", args)
     return args
