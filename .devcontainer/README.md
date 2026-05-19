@@ -13,7 +13,9 @@ unzip v0.1.7.zip
 rm v0.1.7.zip
 ```
 
-The devcontainer post-create step installs this checkout into `etpr1-uv` with:
+<details><summary>What post-create will do</summary>
+
+The devcontainer post-create step will install this checkout into `etpr1-uv` with:
 
 ```bash
 python setup.py develop --all --no-deps
@@ -26,11 +28,15 @@ environment's `site-packages` directory. Python imports this file at startup, so
 legacy Habitat-Lab and Habitat-Sim worker processes see `np.float` mapped to the
 builtin `float` without rewriting files under `data/` or `site-packages`.
 
+</details>
+
 ## Build Image
 
 1. Install Visual Studio Code
 2. Install [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 3. Open this folder in VSCode, reopen in devcontainer and wait for the image to build
+
+<details><summary>Env details</summary>
 
 The image creates and activates the `etpr1-uv` conda environment from
 `conda-linux-64.lock`. Conda owns Python, Habitat-Sim, Gym 0.21.0, and
@@ -47,6 +53,8 @@ from `developer.download.nvidia.com`, verifies their SHA-256 hashes, and install
 them with `pip --no-deps`. This avoids the `nvidia-pyindex` redirect through
 `developer.nvidia.com/w/`, which can return corrupt wheel bytes on some network
 routes.
+
+</details>
 
 ## Dataset Download
 

@@ -23,6 +23,8 @@ In this paper, we try to bridge this gap by introducing ETP-R1, a framework that
 
 ## Installation
 
+> Checkout [Instruction for devcontainer](./.devcontainer/README.md) for easier setup process.
+
 ### 1. System Requirements
 * **Hardware:** We trained our models on a server equipped with **4 NVIDIA A6000 GPUs**. The provided scripts default to using 4 GPUs (`CUDA_VISIBLE_DEVICES=0,1,2,3`).
 
