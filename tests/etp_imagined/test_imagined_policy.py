@@ -126,6 +126,7 @@ def _load_imagined_policy(monkeypatch):
 
 def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
     policy_module = _load_imagined_policy(monkeypatch)
+    map_utils = sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"]
     net = policy_module.ETP_Imagined.__new__(policy_module.ETP_Imagined)
     torch.nn.Module.__init__(net)
     net.map_encoder = policy_module.EmbeddingGridMapEncoder(hidden_size=32)
@@ -154,7 +155,7 @@ def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
     )
 
     assert logits.shape == (2, policy_module.NUM_MAP_CATEGORIES, policy_module.SIZE, policy_module.SIZE)
-    assert direction_vectors.shape == (2, policy_module.DIRECTION_VECTOR_CNT, 2)
+    assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)
     assert torch.isfinite(logits).all()
@@ -163,6 +164,7 @@ def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
 
 def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
     policy_module = _load_imagined_policy(monkeypatch)
+    map_utils = sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"]
     net = policy_module.ETP_Imagined.__new__(policy_module.ETP_Imagined)
     torch.nn.Module.__init__(net)
     net.map_encoder_enabled = True
@@ -192,6 +194,6 @@ def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
     )
 
     assert map_logits.shape == (2, policy_module.NUM_MAP_CATEGORIES, policy_module.SIZE, policy_module.SIZE)
-    assert direction_vectors.shape == (2, policy_module.DIRECTION_VECTOR_CNT, 2)
+    assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)

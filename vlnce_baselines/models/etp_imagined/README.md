@@ -119,7 +119,7 @@ matching PriorGT training.
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
-  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
+  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
 ```
 
 The trainer freezes the same VLN language encoder used by the navigation model,
@@ -130,7 +130,7 @@ multiple GPUs are visible, it wraps the frozen text encoder and predictor in one
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
   --epochs 3 --batch-size 32 --limit 1024 --val-limit 256 \
-  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
+  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
 ```
 
 The trainer reports sparse-map metrics across configurable thresholds:
