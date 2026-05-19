@@ -7,8 +7,12 @@ from functools import lru_cache
 import re
 from typing import Callable, List, Optional, Set, Tuple
 
+import clip
 import numpy as np
+import spacy
+from spacy.tokens import Token
 from scipy.ndimage import gaussian_filter
+import torch
 
 
 from ..constants import (
@@ -41,10 +45,6 @@ IRRELEVANT_MULTIPLIER = 0.6
 """Multiplier to apply to confidence scores for categories not explicitly mentioned in the instruction, but still neighboring the path. This allows them to be included in the cognitive map, but with lower confidence than explicitly mentioned categories."""
 
 MAPPED_REGION_OTHER_INDEX = MAPPED_REGION_NAMES.index("other/miscellaneous")
-OBJECT_VECTORS = OBJECT_NAMES
-MAPPED_OBJECT_VECTORS = MAPPED_OBJECT_NAMES
-REGION_VECTORS = REGION_NAMES
-MAPPED_REGION_VECTORS = MAPPED_REGION_NAMES
 
 SPATIAL_IGNORE_LIST = {
     "left",
@@ -60,38 +60,91 @@ SPATIAL_IGNORE_LIST = {
     "space",
 }
 
+# The small spaCy model is enough for POS and lemma extraction; semantic matching
+# is handled by CLIP below.
+nlp = spacy.load("en_core_web_sm")
+
+CLIP_DEVICE = "cpu"
+CLIP_MODEL_NAME = "ViT-B/32"
+CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME, device=CLIP_DEVICE)
+CLIP_MODEL.eval()
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
-def _tokenize_instruction(text: str) -> List[str]:
+def _readable_category_name(name: str) -> str:
+    return _normalize_text(name.replace("/", " "))
+
+
+def _encode_clip_text(prompts: List[str]) -> torch.Tensor:
+    with torch.no_grad():
+        tokens = clip.tokenize(prompts).to(CLIP_DEVICE)
+        features = CLIP_MODEL.encode_text(tokens).float()
+        return features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+
+def _category_prompts(names: List[str], category_kind: str) -> List[str]:
     return [
-        token
-        for token in _normalize_text(text).split()
-        if token not in SPATIAL_IGNORE_LIST
+        f"an indoor navigation {category_kind} named {_readable_category_name(name)}"
+        for name in names
     ]
 
 
-def extract_nouns(text: str) -> List[str]:
-    """Extract candidate category tokens without external NLP dependencies."""
-    return _tokenize_instruction(text)
+OBJECT_VECTORS = _encode_clip_text(_category_prompts(OBJECT_NAMES, "object"))
+MAPPED_OBJECT_VECTORS = _encode_clip_text(
+    _category_prompts(MAPPED_OBJECT_NAMES, "object")
+)
+REGION_VECTORS = _encode_clip_text(_category_prompts(REGION_NAMES, "room or region"))
+MAPPED_REGION_VECTORS = _encode_clip_text(
+    _category_prompts(MAPPED_REGION_NAMES, "room or region")
+)
+
+
+def extract_nouns(text: str) -> List[Token]:
+    """Extract noun tokens from the input text."""
+    doc = nlp(text)
+    tokens = []
+    for token in doc:
+        if token.pos_ == "NOUN":  # only nouns
+            # Skip compound parts (e.g. "king" in "king-size")
+            if token.dep_ == "compound":
+                continue
+            # Skip common spatial/abstract terms
+            if token.lemma_.lower() in SPATIAL_IGNORE_LIST:
+                continue
+            tokens.append(token)
+    return tokens
 
 
 def _compute_best_match(
     text: str,
-    vectors: List[str],
-    mapped_vectors: List[str],
+    vectors: torch.Tensor,
+    mapped_vectors: torch.Tensor,
     mapping: List[int],
     other_index: int,
 ) -> Tuple[Optional[int], int, float]:
-    normalized = _normalize_text(text)
-    for index, candidate in enumerate(vectors):
-        if normalized == _normalize_text(candidate):
-            return index, mapping[index], 0.0
-    for index, candidate in enumerate(mapped_vectors):
-        if normalized == _normalize_text(candidate):
-            return None, index, 0.0
-    return None, other_index, 0.0
+    query_vector = _encode_clip_text([_normalize_text(text)])[0]
+
+    original_scores = torch.mv(vectors, query_vector)
+    mapped_scores = torch.mv(mapped_vectors, query_vector)
+    best_original_score, best_original = torch.max(original_scores, dim=0)
+    best_mapped_score, best_mapped = torch.max(mapped_scores, dim=0)
+
+    if best_original_score > best_mapped_score:
+        best_score = float(best_original_score.item())
+        best_original_idx = int(best_original.item())
+        best_mapped_idx = mapping[best_original_idx]
+    else:
+        best_score = float(best_mapped_score.item())
+        best_original_idx = None
+        best_mapped_idx = int(best_mapped.item())
+
+    if best_score < CONFIDENCE_THRESHOLD:
+        return None, other_index, 0.0
+
+    return best_original_idx, best_mapped_idx, best_score
 
 
 @lru_cache(maxsize=2048)
@@ -110,15 +163,15 @@ def _get_best_object_match_by_vector(text: str) -> Tuple[Optional[int], int, flo
 
 
 def _resolve_category_generic(
-    obj: str,
+    obj: Token,
     original_names: List[str],
     mapped_names: List[str],
     mapping: List[int],
     similarity_func: Callable[[str], Tuple[Optional[int], int, float]],
 ) -> Tuple[Optional[int], int, float]:
     """Find the best matching category index (optional original and mapped) for the extracted object name."""
-    # 1. Exact match via token text
-    text = obj.lower()
+    # 1. Exact match via Token text.
+    text = obj.text.lower()
     if text in original_names:
         index_original = original_names.index(text)
         index_mapped = mapping[index_original]
@@ -128,11 +181,23 @@ def _resolve_category_generic(
         index_mapped = mapped_names.index(text)
         return None, index_mapped, 0.0
 
-    # 2. Fallback exact matching over normalized category names.
+    # 2. Exact match via lemma.
+    lemma = obj.lemma_.lower()
+    if lemma != text:
+        if lemma in original_names:
+            index_original = original_names.index(lemma)
+            index_mapped = mapping[index_original]
+            return index_original, index_mapped, 0.0
+
+        if lemma in mapped_names:
+            index_mapped = mapped_names.index(lemma)
+            return None, index_mapped, 0.0
+
+    # 3. Similarity search using CLIP embeddings.
     return similarity_func(text)
 
 
-def get_object_category_of(obj: str) -> Tuple[Optional[int], int, float]:
+def get_object_category_of(obj: Token) -> Tuple[Optional[int], int, float]:
     """Find the best matching object category index (optional original and mapped) for the extracted object name, along with similarity if applicable."""
     return _resolve_category_generic(
         obj,
@@ -158,7 +223,7 @@ def _get_best_region_match_by_vector(text: str) -> Tuple[Optional[int], int, flo
     )
 
 
-def get_region_category_of(obj: str) -> Tuple[Optional[int], int, float]:
+def get_region_category_of(obj: Token) -> Tuple[Optional[int], int, float]:
     """Find the best matching region category index (optional original and mapped) for the extracted object name, along with similarity if applicable."""
     return _resolve_category_generic(
         obj,
@@ -189,12 +254,29 @@ def extract_categories(text: str) -> Tuple[Set[int], Set[int]]:
             region_categories.add(idx)
 
     for token in extract_nouns(text):
-        _, object_category_mapped, _ = get_object_category_of(token)
-        if object_category_mapped != MAPPED_OBJECT_OTHER_INDEX:
-            object_categories.add(object_category_mapped)
+        _, object_category_mapped, object_score = get_object_category_of(token)
+        _, region_category_mapped, region_score = get_region_category_of(token)
 
-        _, region_category_mapped, _ = get_region_category_of(token)
-        if region_category_mapped != MAPPED_REGION_OTHER_INDEX:
+        object_exact = (
+            object_score == 0.0 and object_category_mapped != MAPPED_OBJECT_OTHER_INDEX
+        )
+        region_exact = (
+            region_score == 0.0 and region_category_mapped != MAPPED_REGION_OTHER_INDEX
+        )
+
+        if object_exact:
+            object_categories.add(object_category_mapped)
+        if region_exact:
+            region_categories.add(region_category_mapped)
+        if object_exact or region_exact:
+            continue
+
+        if (
+            object_category_mapped != MAPPED_OBJECT_OTHER_INDEX
+            and object_score >= region_score
+        ):
+            object_categories.add(object_category_mapped)
+        elif region_category_mapped != MAPPED_REGION_OTHER_INDEX:
             region_categories.add(region_category_mapped)
 
     return object_categories, region_categories
