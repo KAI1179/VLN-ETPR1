@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 from typing import List
 
 import torch
@@ -29,6 +30,11 @@ def _instruction_text(episode) -> str:
     return getattr(instruction, "instruction_text", instruction)
 
 
+@lru_cache(maxsize=128)
+def _scene_grid_maps(scene_key: str):
+    return GroundTruthGridMap.from_scene_id(scene_key)
+
+
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
     return {
         "grid": torch.from_numpy(cognitive_map.grid),
@@ -54,6 +60,32 @@ def build_cognitive_map(
         instruction,
         positions,
         start_direction_vector=start_direction_vector,
+    )
+
+
+def start_metadata_to_tensors(scene_id: str, start_position, start_rotation):
+    """Build inference-safe start metadata without using the reference path."""
+    scene_key = _scene_key(scene_id)
+    _, start_level_map = first_encountered_level(
+        _scene_grid_maps(scene_key),
+        [start_position],
+    )
+    start_x, _, start_z = start_position
+    start_grid_position = start_level_map.world_to_grid(float(start_x), float(start_z))
+    return {
+        "start_direction_vector": torch.tensor(
+            start_rotation_to_direction_vector(start_rotation),
+            dtype=torch.float32,
+        ),
+        "start_position": torch.tensor(start_grid_position, dtype=torch.float32),
+    }
+
+
+def start_metadata_for_episode(episode):
+    return start_metadata_to_tensors(
+        episode.scene_id,
+        episode.start_position,
+        episode.start_rotation,
     )
 
 

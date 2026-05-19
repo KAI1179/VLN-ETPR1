@@ -1,18 +1,21 @@
 # ETP Imagined
 
-`etp_imagined` is the instruction-only cognitive-map variant of PriorGT.
+`etp_imagined` is the inferred cognitive-map variant of PriorGT.
 
 PriorGT consumes precomputed ground-truth cognitive maps. ETP Imagined predicts a
-soft cognitive map from the instruction text embeddings, then feeds that predicted
-map through the existing PriorGT map-token encoder and graph-map cross-attention.
+soft cognitive map from the instruction text embeddings plus inference-safe start
+pose metadata, then feeds that predicted map through the existing PriorGT
+map-token encoder and graph-map cross-attention.
 
 ## Architecture
 
 ```text
 instruction -> VLN text embeddings
-text embeddings -> InstructionCognitiveMapPredictor
+episode start_rotation/start_position -> start metadata
+text embeddings + start metadata -> InstructionCognitiveMapPredictor
 predicted grid logits -> sigmoid -> soft cognitive grid (B,37,100,100)
-soft grid -> PriorGT map_encoding / EmbeddingGridMapEncoder
+predicted direction vectors (B,5,2)
+soft grid + predicted directions + real start metadata -> PriorGT map_encoding
 map tokens -> GraphMapCrossAttention -> navigation logits
 ```
 
@@ -20,15 +23,20 @@ map tokens -> GraphMapCrossAttention -> navigation logits
 
 ```text
 VLN text embeddings
+start_direction_vector + start_position
 -> learned 10x10 latent map tokens
 -> repeated cross-attention to text + latent self-attention + FFN blocks
 -> latent-to-CNN projection
 -> progressive upsample decoder
 -> 37-channel 100x100 map logits
+-> pooled latent direction head -> 5 route direction vectors
 ```
 
-The output is still logits, not probabilities. Callers use `sigmoid(logits)`
-before passing the soft map to `EmbeddingGridMapEncoder`.
+The grid output is still logits, not probabilities. Callers use
+`sigmoid(logits)` before passing the soft map to `EmbeddingGridMapEncoder`.
+`direction_vectors` are predicted by the predictor. `start_direction_vector` and
+`start_position` are real episode-start metadata and do not use the reference
+path.
 
 ## Training
 
@@ -38,8 +46,9 @@ Use:
 - `MODEL.policy_name ImaginedPolicy`
 
 During SS training, ground-truth cognitive maps are loaded only as supervision
-targets for `BCEWithLogitsLoss`. They are not passed to navigation. During eval
-or inference, no cognitive-map file is required.
+targets for grid BCE and direction-vector MSE. They are not passed to navigation.
+During eval or inference, no cognitive-map file is required; the trainer derives
+start metadata from the current episode.
 
 The predictor is exposed separately through `mode="predict_cognitive_map"`.
 `SS-ETP-Imagined` composes it with the existing PriorGT `mode="map_encoding"`
@@ -97,7 +106,7 @@ only needs paired instructions and ground-truth cognitive maps:
 ```text
 instruction text -> frozen VLN language encoder -> txt_embeds/txt_masks
 txt_embeds/txt_masks -> InstructionCognitiveMapPredictor -> map logits
-map logits + GT cognitive map -> weighted BCE/focal loss
+map logits + predicted directions + GT cognitive map metadata -> weighted BCE/focal loss + direction MSE
 ```
 
 That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
@@ -108,6 +117,7 @@ A standalone predictor trainer is provided for this:
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --cognitive-map-dir data/cognitive_maps_deprecated \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
 ```
 
@@ -118,15 +128,16 @@ multiple GPUs are visible, it wraps the frozen text encoder and predictor in one
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --cognitive-map-dir data/cognitive_maps_deprecated \
   --epochs 3 --batch-size 32 --limit 1024 --val-limit 256 \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
 ```
 
 The trainer reports sparse-map metrics across configurable thresholds:
 `pred_pos@t`, `iou@t`, `precision@t`, `recall@t`, `top1pct_recall`, and
-`top5pct_recall`. Best checkpoint selection uses the best validation IoU across
-thresholds, not loss, because loss can improve while the predictor over-expands
-positive cells.
+`top5pct_recall`, plus `direction_mae` and `direction_cos`. Best checkpoint
+selection uses the best validation IoU across thresholds, not loss, because loss
+can improve while the predictor over-expands positive cells.
 
 It saves:
 

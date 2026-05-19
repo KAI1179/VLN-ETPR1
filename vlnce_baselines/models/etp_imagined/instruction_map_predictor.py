@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Tuple
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
     SIZE,
 )
@@ -10,6 +12,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 
 MAP_QUERY_GRID_SIZE = 10
 MAP_QUERY_COUNT = MAP_QUERY_GRID_SIZE * MAP_QUERY_GRID_SIZE
+START_METADATA_DIM = 4
 
 
 class InstructionLatentMapBlock(nn.Module):
@@ -107,6 +110,12 @@ class InstructionCognitiveMapPredictor(nn.Module):
         self.latent_count = latent_grid_size * latent_grid_size
         self.map_queries = nn.Parameter(torch.zeros(1, self.latent_count, hidden_size))
         self.map_pos = nn.Parameter(torch.zeros(1, self.latent_count, hidden_size))
+        self.start_metadata_projection = nn.Sequential(
+            nn.Linear(START_METADATA_DIM, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+        )
         self.layers = nn.ModuleList(
             [
                 InstructionLatentMapBlock(hidden_size, num_heads, dropout)
@@ -133,10 +142,22 @@ class InstructionCognitiveMapPredictor(nn.Module):
             nn.GELU(),
             nn.Conv2d(channels, NUM_MAP_CATEGORIES, kernel_size=1),
         )
+        self.direction_head = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, DIRECTION_VECTOR_CNT * 2),
+        )
         nn.init.normal_(self.map_queries, std=0.02)
         nn.init.normal_(self.map_pos, std=0.02)
 
-    def _validate_inputs(self, txt_embeds: torch.Tensor, txt_masks: torch.Tensor) -> None:
+    def _validate_inputs(
+        self,
+        txt_embeds: torch.Tensor,
+        txt_masks: torch.Tensor,
+        start_direction_vectors: torch.Tensor,
+        start_positions: torch.Tensor,
+    ) -> None:
         if txt_embeds.dim() != 3:
             raise ValueError(f"txt_embeds must have shape (B, L, H), got {tuple(txt_embeds.shape)}")
         if txt_masks.dim() != 2 or txt_masks.shape != txt_embeds.shape[:2]:
@@ -147,16 +168,43 @@ class InstructionCognitiveMapPredictor(nn.Module):
             raise ValueError(
                 f"txt_embeds hidden size must be {self.hidden_size}, got {txt_embeds.shape[-1]}"
             )
+        if start_direction_vectors.dim() != 2 or start_direction_vectors.shape != (txt_embeds.shape[0], 2):
+            raise ValueError(
+                "start_direction_vectors must have shape "
+                f"({txt_embeds.shape[0]}, 2), got {tuple(start_direction_vectors.shape)}"
+            )
+        if start_positions.dim() != 2 or start_positions.shape != (txt_embeds.shape[0], 2):
+            raise ValueError(
+                f"start_positions must have shape ({txt_embeds.shape[0]}, 2), got {tuple(start_positions.shape)}"
+            )
 
-    def forward(self, txt_embeds: torch.Tensor, txt_masks: torch.Tensor) -> torch.Tensor:
-        self._validate_inputs(txt_embeds, txt_masks)
+    def forward(
+        self,
+        txt_embeds: torch.Tensor,
+        txt_masks: torch.Tensor,
+        start_direction_vectors: torch.Tensor = None,
+        start_positions: torch.Tensor = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = txt_embeds.shape[0]
+        if start_direction_vectors is None:
+            start_direction_vectors = txt_embeds.new_zeros(batch_size, 2)
+        if start_positions is None:
+            start_positions = txt_embeds.new_zeros(batch_size, 2)
+        self._validate_inputs(txt_embeds, txt_masks, start_direction_vectors, start_positions)
         batch_size = txt_embeds.shape[0]
         queries = self.map_queries + self.map_pos
         queries = queries.expand(batch_size, -1, -1)
+        start_metadata = torch.cat([start_direction_vectors, start_positions], dim=1)
+        queries = queries + self.start_metadata_projection(start_metadata).unsqueeze(1)
         txt_key_padding_mask = txt_masks.logical_not()
         for layer in self.layers:
             queries = layer(queries, txt_embeds, txt_key_padding_mask)
         queries = self.output_norm(queries)
+        direction_vectors = self.direction_head(queries.mean(dim=1)).view(
+            batch_size,
+            DIRECTION_VECTOR_CNT,
+            2,
+        )
         latent = self.latent_projection(queries)
         latent = latent.transpose(1, 2).reshape(
             batch_size,
@@ -167,4 +215,4 @@ class InstructionCognitiveMapPredictor(nn.Module):
         logits = self.output_head(self.decoder(latent))
         if logits.shape[-2:] != (SIZE, SIZE):
             logits = F.interpolate(logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False)
-        return logits
+        return logits, direction_vectors

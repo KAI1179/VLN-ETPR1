@@ -19,7 +19,11 @@ from vlnce_baselines.models.etp_imagined.train_map_predictor import (
     load_predictor_examples,
     save_checkpoint,
 )
-from vlnce_baselines.models.etp_prior_gt.map_utils import NUM_MAP_CATEGORIES, SIZE
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DIRECTION_VECTOR_CNT,
+    NUM_MAP_CATEGORIES,
+    SIZE,
+)
 
 
 def _write_dataset(path: Path) -> None:
@@ -45,7 +49,13 @@ def _write_map(path: Path) -> None:
     path.parent.mkdir(parents=True)
     grid = np.zeros((NUM_MAP_CATEGORIES, SIZE, SIZE), dtype=np.float32)
     grid[1, 2, 3] = 1.0
-    np.savez(path, grid=grid)
+    np.savez(
+        path,
+        grid=grid,
+        direction_vectors=np.zeros((DIRECTION_VECTOR_CNT, 2), dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        start_position=np.asarray([10.0, 20.0], dtype=np.float32),
+    )
 
 
 def test_load_predictor_examples_matches_dataset_scene_episode(tmp_path):
@@ -85,6 +95,9 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(tmp_path):
     assert batch["txt_task_encoding"].tolist() == [[1, 1, 1, 0, 0]]
     assert batch["txt_masks"].tolist() == [[True, True, True, False, False]]
     assert batch["grids"].shape == (1, NUM_MAP_CATEGORIES, SIZE, SIZE)
+    assert batch["direction_vectors"].shape == (1, DIRECTION_VECTOR_CNT, 2)
+    assert batch["start_direction_vectors"].tolist() == [[0.0, 1.0]]
+    assert batch["start_positions"].tolist() == [[10.0, 20.0]]
 
 
 def test_save_checkpoint_writes_policy_compatible_keys(tmp_path):

@@ -8,7 +8,6 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
     SIZE,
 )
@@ -69,31 +68,58 @@ class ETP_Imagined(ETP_PriorGT):
             num_layers=2,
             dropout=0.0,
         )
-        print(f"  Imagined map predictor enabled: text -> (37, {SIZE}, {SIZE})")
+        print(f"  Imagined map predictor enabled: text + start pose -> (37, {SIZE}, {SIZE}) + directions")
 
     def forward(self, mode=None, **kwargs):
         if mode == "predict_cognitive_map":
             return self.forward_predict_cognitive_map(
                 kwargs["txt_embeds"],
                 kwargs["txt_masks"],
+                kwargs.get("start_direction_vectors"),
+                kwargs.get("start_positions"),
             )
         if mode == "imagined_map_encoding":
             return self.forward_imagined_map_encoding(
                 kwargs["txt_embeds"],
                 kwargs["txt_masks"],
+                kwargs.get("start_direction_vectors"),
+                kwargs.get("start_positions"),
             )
         return super().forward(mode=mode, **kwargs)
 
-    def forward_predict_cognitive_map(self, txt_embeds, txt_masks):
-        return self.map_predictor(txt_embeds, txt_masks)
+    def forward_predict_cognitive_map(
+        self,
+        txt_embeds,
+        txt_masks,
+        start_direction_vectors=None,
+        start_positions=None,
+    ):
+        return self.map_predictor(
+            txt_embeds,
+            txt_masks,
+            start_direction_vectors=start_direction_vectors,
+            start_positions=start_positions,
+        )
 
-    def forward_imagined_map_encoding(self, txt_embeds, txt_masks):
-        map_logits = self.forward_predict_cognitive_map(txt_embeds, txt_masks)
+    def forward_imagined_map_encoding(
+        self,
+        txt_embeds,
+        txt_masks,
+        start_direction_vectors=None,
+        start_positions=None,
+    ):
+        map_logits, direction_vectors = self.forward_predict_cognitive_map(
+            txt_embeds,
+            txt_masks,
+            start_direction_vectors=start_direction_vectors,
+            start_positions=start_positions,
+        )
         map_probs = torch.sigmoid(map_logits)
         batch_size = map_probs.shape[0]
-        direction_vectors = map_probs.new_zeros(batch_size, DIRECTION_VECTOR_CNT, 2)
-        start_direction_vectors = map_probs.new_zeros(batch_size, 2)
-        start_positions = map_probs.new_zeros(batch_size, 2)
+        if start_direction_vectors is None:
+            start_direction_vectors = map_probs.new_zeros(batch_size, 2)
+        if start_positions is None:
+            start_positions = map_probs.new_zeros(batch_size, 2)
         map_tokens, map_token_masks = self.forward(
             mode="map_encoding",
             cognitive_crops=map_probs,
@@ -101,4 +127,4 @@ class ETP_Imagined(ETP_PriorGT):
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
-        return map_logits, map_tokens, map_token_masks
+        return map_logits, direction_vectors, map_tokens, map_token_masks

@@ -23,7 +23,11 @@ from vlnce_baselines.config.default import get_config
 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
 )
-from vlnce_baselines.models.etp_prior_gt.map_utils import NUM_MAP_CATEGORIES, SIZE
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DIRECTION_VECTOR_CNT,
+    NUM_MAP_CATEGORIES,
+    SIZE,
+)
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 
 
@@ -114,14 +118,26 @@ class CognitiveMapPredictorDataset(Dataset):
         example = self.examples[idx]
         with np.load(example.map_path) as data:
             grid = data["grid"].astype("float32")
+            direction_vectors = data["direction_vectors"].astype("float32")
+            start_direction_vector = data["start_direction_vector"].astype("float32")
+            start_position = data["start_position"].astype("float32")
         if grid.shape != (NUM_MAP_CATEGORIES, SIZE, SIZE):
             raise ValueError(f"Bad grid shape for {example.map_path}: {grid.shape}")
+        if direction_vectors.shape != (DIRECTION_VECTOR_CNT, 2):
+            raise ValueError(f"Bad direction_vectors shape for {example.map_path}: {direction_vectors.shape}")
+        if start_direction_vector.shape != (2,):
+            raise ValueError(f"Bad start_direction_vector shape for {example.map_path}: {start_direction_vector.shape}")
+        if start_position.shape != (2,):
+            raise ValueError(f"Bad start_position shape for {example.map_path}: {start_position.shape}")
         return {
             "episode_id": example.episode_id,
             "scene_id": example.scene_id,
             "dataset": example.dataset,
             "token_ids": example.token_ids,
             "grid": torch.from_numpy(grid),
+            "direction_vectors": torch.from_numpy(direction_vectors),
+            "start_direction_vector": torch.from_numpy(start_direction_vector),
+            "start_position": torch.from_numpy(start_position),
         }
 
 
@@ -140,10 +156,17 @@ class CognitiveMapPredictionModel(torch.nn.Module):
         txt_ids: torch.Tensor,
         txt_task_encoding: torch.Tensor,
         txt_masks: torch.Tensor,
-    ) -> torch.Tensor:
+        start_direction_vectors: torch.Tensor,
+        start_positions: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             txt_embeds = self.vln_bert.forward_txt(txt_ids, txt_task_encoding, txt_masks)
-        return self.predictor(txt_embeds, txt_masks)
+        return self.predictor(
+            txt_embeds,
+            txt_masks,
+            start_direction_vectors=start_direction_vectors,
+            start_positions=start_positions,
+        )
 
 
 def collate_predictor_batch(batch: Sequence[Dict], max_text_len: int, pad_id: int = PAD_ID) -> Dict:
@@ -151,6 +174,9 @@ def collate_predictor_batch(batch: Sequence[Dict], max_text_len: int, pad_id: in
     txt_ids = torch.full((batch_size, max_text_len), pad_id, dtype=torch.long)
     txt_task_encoding = torch.zeros((batch_size, max_text_len), dtype=torch.long)
     grids = torch.stack([item["grid"] for item in batch], dim=0)
+    direction_vectors = torch.stack([item["direction_vectors"] for item in batch], dim=0)
+    start_direction_vectors = torch.stack([item["start_direction_vector"] for item in batch], dim=0)
+    start_positions = torch.stack([item["start_position"] for item in batch], dim=0)
     for i, item in enumerate(batch):
         tokens = item["token_ids"][:max_text_len]
         token_len = len(tokens)
@@ -161,13 +187,24 @@ def collate_predictor_batch(batch: Sequence[Dict], max_text_len: int, pad_id: in
         "txt_task_encoding": txt_task_encoding,
         "txt_masks": txt_ids != pad_id,
         "grids": grids,
+        "direction_vectors": direction_vectors,
+        "start_direction_vectors": start_direction_vectors,
+        "start_positions": start_positions,
         "episode_ids": [item["episode_id"] for item in batch],
     }
 
 
 def _move_batch(batch: Dict, device: torch.device) -> Dict:
     moved = dict(batch)
-    for key in ("txt_ids", "txt_task_encoding", "txt_masks", "grids"):
+    for key in (
+        "txt_ids",
+        "txt_task_encoding",
+        "txt_masks",
+        "grids",
+        "direction_vectors",
+        "start_direction_vectors",
+        "start_positions",
+    ):
         moved[key] = batch[key].to(device, non_blocking=True)
     return moved
 
@@ -226,9 +263,12 @@ def compute_metrics(
 def compute_loss(
     logits: torch.Tensor,
     target: torch.Tensor,
+    pred_direction_vectors: torch.Tensor,
+    target_direction_vectors: torch.Tensor,
     loss_type: str,
     max_pos_weight: float,
     focal_gamma: float,
+    direction_loss_weight: float,
 ) -> torch.Tensor:
     target_mask = target > 0.5
     pos = target_mask.sum(dim=(0, 2, 3)).float()
@@ -241,12 +281,34 @@ def compute_loss(
         reduction="none",
     )
     if loss_type == "bce":
-        return bce.mean()
-    if loss_type == "focal":
+        map_loss = bce.mean()
+    elif loss_type == "focal":
         probs = torch.sigmoid(logits)
         pt = torch.where(target_mask, probs, 1.0 - probs)
-        return ((1.0 - pt).pow(focal_gamma) * bce).mean()
-    raise ValueError(f"loss_type must be bce or focal, got {loss_type}")
+        map_loss = ((1.0 - pt).pow(focal_gamma) * bce).mean()
+    else:
+        raise ValueError(f"loss_type must be bce or focal, got {loss_type}")
+    direction_loss = F.mse_loss(pred_direction_vectors, target_direction_vectors)
+    return map_loss + direction_loss_weight * direction_loss
+
+
+def compute_direction_metrics(
+    pred_direction_vectors: torch.Tensor,
+    target_direction_vectors: torch.Tensor,
+) -> Dict[str, float]:
+    target_norm = target_direction_vectors.norm(dim=-1)
+    valid = target_norm > 0.5
+    mae = torch.mean(torch.abs(pred_direction_vectors - target_direction_vectors)).item()
+    if valid.any():
+        pred_unit = F.normalize(pred_direction_vectors[valid], dim=-1)
+        target_unit = F.normalize(target_direction_vectors[valid], dim=-1)
+        cosine = (pred_unit * target_unit).sum(dim=-1).mean().item()
+    else:
+        cosine = 0.0
+    return {
+        "direction_mae": mae,
+        "direction_cos": cosine,
+    }
 
 
 def initialize_output_prior(predictor: InstructionCognitiveMapPredictor, positive_prob: float) -> None:
@@ -274,6 +336,7 @@ def _iterate_batches(
     loss_type: str = "bce",
     max_pos_weight: float = 100.0,
     focal_gamma: float = 2.0,
+    direction_loss_weight: float = 0.1,
 ) -> Dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -284,19 +347,34 @@ def _iterate_batches(
         if max_batches is not None and batch_idx >= max_batches:
             break
         batch = _move_batch(batch, device)
-        logits = model(batch["txt_ids"], batch["txt_task_encoding"], batch["txt_masks"])
+        logits, pred_direction_vectors = model(
+            batch["txt_ids"],
+            batch["txt_task_encoding"],
+            batch["txt_masks"],
+            batch["start_direction_vectors"],
+            batch["start_positions"],
+        )
         loss = compute_loss(
             logits,
             batch["grids"],
+            pred_direction_vectors,
+            batch["direction_vectors"],
             loss_type=loss_type,
             max_pos_weight=max_pos_weight,
             focal_gamma=focal_gamma,
+            direction_loss_weight=direction_loss_weight,
         )
         if is_train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
         metrics = compute_metrics(logits.detach(), batch["grids"], thresholds=thresholds)
+        metrics.update(
+            compute_direction_metrics(
+                pred_direction_vectors.detach(),
+                batch["direction_vectors"],
+            )
+        )
         metrics["loss"] = loss.item()
         for key, value in metrics.items():
             totals[key] = totals.get(key, 0.0) + value
@@ -317,7 +395,8 @@ def save_checkpoint(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     unwrapped_model = model.module if isinstance(model, torch.nn.DataParallel) else model
-    map_predictor = unwrapped_model.predictor.state_dict()
+    predictor = unwrapped_model.predictor if hasattr(unwrapped_model, "predictor") else unwrapped_model
+    map_predictor = predictor.state_dict()
     torch.save(
         {
             "epoch": epoch,
@@ -369,7 +448,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--val-dataset", nargs="+", type=Path, default=[Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")])
     parser.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
-    parser.add_argument("--cognitive-map-dir", type=Path, default=Path("data/cognitive_maps"))
+    parser.add_argument("--cognitive-map-dir", type=Path, default=Path("data/cognitive_maps_deprecated"))
     parser.add_argument(
         "--output",
         type=Path,
@@ -381,6 +460,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--loss", choices=["bce", "focal"], default="bce")
     parser.add_argument("--max-pos-weight", type=float, default=20.0)
     parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--direction-loss-weight", type=float, default=0.1)
     parser.add_argument("--init-positive-prob", type=float, default=0.002)
     parser.add_argument("--thresholds", default="0.001,0.002,0.005,0.01,0.02,0.05")
     parser.add_argument("--max-text-len", type=int, default=None)
@@ -468,6 +548,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             loss_type=args.loss,
             max_pos_weight=args.max_pos_weight,
             focal_gamma=args.focal_gamma,
+            direction_loss_weight=args.direction_loss_weight,
         )
         metrics = {"train_" + key: value for key, value in train_metrics.items()}
         if val_loader is not None:
@@ -479,6 +560,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 loss_type=args.loss,
                 max_pos_weight=args.max_pos_weight,
                 focal_gamma=args.focal_gamma,
+                direction_loss_weight=args.direction_loss_weight,
             )
             metrics.update({"val_" + key: value for key, value in val_metrics.items()})
             selection_metric = -_best_iou(val_metrics)
