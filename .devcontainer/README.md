@@ -87,3 +87,12 @@ python copy_extra_files.py
 # Clean up (Optional)
 rm -rf extra_files extra_files.zip
 ```
+
+## Working With uv
+
+### Adding Packages
+
+```shell
+$ uv add --no-sync --bounds exact pytest
+$ uv pip install --python "$CONDA_PREFIX/bin/python" pytest==<locked-version>
+```

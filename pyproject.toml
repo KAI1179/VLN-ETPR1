@@ -130,6 +130,7 @@ dependencies = [
     "yacs==0.1.8",
     "zipp==3.6.0",
     "pytest>=8.3.5",
+    "typed-argument-parser==1.10.1",
 ]
 
 [tool.uv]
