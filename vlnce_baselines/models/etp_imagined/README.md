@@ -113,11 +113,12 @@ That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
 rollout. It should save predictor weights that the full imagined policy can load
 before SS/DAgger fine-tuning.
 
-A standalone predictor trainer is provided for this:
+A standalone predictor trainer is provided for this. It reads the VLN dataset
+episodes and generates cognitive-map targets on the fly from `reference_path`,
+matching PriorGT training.
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
-  --cognitive-map-dir data/cognitive_maps_deprecated \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
 ```
 
@@ -128,7 +129,6 @@ multiple GPUs are visible, it wraps the frozen text encoder and predictor in one
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
-  --cognitive-map-dir data/cognitive_maps_deprecated \
   --epochs 3 --batch-size 32 --limit 1024 --val-limit 256 \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/new-vlnce-only_step_462500.pt
 ```

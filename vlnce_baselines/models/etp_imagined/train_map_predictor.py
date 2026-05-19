@@ -1,7 +1,7 @@
 """Offline trainer for instruction-to-cognitive-map prediction.
 
 This script trains only InstructionCognitiveMapPredictor from paired VLN
-instruction tokens and precomputed cognitive maps. It deliberately avoids
+instructions and on-the-fly cognitive-map targets. It deliberately avoids
 Habitat rollout and navigation loss.
 """
 
@@ -27,8 +27,11 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
     SIZE,
+    build_cognitive_map,
+    cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
+from prior.directions import start_rotation_to_direction_vector
 
 
 PAD_ID = 1
@@ -40,8 +43,10 @@ TASK_TYPE_IDS = {"r2r": 1, "rxr": 2}
 class PredictorExample:
     episode_id: str
     scene_id: str
+    instruction_text: str
     token_ids: List[int]
-    map_path: Path
+    reference_path: List[List[float]]
+    start_rotation: List[float]
     dataset: str
 
 
@@ -66,16 +71,10 @@ def _infer_dataset(path: Path, explicit_dataset: Optional[str]) -> str:
     return dataset
 
 
-def _map_path(cognitive_map_dir: Path, dataset: str, scene_id: str, episode_id: str) -> Path:
-    return cognitive_map_dir / _scene_key(scene_id) / f"{DATASET_FLAGS[dataset]}_{episode_id}.npz"
-
-
 def load_predictor_examples(
     dataset_paths: Sequence[Path],
-    cognitive_map_dir: Path,
     dataset: Optional[str] = None,
     limit: Optional[int] = None,
-    require_maps: bool = True,
 ) -> List[PredictorExample]:
     examples: List[PredictorExample] = []
     for dataset_path in dataset_paths:
@@ -84,19 +83,21 @@ def load_predictor_examples(
         for episode in data.get("episodes", []):
             instruction = episode.get("instruction", {})
             token_ids = instruction.get("instruction_tokens")
-            if not token_ids:
+            instruction_text = instruction.get("instruction_text")
+            reference_path = episode.get("reference_path")
+            start_rotation = episode.get("start_rotation")
+            if not token_ids or not instruction_text or not reference_path or start_rotation is None:
                 continue
             episode_id = str(episode["episode_id"])
             scene_id = episode["scene_id"]
-            map_path = _map_path(cognitive_map_dir, dataset_name, scene_id, episode_id)
-            if require_maps and not map_path.exists():
-                continue
             examples.append(
                 PredictorExample(
                     episode_id=episode_id,
-                    scene_id=_scene_key(scene_id),
+                    scene_id=scene_id,
+                    instruction_text=instruction_text,
                     token_ids=[int(token_id) for token_id in token_ids],
-                    map_path=map_path,
+                    reference_path=reference_path,
+                    start_rotation=start_rotation,
                     dataset=dataset_name,
                 )
             )
@@ -116,28 +117,43 @@ class CognitiveMapPredictorDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict:
         example = self.examples[idx]
-        with np.load(example.map_path) as data:
-            grid = data["grid"].astype("float32")
-            direction_vectors = data["direction_vectors"].astype("float32")
-            start_direction_vector = data["start_direction_vector"].astype("float32")
-            start_position = data["start_position"].astype("float32")
+        cognitive_map = build_cognitive_map(
+            example.scene_id,
+            example.instruction_text,
+            example.reference_path,
+            start_rotation_to_direction_vector(example.start_rotation),
+        )
+        tensors = cognitive_map_to_tensors(cognitive_map)
+        grid = tensors["grid"].float()
+        direction_vectors = tensors["direction_vectors"].float()
+        start_direction_vector = tensors["start_direction_vector"].float()
+        start_position = tensors["start_position"].float()
         if grid.shape != (NUM_MAP_CATEGORIES, SIZE, SIZE):
-            raise ValueError(f"Bad grid shape for {example.map_path}: {grid.shape}")
+            raise ValueError(f"Bad grid shape for episode {example.episode_id}: {tuple(grid.shape)}")
         if direction_vectors.shape != (DIRECTION_VECTOR_CNT, 2):
-            raise ValueError(f"Bad direction_vectors shape for {example.map_path}: {direction_vectors.shape}")
+            raise ValueError(
+                f"Bad direction_vectors shape for episode {example.episode_id}: "
+                f"{tuple(direction_vectors.shape)}"
+            )
         if start_direction_vector.shape != (2,):
-            raise ValueError(f"Bad start_direction_vector shape for {example.map_path}: {start_direction_vector.shape}")
+            raise ValueError(
+                f"Bad start_direction_vector shape for episode {example.episode_id}: "
+                f"{tuple(start_direction_vector.shape)}"
+            )
         if start_position.shape != (2,):
-            raise ValueError(f"Bad start_position shape for {example.map_path}: {start_position.shape}")
+            raise ValueError(
+                f"Bad start_position shape for episode {example.episode_id}: "
+                f"{tuple(start_position.shape)}"
+            )
         return {
             "episode_id": example.episode_id,
-            "scene_id": example.scene_id,
+            "scene_id": _scene_key(example.scene_id),
             "dataset": example.dataset,
             "token_ids": example.token_ids,
-            "grid": torch.from_numpy(grid),
-            "direction_vectors": torch.from_numpy(direction_vectors),
-            "start_direction_vector": torch.from_numpy(start_direction_vector),
-            "start_position": torch.from_numpy(start_position),
+            "grid": grid,
+            "direction_vectors": direction_vectors,
+            "start_direction_vector": start_direction_vector,
+            "start_position": start_position,
         }
 
 
@@ -412,7 +428,6 @@ def save_checkpoint(
 
 def _build_dataloader(
     dataset_paths: Sequence[Path],
-    cognitive_map_dir: Path,
     dataset_name: Optional[str],
     max_text_len: int,
     batch_size: int,
@@ -422,7 +437,6 @@ def _build_dataloader(
 ) -> DataLoader:
     examples = load_predictor_examples(
         dataset_paths,
-        cognitive_map_dir=cognitive_map_dir,
         dataset=dataset_name,
         limit=limit,
     )
@@ -448,7 +462,6 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--val-dataset", nargs="+", type=Path, default=[Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")])
     parser.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
-    parser.add_argument("--cognitive-map-dir", type=Path, default=Path("data/cognitive_maps_deprecated"))
     parser.add_argument(
         "--output",
         type=Path,
@@ -512,7 +525,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     train_loader = _build_dataloader(
         dataset_paths=args.train_dataset,
-        cognitive_map_dir=args.cognitive_map_dir,
         dataset_name=args.dataset,
         max_text_len=max_text_len,
         batch_size=args.batch_size,
@@ -524,7 +536,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     if args.val_dataset:
         val_loader = _build_dataloader(
             dataset_paths=args.val_dataset,
-            cognitive_map_dir=args.cognitive_map_dir,
             dataset_name=args.dataset,
             max_text_len=max_text_len,
             batch_size=args.batch_size,

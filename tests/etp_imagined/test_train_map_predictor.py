@@ -3,7 +3,6 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +12,7 @@ if str(ROOT) not in sys.path:
 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
 )
+from vlnce_baselines.models.etp_imagined import train_map_predictor
 from vlnce_baselines.models.etp_imagined.train_map_predictor import (
     CognitiveMapPredictorDataset,
     collate_predictor_batch,
@@ -32,7 +32,15 @@ def _write_dataset(path: Path) -> None:
             {
                 "episode_id": "123",
                 "scene_id": "mp3d/TestScene/TestScene.glb",
-                "instruction": {"instruction_tokens": [10, 11, 12]},
+                "start_rotation": [0.0, 0.0, 0.0, 1.0],
+                "reference_path": [
+                    [1.0, 0.0, 2.0],
+                    [2.0, 0.0, 2.0],
+                ],
+                "instruction": {
+                    "instruction_text": "go to the chair",
+                    "instruction_tokens": [10, 11, 12],
+                },
             },
             {
                 "episode_id": "missing",
@@ -45,46 +53,51 @@ def _write_dataset(path: Path) -> None:
         json.dump(data, f)
 
 
-def _write_map(path: Path) -> None:
-    path.parent.mkdir(parents=True)
-    grid = np.zeros((NUM_MAP_CATEGORIES, SIZE, SIZE), dtype=np.float32)
+def _patch_cognitive_map_generation(monkeypatch) -> None:
+    grid = torch.zeros(NUM_MAP_CATEGORIES, SIZE, SIZE)
     grid[1, 2, 3] = 1.0
-    np.savez(
-        path,
-        grid=grid,
-        direction_vectors=np.zeros((DIRECTION_VECTOR_CNT, 2), dtype=np.float32),
-        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
-        start_position=np.asarray([10.0, 20.0], dtype=np.float32),
+
+    monkeypatch.setattr(
+        train_map_predictor,
+        "build_cognitive_map",
+        lambda scene_id, instruction, reference_path, start_direction_vector: object(),
+    )
+    monkeypatch.setattr(
+        train_map_predictor,
+        "cognitive_map_to_tensors",
+        lambda cognitive_map: {
+            "grid": grid,
+            "direction_vectors": torch.zeros(DIRECTION_VECTOR_CNT, 2),
+            "start_direction_vector": torch.tensor([0.0, 1.0]),
+            "start_position": torch.tensor([10.0, 20.0]),
+        },
     )
 
 
 def test_load_predictor_examples_matches_dataset_scene_episode(tmp_path):
     dataset_path = tmp_path / "train.json.gz"
-    map_path = tmp_path / "maps" / "TestScene" / "R2R_123.npz"
     _write_dataset(dataset_path)
-    _write_map(map_path)
 
     examples = load_predictor_examples(
         [dataset_path],
-        cognitive_map_dir=tmp_path / "maps",
         dataset="r2r",
     )
 
     assert len(examples) == 1
     assert examples[0].episode_id == "123"
-    assert examples[0].scene_id == "TestScene"
+    assert examples[0].scene_id == "mp3d/TestScene/TestScene.glb"
+    assert examples[0].instruction_text == "go to the chair"
     assert examples[0].token_ids == [10, 11, 12]
-    assert examples[0].map_path == map_path
+    assert examples[0].reference_path == [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
+    assert examples[0].start_rotation == [0.0, 0.0, 0.0, 1.0]
 
 
-def test_collate_predictor_batch_pads_tokens_and_task_encoding(tmp_path):
+def test_collate_predictor_batch_pads_tokens_and_task_encoding(tmp_path, monkeypatch):
     dataset_path = tmp_path / "train.json.gz"
-    map_path = tmp_path / "maps" / "TestScene" / "R2R_123.npz"
     _write_dataset(dataset_path)
-    _write_map(map_path)
+    _patch_cognitive_map_generation(monkeypatch)
     examples = load_predictor_examples(
         [dataset_path],
-        cognitive_map_dir=tmp_path / "maps",
         dataset="r2r",
     )
     item = CognitiveMapPredictorDataset(examples)[0]
