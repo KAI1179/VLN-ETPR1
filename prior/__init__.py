@@ -14,10 +14,10 @@ DATA_DIR = _WORKSPACE_ROOT / "data"
 MP3D_DIR = DATA_DIR / "scene_datasets" / "mp3d"
 """MP3D dataset directory."""
 
-R2R_DIR = DATA_DIR / "datasets" / "R2R_VLNCE_v1-3_preprocessed"
+R2R_DIR = DATA_DIR / "datasets" / "R2R_VLNCE_v1-3_preprocessed_xlmr"
 """R2R dataset directory."""
 
-RxR_DIR = DATA_DIR / "datasets" / "RxR_VLNCE_v0"
+RxR_DIR = DATA_DIR / "datasets" / "RxR_VLNCE_v0_enc_xlmr"
 """RxR dataset directory."""
 
 VISUALIZATIONS_DIR = DATA_DIR / "visualizations"

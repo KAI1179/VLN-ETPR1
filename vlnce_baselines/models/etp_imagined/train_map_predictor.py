@@ -5,8 +5,6 @@ instructions and on-the-fly cognitive-map targets. It deliberately avoids
 Habitat rollout and navigation loss.
 """
 
-import gzip
-import json
 import os
 import random
 from dataclasses import dataclass
@@ -33,10 +31,10 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from prior.directions import start_rotation_to_direction_vector
 from prior.grid_map import CognitiveGridMap
+from prior.vlnce import VLNCEEpisodeEntry
 
 
 PAD_ID = 1
-DATASET_FLAGS = {"r2r": "R2R", "rxr": "RxR"}
 TASK_TYPE_IDS = {"r2r": 1, "rxr": 2}
 
 
@@ -51,67 +49,43 @@ class PredictorExample:
     dataset: str
 
 
-def _read_json(path: Path) -> Dict:
-    opener = gzip.open if path.suffix == ".gz" else open
-    with opener(path, "rt") as f:
-        return json.load(f)
-
-
 def _scene_key(scene_id: str) -> str:
     return os.path.splitext(os.path.basename(scene_id))[0]
 
 
-def _infer_dataset(path: Path, explicit_dataset: Optional[str]) -> str:
-    if explicit_dataset:
-        dataset = explicit_dataset.lower()
-    else:
-        lower_path = str(path).lower()
-        dataset = "rxr" if "rxr" in lower_path else "r2r"
-    if dataset not in DATASET_FLAGS:
-        raise ValueError(
-            f"dataset must be one of {sorted(DATASET_FLAGS)}, got {dataset}"
-        )
-    return dataset
-
-
 def load_predictor_examples(
-    dataset_paths: Sequence[Path],
-    dataset: Optional[str] = None,
+    dataset: str,
+    splits: Sequence[str],
     limit: Optional[int] = None,
 ) -> List[PredictorExample]:
     examples: List[PredictorExample] = []
-    for dataset_path in dataset_paths:
-        dataset_name = _infer_dataset(dataset_path, dataset)
-        data = _read_json(dataset_path)
-        for episode in data.get("episodes", []):
-            instruction = episode.get("instruction", {})
-            token_ids = instruction.get("instruction_tokens")
-            instruction_text = instruction.get("instruction_text")
-            reference_path = episode.get("reference_path")
-            start_rotation = episode.get("start_rotation")
-            if (
-                not token_ids
-                or not instruction_text
-                or not reference_path
-                or start_rotation is None
-            ):
-                continue
-            episode_id = str(episode["episode_id"])
-            scene_id = episode["scene_id"]
-            examples.append(
-                PredictorExample(
-                    episode_id=episode_id,
-                    scene_id=scene_id,
-                    instruction_text=instruction_text,
-                    token_ids=[int(token_id) for token_id in token_ids],
-                    reference_path=reference_path,
-                    start_rotation=start_rotation,
-                    dataset=dataset_name,
-                )
+    for entry in VLNCEEpisodeEntry.iter_from(
+        _dataset_name_for_vlnce(dataset),
+        splits=splits,
+    ):
+        examples.append(
+            PredictorExample(
+                episode_id=entry.sample_id,
+                scene_id=entry.scene_id,
+                instruction_text=entry.instruction,
+                token_ids=entry.instruction_tokens,
+                reference_path=entry.reference_path,
+                start_rotation=entry.start_rotation,
+                dataset=entry.dataset.lower(),
             )
-            if limit is not None and len(examples) >= limit:
-                return examples
+        )
+        if limit is not None and len(examples) >= limit:
+            return examples
     return examples
+
+
+def _dataset_name_for_vlnce(dataset: str) -> str:
+    dataset = dataset.lower()
+    if dataset == "r2r":
+        return "R2R"
+    if dataset == "rxr":
+        return "RxR"
+    raise ValueError(f"dataset must be r2r or rxr, got {dataset}")
 
 
 class CognitiveMapPredictorDataset(Dataset):
@@ -497,8 +471,8 @@ def _load_predictor_state_dict(checkpoint_path: Path) -> Dict[str, torch.Tensor]
 
 
 def _build_dataloader(
-    dataset_paths: Sequence[Path],
-    dataset_name: Optional[str],
+    dataset_name: str,
+    splits: Sequence[str],
     max_text_len: int,
     batch_size: int,
     num_workers: int,
@@ -506,8 +480,8 @@ def _build_dataloader(
     shuffle: bool,
 ) -> DataLoader:
     examples = load_predictor_examples(
-        dataset_paths,
-        dataset=dataset_name,
+        dataset_name,
+        splits=splits,
         limit=limit,
     )
     dataset = CognitiveMapPredictorDataset(examples)
@@ -526,15 +500,10 @@ def _build_dataloader(
 class TrainMapPredictorArgs(Tap):
     mode: Literal["train", "visualize"] = "train"
     exp_config: str = "run_r2r/iter_train.yaml"
-    train_dataset: List[Path] = [
-        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")
-    ]
-    val_dataset: List[Path] = [
-        Path(
-            "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
-        )
-    ]
-    dataset: Optional[Literal["r2r", "rxr"]] = None
+    dataset: Literal["r2r", "rxr"] = "r2r"
+    train_splits: List[str] = ["train"]
+    val_splits: List[str] = ["val_unseen"]
+    visualize_splits: List[str] = ["val_unseen"]
     output: Path = Path(
         "data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt"
     )
@@ -556,7 +525,6 @@ class TrainMapPredictorArgs(Tap):
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     opts: Optional[List[str]] = None
     predictor_checkpoint: Optional[Path] = None
-    visualize_dataset: Optional[Path] = None
     episode_id: Optional[str] = None
     episode_index: int = 0
     visualize_output_dir: Path = Path("data/visualizations/map_predictor")
@@ -568,27 +536,23 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> TrainMapPredictorArgs:
 
 
 def _select_visualize_example(args: TrainMapPredictorArgs) -> PredictorExample:
-    dataset_path = args.visualize_dataset
-    if dataset_path is None:
-        if not args.val_dataset:
-            raise ValueError(
-                "--visualize-dataset is required when --val-dataset is empty"
-            )
-        dataset_path = args.val_dataset[0]
-
-    examples = load_predictor_examples([dataset_path], dataset=args.dataset)
+    examples = load_predictor_examples(
+        args.dataset,
+        splits=args.visualize_splits,
+    )
     if args.episode_id is not None:
         for example in examples:
             if example.episode_id == args.episode_id:
                 return example
         raise ValueError(
-            f"episode_id={args.episode_id!r} was not found in {dataset_path}"
+            f"episode_id={args.episode_id!r} was not found in "
+            f"{args.dataset}:{args.visualize_splits}"
         )
 
     if not 0 <= args.episode_index < len(examples):
         raise IndexError(
             f"episode_index={args.episode_index} is out of range for "
-            f"{len(examples)} examples in {dataset_path}"
+            f"{len(examples)} examples in {args.dataset}:{args.visualize_splits}"
         )
     return examples[args.episode_index]
 
@@ -749,8 +713,8 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=0.01)
 
     train_loader = _build_dataloader(
-        dataset_paths=args.train_dataset,
         dataset_name=args.dataset,
+        splits=args.train_splits,
         max_text_len=max_text_len,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -758,10 +722,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         shuffle=True,
     )
     val_loader = None
-    if args.val_dataset:
+    if args.val_splits:
         val_loader = _build_dataloader(
-            dataset_paths=args.val_dataset,
             dataset_name=args.dataset,
+            splits=args.val_splits,
             max_text_len=max_text_len,
             batch_size=args.batch_size,
             num_workers=args.num_workers,

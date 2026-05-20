@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from gzip import open as gzip_open
 from json import load
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Sequence
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
@@ -25,6 +25,8 @@ class VLNCEEpisodeEntry:
     positions: list[list[float]]
     start_position: list[float]
     start_rotation: list[float]
+    instruction_tokens: list[int]
+    reference_path: list[list[float]]
     role: Optional[str] = None
 
     @staticmethod
@@ -64,6 +66,8 @@ class VLNCEEpisodeEntry:
                         positions=gt_entry["locations"],
                         start_position=episode["start_position"],
                         start_rotation=episode["start_rotation"],
+                        instruction_tokens=instruction_data["instruction_tokens"],
+                        reference_path=episode["reference_path"],
                         role=role,
                     )
 
@@ -92,7 +96,38 @@ def _scene_id_from_episode(raw_scene_id: str) -> str:
     return raw_scene_id.split("/")[1]
 
 
-def _files_for_split(dataset: str, split: str) -> list[tuple[Path, Path, Optional[str]]]:
+def _open_json(path: Path):
+    opener = gzip_open if path.suffix == ".gz" else open
+    return opener(path, "rt", encoding="utf-8")
+
+
+def _infer_dataset_name(path: Path, explicit_dataset: Optional[str]) -> str:
+    if explicit_dataset is not None:
+        dataset = explicit_dataset.lower()
+    else:
+        dataset = "rxr" if "rxr" in str(path).lower() else "r2r"
+    if dataset == "r2r":
+        return "R2R"
+    if dataset == "rxr":
+        return "RxR"
+    if dataset in {"R2R", "RxR"}:
+        return dataset
+    raise ValueError(f"Unsupported dataset: {explicit_dataset}")
+
+
+def _infer_split(path: Path) -> str:
+    for part in path.parts:
+        if part in DEFAULT_SPLITS:
+            return part
+    stem = path.stem
+    if stem.endswith(".json"):
+        return stem[: -len(".json")]
+    return stem
+
+
+def _files_for_split(
+    dataset: str, split: str
+) -> list[tuple[Path, Path, Optional[str]]]:
     if dataset == "R2R":
         split_dir = R2R_DIR / split
         return [

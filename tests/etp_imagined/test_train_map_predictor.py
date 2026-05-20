@@ -1,6 +1,5 @@
-import gzip
-import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -26,31 +25,47 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 )
 
 
-def _write_dataset(path: Path) -> None:
-    data = {
-        "episodes": [
-            {
-                "episode_id": "123",
-                "scene_id": "mp3d/TestScene/TestScene.glb",
-                "start_rotation": [0.0, 0.0, 0.0, 1.0],
-                "reference_path": [
-                    [1.0, 0.0, 2.0],
-                    [2.0, 0.0, 2.0],
-                ],
-                "instruction": {
-                    "instruction_text": "go to the chair",
-                    "instruction_tokens": [10, 11, 12],
-                },
-            },
-            {
-                "episode_id": "missing",
-                "scene_id": "mp3d/TestScene/TestScene.glb",
-                "instruction": {"instruction_tokens": [20, 21]},
-            },
-        ]
-    }
-    with gzip.open(path, "wt") as f:
-        json.dump(data, f)
+@dataclass
+class _EpisodeEntry:
+    dataset: str = "R2R"
+    split: str = "train"
+    scene_id: str = "TestScene"
+    episode_id: int = 123
+    instruction: str = "go to the chair"
+    positions: list = None
+    start_position: list = None
+    start_rotation: list = None
+    instruction_tokens: list = None
+    reference_path: list = None
+    role: str = None
+
+    def __post_init__(self):
+        if self.positions is None:
+            self.positions = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
+        if self.start_position is None:
+            self.start_position = [1.0, 0.0, 2.0]
+        if self.start_rotation is None:
+            self.start_rotation = [0.0, 0.0, 0.0, 1.0]
+        if self.instruction_tokens is None:
+            self.instruction_tokens = [10, 11, 12]
+        if self.reference_path is None:
+            self.reference_path = self.positions
+
+    @property
+    def sample_id(self):
+        if self.role is None:
+            return str(self.episode_id)
+        return f"{self.episode_id}.{self.role}"
+
+
+def _patch_episode_entries(monkeypatch, entries=None) -> None:
+    if entries is None:
+        entries = [_EpisodeEntry()]
+    monkeypatch.setattr(
+        train_map_predictor.VLNCEEpisodeEntry,
+        "iter_from",
+        lambda dataset, splits: iter(entries),
+    )
 
 
 def _patch_cognitive_map_generation(monkeypatch) -> None:
@@ -74,31 +89,29 @@ def _patch_cognitive_map_generation(monkeypatch) -> None:
     )
 
 
-def test_load_predictor_examples_matches_dataset_scene_episode(tmp_path):
-    dataset_path = tmp_path / "train.json.gz"
-    _write_dataset(dataset_path)
+def test_load_predictor_examples_matches_dataset_scene_episode(monkeypatch):
+    _patch_episode_entries(monkeypatch)
 
     examples = load_predictor_examples(
-        [dataset_path],
         dataset="r2r",
+        splits=["train"],
     )
 
     assert len(examples) == 1
     assert examples[0].episode_id == "123"
-    assert examples[0].scene_id == "mp3d/TestScene/TestScene.glb"
+    assert examples[0].scene_id == "TestScene"
     assert examples[0].instruction_text == "go to the chair"
     assert examples[0].token_ids == [10, 11, 12]
     assert examples[0].reference_path == [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
     assert examples[0].start_rotation == [0.0, 0.0, 0.0, 1.0]
 
 
-def test_collate_predictor_batch_pads_tokens_and_task_encoding(tmp_path, monkeypatch):
-    dataset_path = tmp_path / "train.json.gz"
-    _write_dataset(dataset_path)
+def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
+    _patch_episode_entries(monkeypatch)
     _patch_cognitive_map_generation(monkeypatch)
     examples = load_predictor_examples(
-        [dataset_path],
         dataset="r2r",
+        splits=["train"],
     )
     item = CognitiveMapPredictorDataset(examples)[0]
 

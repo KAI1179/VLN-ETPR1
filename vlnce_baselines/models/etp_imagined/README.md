@@ -133,6 +133,7 @@ from `reference_path`, matching PriorGT training.
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --dataset r2r \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
 ```
 
@@ -143,6 +144,7 @@ multiple GPUs are visible, it wraps the frozen text encoder and predictor in one
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --dataset r2r --train-splits train --val-splits val_unseen \
   --epochs 3 --batch-size 32 --limit 1024 --val-limit 256 \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
 ```
@@ -173,8 +175,9 @@ without running Habitat rollout:
 ```bash
 CUDA_VISIBLE_DEVICES=1 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
   --mode visualize \
+  --dataset r2r \
+  --visualize-splits val_unseen \
   --predictor-checkpoint data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.best.pt \
-  --visualize-dataset data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz \
   --episode-index 0 \
   --visualize-output-dir data/visualizations/map_predictor \
   --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
@@ -188,7 +191,7 @@ Selection options:
 
 - `--episode-index N` selects by dataset order.
 - `--episode-id ID` selects a specific episode.
-- `--visualize-dataset PATH` overrides the default first validation dataset.
+- `--visualize-splits SPLIT [SPLIT ...]` selects one or more VLN-CE splits.
 - `--skip-ground-truth` saves only `predicted.png`; otherwise it also saves
   `ground_truth.png` from the on-the-fly cognitive-map generator.
 
