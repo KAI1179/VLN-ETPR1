@@ -5,14 +5,13 @@ instructions and on-the-fly cognitive-map targets. It deliberately avoids
 Habitat rollout and navigation loss.
 """
 
-import argparse
 import gzip
 import json
 import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -33,6 +32,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 )
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from prior.directions import start_rotation_to_direction_vector
+from prior.grid_map import CognitiveGridMap
 
 
 PAD_ID = 1
@@ -470,6 +470,32 @@ def save_checkpoint(
     )
 
 
+def _load_predictor_state_dict(checkpoint_path: Path) -> Dict[str, torch.Tensor]:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if "map_predictor" in checkpoint:
+        return checkpoint["map_predictor"]
+
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    predictor_state_dict = {}
+    for key, value in state_dict.items():
+        normalized_key = key
+        if normalized_key.startswith("module."):
+            normalized_key = normalized_key[len("module.") :]
+        if normalized_key.startswith("map_predictor."):
+            normalized_key = normalized_key[len("map_predictor.") :]
+        elif normalized_key.startswith("predictor."):
+            normalized_key = normalized_key[len("predictor.") :]
+        else:
+            continue
+        predictor_state_dict[normalized_key] = value
+
+    if not predictor_state_dict:
+        raise ValueError(
+            f"No map predictor weights found in checkpoint: {checkpoint_path}"
+        )
+    return predictor_state_dict
+
+
 def _build_dataloader(
     dataset_paths: Sequence[Path],
     dataset_name: Optional[str],
@@ -498,6 +524,7 @@ def _build_dataloader(
 
 
 class TrainMapPredictorArgs(Tap):
+    mode: Literal["train", "visualize"] = "train"
     exp_config: str = "run_r2r/iter_train.yaml"
     train_dataset: List[Path] = [
         Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")
@@ -507,14 +534,14 @@ class TrainMapPredictorArgs(Tap):
             "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
         )
     ]
-    dataset: Optional[str] = None
+    dataset: Optional[Literal["r2r", "rxr"]] = None
     output: Path = Path(
         "data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt"
     )
     batch_size: int = 8
     epochs: int = 20
     lr: float = 1e-4
-    loss: str = "bce"
+    loss: Literal["bce", "focal"] = "bce"
     max_pos_weight: float = 20.0
     focal_gamma: float = 2.0
     direction_loss_weight: float = 0.1
@@ -528,62 +555,161 @@ class TrainMapPredictorArgs(Tap):
     log_every: int = 1
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     opts: Optional[List[str]] = None
-
-    def configure(self) -> None:
-        self.add_argument("--exp-config", default=TrainMapPredictorArgs.exp_config)
-        self.add_argument(
-            "--train-dataset",
-            nargs="+",
-            type=Path,
-            default=TrainMapPredictorArgs.train_dataset,
-        )
-        self.add_argument(
-            "--val-dataset",
-            nargs="+",
-            type=Path,
-            default=TrainMapPredictorArgs.val_dataset,
-        )
-        self.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
-        self.add_argument("--output", type=Path, default=TrainMapPredictorArgs.output)
-        self.add_argument(
-            "--batch-size", type=int, default=TrainMapPredictorArgs.batch_size
-        )
-        self.add_argument(
-            "--loss", choices=["bce", "focal"], default=TrainMapPredictorArgs.loss
-        )
-        self.add_argument(
-            "--max-pos-weight", type=float, default=TrainMapPredictorArgs.max_pos_weight
-        )
-        self.add_argument(
-            "--focal-gamma", type=float, default=TrainMapPredictorArgs.focal_gamma
-        )
-        self.add_argument(
-            "--direction-loss-weight",
-            type=float,
-            default=TrainMapPredictorArgs.direction_loss_weight,
-        )
-        self.add_argument(
-            "--init-positive-prob",
-            type=float,
-            default=TrainMapPredictorArgs.init_positive_prob,
-        )
-        self.add_argument("--max-text-len", type=int, default=None)
-        self.add_argument(
-            "--num-workers", type=int, default=TrainMapPredictorArgs.num_workers
-        )
-        self.add_argument("--val-limit", type=int, default=None)
-        self.add_argument(
-            "--log-every", type=int, default=TrainMapPredictorArgs.log_every
-        )
-        self.add_argument("--opts", nargs=argparse.REMAINDER, default=None)
+    predictor_checkpoint: Optional[Path] = None
+    visualize_dataset: Optional[Path] = None
+    episode_id: Optional[str] = None
+    episode_index: int = 0
+    visualize_output_dir: Path = Path("data/visualizations/map_predictor")
+    skip_ground_truth: bool = False
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> TrainMapPredictorArgs:
-    return TrainMapPredictorArgs().parse_args(argv)
+    return TrainMapPredictorArgs(underscores_to_dashes=True).parse_args(argv)
+
+
+def _select_visualize_example(args: TrainMapPredictorArgs) -> PredictorExample:
+    dataset_path = args.visualize_dataset
+    if dataset_path is None:
+        if not args.val_dataset:
+            raise ValueError(
+                "--visualize-dataset is required when --val-dataset is empty"
+            )
+        dataset_path = args.val_dataset[0]
+
+    examples = load_predictor_examples([dataset_path], dataset=args.dataset)
+    if args.episode_id is not None:
+        for example in examples:
+            if example.episode_id == args.episode_id:
+                return example
+        raise ValueError(
+            f"episode_id={args.episode_id!r} was not found in {dataset_path}"
+        )
+
+    if not 0 <= args.episode_index < len(examples):
+        raise IndexError(
+            f"episode_index={args.episode_index} is out of range for "
+            f"{len(examples)} examples in {dataset_path}"
+        )
+    return examples[args.episode_index]
+
+
+def _prediction_to_cognitive_grid_map(
+    grid: torch.Tensor,
+    direction_vectors: torch.Tensor,
+    start_direction_vector: torch.Tensor,
+    start_position: torch.Tensor,
+) -> CognitiveGridMap:
+    cognitive_map = CognitiveGridMap()
+    cognitive_map.grid = grid.detach().cpu().numpy().astype(np.float32)
+    cognitive_map.direction_vectors = [
+        (float(vector[0]), float(vector[1]))
+        for vector in direction_vectors.detach().cpu().tolist()
+    ]
+    cognitive_map.start_direction_vector = (
+        float(start_direction_vector[0].detach().cpu()),
+        float(start_direction_vector[1].detach().cpu()),
+    )
+    cognitive_map.positions = [
+        (
+            float(start_position[0].detach().cpu()),
+            float(start_position[1].detach().cpu()),
+        )
+    ]
+    return cognitive_map
+
+
+def visualize_prediction(args: TrainMapPredictorArgs) -> None:
+    if args.predictor_checkpoint is None:
+        raise ValueError("--predictor-checkpoint is required for --mode visualize")
+    if not args.predictor_checkpoint.exists():
+        raise FileNotFoundError(args.predictor_checkpoint)
+
+    config = get_config(args.exp_config, args.opts)
+    max_text_len = args.max_text_len or config.IL.max_text_len
+    device = torch.device(args.device)
+
+    pretrained_path = getattr(config.MODEL, "pretrained_path", None)
+    if pretrained_path and not Path(pretrained_path).exists():
+        raise FileNotFoundError(
+            f"MODEL.pretrained_path does not exist: {pretrained_path}. "
+            "Pass a valid VLN checkpoint with --opts MODEL.pretrained_path <path>."
+        )
+
+    vln_bert = get_vlnbert_models(config.MODEL, dropout_rate=0.0).to(device)
+    vln_bert.eval()
+    for param in vln_bert.parameters():
+        param.requires_grad_(False)
+
+    predictor = InstructionCognitiveMapPredictor(
+        hidden_size=vln_bert.config.hidden_size,
+        num_heads=vln_bert.config.num_attention_heads,
+        num_layers=2,
+        dropout=0.0,
+    ).to(device)
+    predictor.load_state_dict(_load_predictor_state_dict(args.predictor_checkpoint))
+    predictor.eval()
+
+    model = CognitiveMapPredictionModel(vln_bert=vln_bert, predictor=predictor).to(
+        device
+    )
+    model.eval()
+
+    example = _select_visualize_example(args)
+    item = CognitiveMapPredictorDataset([example])[0]
+    batch = collate_predictor_batch([item], max_text_len=max_text_len)
+    batch = _move_batch(batch, device)
+
+    with torch.no_grad():
+        map_logits, direction_vectors = model(
+            batch["txt_ids"],
+            batch["txt_task_encoding"],
+            batch["txt_masks"],
+            batch["start_direction_vectors"],
+            batch["start_positions"],
+        )
+        predicted_grid = torch.sigmoid(map_logits[0])
+
+    output_dir = args.visualize_output_dir / f"episode_{example.episode_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    predicted_map = _prediction_to_cognitive_grid_map(
+        predicted_grid,
+        direction_vectors[0],
+        batch["start_direction_vectors"][0],
+        batch["start_positions"][0],
+    )
+    predicted_path = output_dir / "predicted.png"
+    predicted_map.visualize(
+        predicted_path,
+        title=f"Predicted Cognitive Map: episode {example.episode_id}",
+    )
+
+    if not args.skip_ground_truth:
+        ground_truth_map = build_cognitive_map(
+            example.scene_id,
+            example.instruction_text,
+            example.reference_path,
+            start_rotation_to_direction_vector(example.start_rotation),
+        )
+        ground_truth_path = output_dir / "ground_truth.png"
+        ground_truth_map.visualize(
+            ground_truth_path,
+            title=f"Ground Truth Cognitive Map: episode {example.episode_id}",
+        )
+
+    print(f"episode_id={example.episode_id}")
+    print(f"instruction={example.instruction_text}")
+    print(f"saved_predicted={predicted_path}")
+    if not args.skip_ground_truth:
+        print(f"saved_ground_truth={ground_truth_path}")
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = parse_args(argv)
+    if args.mode == "visualize":
+        visualize_prediction(args)
+        return
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)

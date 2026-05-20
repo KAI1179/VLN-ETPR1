@@ -127,9 +127,9 @@ That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
 rollout. It should save predictor weights that the full imagined policy can load
 before SS/DAgger fine-tuning.
 
-A standalone predictor trainer is provided for this. It reads the VLN dataset
-episodes and generates cognitive-map targets on the fly from `reference_path`,
-matching PriorGT training.
+A standalone predictor script is provided for this. In its default `train` mode,
+it reads the VLN dataset episodes and generates cognitive-map targets on the fly
+from `reference_path`, matching PriorGT training.
 
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
@@ -164,6 +164,44 @@ args
 ```
 
 Use `--limit N` and `--val-limit N` for quick smoke runs.
+
+### Predictor Visualization
+
+The same script can load a predictor checkpoint and visualize one generated map
+without running Habitat rollout:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
+  --mode visualize \
+  --predictor-checkpoint data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.best.pt \
+  --visualize-dataset data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz \
+  --episode-index 0 \
+  --visualize-output-dir data/visualizations/map_predictor \
+  --opts MODEL.task_type r2r MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt
+```
+
+Use `nvidia-smi` first and bind `CUDA_VISIBLE_DEVICES` to a vacant card. The
+visualizer loads the frozen VLN text encoder plus the map predictor, so it can
+use several GB of GPU memory even for one example.
+
+Selection options:
+
+- `--episode-index N` selects by dataset order.
+- `--episode-id ID` selects a specific episode.
+- `--visualize-dataset PATH` overrides the default first validation dataset.
+- `--skip-ground-truth` saves only `predicted.png`; otherwise it also saves
+  `ground_truth.png` from the on-the-fly cognitive-map generator.
+
+The generated images are written to:
+
+```text
+<visualize-output-dir>/episode_<episode_id>/predicted.png
+<visualize-output-dir>/episode_<episode_id>/ground_truth.png
+```
+
+The script uses `typed-argument-parser` (`Tap`) field inference with dashed CLI
+names, so Python fields such as `predictor_checkpoint` are exposed as
+`--predictor-checkpoint`.
 
 ## Scope
 
