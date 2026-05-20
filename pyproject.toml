@@ -65,7 +65,7 @@ dependencies = [
     "oauthlib==3.1.1",
     "objectio==0.2.29",
     "omegaconf==2.3.0",
-    "opencv-python==4.5.5.62",
+    "opencv-python==4.5.5.64",
     "packaging==21.3",
     "platformdirs==2.5.4",
     "pre-commit==2.16.0",
