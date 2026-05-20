@@ -155,10 +155,10 @@ def construct_grid_map_from_level(
 
     # Read regions
     for region in semantic_level.regions:
-        assert isinstance(
-            region.category, Mp3dRegionCategory
-        ), "Region category is not Mp3dRegionCategory"
-        category = cast(Mp3dRegionCategory, region.category)
+        assert isinstance(region.category, Mp3dRegionCategory), (
+            "Region category is not Mp3dRegionCategory"
+        )
+        category = region.category
         mapped_category = REGION_MAPPING[category.index()]
 
         # Set region value to 1 of mapped category in grid map.
@@ -180,10 +180,10 @@ def construct_grid_map_from_level(
         # Read objects
         # NOTE: We do not access semantic_level.objects, since its always empty. Instead, semantic_scene.objects and region.objects work correctly.
         for obj in region.objects:
-            assert isinstance(
-                obj.category, Mp3dObjectCategory
-            ), "Object category is not Mp3dObjectCategory"
-            category = cast(Mp3dObjectCategory, obj.category)
+            assert isinstance(obj.category, Mp3dObjectCategory), (
+                "Object category is not Mp3dObjectCategory"
+            )
+            category = obj.category
             mapped_category = OBJECT_MAPPING[category.index()]
 
             # Set object value to 1 of mapped category in grid map.

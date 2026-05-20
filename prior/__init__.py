@@ -20,6 +20,9 @@ R2R_DIR = DATA_DIR / "datasets" / "R2R_VLNCE_v1-3_preprocessed"
 RxR_DIR = DATA_DIR / "datasets" / "RxR_VLNCE_v0"
 """RxR dataset directory."""
 
+VISUALIZATIONS_DIR = DATA_DIR / "visualizations"
+"""Directory to save visualizations."""
+
 __all__ = [
     "DATA_DIR",
     "MP3D_DIR",
