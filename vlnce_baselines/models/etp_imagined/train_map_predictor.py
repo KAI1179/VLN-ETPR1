@@ -68,7 +68,9 @@ def _infer_dataset(path: Path, explicit_dataset: Optional[str]) -> str:
         lower_path = str(path).lower()
         dataset = "rxr" if "rxr" in lower_path else "r2r"
     if dataset not in DATASET_FLAGS:
-        raise ValueError(f"dataset must be one of {sorted(DATASET_FLAGS)}, got {dataset}")
+        raise ValueError(
+            f"dataset must be one of {sorted(DATASET_FLAGS)}, got {dataset}"
+        )
     return dataset
 
 
@@ -87,7 +89,12 @@ def load_predictor_examples(
             instruction_text = instruction.get("instruction_text")
             reference_path = episode.get("reference_path")
             start_rotation = episode.get("start_rotation")
-            if not token_ids or not instruction_text or not reference_path or start_rotation is None:
+            if (
+                not token_ids
+                or not instruction_text
+                or not reference_path
+                or start_rotation is None
+            ):
                 continue
             episode_id = str(episode["episode_id"])
             scene_id = episode["scene_id"]
@@ -130,7 +137,9 @@ class CognitiveMapPredictorDataset(Dataset):
         start_direction_vector = tensors["start_direction_vector"].float()
         start_position = tensors["start_position"].float()
         if grid.shape != (NUM_MAP_CATEGORIES, SIZE, SIZE):
-            raise ValueError(f"Bad grid shape for episode {example.episode_id}: {tuple(grid.shape)}")
+            raise ValueError(
+                f"Bad grid shape for episode {example.episode_id}: {tuple(grid.shape)}"
+            )
         if direction_vectors.shape != (DIRECTION_VECTOR_CNT, 2):
             raise ValueError(
                 f"Bad direction_vectors shape for episode {example.episode_id}: "
@@ -177,7 +186,9 @@ class CognitiveMapPredictionModel(torch.nn.Module):
         start_positions: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
-            txt_embeds = self.vln_bert.forward_txt(txt_ids, txt_task_encoding, txt_masks)
+            txt_embeds = self.vln_bert.forward_txt(
+                txt_ids, txt_task_encoding, txt_masks
+            )
         return self.predictor(
             txt_embeds,
             txt_masks,
@@ -186,13 +197,19 @@ class CognitiveMapPredictionModel(torch.nn.Module):
         )
 
 
-def collate_predictor_batch(batch: Sequence[Dict], max_text_len: int, pad_id: int = PAD_ID) -> Dict:
+def collate_predictor_batch(
+    batch: Sequence[Dict], max_text_len: int, pad_id: int = PAD_ID
+) -> Dict:
     batch_size = len(batch)
     txt_ids = torch.full((batch_size, max_text_len), pad_id, dtype=torch.long)
     txt_task_encoding = torch.zeros((batch_size, max_text_len), dtype=torch.long)
     grids = torch.stack([item["grid"] for item in batch], dim=0)
-    direction_vectors = torch.stack([item["direction_vectors"] for item in batch], dim=0)
-    start_direction_vectors = torch.stack([item["start_direction_vector"] for item in batch], dim=0)
+    direction_vectors = torch.stack(
+        [item["direction_vectors"] for item in batch], dim=0
+    )
+    start_direction_vectors = torch.stack(
+        [item["start_direction_vector"] for item in batch], dim=0
+    )
     start_positions = torch.stack([item["start_position"] for item in batch], dim=0)
     for i, item in enumerate(batch):
         tokens = item["token_ids"][:max_text_len]
@@ -233,15 +250,21 @@ def _parse_thresholds(thresholds: str) -> Tuple[float, ...]:
     return parsed
 
 
-def _topk_recall(probs: torch.Tensor, target_mask: torch.Tensor, fraction: float) -> float:
+def _topk_recall(
+    probs: torch.Tensor, target_mask: torch.Tensor, fraction: float
+) -> float:
     flat_probs = probs.flatten()
     flat_target = target_mask.flatten()
     positives = int(flat_target.sum().item())
     if positives == 0:
         return 0.0
     k = max(1, int(flat_probs.numel() * fraction))
-    topk_idx = torch.topk(flat_probs, k=min(k, flat_probs.numel()), largest=True).indices
-    return (flat_target[topk_idx].sum().float() / flat_target.sum().float().clamp_min(1.0)).item()
+    topk_idx = torch.topk(
+        flat_probs, k=min(k, flat_probs.numel()), largest=True
+    ).indices
+    return (
+        flat_target[topk_idx].sum().float() / flat_target.sum().float().clamp_min(1.0)
+    ).item()
 
 
 def compute_metrics(
@@ -315,7 +338,9 @@ def compute_direction_metrics(
 ) -> Dict[str, float]:
     target_norm = target_direction_vectors.norm(dim=-1)
     valid = target_norm > 0.5
-    mae = torch.mean(torch.abs(pred_direction_vectors - target_direction_vectors)).item()
+    mae = torch.mean(
+        torch.abs(pred_direction_vectors - target_direction_vectors)
+    ).item()
     if valid.any():
         pred_unit = F.normalize(pred_direction_vectors[valid], dim=-1)
         target_unit = F.normalize(target_direction_vectors[valid], dim=-1)
@@ -328,7 +353,9 @@ def compute_direction_metrics(
     }
 
 
-def initialize_output_prior(predictor: InstructionCognitiveMapPredictor, positive_prob: float) -> None:
+def initialize_output_prior(
+    predictor: InstructionCognitiveMapPredictor, positive_prob: float
+) -> None:
     if not 0.0 < positive_prob < 1.0:
         raise ValueError(f"--init-positive-prob must be in (0, 1), got {positive_prob}")
     final_head = predictor.output_head[-1]
@@ -385,7 +412,9 @@ def _iterate_batches(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-        metrics = compute_metrics(logits.detach(), batch["grids"], thresholds=thresholds)
+        metrics = compute_metrics(
+            logits.detach(), batch["grids"], thresholds=thresholds
+        )
         metrics.update(
             compute_direction_metrics(
                 pred_direction_vectors.detach(),
@@ -417,8 +446,14 @@ def save_checkpoint(
     args: object,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    unwrapped_model = model.module if isinstance(model, torch.nn.DataParallel) else model
-    predictor = unwrapped_model.predictor if hasattr(unwrapped_model, "predictor") else unwrapped_model
+    unwrapped_model = (
+        model.module if isinstance(model, torch.nn.DataParallel) else model
+    )
+    predictor = (
+        unwrapped_model.predictor
+        if hasattr(unwrapped_model, "predictor")
+        else unwrapped_model
+    )
     map_predictor = predictor.state_dict()
     torch.save(
         {
@@ -426,7 +461,9 @@ def save_checkpoint(
             "metrics": metrics,
             "args": _args_to_dict(args),
             "map_predictor": map_predictor,
-            "state_dict": {f"map_predictor.{key}": value for key, value in map_predictor.items()},
+            "state_dict": {
+                f"map_predictor.{key}": value for key, value in map_predictor.items()
+            },
             "optimizer": optimizer.state_dict(),
         },
         output_path,
@@ -454,7 +491,9 @@ def _build_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        collate_fn=lambda batch: collate_predictor_batch(batch, max_text_len=max_text_len),
+        collate_fn=lambda batch: collate_predictor_batch(
+            batch, max_text_len=max_text_len
+        ),
     )
 
 
@@ -464,12 +503,16 @@ class TrainMapPredictorArgs(Tap):
         Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")
     ]
     val_dataset: List[Path] = [
-        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")
+        Path(
+            "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        )
     ]
     dataset: Optional[str] = None
-    output: Path = Path("data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt")
+    output: Path = Path(
+        "data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.pt"
+    )
     batch_size: int = 8
-    epochs: int = 5
+    epochs: int = 20
     lr: float = 1e-4
     loss: str = "bce"
     max_pos_weight: float = 20.0
@@ -502,10 +545,18 @@ class TrainMapPredictorArgs(Tap):
         )
         self.add_argument("--dataset", choices=sorted(DATASET_FLAGS), default=None)
         self.add_argument("--output", type=Path, default=TrainMapPredictorArgs.output)
-        self.add_argument("--batch-size", type=int, default=TrainMapPredictorArgs.batch_size)
-        self.add_argument("--loss", choices=["bce", "focal"], default=TrainMapPredictorArgs.loss)
-        self.add_argument("--max-pos-weight", type=float, default=TrainMapPredictorArgs.max_pos_weight)
-        self.add_argument("--focal-gamma", type=float, default=TrainMapPredictorArgs.focal_gamma)
+        self.add_argument(
+            "--batch-size", type=int, default=TrainMapPredictorArgs.batch_size
+        )
+        self.add_argument(
+            "--loss", choices=["bce", "focal"], default=TrainMapPredictorArgs.loss
+        )
+        self.add_argument(
+            "--max-pos-weight", type=float, default=TrainMapPredictorArgs.max_pos_weight
+        )
+        self.add_argument(
+            "--focal-gamma", type=float, default=TrainMapPredictorArgs.focal_gamma
+        )
         self.add_argument(
             "--direction-loss-weight",
             type=float,
@@ -517,9 +568,13 @@ class TrainMapPredictorArgs(Tap):
             default=TrainMapPredictorArgs.init_positive_prob,
         )
         self.add_argument("--max-text-len", type=int, default=None)
-        self.add_argument("--num-workers", type=int, default=TrainMapPredictorArgs.num_workers)
+        self.add_argument(
+            "--num-workers", type=int, default=TrainMapPredictorArgs.num_workers
+        )
         self.add_argument("--val-limit", type=int, default=None)
-        self.add_argument("--log-every", type=int, default=TrainMapPredictorArgs.log_every)
+        self.add_argument(
+            "--log-every", type=int, default=TrainMapPredictorArgs.log_every
+        )
         self.add_argument("--opts", nargs=argparse.REMAINDER, default=None)
 
 
@@ -557,10 +612,14 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         dropout=0.0,
     ).to(device)
     initialize_output_prior(predictor, args.init_positive_prob)
-    model = CognitiveMapPredictionModel(vln_bert=vln_bert, predictor=predictor).to(device)
+    model = CognitiveMapPredictionModel(vln_bert=vln_bert, predictor=predictor).to(
+        device
+    )
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
-        print(f"Using {torch.cuda.device_count()} CUDA devices for text encoder + predictor DataParallel")
+        print(
+            f"Using {torch.cuda.device_count()} CUDA devices for text encoder + predictor DataParallel"
+        )
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=0.01)
 
     train_loader = _build_dataloader(
@@ -618,12 +677,21 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         else:
             selection_metric = -_best_iou(train_metrics)
         if epoch % args.log_every == 0:
-            metric_text = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
+            metric_text = " ".join(
+                f"{key}={value:.5f}" for key, value in metrics.items()
+            )
             print(f"epoch={epoch} {metric_text}")
         save_checkpoint(args.output, model, optimizer, epoch, metrics, args)
         if selection_metric < best_metric:
             best_metric = selection_metric
-            save_checkpoint(args.output.with_suffix(".best.pt"), model, optimizer, epoch, metrics, args)
+            save_checkpoint(
+                args.output.with_suffix(".best.pt"),
+                model,
+                optimizer,
+                epoch,
+                metrics,
+                args,
+            )
 
 
 if __name__ == "__main__":
