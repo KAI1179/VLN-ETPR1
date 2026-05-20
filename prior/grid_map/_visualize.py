@@ -151,7 +151,7 @@ def visualize(
         scale = 0.9 / max_abs if max_abs > 0.9 else 1.0
         scaled_points = [(x * scale, y * scale) for x, y in points]
 
-        colors = plt.cm.tab10(np.linspace(0, 1, len(visible_vectors)))
+        colors = plt.colormaps["tab10"](np.linspace(0, 1, len(visible_vectors)))
         for index, ((start_x, start_y), (end_x, end_y), color) in enumerate(
             zip(scaled_points[:-1], scaled_points[1:], colors),
             start=1,
