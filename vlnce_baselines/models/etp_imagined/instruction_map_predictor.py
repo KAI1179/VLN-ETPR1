@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Optional
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DIRECTION_VECTOR_CNT,
@@ -100,11 +100,17 @@ class InstructionCognitiveMapPredictor(nn.Module):
     ):
         super().__init__()
         if hidden_size % num_heads != 0:
-            raise ValueError(f"hidden_size must be divisible by num_heads, got {hidden_size}, {num_heads}")
+            raise ValueError(
+                f"hidden_size must be divisible by num_heads, got {hidden_size}, {num_heads}"
+            )
         if latent_grid_size <= 0:
-            raise ValueError(f"latent_grid_size must be positive, got {latent_grid_size}")
+            raise ValueError(
+                f"latent_grid_size must be positive, got {latent_grid_size}"
+            )
         if decoder_channels % 8 != 0:
-            raise ValueError(f"decoder_channels must be divisible by 8, got {decoder_channels}")
+            raise ValueError(
+                f"decoder_channels must be divisible by 8, got {decoder_channels}"
+            )
         self.hidden_size = hidden_size
         self.latent_grid_size = latent_grid_size
         self.latent_count = latent_grid_size * latent_grid_size
@@ -159,7 +165,9 @@ class InstructionCognitiveMapPredictor(nn.Module):
         start_positions: torch.Tensor,
     ) -> None:
         if txt_embeds.dim() != 3:
-            raise ValueError(f"txt_embeds must have shape (B, L, H), got {tuple(txt_embeds.shape)}")
+            raise ValueError(
+                f"txt_embeds must have shape (B, L, H), got {tuple(txt_embeds.shape)}"
+            )
         if txt_masks.dim() != 2 or txt_masks.shape != txt_embeds.shape[:2]:
             raise ValueError(
                 f"txt_masks must have shape {tuple(txt_embeds.shape[:2])}, got {tuple(txt_masks.shape)}"
@@ -168,12 +176,18 @@ class InstructionCognitiveMapPredictor(nn.Module):
             raise ValueError(
                 f"txt_embeds hidden size must be {self.hidden_size}, got {txt_embeds.shape[-1]}"
             )
-        if start_direction_vectors.dim() != 2 or start_direction_vectors.shape != (txt_embeds.shape[0], 2):
+        if start_direction_vectors.dim() != 2 or start_direction_vectors.shape != (
+            txt_embeds.shape[0],
+            2,
+        ):
             raise ValueError(
                 "start_direction_vectors must have shape "
                 f"({txt_embeds.shape[0]}, 2), got {tuple(start_direction_vectors.shape)}"
             )
-        if start_positions.dim() != 2 or start_positions.shape != (txt_embeds.shape[0], 2):
+        if start_positions.dim() != 2 or start_positions.shape != (
+            txt_embeds.shape[0],
+            2,
+        ):
             raise ValueError(
                 f"start_positions must have shape ({txt_embeds.shape[0]}, 2), got {tuple(start_positions.shape)}"
             )
@@ -182,15 +196,17 @@ class InstructionCognitiveMapPredictor(nn.Module):
         self,
         txt_embeds: torch.Tensor,
         txt_masks: torch.Tensor,
-        start_direction_vectors: torch.Tensor = None,
-        start_positions: torch.Tensor = None,
+        start_direction_vectors: Optional[torch.Tensor] = None,
+        start_positions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = txt_embeds.shape[0]
         if start_direction_vectors is None:
             start_direction_vectors = txt_embeds.new_zeros(batch_size, 2)
         if start_positions is None:
             start_positions = txt_embeds.new_zeros(batch_size, 2)
-        self._validate_inputs(txt_embeds, txt_masks, start_direction_vectors, start_positions)
+        self._validate_inputs(
+            txt_embeds, txt_masks, start_direction_vectors, start_positions
+        )
         batch_size = txt_embeds.shape[0]
         queries = self.map_queries + self.map_pos
         queries = queries.expand(batch_size, -1, -1)
@@ -214,5 +230,7 @@ class InstructionCognitiveMapPredictor(nn.Module):
         )
         logits = self.output_head(self.decoder(latent))
         if logits.shape[-2:] != (SIZE, SIZE):
-            logits = F.interpolate(logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False)
+            logits = F.interpolate(
+                logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False
+            )
         return logits, direction_vectors
