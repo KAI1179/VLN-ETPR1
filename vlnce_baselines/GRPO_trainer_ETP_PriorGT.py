@@ -930,6 +930,49 @@ class RLTrainer(BaseVLNCETrainer):
             data_this_sample = self.sample_once(observations)
             self.data_buffer.append(data_this_sample)
 
+    def _should_build_cognitive_maps(self, map_cfg):
+        return map_cfg.enabled
+
+    def _build_cognitive_maps(self):
+        return _build_cognitive_maps_for_episodes(self.envs.current_episodes())
+
+    def _prepare_map_inputs(
+        self,
+        nav_inputs,
+        txt_embeds,
+        txt_masks,
+        cognitive_maps,
+        map_cfg,
+    ):
+        if not map_cfg.enabled or cognitive_maps is None:
+            return None, None
+        cognitive_crops = torch.stack([
+            cognitive_map["grid"]
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        direction_vectors = torch.stack([
+            cognitive_map["direction_vectors"]
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        start_direction_vectors = torch.stack([
+            cognitive_map["start_direction_vector"]
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        start_positions = torch.stack([
+            cognitive_map["start_position"]
+            for cognitive_map in cognitive_maps[:self.envs.num_envs]
+        ]).to(self.device)
+        map_tokens, map_token_masks = self.policy.net(
+            mode='map_encoding',
+            cognitive_crops=cognitive_crops,
+            direction_vectors=direction_vectors,
+            start_direction_vectors=start_direction_vectors,
+            start_positions=start_positions,
+        )
+        nav_inputs['map_tokens'] = map_tokens
+        nav_inputs['map_token_masks'] = map_token_masks
+        return map_tokens, map_token_masks
+
     def sample_once(self, initial_obs):
         mode = 'train'
 
@@ -978,8 +1021,8 @@ class RLTrainer(BaseVLNCETrainer):
 
         # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
-        if map_cfg.enabled:
-            cognitive_maps = _build_cognitive_maps_for_episodes(self.envs.current_episodes())
+        if self._should_build_cognitive_maps(map_cfg):
+            cognitive_maps = self._build_cognitive_maps()
         else:
             cognitive_maps = None
 
@@ -1043,35 +1086,13 @@ class RLTrainer(BaseVLNCETrainer):
             nav_inputs_for_gpu['txt_embeds'] = txt_embeds
             nav_inputs_for_gpu['txt_masks'] = txt_masks
 
-            # Cognitive map encoding (use the full dynamically generated map directly)
-            current_map_tokens = None
-            current_map_token_masks = None
-            if map_cfg.enabled and cognitive_maps is not None:
-                cognitive_crops = torch.stack([
-                    cognitive_map["grid"]
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                direction_vectors = torch.stack([
-                    cognitive_map["direction_vectors"]
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                start_direction_vectors = torch.stack([
-                    cognitive_map["start_direction_vector"]
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                start_positions = torch.stack([
-                    cognitive_map["start_position"]
-                    for cognitive_map in cognitive_maps[:self.envs.num_envs]
-                ]).to(self.device)
-                current_map_tokens, current_map_token_masks = self.policy.net(
-                    mode='map_encoding',
-                    cognitive_crops=cognitive_crops,
-                    direction_vectors=direction_vectors,
-                    start_direction_vectors=start_direction_vectors,
-                    start_positions=start_positions,
-                )
-                nav_inputs_for_gpu['map_tokens'] = current_map_tokens
-                nav_inputs_for_gpu['map_token_masks'] = current_map_token_masks
+            current_map_tokens, current_map_token_masks = self._prepare_map_inputs(
+                nav_inputs_for_gpu,
+                txt_embeds,
+                txt_masks,
+                cognitive_maps,
+                map_cfg,
+            )
 
             nav_inputs_copy_for_cpu = self.copy_nav_inputs_dict(nav_inputs)
             nav_outs = self.policy.net(**nav_inputs_for_gpu)

@@ -103,6 +103,7 @@ def main(opts):
     model_config.use_prior_gt = getattr(opts, 'use_prior_gt', False)
     model_config.use_imagined = getattr(opts, 'use_imagined', False)
     model_config.map_loss_weight = getattr(opts, 'map_loss_weight', 0.1)
+    model_config.map_predictor_checkpoint = getattr(opts, 'map_predictor_checkpoint', '')
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 

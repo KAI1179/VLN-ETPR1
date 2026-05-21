@@ -35,7 +35,8 @@ GT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try-5-vln
 GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.iter350.pth"
 GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
 
-IMAGINED_PRETRAINED_CKPT="${GT_PRETRAINED_CKPT}"
+IMAGINED_PREDICTOR_CKPT="${IMAGINED_PREDICTOR_CKPT:-}"
+IMAGINED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000.pt"
 IMAGINED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth"
 IMAGINED_GRPO_CKPT="data/logs/checkpoints/release_r2r_imagined_grpo/store/ckpt.iter270.pth"
 
@@ -90,9 +91,21 @@ GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.MAP_ENCODER.enabled True
       MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
+IMAGINED_PREDICTOR_ARG=""
+if [ -n "${IMAGINED_PREDICTOR_CKPT}" ]; then
+      IMAGINED_PREDICTOR_ARG="MODEL.MAP_ENCODER.predictor_checkpoint ${IMAGINED_PREDICTOR_CKPT}"
+fi
+
 IMAGINED_MODEL_ARGS="TRAINER_NAME SS-ETP-Imagined
       MODEL.policy_name ImaginedPolicy
       MODEL.MAP_ENCODER.enabled True
+      ${IMAGINED_PREDICTOR_ARG}
+      MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
+
+IMAGINED_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-Imagined
+      MODEL.policy_name ImaginedPolicy
+      MODEL.MAP_ENCODER.enabled True
+      ${IMAGINED_PREDICTOR_ARG}
       MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
 launch() {
@@ -155,10 +168,12 @@ case $mode in
       launch "--exp_name release_r2r_imagined_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_DAGGER_CKPT} IL.back_algo control"
       ;;
       imagined_grpo)
-      warn_unimplemented "GRPO for imagined cognitive maps"
+      echo "###### imagined grpo train mode ######"
+      launch "--exp_name release_r2r_imagined_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${IMAGINED_DAGGER_CKPT}"
       ;;
       imagined_eval_grpo)
-      warn_unimplemented "GRPO checkpoint eval for imagined cognitive maps (${IMAGINED_GRPO_CKPT})"
+      echo "###### imagined eval mode (GRPO ckpt) ######"
+      launch "--exp_name release_r2r_imagined_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_GRPO_CKPT} IL.back_algo control"
       ;;
       imagined_infer)
       warn_unimplemented "inference path for imagined cognitive maps"
@@ -182,3 +197,5 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo 2333

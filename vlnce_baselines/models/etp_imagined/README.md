@@ -63,55 +63,6 @@ MODEL.MAP_ENCODER.map_loss_weight
 
 Default: `0.1`.
 
-### Full Imagined Model
-
-Pretrain the imagined model on the joint R2R/RxR pretraining data:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
-  --use_imagined \
-  --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
-```
-
-The helper writes checkpoints under:
-
-```text
-pretrained/r2r_rxr_ce/imagined/ckpts/
-```
-
-Train the normal SS/DAgger imagined model through the shared R2R launcher:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
-```
-
-This trains the navigation model, the instruction-to-map predictor, and the
-PriorGT map encoder together. The launcher uses:
-
-```text
---exp_name release_r2r_imagined_dagger
---run-type dagger
-TRAINER_NAME SS-ETP-Imagined
-MODEL.policy_name ImaginedPolicy
-MODEL.MAP_ENCODER.enabled True
-MODEL.pretrained_path pretrained/r2r_rxr_ce/prior_gt/store2/reuse+full_192500.pt
-```
-
-Evaluate the SS checkpoint with:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
-```
-
-The default eval checkpoint path is:
-
-```text
-data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth
-```
-
-Update `IMAGINED_DAGGER_CKPT` in `run_r2r/main_server.bash` if the saved
-checkpoint name differs.
-
 ### Predictor-Only Training
 
 Predictor-only training should not use the VLN rollout trainer. The predictor
@@ -206,8 +157,80 @@ The script uses `typed-argument-parser` (`Tap`) field inference with dashed CLI
 names, so Python fields such as `predictor_checkpoint` are exposed as
 `--predictor-checkpoint`.
 
+### Full Imagined Model
+
+To run the full staged pipeline, first pretrain the imagined model on the
+joint R2R/RxR pretraining data, optionally seeding the predictor from the
+predictor-only checkpoint:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+  --use_imagined \
+  --map_predictor_checkpoint data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.best.pt \
+  --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
+```
+
+The helper writes checkpoints under:
+
+```text
+pretrained/r2r_rxr_ce/imagined/ckpts/
+```
+
+Train the normal SS/DAgger imagined model through the shared R2R launcher:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
+```
+
+This trains the navigation model, the instruction-to-map predictor, and the
+PriorGT map encoder together. The launcher uses:
+
+```text
+--exp_name release_r2r_imagined_dagger
+--run-type dagger
+TRAINER_NAME SS-ETP-Imagined
+MODEL.policy_name ImaginedPolicy
+MODEL.MAP_ENCODER.enabled True
+MODEL.pretrained_path pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000.pt
+```
+
+`MODEL.pretrained_path` still initializes the VLN backbone. If that checkpoint
+contains `map_encoder.*` and `map_predictor.*` keys from imagined pretraining,
+`ImaginedPolicy` loads those modules too. `MODEL.MAP_ENCODER.predictor_checkpoint`
+is an optional override for predictor-only weights. The launcher only passes it
+when the `IMAGINED_PREDICTOR_CKPT` environment variable is set, because the
+normal post-pretraining path should use the jointly pretrained predictor from
+`MODEL.pretrained_path`.
+
+Evaluate the SS checkpoint with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
+```
+
+The default eval checkpoint path is:
+
+```text
+data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth
+```
+
+Update `IMAGINED_DAGGER_CKPT` in `run_r2r/main_server.bash` if the saved
+checkpoint name differs.
+
+Run GRPO finetuning after DAgger:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo 2333
+```
+
+Evaluate the GRPO checkpoint with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo 2333
+```
+
 ## Scope
 
-Current implementation covers SS/DAgger and offline predictor-only training.
-GRPO, GRPO eval, and inference launcher paths are not yet migrated to the
-imagined-map path.
+Current implementation covers predictor-only training, imagined pretraining,
+SS/DAgger, GRPO, and SS/GRPO eval. The `imagined_infer` launcher path is still
+not migrated.

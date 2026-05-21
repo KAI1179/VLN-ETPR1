@@ -1,4 +1,5 @@
 from collections import defaultdict
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -111,6 +112,42 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
 
         self.init_weights()
         self.tie_weights()
+        self._load_map_predictor_checkpoint()
+
+    def _load_map_predictor_checkpoint(self):
+        checkpoint_path = getattr(self.config, "map_predictor_checkpoint", "")
+        if not checkpoint_path:
+            return
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(checkpoint_path)
+        if not getattr(self, "use_imagined", False) or getattr(self, "map_predictor", None) is None:
+            raise ValueError("--map_predictor_checkpoint requires --use_imagined")
+
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        if "map_predictor" in checkpoint:
+            state_dict = checkpoint["map_predictor"]
+        else:
+            raw_state_dict = checkpoint.get("state_dict", checkpoint)
+            state_dict = {}
+            for key, value in raw_state_dict.items():
+                normalized_key = key
+                if normalized_key.startswith("module."):
+                    normalized_key = normalized_key[len("module."):]
+                if normalized_key.startswith("map_predictor."):
+                    normalized_key = normalized_key[len("map_predictor."):]
+                elif normalized_key.startswith("predictor."):
+                    normalized_key = normalized_key[len("predictor."):]
+                else:
+                    continue
+                state_dict[normalized_key] = value
+        if not state_dict:
+            raise ValueError(f"No map predictor weights found in {checkpoint_path}")
+        incompatible = self.map_predictor.load_state_dict(state_dict, strict=False)
+        print(
+            f"Loaded map predictor checkpoint: {checkpoint_path} "
+            f"(missing={len(incompatible.missing_keys)}, unexpected={len(incompatible.unexpected_keys)})"
+        )
 
     def tie_weights(self):
         if 'mlm' in self.config.pretrain_tasks:

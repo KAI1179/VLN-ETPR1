@@ -27,6 +27,12 @@ def load_parser():
     parser.add_argument("--use_prior_gt", action="store_true", help="Enable cognitive map encoder")
     parser.add_argument("--use_imagined", action="store_true", help="Enable instruction-imagined cognitive map predictor")
     parser.add_argument("--map_loss_weight", default=0.1, type=float, help="Auxiliary imagined-map loss weight")
+    parser.add_argument(
+        "--map_predictor_checkpoint",
+        default="",
+        type=str,
+        help="Optional predictor-only checkpoint used to initialize --use_imagined pretraining",
+    )
     # training parameters
     parser.add_argument(
         "--train_batch_size",

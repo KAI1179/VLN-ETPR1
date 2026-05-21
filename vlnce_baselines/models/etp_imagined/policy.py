@@ -1,5 +1,7 @@
 """ImaginedPolicy — ETP variant that predicts cognitive maps from instruction."""
 
+from pathlib import Path
+
 import torch
 
 from gym import Space
@@ -8,6 +10,7 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
     SIZE,
 )
@@ -16,6 +19,49 @@ from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
 )
 from vlnce_baselines.models.policy import ILPolicy
+
+
+def _extract_module_state_dict(state_dict, module_name):
+    prefixes = (
+        f"{module_name}.",
+        f"net.{module_name}.",
+        f"net.module.{module_name}.",
+        f"module.{module_name}.",
+        f"module.net.{module_name}.",
+        f"module.net.module.{module_name}.",
+    )
+    extracted = {}
+    for key, value in state_dict.items():
+        normalized_key = key
+        for prefix in prefixes:
+            if normalized_key.startswith(prefix):
+                extracted[normalized_key[len(prefix) :]] = value
+                break
+    return extracted
+
+
+def _load_optional_module_checkpoint(module, module_name, checkpoint_path):
+    if not checkpoint_path:
+        return False
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if module_name == "map_predictor" and "map_predictor" in checkpoint:
+        module_state_dict = checkpoint["map_predictor"]
+    else:
+        module_state_dict = _extract_module_state_dict(
+            checkpoint.get("state_dict", checkpoint),
+            module_name,
+        )
+    if not module_state_dict:
+        return False
+    incompatible = module.load_state_dict(module_state_dict, strict=False)
+    print(
+        f"  Loaded {module_name} weights from {checkpoint_path} "
+        f"(missing={len(incompatible.missing_keys)}, unexpected={len(incompatible.unexpected_keys)})"
+    )
+    return True
 
 
 @baseline_registry.register_policy
@@ -68,7 +114,36 @@ class ETP_Imagined(ETP_PriorGT):
             num_layers=2,
             dropout=0.0,
         )
+        self._load_map_module_weights(model_config)
         print(f"  Imagined map predictor enabled: text + start pose -> (37, {SIZE}, {SIZE}) + directions")
+
+    def _load_map_module_weights(self, model_config):
+        map_cfg = getattr(model_config, "MAP_ENCODER", None)
+        pretrained_path = getattr(model_config, "pretrained_path", "")
+        predictor_checkpoint = (
+            getattr(map_cfg, "predictor_checkpoint", "") if map_cfg is not None else ""
+        )
+
+        _load_optional_module_checkpoint(
+            self.map_encoder,
+            "map_encoder",
+            pretrained_path,
+        )
+        loaded_from_pretrain = _load_optional_module_checkpoint(
+            self.map_predictor,
+            "map_predictor",
+            pretrained_path,
+        )
+        if predictor_checkpoint:
+            loaded_from_predictor = _load_optional_module_checkpoint(
+                self.map_predictor,
+                "map_predictor",
+                predictor_checkpoint,
+            )
+            if not loaded_from_predictor and not loaded_from_pretrain:
+                raise ValueError(
+                    f"No map_predictor weights found in {predictor_checkpoint}"
+                )
 
     def forward(self, mode=None, **kwargs):
         if mode == "predict_cognitive_map":
