@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, List, cast
+from typing import TYPE_CHECKING, List
 from functools import lru_cache
 
 from habitat_sim.scene import (

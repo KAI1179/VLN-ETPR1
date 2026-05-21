@@ -341,7 +341,9 @@ class GroundTruthGridMap(BaseGridMap):
 
     @staticmethod
     def from_scene_id(scene_id: str) -> List[GroundTruthGridMap]:
-        """Constructs level-wise ground-truth grid maps from the given MP3D scene ID. The return value is cached to improve performance, and copied to avoid mutation."""
+        """Constructs level-wise ground-truth grid maps from the given MP3D scene ID. The return value is cached to improve performance, and copied to avoid mutation.
+
+        ALREADY CACHED. DO NOT CACHE TWICE."""
         from ._construct import construct_grid_maps_from_scene_id
 
         return [deepcopy(m) for m in construct_grid_maps_from_scene_id(scene_id)]
