@@ -126,6 +126,6 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.direction_loss_weight == 0.1
     assert args.init_positive_prob == 0.002
     assert args.max_text_len is None
-    assert args.num_workers == 2
+    assert args.num_workers == 0
     assert args.val_limit is None
     assert args.log_every == 1

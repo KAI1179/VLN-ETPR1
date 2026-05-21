@@ -517,7 +517,7 @@ class TrainMapPredictorArgs(Tap):
     init_positive_prob: float = 0.002
     thresholds: str = "0.001,0.002,0.005,0.01,0.02,0.05"
     max_text_len: Optional[int] = None
-    num_workers: int = 2
+    num_workers: int = 0
     seed: int = 0
     limit: Optional[int] = None
     val_limit: Optional[int] = None

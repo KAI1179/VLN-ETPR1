@@ -62,7 +62,7 @@ SPATIAL_IGNORE_LIST = {
 # is handled by CLIP below.
 nlp = spacy.load("en_core_web_sm")
 
-CLIP_DEVICE = "cpu"
+CLIP_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME, device=CLIP_DEVICE)
 CLIP_MODEL.eval()
