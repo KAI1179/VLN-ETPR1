@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from os import PathLike
-from typing import List, Optional, Tuple, cast
+from typing import List, Optional, Tuple, Type, TypeVar, cast
 from copy import deepcopy
 
 import numpy as np
@@ -28,6 +28,9 @@ from ..constants import (
     ROWS,
 )
 from prior.directions import DirectionVector
+
+
+GridMapT = TypeVar("GridMapT", bound="BaseGridMap")
 
 
 class BaseGridMap:
@@ -266,17 +269,18 @@ class BaseGridMap:
             range_y=np.asarray(self.range_y, dtype=object),
         )
 
-    @staticmethod
+    @classmethod
     def load(
+        cls: Type[GridMapT],
         load_path: str | PathLike[str],
-    ) -> BaseGridMap:
+    ) -> GridMapT:
         """Load from given npz file."""
-        data = np.load(load_path)
-        grid_map = BaseGridMap()
+        data = np.load(load_path, allow_pickle=True)
+        grid_map = cls()
         grid_map.grid = data["grid"]
-        grid_map.offset_x = data["offset_x"]
-        grid_map.offset_z = data["offset_z"]
-        grid_map.range_y = list(data["range_y"])
+        grid_map.offset_x = float(data["offset_x"])
+        grid_map.offset_z = float(data["offset_z"])
+        grid_map.range_y = list(data["range_y"].tolist())
         return grid_map
 
 
@@ -429,17 +433,18 @@ class CognitiveGridMap(BaseGridMap):
             ),
         )
 
-    @staticmethod
+    @classmethod
     def load(
+        cls: Type[CognitiveGridMap],
         load_path: str | PathLike[str],
     ) -> CognitiveGridMap:
         """Load from given npz file."""
-        data = np.load(load_path)
-        grid_map = CognitiveGridMap()
+        data = np.load(load_path, allow_pickle=True)
+        grid_map = cls()
         grid_map.grid = data["grid"]
-        grid_map.offset_x = data["offset_x"]
-        grid_map.offset_z = data["offset_z"]
-        grid_map.range_y = list(data["range_y"])
+        grid_map.offset_x = float(data["offset_x"])
+        grid_map.offset_z = float(data["offset_z"])
+        grid_map.range_y = list(data["range_y"].tolist())
         grid_map.positions = [tuple(pos) for pos in data["positions"]]
         grid_map.direction_vectors = [tuple(v) for v in list(data["direction_vectors"])]
         grid_map.start_direction_vector = tuple(data["start_direction_vector"])

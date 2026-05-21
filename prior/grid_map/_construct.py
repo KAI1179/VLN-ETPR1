@@ -14,7 +14,7 @@ from habitat_sim.scene import (
 )
 from magnum import Vector3
 
-from prior import MP3D_DIR
+from prior import MP3D_DIR, DATA_DIR
 
 from ..constants import (
     CELL_SIZE,
@@ -28,6 +28,9 @@ from ..constants import (
 
 if TYPE_CHECKING:
     from . import GroundTruthGridMap
+
+
+SEMANTIC_MAP_DIR = DATA_DIR / "semantic_maps"
 
 
 def _grid_center_index_range(
@@ -56,14 +59,32 @@ def _aabb_max(aabb) -> Vector3:
 
 @lru_cache(maxsize=100)
 def construct_grid_maps_from_scene_id(scene_id: str) -> List[GroundTruthGridMap]:
-    """Constructs grid maps from the given MP3D scene ID. The return value is cached to improve performance, but not copied, so DO NOT MUTATE it."""
+    """Constructs grid maps from the given MP3D scene ID. The return value is cached (on memory AND disk) to improve performance, but not copied, so DO NOT MUTATE it."""
+    # Try cached first
+    cached_path = SEMANTIC_MAP_DIR / scene_id
+    cached_maps: List[GroundTruthGridMap] = []
+    level = 0
+    while (cached_path / f"{level}.npz").exists():
+        from . import GroundTruthGridMap
+
+        cached_maps.append(GroundTruthGridMap.load(cached_path / f"{level}.npz"))
+        level += 1
+    if cached_maps:
+        return cached_maps
+
     # Load scene
     scene_path = str(MP3D_DIR / scene_id / f"{scene_id}.house")
     semantic_scene = SemanticScene()
     SemanticScene.load_mp3d_house(
         scene_path, semantic_scene, HABITAT_MP3D_ROTATION_VECTOR
     )
-    return construct_grid_maps_from_scene(semantic_scene)
+    grid_map = construct_grid_maps_from_scene(semantic_scene)
+
+    # Save to cache
+    cached_path.mkdir(parents=True, exist_ok=True)
+    for level, semantic_map in enumerate(grid_map):
+        semantic_map.save(cached_path / f"{level}.npz")
+    return grid_map
 
 
 def construct_grid_maps_from_scene(
