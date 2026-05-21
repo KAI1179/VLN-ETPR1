@@ -266,6 +266,19 @@ class BaseGridMap:
             range_y=np.asarray(self.range_y, dtype=object),
         )
 
+    @staticmethod
+    def load(
+        load_path: str | PathLike[str],
+    ) -> BaseGridMap:
+        """Load from given npz file."""
+        data = np.load(load_path)
+        grid_map = BaseGridMap()
+        grid_map.grid = data["grid"]
+        grid_map.offset_x = data["offset_x"]
+        grid_map.offset_z = data["offset_z"]
+        grid_map.range_y = list(data["range_y"])
+        return grid_map
+
 
 class GroundTruthGridMap(BaseGridMap):
     """
@@ -405,14 +418,30 @@ class CognitiveGridMap(BaseGridMap):
             grid=self.grid,
             offset_x=self.offset_x,
             offset_z=self.offset_z,
-            # range_y=np.asarray(self.range_y, dtype=object),
+            range_y=np.asarray(self.range_y, dtype=object),
+            positions=np.asarray(self.positions, dtype=np.float32),
             direction_vectors=np.asarray(self.direction_vectors, dtype=np.float32),
             start_direction_vector=np.asarray(
                 self.start_direction_vector,
                 dtype=np.float32,
             ),
-            start_position=np.asarray(self.positions[0], dtype=np.float32),
         )
+
+    @staticmethod
+    def load(
+        load_path: str | PathLike[str],
+    ) -> CognitiveGridMap:
+        """Load from given npz file."""
+        data = np.load(load_path)
+        grid_map = CognitiveGridMap()
+        grid_map.grid = data["grid"]
+        grid_map.offset_x = data["offset_x"]
+        grid_map.offset_z = data["offset_z"]
+        grid_map.range_y = list(data["range_y"])
+        grid_map.positions = [tuple(pos) for pos in data["positions"]]
+        grid_map.direction_vectors = [tuple(v) for v in list(data["direction_vectors"])]
+        grid_map.start_direction_vector = tuple(data["start_direction_vector"])
+        return grid_map
 
     def validate(self) -> bool:
         """
