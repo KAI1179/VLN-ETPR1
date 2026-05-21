@@ -39,13 +39,13 @@ def test_train_map_predictor_parser_returns_typed_args():
         [
             "--exp-config",
             "run_r2r/iter_train.yaml",
-            "--train-dataset",
-            "train.json.gz",
-            "extra.json.gz",
-            "--val-dataset",
-            "val.json.gz",
             "--dataset",
             "r2r",
+            "--train-splits",
+            "train",
+            "val_seen",
+            "--val-splits",
+            "val_unseen",
             "--output",
             "predictor.pt",
             "--batch-size",
@@ -88,9 +88,9 @@ def test_train_map_predictor_parser_returns_typed_args():
 
     assert isinstance(args, train_map_predictor.TrainMapPredictorArgs)
     assert args.exp_config == "run_r2r/iter_train.yaml"
-    assert args.train_dataset == [Path("train.json.gz"), Path("extra.json.gz")]
-    assert args.val_dataset == [Path("val.json.gz")]
     assert args.dataset == "r2r"
+    assert args.train_splits == ["train", "val_seen"]
+    assert args.val_splits == ["val_unseen"]
     assert args.output == Path("predictor.pt")
     assert args.batch_size == 4
     assert args.epochs == 2
@@ -117,12 +117,9 @@ def test_train_map_predictor_parser_preserves_defaults():
     args = train_map_predictor.parse_args([])
 
     assert args.exp_config == "run_r2r/iter_train.yaml"
-    assert args.train_dataset == [
-        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train/train_90.json.gz")
-    ]
-    assert args.val_dataset == [
-        Path("data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz")
-    ]
+    assert args.dataset == "r2r"
+    assert args.train_splits == ["train"]
+    assert args.val_splits == ["val_unseen"]
     assert args.batch_size == 8
     assert args.max_pos_weight == 20.0
     assert args.focal_gamma == 2.0
