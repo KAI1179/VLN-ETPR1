@@ -64,7 +64,7 @@ def _patch_episode_entries(monkeypatch, entries=None) -> None:
     monkeypatch.setattr(
         train_map_predictor.VLNCEEpisodeEntry,
         "iter_from",
-        lambda dataset, splits: iter(entries),
+        lambda dataset, splits, **kwargs: iter(entries),
     )
 
 

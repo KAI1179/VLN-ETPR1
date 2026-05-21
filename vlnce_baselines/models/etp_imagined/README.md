@@ -82,6 +82,11 @@ A standalone predictor script is provided for this. In its default `train` mode,
 it reads the VLN dataset episodes and generates cognitive-map targets on the fly
 from `reference_path`, matching PriorGT training.
 
+For RxR, the predictor uses guide-role episodes by default. Follower-role
+episodes are intentionally excluded because their language is collected from a
+different perspective and the current `RxR_VLNCE_v0_enc_xlmr` follower files are
+not consistently pre-tokenized.
+
 ```bash
 python -m vlnce_baselines.models.etp_imagined.train_map_predictor \
   --dataset r2r \
