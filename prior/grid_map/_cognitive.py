@@ -11,7 +11,6 @@ import clip
 import numpy as np
 import spacy
 from spacy.tokens import Token
-from scipy.ndimage import gaussian_filter
 import torch
 
 
@@ -28,7 +27,6 @@ from ..constants import (
     REGION_MAPPING,
     REGION_NAMES,
     ROWS,
-    GAUSSIAN_SIGMA,
     DIRECTION_VECTOR_CNT,
     DIRECTION_VECTOR_SIM,
 )
@@ -394,12 +392,12 @@ def build_cognitive_map(
             )
 
     # Per-layer Gaussian filtering
-    for layer in range(OBJECT_CATEGORIES + REGION_CATEGORIES):
-        gaussian_filter(
-            cognitive_map.grid[layer],
-            sigma=GAUSSIAN_SIGMA,
-            output=cognitive_map.grid[layer],
-        )
+    # for layer in range(OBJECT_CATEGORIES + REGION_CATEGORIES):
+    #     gaussian_filter(
+    #         cognitive_map.grid[layer],
+    #         sigma=GAUSSIAN_SIGMA,
+    #         output=cognitive_map.grid[layer],
+    #     )
 
     return cognitive_map
 
