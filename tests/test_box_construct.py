@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 from magnum import Matrix4, Vector3
 
-from prior import box
+from prior import bbox as box
 
 
 @dataclass
@@ -128,3 +128,53 @@ def test_construct_bounding_boxes_from_scene_sorts_levels_by_floor_y(
     assert levels[0].range_y == [None, 3.0]
     assert levels[1].regions[6][0].id == "upper"
     assert levels[1].range_y == [3.0, None]
+
+
+def test_extract_relevant_bounding_boxes_keeps_nearby_boxes_and_marks_mentions():
+    level = box.LevelBoundingBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+    level.objects[3] = [
+        box.OBB2D(
+            id="near-mentioned-table",
+            center=(0.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        ),
+        box.OBB2D(
+            id="far-mentioned-table",
+            center=(10.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        ),
+    ]
+    level.objects[1] = [
+        box.OBB2D(
+            id="near-unmentioned-chair",
+            center=(0.0, 2.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        )
+    ]
+    level.regions[7] = [
+        box.AABB2D(id="near-unmentioned-bathroom", min=(-2.0, -2.0), max=(2.0, 2.0))
+    ]
+
+    relevant = box.extract_relevant_bounding_boxes(
+        [level],
+        "walk to the table",
+        positions=[[0.0, 0.0, 0.0]],
+        max_distance=1.5,
+        category_extractor=lambda instruction: ({3}, set()),
+    )
+
+    assert [obb.id for obb in relevant[0].objects[3]] == ["near-mentioned-table"]
+    assert relevant[0].objects[3][0].mentioned is True
+    assert [obb.id for obb in relevant[0].objects[1]] == ["near-unmentioned-chair"]
+    assert relevant[0].objects[1][0].mentioned is False
+    assert [region.id for region in relevant[0].regions[7]] == [
+        "near-unmentioned-bathroom"
+    ]
+    assert relevant[0].regions[7][0].mentioned is False

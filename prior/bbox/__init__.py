@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 from habitat_sim.scene import (
     Mp3dObjectCategory,
@@ -18,7 +18,9 @@ from magnum import Vector3
 
 from prior import MP3D_DIR
 from ..constants import (
+    CELL_SIZE,
     HABITAT_MP3D_ROTATION_VECTOR,
+    MAX_DISTANCE_CELLS,
     OBJECT_CATEGORIES,
     OBJECT_MAPPING,
     REGION_CATEGORIES,
@@ -37,6 +39,7 @@ class OBB2D:
     center: Point2D
     half_extents: Point2D
     axes: Tuple[Axis2D, Axis2D]
+    mentioned: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class AABB2D:
     id: str
     min: Point2D
     max: Point2D
+    mentioned: bool = False
 
 
 ObjectOBB2Ds = List[List[OBB2D]]
@@ -108,6 +112,100 @@ def _empty_level_boxes() -> LevelBoundingBoxes:
         regions=[[] for _ in range(REGION_CATEGORIES)],
         range_y=[None, None],
     )
+
+
+def _point_to_aabb_distance(point: Point2D, box: AABB2D) -> float:
+    """Return shortest 2D distance from a point to an axis-aligned box."""
+    px, pz = point
+    dx = max(box.min[0] - px, 0.0, px - box.max[0])
+    dz = max(box.min[1] - pz, 0.0, pz - box.max[1])
+    return math.hypot(dx, dz)
+
+
+def _point_to_obb_distance(point: Point2D, box: OBB2D) -> float:
+    """Return shortest 2D distance from a point to an oriented box."""
+    dx = point[0] - box.center[0]
+    dz = point[1] - box.center[1]
+    axis_x, axis_z = box.axes
+
+    local_x = dx * axis_x[0] + dz * axis_x[1]
+    local_z = dx * axis_z[0] + dz * axis_z[1]
+    clamped_x = min(max(local_x, -box.half_extents[0]), box.half_extents[0])
+    clamped_z = min(max(local_z, -box.half_extents[1]), box.half_extents[1])
+
+    closest_x = box.center[0] + clamped_x * axis_x[0] + clamped_z * axis_z[0]
+    closest_z = box.center[1] + clamped_x * axis_x[1] + clamped_z * axis_z[1]
+    return math.hypot(point[0] - closest_x, point[1] - closest_z)
+
+
+def _is_position_in_level(position: List[float], range_y: List[Optional[float]]) -> bool:
+    y = position[1]
+    if range_y[0] is not None and y < range_y[0]:
+        return False
+    if range_y[1] is not None and y >= range_y[1]:
+        return False
+    return True
+
+
+def _near_any_position(
+    box,
+    points: List[Point2D],
+    max_distance: float,
+) -> bool:
+    if isinstance(box, OBB2D):
+        distance_func = _point_to_obb_distance
+    else:
+        distance_func = _point_to_aabb_distance
+    return any(distance_func(point, box) <= max_distance for point in points)
+
+
+def extract_relevant_bounding_boxes(
+    levels: List[LevelBoundingBoxes],
+    instruction: str,
+    positions: List[List[float]],
+    max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
+    category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
+) -> List[LevelBoundingBoxes]:
+    """Return boxes close to the trajectory, marking categories mentioned in text."""
+    if category_extractor is None:
+        from prior.grid_map._cognitive import extract_categories
+
+        category_extractor = extract_categories
+
+    mentioned_objects, mentioned_regions = category_extractor(instruction)
+    relevant_levels: List[LevelBoundingBoxes] = []
+
+    for level in levels:
+        relevant_level = _empty_level_boxes()
+        relevant_level.range_y = list(level.range_y)
+        level_points = [
+            (float(position[0]), float(position[2]))
+            for position in positions
+            if _is_position_in_level(position, level.range_y)
+        ]
+        if not level_points:
+            relevant_levels.append(relevant_level)
+            continue
+
+        for category_idx, boxes in enumerate(level.objects):
+            mentioned = category_idx in mentioned_objects
+            relevant_level.objects[category_idx] = [
+                replace(box, mentioned=mentioned)
+                for box in boxes
+                if _near_any_position(box, level_points, max_distance)
+            ]
+
+        for category_idx, boxes in enumerate(level.regions):
+            mentioned = category_idx in mentioned_regions
+            relevant_level.regions[category_idx] = [
+                replace(box, mentioned=mentioned)
+                for box in boxes
+                if _near_any_position(box, level_points, max_distance)
+            ]
+
+        relevant_levels.append(relevant_level)
+
+    return relevant_levels
 
 
 @lru_cache(maxsize=100)
@@ -209,4 +307,5 @@ __all__ = [
     "construct_bounding_boxes_from_level",
     "construct_bounding_boxes_from_scene",
     "construct_bounding_boxes_from_scene_id",
+    "extract_relevant_bounding_boxes",
 ]
