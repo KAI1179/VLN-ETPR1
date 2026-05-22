@@ -141,3 +141,9 @@ build-constraint-dependencies = [
     "setuptools<66",
     "wheel==0.37.1",
 ]
+
+[tool.ty.environment]
+extra-paths = ["./stubs"]
+
+[tool.ruff]
+extend-exclude = ["*.md"]
