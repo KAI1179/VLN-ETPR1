@@ -5,9 +5,10 @@ Each npz file contains:
 - `grid`: Grid data of dimension (OBJECT_CATEGORIES + REGION_CATEGORIES) x ROWS x COLS.
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
-- `direction_vectors`: Distinct path directions as normalized (sin, cos) tuples.
+- `range_y`: Y range of the floor. Not useful for our job.
+- `positions`: Waypoint positions along the path.
+- `direction_vectors`: 5 distinct path directions as normalized (sin, cos) tuples. Zeroes used if distinct directions < 5. Dropped if > 5.
 - `start_direction_vector`: Direction vector of the start position.
-- `start_position`: Start coordinate.
 
 Together they showcase navigation trajectory of some given instruction, with a radius of 5 cells around each waypoint.
 
@@ -15,7 +16,7 @@ Together they showcase navigation trajectory of some given instruction, with a r
 
 - Each cell is 0.5 x 0.5m. ROWS and COLS set to $100$. OBJECT_CATEGORIES = 27, REGION_CATEGORIES = 10.
 - Each element in cell is `float` in the range [0.0, 1.0], representing the confidence level of the presence of a specific category at the grid cell.
-    - For generated ground-truth, if the category is mentioned in instruction, the confidence level is set as $1$; otherwise $0.7$.
+    - For generated ground-truth, if the category is mentioned in instruction, the confidence level is set as $1$; otherwise $0.6$.
 - In visualizations, the upper-right corner is the origin (x=0, z=0). X coord increases going left, and Z coord increases going down.
 
 ## Angles
