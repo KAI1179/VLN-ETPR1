@@ -106,11 +106,18 @@ class LevelSemanticBoxes(BaseModel):
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
+        if path.suffix == ".json":
+            self.save_json(path)
+            return
+
         np.savez_compressed(path, payload=np.asarray(self.to_json(indent=None)))
 
     @staticmethod
     def load(path: str | Path) -> "LevelSemanticBoxes":
         path = Path(path)
+        if path.suffix == ".json":
+            return LevelSemanticBoxes.load_json(path)
+
         data = np.load(path)
         return LevelSemanticBoxes.from_json(str(data["payload"]))
 

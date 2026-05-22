@@ -1,3 +1,4 @@
+from functools import partial
 import sys
 from pathlib import Path
 
@@ -141,6 +142,8 @@ def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
             "r2r",
             "--episode-id",
             "123",
+            "--output",
+            "boxes",
         ]
     )
 
@@ -148,6 +151,7 @@ def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
     assert args.scenes == ["17DRP5sb8fy"]
     assert args.dataset == "r2r"
     assert args.episode_id == 123
+    assert args.output == Path("boxes")
 
 
 def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
@@ -171,4 +175,5 @@ def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
 
     assert loader.num_workers == 2
     assert loader.multiprocessing_context.get_start_method() == "spawn"
+    assert isinstance(loader.collate_fn, partial)
     assert loader.collate_fn.func is train_map_predictor.collate_predictor_batch

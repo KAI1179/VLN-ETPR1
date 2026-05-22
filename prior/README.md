@@ -7,7 +7,9 @@ Following modules could be run with `python -m`:
 - `prior.etp_r1`: Generate cognitive maps for all ETP-R1 entries
 - `prior.grid_map`: Visualizes given cognitive map (`.npz`)
 
-# Saved Data
+# Saved NPZ Data
+
+`.npz` is used for cognitive grid maps.
 
 ## Data Overview
 
@@ -90,3 +92,7 @@ MAPPED_REGION_NAMES = [
 ]
 """Names of the 10 mapped region categories, indexed by mapped category ID."""
 ```
+
+# Saved JSON Data
+
+`.json` is used for semantic boxes.

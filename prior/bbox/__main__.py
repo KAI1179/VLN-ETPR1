@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 
 from tap import Tap
@@ -24,6 +25,8 @@ class BoundingBoxArgs(Tap):
     """Dataset to use for relevant episode mode."""
     episode_id: Optional[int] = None
     """Episode id to use for relevant episode mode."""
+    output: Optional[Path] = None
+    """Optional JSON output path. Directories receive one level JSON per file."""
 
     def configure(self) -> None:
         self.add_argument("scenes", nargs="*")
@@ -82,12 +85,33 @@ def _print_levels(levels: List[LevelSemanticBoxes]) -> None:
                 _print_aabb(box)
 
 
+def _export_levels_json(levels: List[LevelSemanticBoxes], output: Path) -> None:
+    if output.suffix == ".json":
+        if len(levels) != 1:
+            raise ValueError("A .json output file requires exactly one level")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        levels[0].save(output)
+        print(f"Wrote 1 level JSON file to {output}")
+        return
+
+    output.mkdir(parents=True, exist_ok=True)
+    for level_idx, level in enumerate(levels):
+        level.save(output / f"{level_idx}.json")
+    print(f"Wrote {len(levels)} level JSON file(s) to {output}")
+
+
 def _print_scene_boxes(scene: str) -> None:
     print(f"Scene {scene}")
     _print_levels(SceneSemanticBoxes.from_scene_id(scene).levels)
 
 
-def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
+def _scene_boxes(scene: str) -> SceneSemanticBoxes:
+    return SceneSemanticBoxes.from_scene_id(scene)
+
+
+def _relevant_episode_boxes(
+    args: BoundingBoxArgs,
+) -> tuple[VLNCEEpisodeEntry, SceneSemanticBoxes]:
     assert args.dataset is not None
     assert args.episode_id is not None
 
@@ -96,7 +120,11 @@ def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
         episode.instruction,
         episode.reference_path,
     )
+    return episode, relevant_scene
 
+
+def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
+    episode, relevant_scene = _relevant_episode_boxes(args)
     print(
         f"Relevant bounding boxes for {episode.dataset} episode "
         f"{episode.episode_id} ({episode.source})"
@@ -112,7 +140,23 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         raise ValueError("--dataset and --episode-id must be provided together")
 
     if args.dataset is not None:
-        _print_relevant_episode_boxes(args)
+        if args.output is not None:
+            _, relevant_scene = _relevant_episode_boxes(args)
+            _export_levels_json(relevant_scene.levels, args.output)
+        else:
+            _print_relevant_episode_boxes(args)
+        return
+
+    if args.output is not None:
+        if len(args.scenes) == 1:
+            scene_boxes = _scene_boxes(args.scenes[0])
+            _export_levels_json(scene_boxes.levels, args.output)
+            return
+
+        args.output.mkdir(parents=True, exist_ok=True)
+        for scene in args.scenes:
+            scene_boxes = _scene_boxes(scene)
+            _export_levels_json(scene_boxes.levels, args.output / scene)
         return
 
     for scene in args.scenes:

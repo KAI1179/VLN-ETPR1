@@ -83,3 +83,43 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     assert "Scene 17DRP5sb8fy" in output
     assert "Object table" in output
     assert "table-1 mentioned=True" in output
+
+
+def test_scene_mode_exports_level_boxes_as_json(monkeypatch, tmp_path, capsys):
+    level = bbox.LevelSemanticBoxes(
+        objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+        range_y=[None, None],
+        offset_x=1.0,
+        offset_z=2.0,
+    )
+    level.objects[3].append(
+        bbox.OBB2D(
+            id="table-1",
+            center=(0.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+            mentioned=True,
+        )
+    )
+
+    monkeypatch.setattr(
+        bbox_main,
+        "SceneSemanticBoxes",
+        type(
+            "FakeSceneSemanticBoxesFactory",
+            (),
+            {
+                "from_scene_id": staticmethod(
+                    lambda scene_id: bbox.SceneSemanticBoxes([level])
+                )
+            },
+        ),
+    )
+
+    output_dir = tmp_path / "scene-boxes"
+    bbox_main.main(["17DRP5sb8fy", "--output", str(output_dir)])
+
+    loaded = bbox.LevelSemanticBoxes.load(output_dir / "0.json")
+    assert loaded == level
+    assert "Wrote 1 level JSON file" in capsys.readouterr().out
