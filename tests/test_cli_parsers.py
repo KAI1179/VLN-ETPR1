@@ -131,6 +131,25 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.log_every == 1
 
 
+def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
+    from prior.bbox import __main__ as bbox_main
+
+    args = bbox_main.parse_args(
+        [
+            "17DRP5sb8fy",
+            "--dataset",
+            "r2r",
+            "--episode-id",
+            "123",
+        ]
+    )
+
+    assert isinstance(args, bbox_main.BoundingBoxArgs)
+    assert args.scenes == ["17DRP5sb8fy"]
+    assert args.dataset == "r2r"
+    assert args.episode_id == 123
+
+
 def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
     from vlnce_baselines.models.etp_imagined import train_map_predictor
 

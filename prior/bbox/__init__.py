@@ -6,7 +6,7 @@ import math
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import lru_cache
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Any, Callable, List, Optional, Set, Tuple, cast
 
 from habitat_sim.scene import (
     Mp3dObjectCategory,
@@ -138,7 +138,9 @@ def _point_to_obb_distance(point: Point2D, box: OBB2D) -> float:
     return math.hypot(point[0] - closest_x, point[1] - closest_z)
 
 
-def _is_position_in_level(position: List[float], range_y: List[Optional[float]]) -> bool:
+def _is_position_in_level(
+    position: List[float], range_y: List[Optional[float]]
+) -> bool:
     y = position[1]
     if range_y[0] is not None and y < range_y[0]:
         return False
@@ -218,7 +220,7 @@ def construct_bounding_boxes_from_scene_id(scene_id: str) -> List[LevelBoundingB
     scene_path = str(MP3D_DIR / scene_id / f"{scene_id}.house")
     semantic_scene = SemanticScene()
     SemanticScene.load_mp3d_house(
-        scene_path, semantic_scene, HABITAT_MP3D_ROTATION_VECTOR
+        scene_path, semantic_scene, cast(Any, HABITAT_MP3D_ROTATION_VECTOR)
     )
     return construct_bounding_boxes_from_scene(semantic_scene)
 
