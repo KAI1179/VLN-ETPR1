@@ -503,7 +503,7 @@ def _scene_semantic_boxes_from_scene_id(scene_id: str) -> SceneSemanticBoxes:
 
 
 def _construct_scene_semantic_boxes_from_scene(
-    semantic_scene: Any,
+    semantic_scene: SemanticScene,
 ) -> SceneSemanticBoxes:
     """Construct level-wise 2D semantic boxes from a loaded semantic scene."""
     if not semantic_scene.levels:

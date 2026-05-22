@@ -3,15 +3,15 @@
 Following modules could be run with `python -m`:
 
 - `prior`: Generate cognitive maps for all VLNCE entries (R2R + RxR)
-- `prior.bbox`: Show bounding box info for given scene or episode
+- `prior.bbox`: Show / export bounding box info for given scene or episode
 - `prior.etp_r1`: Generate cognitive maps for all ETP-R1 entries
 - `prior.grid_map`: Visualizes given cognitive map (`.npz`)
 
 # Saved NPZ Data
 
-`.npz` is used for cognitive grid maps.
+`.npz` is used for first encountered level of cognitive grid maps.
 
-## Data Overview
+## NPZ Overview
 
 Each npz file contains:
 
@@ -43,9 +43,42 @@ Angles follow standard mathematical convention in visualization space, increasin
 | 0° | (cos=1, sin=0) | Right | -col |
 | 90° | (cos=0, sin=1) | Up | -row |
 
-## Categories
+# Saved JSON Data
 
-Object and region categories:
+`.json` is used for first encountered level of semantic boxes.
+
+## JSON Overview
+
+Each json file contains:
+
+- `objects`: 27 arrays of object OBBs, indexed by mapped object category.
+- `regions`: 10 arrays of region AABBs, indexed by mapped region category.
+- `range_y`: Y range of the floor. Not useful for our job.
+- `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
+- `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
+
+## Objects
+
+The `objects` field is an array of length 27. `objects[i]` contains 2D oriented bounding boxes of objects of category $i$. Each 2D oriented bounding box consists of:
+
+- `id`: ID of the object. Not useful for our job.
+- `center`: Center coordinate of the box.
+- `half_extents`: Half size along each local box axis.
+- `axes`: Two normalized local axes in world X/Z coordinates.
+- `mentioned`: Whether category $i$ is mentioned in the instruction.
+
+## Regions
+
+The `regions` field is an array of length 10. `regions[i]` contains 2D axis-aligned bounding boxes of regions of category $i$. Each 2D axis-aligned bounding box consists of:
+
+- `id`: ID of the region. Not useful for our job.
+- `min`: Minimum X/Z coordinate of the box.
+- `max`: Maximum X/Z coordinate of the box.
+- `mentioned`: Whether category $i$ is mentioned in the instruction.
+
+# Categories
+
+## Object Categories
 
 ```python
 MAPPED_OBJECT_NAMES = [
@@ -78,6 +111,11 @@ MAPPED_OBJECT_NAMES = [
     "clothes",  # 26
 ]
 """Names of the 27 mapped object categories, indexed by mapped category ID."""
+```
+
+## Region Categories
+
+```python
 MAPPED_REGION_NAMES = [
     "outdoor/semi-outdoor",  # 0
     "living/social space",  # 1
@@ -92,7 +130,3 @@ MAPPED_REGION_NAMES = [
 ]
 """Names of the 10 mapped region categories, indexed by mapped category ID."""
 ```
-
-# Saved JSON Data
-
-`.json` is used for semantic boxes.

@@ -18,7 +18,7 @@ class FakeEpisode:
 
     def __post_init__(self):
         if self.reference_path is None:
-            self.reference_path = [[0.0, 0.0, 0.0]]
+            self.reference_path = [[0.0, 5.0, 0.0]]
 
     @property
     def source(self) -> str:
@@ -26,21 +26,39 @@ class FakeEpisode:
 
 
 def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
-    all_boxes = [
-        bbox.LevelSemanticBoxes(
-            objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
-            regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
-            range_y=[None, None],
-        )
-    ]
+    lower_level = bbox.LevelSemanticBoxes(
+        objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+        range_y=[None, 3.0],
+    )
+    upper_level = bbox.LevelSemanticBoxes(
+        objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+        range_y=[3.0, None],
+    )
+    all_boxes = [lower_level, upper_level]
     relevant_boxes = [
         bbox.LevelSemanticBoxes(
             objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
             regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
-            range_y=[None, None],
-        )
+            range_y=[None, 3.0],
+        ),
+        bbox.LevelSemanticBoxes(
+            objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+            regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+            range_y=[3.0, None],
+        ),
     ]
     relevant_boxes[0].objects[3] = [
+        bbox.OBB2D(
+            id="wrong-level-table",
+            center=(0.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+            mentioned=True,
+        )
+    ]
+    relevant_boxes[1].objects[3] = [
         bbox.OBB2D(
             id="table-1",
             center=(0.0, 0.0),
@@ -81,21 +99,31 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Relevant bounding boxes for R2R episode 123" in output
     assert "Scene 17DRP5sb8fy" in output
+    assert "Level 1" in output
     assert "Object table" in output
     assert "table-1 mentioned=True" in output
+    assert "wrong-level-table" not in output
 
 
-def test_scene_mode_exports_level_boxes_as_json(monkeypatch, tmp_path, capsys):
-    level = bbox.LevelSemanticBoxes(
+def test_episode_mode_exports_first_encountered_level_as_single_json_file(
+    monkeypatch, tmp_path, capsys
+):
+    lower_level = bbox.LevelSemanticBoxes(
         objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
-        range_y=[None, None],
+        range_y=[None, 3.0],
         offset_x=1.0,
         offset_z=2.0,
     )
-    level.objects[3].append(
+    upper_level = bbox.LevelSemanticBoxes(
+        objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+        range_y=[3.0, None],
+    )
+    relevant_levels = [lower_level.model_copy(deep=True), upper_level]
+    relevant_levels[1].objects[3].append(
         bbox.OBB2D(
-            id="table-1",
+            id="upper-level-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
             axes=((1.0, 0.0), (0.0, 1.0)),
@@ -104,6 +132,11 @@ def test_scene_mode_exports_level_boxes_as_json(monkeypatch, tmp_path, capsys):
     )
 
     monkeypatch.setattr(
+        bbox_main.VLNCEEpisodeEntry,
+        "iter_from",
+        lambda dataset: iter([FakeEpisode()]),
+    )
+    monkeypatch.setattr(
         bbox_main,
         "SceneSemanticBoxes",
         type(
@@ -111,15 +144,26 @@ def test_scene_mode_exports_level_boxes_as_json(monkeypatch, tmp_path, capsys):
             (),
             {
                 "from_scene_id": staticmethod(
-                    lambda scene_id: bbox.SceneSemanticBoxes([level])
+                    lambda scene_id: bbox.SceneSemanticBoxes([lower_level, upper_level])
                 )
             },
         ),
     )
+    monkeypatch.setattr(
+        bbox.SceneSemanticBoxes,
+        "relevant_to",
+        lambda self, instruction, reference_path: bbox.SceneSemanticBoxes(
+            relevant_levels
+        ),
+    )
 
-    output_dir = tmp_path / "scene-boxes"
-    bbox_main.main(["17DRP5sb8fy", "--output", str(output_dir)])
+    output_path = tmp_path / "episode-boxes.json"
+    bbox_main.main(
+        ["--dataset", "r2r", "--episode-id", "123", "--output", str(output_path)]
+    )
 
-    loaded = bbox.LevelSemanticBoxes.load(output_dir / "0.json")
-    assert loaded == level
-    assert "Wrote 1 level JSON file" in capsys.readouterr().out
+    loaded = bbox.LevelSemanticBoxes.load(output_path)
+    assert loaded == relevant_levels[1]
+    output = capsys.readouterr().out
+    assert "Level 1" in output
+    assert "Wrote level JSON file" in output
