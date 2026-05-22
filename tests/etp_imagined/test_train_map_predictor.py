@@ -1,12 +1,6 @@
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
@@ -32,7 +26,6 @@ class _EpisodeEntry:
     scene_id: str = "TestScene"
     episode_id: int = 123
     instruction: str = "go to the chair"
-    positions: list = None
     start_position: list = None
     start_rotation: list = None
     instruction_tokens: list = None
@@ -40,8 +33,6 @@ class _EpisodeEntry:
     role: str = None
 
     def __post_init__(self):
-        if self.positions is None:
-            self.positions = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
         if self.start_position is None:
             self.start_position = [1.0, 0.0, 2.0]
         if self.start_rotation is None:
@@ -49,7 +40,7 @@ class _EpisodeEntry:
         if self.instruction_tokens is None:
             self.instruction_tokens = [10, 11, 12]
         if self.reference_path is None:
-            self.reference_path = self.positions
+            self.reference_path = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
 
     @property
     def sample_id(self):
@@ -127,15 +118,22 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
 
 
 def test_save_checkpoint_writes_policy_compatible_keys(tmp_path):
-    predictor = InstructionCognitiveMapPredictor(hidden_size=16, num_heads=4, num_layers=1)
+    predictor = InstructionCognitiveMapPredictor(
+        hidden_size=16, num_heads=4, num_layers=1
+    )
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=1e-4)
     output = tmp_path / "predictor.pt"
     args = type("Args", (), {"output": output, "epochs": 1})()
 
-    save_checkpoint(output, predictor, optimizer, epoch=1, metrics={"loss": 0.5}, args=args)
+    save_checkpoint(
+        output, predictor, optimizer, epoch=1, metrics={"loss": 0.5}, args=args
+    )
 
     checkpoint = torch.load(output, map_location="cpu")
     first_key = next(iter(predictor.state_dict().keys()))
     assert "map_predictor" in checkpoint
-    assert checkpoint["map_predictor"][first_key].shape == predictor.state_dict()[first_key].shape
+    assert (
+        checkpoint["map_predictor"][first_key].shape
+        == predictor.state_dict()[first_key].shape
+    )
     assert f"map_predictor.{first_key}" in checkpoint["state_dict"]

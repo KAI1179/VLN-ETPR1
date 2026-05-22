@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+import json
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable, List, Optional, Set, Tuple, cast
 
+import numpy as np
 from habitat_sim.scene import (
     Mp3dObjectCategory,
     Mp3dRegionCategory,
@@ -17,18 +20,29 @@ from habitat_sim.scene import (
 from magnum import Vector3
 
 from prior import MP3D_DIR
+from prior import DATA_DIR
+from prior.directions import DirectionVector, world_delta_to_direction_vector
 from ..constants import (
     CELL_SIZE,
+    COLS,
+    DIRECTION_VECTOR_CNT,
+    DIRECTION_VECTOR_SIM,
     HABITAT_MP3D_ROTATION_VECTOR,
     MAX_DISTANCE_CELLS,
     OBJECT_CATEGORIES,
     OBJECT_MAPPING,
     REGION_CATEGORIES,
     REGION_MAPPING,
+    ROWS,
 )
 
 Point2D = Tuple[float, float]
 Axis2D = Tuple[float, float]
+IRRELEVANT_MULTIPLIER = 0.6
+"""Confidence multiplier for trajectory-near boxes not mentioned in the instruction."""
+
+SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
+"""On-disk cache root for per-scene semantic boxes."""
 
 
 @dataclass(frozen=True)
@@ -60,12 +74,146 @@ RegionAABB2Ds = List[List[AABB2D]]
 
 
 @dataclass
-class LevelBoundingBoxes:
+class LevelSemanticBoxes:
     """2D semantic boxes for one MP3D semantic level."""
 
     objects: ObjectOBB2Ds
     regions: RegionAABB2Ds
     range_y: List[Optional[float]]
+    offset_x: float = 0.0
+    offset_z: float = 0.0
+
+    def world_to_grid(self, x: float, z: float) -> tuple[float, float]:
+        return ((x - self.offset_x) / CELL_SIZE, (z - self.offset_z) / CELL_SIZE)
+
+    def grid_to_world(self, row: int, col: int) -> tuple[float, float]:
+        x = row * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_x
+        z = col * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_z
+        return (x, z)
+
+    def save(self, path: str | Path) -> None:
+        payload = {
+            "objects": [[asdict(box) for box in boxes] for boxes in self.objects],
+            "regions": [[asdict(box) for box in boxes] for boxes in self.regions],
+            "range_y": self.range_y,
+            "offset_x": self.offset_x,
+            "offset_z": self.offset_z,
+        }
+        np.savez_compressed(path, payload=np.asarray(json.dumps(payload)))
+
+    @staticmethod
+    def load(path: str | Path) -> "LevelSemanticBoxes":
+        data = np.load(path)
+        payload = json.loads(str(data["payload"]))
+        return LevelSemanticBoxes(
+            objects=[
+                [
+                    OBB2D(
+                        id=box["id"],
+                        center=tuple(box["center"]),
+                        half_extents=tuple(box["half_extents"]),
+                        axes=(tuple(box["axes"][0]), tuple(box["axes"][1])),
+                        mentioned=bool(box["mentioned"]),
+                    )
+                    for box in boxes
+                ]
+                for boxes in payload["objects"]
+            ],
+            regions=[
+                [
+                    AABB2D(
+                        id=box["id"],
+                        min=tuple(box["min"]),
+                        max=tuple(box["max"]),
+                        mentioned=bool(box["mentioned"]),
+                    )
+                    for box in boxes
+                ]
+                for boxes in payload["regions"]
+            ],
+            range_y=list(payload["range_y"]),
+            offset_x=float(payload["offset_x"]),
+            offset_z=float(payload["offset_z"]),
+        )
+
+
+@dataclass
+class SceneSemanticBoxes:
+    """All level-wise semantic boxes for one MP3D scene."""
+
+    levels: List[LevelSemanticBoxes]
+
+    @staticmethod
+    def from_scene_id(scene_id: str) -> "SceneSemanticBoxes":
+        """Load scene semantic boxes from cache or build/cache them from MP3D."""
+        return deepcopy(_scene_semantic_boxes_from_scene_id(scene_id))
+
+    @staticmethod
+    def from_scene(semantic_scene: Any) -> "SceneSemanticBoxes":
+        return _construct_scene_semantic_boxes_from_scene(semantic_scene)
+
+    def relevant_to(
+        self,
+        instruction: str,
+        reference_path: List[List[float]],
+        max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
+        category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
+    ) -> "SceneSemanticBoxes":
+        return _extract_relevant_scene_semantic_boxes(
+            self,
+            instruction,
+            reference_path,
+            max_distance=max_distance,
+            category_extractor=category_extractor,
+        )
+
+    def first_encountered_level(
+        self, reference_path: List[List[float]]
+    ) -> tuple[int, LevelSemanticBoxes]:
+        if not self.levels:
+            raise ValueError("SceneSemanticBoxes contains no levels")
+
+        for position in reference_path:
+            y = float(position[1])
+            for level_idx, level in enumerate(self.levels):
+                lower, upper = level.range_y
+                if (lower is None or y >= lower) and (upper is None or y < upper):
+                    return level_idx, level
+
+        return 0, self.levels[0]
+
+    def to_cognitive_map(
+        self,
+        instruction: str,
+        reference_path: List[List[float]],
+        start_direction_vector: DirectionVector,
+        category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
+    ):
+        """Convert relevant scene semantic boxes into one CognitiveGridMap."""
+        from prior.grid_map import CognitiveGridMap
+
+        _, selected_level = self.first_encountered_level(reference_path)
+        relevant_scene = SceneSemanticBoxes([selected_level]).relevant_to(
+            instruction,
+            reference_path,
+            category_extractor=category_extractor,
+        )
+        relevant_level = relevant_scene.levels[0]
+
+        cognitive_map = CognitiveGridMap()
+        cognitive_map.offset_x = relevant_level.offset_x
+        cognitive_map.offset_z = relevant_level.offset_z
+        cognitive_map.range_y = list(relevant_level.range_y)
+        cognitive_map.direction_vectors = _extract_direction_vectors(reference_path)
+        cognitive_map.start_direction_vector = start_direction_vector
+        cognitive_map.positions = [
+            relevant_level.world_to_grid(float(x), float(z))
+            for x, y, z in reference_path
+            if _is_position_in_level([x, y, z], relevant_level.range_y)
+        ]
+
+        _rasterize_level_semantic_boxes(relevant_level, cognitive_map.grid)
+        return cognitive_map
 
 
 def _aabb_min(aabb) -> Vector3:
@@ -106,8 +254,8 @@ def _obb_axes_2d(obb) -> Tuple[Axis2D, Axis2D]:
     return (_normalized_xz(x_axis), _normalized_xz(z_axis))
 
 
-def _empty_level_boxes() -> LevelBoundingBoxes:
-    return LevelBoundingBoxes(
+def _empty_level_boxes() -> LevelSemanticBoxes:
+    return LevelSemanticBoxes(
         objects=[[] for _ in range(OBJECT_CATEGORIES)],
         regions=[[] for _ in range(REGION_CATEGORIES)],
         range_y=[None, None],
@@ -161,13 +309,45 @@ def _near_any_position(
     return any(distance_func(point, box) <= max_distance for point in points)
 
 
-def extract_relevant_bounding_boxes(
-    levels: List[LevelBoundingBoxes],
-    instruction: str,
+def _direction_vector_between(
+    prev_position: List[float],
+    next_position: List[float],
+) -> DirectionVector:
+    dx = next_position[0] - prev_position[0]
+    dz = next_position[2] - prev_position[2]
+    return world_delta_to_direction_vector(dx, dz)
+
+
+def _extract_direction_vectors(
     positions: List[List[float]],
+) -> List[DirectionVector]:
+    directions: List[DirectionVector] = []
+
+    for i in range(len(positions) - 1):
+        direction = _direction_vector_between(positions[i], positions[i + 1])
+        if directions:
+            prev = directions[-1]
+            similarity = direction[0] * prev[0] + direction[1] * prev[1]
+            if similarity >= DIRECTION_VECTOR_SIM:
+                continue
+
+        directions.append(direction)
+        if len(directions) >= DIRECTION_VECTOR_CNT:
+            break
+
+    while len(directions) < DIRECTION_VECTOR_CNT:
+        directions.append((0.0, 0.0))
+
+    return directions
+
+
+def _extract_relevant_scene_semantic_boxes(
+    scene: SceneSemanticBoxes,
+    instruction: str,
+    reference_path: List[List[float]],
     max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
     category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
-) -> List[LevelBoundingBoxes]:
+) -> SceneSemanticBoxes:
     """Return boxes close to the trajectory, marking categories mentioned in text."""
     if category_extractor is None:
         from prior.grid_map._cognitive import extract_categories
@@ -175,14 +355,16 @@ def extract_relevant_bounding_boxes(
         category_extractor = extract_categories
 
     mentioned_objects, mentioned_regions = category_extractor(instruction)
-    relevant_levels: List[LevelBoundingBoxes] = []
+    relevant_levels: List[LevelSemanticBoxes] = []
 
-    for level in levels:
+    for level in scene.levels:
         relevant_level = _empty_level_boxes()
         relevant_level.range_y = list(level.range_y)
+        relevant_level.offset_x = level.offset_x
+        relevant_level.offset_z = level.offset_z
         level_points = [
             (float(position[0]), float(position[2]))
-            for position in positions
+            for position in reference_path
             if _is_position_in_level(position, level.range_y)
         ]
         if not level_points:
@@ -207,35 +389,140 @@ def extract_relevant_bounding_boxes(
 
         relevant_levels.append(relevant_level)
 
-    return relevant_levels
+    return SceneSemanticBoxes(relevant_levels)
+
+
+def _grid_center_index_range(
+    min_coord: float,
+    max_coord: float,
+    offset: float,
+    limit: int,
+) -> tuple[int, int] | None:
+    start = math.ceil((min_coord - offset - CELL_SIZE / 2.0) / CELL_SIZE)
+    end = math.floor((max_coord - offset - CELL_SIZE / 2.0) / CELL_SIZE)
+    if end < 0 or start >= limit:
+        return None
+    return max(0, start), min(limit - 1, end)
+
+
+def _rasterize_aabb(
+    box: AABB2D,
+    level: LevelSemanticBoxes,
+    layer_idx: int,
+    grid: np.ndarray,
+    confidence: float,
+) -> None:
+    row_range = _grid_center_index_range(box.min[0], box.max[0], level.offset_x, ROWS)
+    col_range = _grid_center_index_range(box.min[1], box.max[1], level.offset_z, COLS)
+    if row_range is None or col_range is None:
+        return
+    row_start, row_end = row_range
+    col_start, col_end = col_range
+    grid[layer_idx, row_start : row_end + 1, col_start : col_end + 1] = np.maximum(
+        grid[layer_idx, row_start : row_end + 1, col_start : col_end + 1],
+        confidence,
+    )
+
+
+def _obb_bounds(box: OBB2D) -> tuple[float, float, float, float]:
+    axis_x, axis_z = box.axes
+    corners = []
+    for sign_x in (-1.0, 1.0):
+        for sign_z in (-1.0, 1.0):
+            x = (
+                box.center[0]
+                + sign_x * box.half_extents[0] * axis_x[0]
+                + sign_z * box.half_extents[1] * axis_z[0]
+            )
+            z = (
+                box.center[1]
+                + sign_x * box.half_extents[0] * axis_x[1]
+                + sign_z * box.half_extents[1] * axis_z[1]
+            )
+            corners.append((x, z))
+    xs = [corner[0] for corner in corners]
+    zs = [corner[1] for corner in corners]
+    return min(xs), max(xs), min(zs), max(zs)
+
+
+def _rasterize_obb(
+    box: OBB2D,
+    level: LevelSemanticBoxes,
+    layer_idx: int,
+    grid: np.ndarray,
+    confidence: float,
+) -> None:
+    min_x, max_x, min_z, max_z = _obb_bounds(box)
+    row_range = _grid_center_index_range(min_x, max_x, level.offset_x, ROWS)
+    col_range = _grid_center_index_range(min_z, max_z, level.offset_z, COLS)
+    if row_range is None or col_range is None:
+        return
+
+    row_start, row_end = row_range
+    col_start, col_end = col_range
+    for row in range(row_start, row_end + 1):
+        for col in range(col_start, col_end + 1):
+            point = level.grid_to_world(row, col)
+            if _point_to_obb_distance(point, box) <= 1e-6:
+                grid[layer_idx, row, col] = max(grid[layer_idx, row, col], confidence)
+
+
+def _rasterize_level_semantic_boxes(
+    level: LevelSemanticBoxes,
+    grid: np.ndarray,
+) -> None:
+    for category_idx, boxes in enumerate(level.objects):
+        for box in boxes:
+            confidence = 1.0 if box.mentioned else IRRELEVANT_MULTIPLIER
+            _rasterize_obb(box, level, category_idx, grid, confidence)
+
+    for category_idx, boxes in enumerate(level.regions):
+        layer_idx = OBJECT_CATEGORIES + category_idx
+        for box in boxes:
+            confidence = 1.0 if box.mentioned else IRRELEVANT_MULTIPLIER
+            _rasterize_aabb(box, level, layer_idx, grid, confidence)
+
+
+def _load_scene_semantic_boxes_from_cache(scene_id: str) -> SceneSemanticBoxes | None:
+    cache_dir = SEMANTIC_BOX_DIR / scene_id
+    levels: List[LevelSemanticBoxes] = []
+    level_idx = 0
+    while (cache_dir / f"{level_idx}.npz").exists():
+        levels.append(LevelSemanticBoxes.load(cache_dir / f"{level_idx}.npz"))
+        level_idx += 1
+    if not levels:
+        return None
+    return SceneSemanticBoxes(levels)
 
 
 @lru_cache(maxsize=100)
-def construct_bounding_boxes_from_scene_id(scene_id: str) -> List[LevelBoundingBoxes]:
-    """Construct level-wise 2D bounding boxes from the given MP3D scene ID.
+def _scene_semantic_boxes_from_scene_id(scene_id: str) -> SceneSemanticBoxes:
+    """Load cached scene semantic boxes or build/cache them from MP3D."""
+    cached = _load_scene_semantic_boxes_from_cache(scene_id)
+    if cached is not None:
+        return cached
 
-    The cached return value is not copied, so callers should prefer
-    ``bounding_boxes_from_scene_id`` unless they will not mutate the result.
-    """
     scene_path = str(MP3D_DIR / scene_id / f"{scene_id}.house")
     semantic_scene = SemanticScene()
     SemanticScene.load_mp3d_house(
         scene_path, semantic_scene, cast(Any, HABITAT_MP3D_ROTATION_VECTOR)
     )
-    return construct_bounding_boxes_from_scene(semantic_scene)
+    scene_boxes = _construct_scene_semantic_boxes_from_scene(semantic_scene)
+
+    cache_dir = SEMANTIC_BOX_DIR / scene_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for level_idx, level in enumerate(scene_boxes.levels):
+        level.save(cache_dir / f"{level_idx}.npz")
+
+    return scene_boxes
 
 
-def bounding_boxes_from_scene_id(scene_id: str) -> List[LevelBoundingBoxes]:
-    """Return a mutable-safe copy of 2D boxes for each level in a scene."""
-    return deepcopy(construct_bounding_boxes_from_scene_id(scene_id))
-
-
-def construct_bounding_boxes_from_scene(
-    semantic_scene: SemanticScene,
-) -> List[LevelBoundingBoxes]:
+def _construct_scene_semantic_boxes_from_scene(
+    semantic_scene: Any,
+) -> SceneSemanticBoxes:
     """Construct level-wise 2D semantic boxes from a loaded semantic scene."""
     if not semantic_scene.levels:
-        return []
+        return SceneSemanticBoxes([])
 
     def _level_floor_y(level) -> float:
         if level.regions:
@@ -248,24 +535,27 @@ def construct_bounding_boxes_from_scene(
     )
 
     floor_ys = [fy for fy, _ in level_pairs]
-    level_boxes: List[LevelBoundingBoxes] = []
+    level_boxes: List[LevelSemanticBoxes] = []
 
     for i, (_, semantic_level) in enumerate(level_pairs):
-        boxes = construct_bounding_boxes_from_level(semantic_level)
+        boxes = _construct_level_semantic_boxes_from_level(semantic_level)
         boxes.range_y = [
             None if i == 0 else floor_ys[i],
             floor_ys[i + 1] if i + 1 < len(floor_ys) else None,
         ]
         level_boxes.append(boxes)
 
-    return level_boxes
+    return SceneSemanticBoxes(level_boxes)
 
 
-def construct_bounding_boxes_from_level(
+def _construct_level_semantic_boxes_from_level(
     semantic_level: SemanticLevel,
-) -> LevelBoundingBoxes:
+) -> LevelSemanticBoxes:
     """Construct 2D semantic boxes from one semantic level."""
     boxes = _empty_level_boxes()
+    level_aabb_min = _aabb_min(semantic_level.aabb)
+    boxes.offset_x = float(level_aabb_min.x)
+    boxes.offset_z = float(level_aabb_min.z)
 
     for region in semantic_level.regions:
         assert isinstance(region.category, Mp3dRegionCategory), (
@@ -303,11 +593,8 @@ def construct_bounding_boxes_from_level(
 
 __all__ = [
     "AABB2D",
-    "LevelBoundingBoxes",
+    "IRRELEVANT_MULTIPLIER",
+    "LevelSemanticBoxes",
     "OBB2D",
-    "bounding_boxes_from_scene_id",
-    "construct_bounding_boxes_from_level",
-    "construct_bounding_boxes_from_scene",
-    "construct_bounding_boxes_from_scene_id",
-    "extract_relevant_bounding_boxes",
+    "SceneSemanticBoxes",
 ]

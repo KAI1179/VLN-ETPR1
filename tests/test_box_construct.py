@@ -56,7 +56,7 @@ class FakeScene:
     levels: list[FakeLevel]
 
 
-def test_construct_bounding_boxes_from_scene_groups_2d_boxes_by_mapped_category(
+def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(box, "Mp3dObjectCategory", FakeCategory)
@@ -80,10 +80,13 @@ def test_construct_bounding_boxes_from_scene_groups_2d_boxes_by_mapped_category(
     )
     scene = FakeScene(levels=[FakeLevel(aabb=region.aabb, regions=[region])])
 
-    levels = box.construct_bounding_boxes_from_scene(scene)
+    scene_boxes = box.SceneSemanticBoxes.from_scene(scene)
+    levels = scene_boxes.levels
 
     assert len(levels) == 1
     assert levels[0].range_y == [None, None]
+    assert levels[0].offset_x == 2.0
+    assert levels[0].offset_z == 3.0
     assert levels[0].objects[3] == [
         box.OBB2D(
             id="0_0_0",
@@ -97,7 +100,7 @@ def test_construct_bounding_boxes_from_scene_groups_2d_boxes_by_mapped_category(
     ]
 
 
-def test_construct_bounding_boxes_from_scene_sorts_levels_by_floor_y(
+def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(box, "Mp3dObjectCategory", FakeCategory)
@@ -122,7 +125,7 @@ def test_construct_bounding_boxes_from_scene_sorts_levels_by_floor_y(
         ]
     )
 
-    levels = box.construct_bounding_boxes_from_scene(scene)
+    levels = box.SceneSemanticBoxes.from_scene(scene).levels
 
     assert levels[0].regions[6][0].id == "lower"
     assert levels[0].range_y == [None, 3.0]
@@ -130,11 +133,13 @@ def test_construct_bounding_boxes_from_scene_sorts_levels_by_floor_y(
     assert levels[1].range_y == [3.0, None]
 
 
-def test_extract_relevant_bounding_boxes_keeps_nearby_boxes_and_marks_mentions():
-    level = box.LevelBoundingBoxes(
+def test_scene_semantic_boxes_relevant_to_keeps_nearby_boxes_and_marks_mentions():
+    level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[None, None],
+        offset_x=-5.0,
+        offset_z=-5.0,
     )
     level.objects[3] = [
         box.OBB2D(
@@ -162,19 +167,95 @@ def test_extract_relevant_bounding_boxes_keeps_nearby_boxes_and_marks_mentions()
         box.AABB2D(id="near-unmentioned-bathroom", min=(-2.0, -2.0), max=(2.0, 2.0))
     ]
 
-    relevant = box.extract_relevant_bounding_boxes(
-        [level],
+    relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
-        positions=[[0.0, 0.0, 0.0]],
+        reference_path=[[0.0, 0.0, 0.0]],
         max_distance=1.5,
         category_extractor=lambda instruction: ({3}, set()),
     )
 
-    assert [obb.id for obb in relevant[0].objects[3]] == ["near-mentioned-table"]
-    assert relevant[0].objects[3][0].mentioned is True
-    assert [obb.id for obb in relevant[0].objects[1]] == ["near-unmentioned-chair"]
-    assert relevant[0].objects[1][0].mentioned is False
-    assert [region.id for region in relevant[0].regions[7]] == [
+    assert [obb.id for obb in relevant.levels[0].objects[3]] == ["near-mentioned-table"]
+    assert relevant.levels[0].objects[3][0].mentioned is True
+    assert [obb.id for obb in relevant.levels[0].objects[1]] == [
+        "near-unmentioned-chair"
+    ]
+    assert relevant.levels[0].objects[1][0].mentioned is False
+    assert [region.id for region in relevant.levels[0].regions[7]] == [
         "near-unmentioned-bathroom"
     ]
-    assert relevant[0].regions[7][0].mentioned is False
+    assert relevant.levels[0].regions[7][0].mentioned is False
+
+
+def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
+    tmp_path, monkeypatch
+):
+    scene_id = "scene"
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+        offset_x=1.0,
+        offset_z=2.0,
+    )
+    level.objects[3].append(
+        box.OBB2D(
+            id="cached-table",
+            center=(3.0, 4.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        )
+    )
+    cache_dir = tmp_path / scene_id
+    cache_dir.mkdir()
+    level.save(cache_dir / "0.npz")
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("scene should not load when cache exists")
+
+    box._scene_semantic_boxes_from_scene_id.cache_clear()
+    monkeypatch.setattr(box, "SEMANTIC_BOX_DIR", tmp_path)
+    monkeypatch.setattr(box.SemanticScene, "load_mp3d_house", fail_load)
+
+    scene_boxes = box.SceneSemanticBoxes.from_scene_id(scene_id)
+
+    assert scene_boxes.levels[0].offset_x == 1.0
+    assert scene_boxes.levels[0].offset_z == 2.0
+    assert scene_boxes.levels[0].objects[3][0].id == "cached-table"
+
+
+def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+        offset_x=-2.0,
+        offset_z=-2.0,
+    )
+    level.objects[3].append(
+        box.OBB2D(
+            id="mentioned-table",
+            center=(0.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        )
+    )
+    level.objects[1].append(
+        box.OBB2D(
+            id="unmentioned-chair",
+            center=(1.0, 0.0),
+            half_extents=(1.0, 1.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+        )
+    )
+
+    cognitive_map = box.SceneSemanticBoxes([level]).to_cognitive_map(
+        "walk to the table",
+        reference_path=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        start_direction_vector=(0.0, 1.0),
+        category_extractor=lambda instruction: ({3}, set()),
+    )
+
+    row, col = (4, 4)
+    assert cognitive_map.grid[3, row, col] == 1.0
+    assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
+    assert cognitive_map.positions[0] == (4.0, 4.0)

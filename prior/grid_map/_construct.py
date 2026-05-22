@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import math
-from typing import TYPE_CHECKING, List
 from functools import lru_cache
+import math
+from typing import TYPE_CHECKING, Any, List, cast
 
 from habitat_sim.scene import (
     Mp3dObjectCategory,
@@ -76,7 +76,7 @@ def construct_grid_maps_from_scene_id(scene_id: str) -> List[GroundTruthGridMap]
     scene_path = str(MP3D_DIR / scene_id / f"{scene_id}.house")
     semantic_scene = SemanticScene()
     SemanticScene.load_mp3d_house(
-        scene_path, semantic_scene, HABITAT_MP3D_ROTATION_VECTOR
+        scene_path, semantic_scene, cast(Any, HABITAT_MP3D_ROTATION_VECTOR)
     )
     grid_map = construct_grid_maps_from_scene(semantic_scene)
 
@@ -230,7 +230,7 @@ def construct_grid_map_from_level(
 
                     # Check if cell center is within the object's OBB (more accurate than AABB)
                     point = Vector3(x, test_y, z)
-                    if obj.obb.contains(point, 0.0):
+                    if obj.obb.contains(cast(Any, point), 0.0):
                         gt_grid_map.grid[mapped_category, row, col] = 1
 
     return gt_grid_map

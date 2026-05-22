@@ -11,10 +11,9 @@ from prior.vlnce import VLNCEEpisodeEntry
 
 from . import (
     AABB2D,
-    LevelBoundingBoxes,
+    LevelSemanticBoxes,
     OBB2D,
-    construct_bounding_boxes_from_scene_id,
-    extract_relevant_bounding_boxes,
+    SceneSemanticBoxes,
 )
 
 
@@ -62,7 +61,7 @@ def _print_aabb(box: AABB2D) -> None:
     print(f"      {box.id} mentioned={box.mentioned} {box.min} ~ {box.max}")
 
 
-def _print_levels(levels: List[LevelBoundingBoxes]) -> None:
+def _print_levels(levels: List[LevelSemanticBoxes]) -> None:
     for level_idx, level in enumerate(levels):
         print(f"  Level {level_idx} ({level.range_y})")
 
@@ -85,7 +84,7 @@ def _print_levels(levels: List[LevelBoundingBoxes]) -> None:
 
 def _print_scene_boxes(scene: str) -> None:
     print(f"Scene {scene}")
-    _print_levels(construct_bounding_boxes_from_scene_id(scene))
+    _print_levels(SceneSemanticBoxes.from_scene_id(scene).levels)
 
 
 def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
@@ -93,9 +92,7 @@ def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
     assert args.episode_id is not None
 
     episode = _find_episode(args.dataset, args.episode_id)
-    levels = construct_bounding_boxes_from_scene_id(episode.scene_id)
-    relevant_levels = extract_relevant_bounding_boxes(
-        levels,
+    relevant_scene = SceneSemanticBoxes.from_scene_id(episode.scene_id).relevant_to(
         episode.instruction,
         episode.reference_path,
     )
@@ -105,7 +102,7 @@ def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
         f"{episode.episode_id} ({episode.source})"
     )
     print(f"Scene {episode.scene_id}")
-    _print_levels(relevant_levels)
+    _print_levels(relevant_scene.levels)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

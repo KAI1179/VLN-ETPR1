@@ -76,9 +76,10 @@ also no-op when map tokens are absent.
 PriorGT no longer loads precomputed cognitive-map `.npz` files during navigation
 training/evaluation. Instead, it builds maps on the fly:
 
-- `GroundTruthGridMap.from_scene_id(scene_id)` builds/caches MP3D semantic maps.
+- `SceneSemanticBoxes.from_scene_id(scene_id)` builds/caches MP3D semantic boxes.
 - The first level encountered by the instruction reference path is selected.
-- `GroundTruthGridMap.to_cognitive_map(...)` creates the instruction cognitive map.
+- `SceneSemanticBoxes.to_cognitive_map(...)` creates the instruction cognitive map
+  from trajectory-near boxes, scaling unmentioned categories below mentioned ones.
 - The resulting `grid`, `direction_vectors`, `start_direction_vector`, and
   `start_position` are passed directly to the map encoder.
 

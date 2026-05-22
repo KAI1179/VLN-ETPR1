@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from gzip import open as gzip_open
 from json import load
-from pathlib import Path
 from typing import Iterable, Iterator, Optional, Literal
 
 from prior import R2R_DIR, RxR_DIR
@@ -22,7 +21,6 @@ class VLNCEEpisodeEntry:
     scene_id: str
     episode_id: int
     instruction: str
-    positions: list[list[float]]
     start_position: list[float]
     start_rotation: list[float]
     instruction_tokens: list[int]
@@ -34,17 +32,14 @@ class VLNCEEpisodeEntry:
         dataset: Literal["R2R", "RxR"],
         splits: Iterable[str] = DEFAULT_SPLITS,
     ) -> Iterator["VLNCEEpisodeEntry"]:
-        """Iterate R2R/RxR VLN-CE episodes with GT waypoint positions."""
+        """Iterate R2R/RxR VLN-CE episodes with reference-path waypoints."""
         for split in splits:
-            data_path, gt_path, role = _files_for_split(dataset, split)
-            if not data_path.exists() or not gt_path.exists():
+            data_path, role = _files_for_split(dataset, split)
+            if not data_path.exists():
                 continue
 
             with gzip_open(data_path, "rt", encoding="utf-8") as f:
                 raw_data = load(f)
-
-            with gzip_open(gt_path, "rt", encoding="utf-8") as f:
-                gt_data = load(f)
 
             for episode in raw_data["episodes"]:
                 instruction_data = episode["instruction"]
@@ -53,9 +48,6 @@ class VLNCEEpisodeEntry:
                 #     continue  # TODO: How to extract nouns in other lang?
 
                 episode_id = episode["episode_id"]
-                gt_entry = gt_data.get(str(episode_id))
-                if gt_entry is None:
-                    continue
 
                 yield VLNCEEpisodeEntry(
                     dataset=dataset,
@@ -63,7 +55,6 @@ class VLNCEEpisodeEntry:
                     scene_id=_scene_id_from_episode(episode["scene_id"]),
                     episode_id=episode_id,
                     instruction=instruction_data["instruction_text"],
-                    positions=gt_entry["locations"],
                     start_position=episode["start_position"],
                     start_rotation=episode["start_rotation"],
                     instruction_tokens=instruction_data["instruction_tokens"],
@@ -96,43 +87,11 @@ def _scene_id_from_episode(raw_scene_id: str) -> str:
     return raw_scene_id.split("/")[1]
 
 
-def _open_json(path: Path):
-    opener = gzip_open if path.suffix == ".gz" else open
-    return opener(path, "rt", encoding="utf-8")
-
-
-def _infer_dataset_name(path: Path, explicit_dataset: Optional[str]) -> str:
-    if explicit_dataset is not None:
-        dataset = explicit_dataset.lower()
-    else:
-        dataset = "rxr" if "rxr" in str(path).lower() else "r2r"
-    if dataset == "r2r":
-        return "R2R"
-    if dataset == "rxr":
-        return "RxR"
-    if dataset in {"R2R", "RxR"}:
-        return dataset
-    raise ValueError(f"Unsupported dataset: {explicit_dataset}")
-
-
-def _infer_split(path: Path) -> str:
-    for part in path.parts:
-        if part in DEFAULT_SPLITS:
-            return part
-    stem = path.stem
-    if stem.endswith(".json"):
-        return stem[: -len(".json")]
-    return stem
-
-
-def _files_for_split(
-    dataset: Literal["R2R", "RxR"], split: str
-) -> tuple[Path, Path, Optional[str]]:
+def _files_for_split(dataset: Literal["R2R", "RxR"], split: str):
     if dataset == "R2R":
         split_dir = R2R_DIR / split
         return (
             split_dir / f"{split}.json.gz",
-            split_dir / f"{split}_gt.json.gz",
             None,
         )
 
@@ -140,7 +99,6 @@ def _files_for_split(
         split_dir = RxR_DIR / split
         return (
             split_dir / f"{split}_guide.json.gz",
-            split_dir / f"{split}_guide_gt.json.gz",
             None,
         )
 

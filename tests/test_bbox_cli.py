@@ -27,14 +27,14 @@ class FakeEpisode:
 
 def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     all_boxes = [
-        bbox.LevelBoundingBoxes(
+        bbox.LevelSemanticBoxes(
             objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
             regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
             range_y=[None, None],
         )
     ]
     relevant_boxes = [
-        bbox.LevelBoundingBoxes(
+        bbox.LevelSemanticBoxes(
             objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
             regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
             range_y=[None, None],
@@ -57,13 +57,23 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     )
     monkeypatch.setattr(
         bbox_main,
-        "construct_bounding_boxes_from_scene_id",
-        lambda scene_id: all_boxes,
+        "SceneSemanticBoxes",
+        type(
+            "FakeSceneSemanticBoxesFactory",
+            (),
+            {
+                "from_scene_id": staticmethod(
+                    lambda scene_id: bbox.SceneSemanticBoxes(all_boxes)
+                )
+            },
+        ),
     )
     monkeypatch.setattr(
-        bbox_main,
-        "extract_relevant_bounding_boxes",
-        lambda levels, instruction, positions: relevant_boxes,
+        bbox.SceneSemanticBoxes,
+        "relevant_to",
+        lambda self, instruction, reference_path: bbox.SceneSemanticBoxes(
+            relevant_boxes
+        ),
     )
 
     bbox_main.main(["--dataset", "r2r", "--episode-id", "123"])

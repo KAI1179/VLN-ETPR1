@@ -309,33 +309,6 @@ class GroundTruthGridMap(BaseGridMap):
             return False
         return True
 
-    def to_cognitive_map(
-        self,
-        instruction: str,
-        positions: List[List[float]],
-        start_direction_vector: DirectionVector,
-    ) -> CognitiveGridMap:
-        """
-        Convert this ground truth grid map to a cognitive grid map, only
-        keeping instruction-related categories along the path defined by positions.
-
-        Args:
-            instruction: Instruction text to determine relevant categories.
-            positions: List of 3D positions (x, y, z) along the path.
-            start_direction_vector: Start orientation as (sin, cos).
-
-        Returns:
-            CognitiveGridMap: New cognitive grid map with the same data.
-        """
-        from ._cognitive import build_cognitive_map
-
-        return build_cognitive_map(
-            self,
-            instruction,
-            positions,
-            start_direction_vector=start_direction_vector,
-        )
-
     @staticmethod
     def from_scene(semantic_scene: SemanticScene) -> List[GroundTruthGridMap]:
         """Constructs level-wise ground-truth grid maps from the given semantic scene. If you intend to work with MP3D scenes, consider using from_scene_id instead."""
@@ -459,27 +432,8 @@ class CognitiveGridMap(BaseGridMap):
         return super().validate()
 
 
-def first_encountered_level(
-    grid_maps: List[GroundTruthGridMap],
-    positions: List[List[float]],
-) -> Tuple[int, GroundTruthGridMap]:
-    """Select the first map level encountered by a waypoint path."""
-    if len(grid_maps) == 0:
-        raise ValueError("GroundTruthGridMap.from_scene_id returned no levels")
-
-    for position in positions:
-        y = float(position[1])
-        for level, grid_map in enumerate(grid_maps):
-            lower, upper = grid_map.range_y
-            if (lower is None or y >= lower) and (upper is None or y < upper):
-                return level, grid_map
-
-    return 0, grid_maps[0]
-
-
 __all__ = [
     "BaseGridMap",
     "GroundTruthGridMap",
     "CognitiveGridMap",
-    "first_encountered_level",
 ]

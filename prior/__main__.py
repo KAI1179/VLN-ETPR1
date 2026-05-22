@@ -1,7 +1,7 @@
 """Export cognitive grid maps to NumPy arrays."""
 
 from prior import DATA_DIR
-from prior.grid_map import GroundTruthGridMap, first_encountered_level
+from prior.bbox import SceneSemanticBoxes
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
 
 OUTPUT_DIR = DATA_DIR / "cognitive_maps"
@@ -19,7 +19,7 @@ for i, entry in enumerate(data):
     episode_id = entry.episode_id
     dataset = entry.dataset
     print(
-        f"[{dataset}] Processing episode {i+1:0>5}/{len(data):0>5} (scene {scene_id})",
+        f"[{dataset}] Processing episode {i + 1:0>5}/{len(data):0>5} (scene {scene_id})",
         end="\r",
     )
 
@@ -33,12 +33,9 @@ for i, entry in enumerate(data):
         )
         continue
 
-    gt_grid_maps = GroundTruthGridMap.from_scene_id(scene_id)
-    _, selected_map = first_encountered_level(gt_grid_maps, entry.positions)
-
-    cognitive_map = selected_map.to_cognitive_map(
+    cognitive_map = SceneSemanticBoxes.from_scene_id(scene_id).to_cognitive_map(
         entry.instruction,
-        entry.positions,
+        entry.reference_path,
         start_direction_vector=entry.start_direction_vector,
     )
 

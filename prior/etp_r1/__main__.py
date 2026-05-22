@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sys import argv
 from prior import DATA_DIR, VISUALIZATIONS_DIR
-from prior.grid_map import GroundTruthGridMap, first_encountered_level
+from prior.bbox import SceneSemanticBoxes
 
 from . import (
     ANNOTATION_FILES,
@@ -34,11 +34,11 @@ def generate_cognitive_map(annotation_file: str):
             )
             continue
 
-        gt_maps = GroundTruthGridMap.from_scene_id(scene_id)
         positions = entry.positions()
-        selected_level, selected_map = first_encountered_level(gt_maps, positions)
+        scene_boxes = SceneSemanticBoxes.from_scene_id(scene_id)
+        selected_level, _ = scene_boxes.first_encountered_level(positions)
 
-        cognitive_map = selected_map.to_cognitive_map(
+        cognitive_map = scene_boxes.to_cognitive_map(
             entry.instruction,
             positions,
             start_direction_vector=entry.start_direction_vector,
@@ -55,7 +55,9 @@ def generate_cognitive_map(annotation_file: str):
             print("Instruction:", entry.instruction)
             vis_path = VISUALIZATIONS_DIR / "cognitive_maps" / scene_id
             vis_path.mkdir(parents=True, exist_ok=True)
-            save_path_png = vis_path / f"level_{selected_level}.instruction.{instr_id}.png"
+            save_path_png = (
+                vis_path / f"level_{selected_level}.instruction.{instr_id}.png"
+            )
             cognitive_map.visualize(
                 title=f"Cognitive - Scene {scene_id} - Level {selected_level}",
                 save_path=save_path_png,

@@ -1,6 +1,5 @@
 """Module for cognitive maps, including:
 - Extract objects and categories.
-- Build cognitive map from ground truth map, instruction and path.
 """
 
 from functools import lru_cache
@@ -8,39 +7,24 @@ import re
 from typing import Callable, List, Optional, Set, Tuple
 
 import clip
-import numpy as np
 import spacy
 from spacy.tokens import Token
 import torch
 
 
 from ..constants import (
-    COLS,
     MAPPED_OBJECT_NAMES,
     MAPPED_OBJECT_OTHER_INDEX,
     MAPPED_REGION_NAMES,
-    MAX_DISTANCE_CELLS,
-    OBJECT_CATEGORIES,
     OBJECT_MAPPING,
     OBJECT_NAMES,
-    REGION_CATEGORIES,
     REGION_MAPPING,
     REGION_NAMES,
-    ROWS,
-    DIRECTION_VECTOR_CNT,
-    DIRECTION_VECTOR_SIM,
 )
-from prior.directions import (
-    DirectionVector,
-    world_delta_to_direction_vector,
-)
-from . import CognitiveGridMap, GroundTruthGridMap
 
 
 CONFIDENCE_THRESHOLD = 0.40
 """Minimum similarity score to accept a fuzzy match; below this, we fallback to "other"."""
-IRRELEVANT_MULTIPLIER = 0.6
-"""Multiplier to apply to confidence scores for categories not explicitly mentioned in the instruction, but still neighboring the path. This allows them to be included in the cognitive map, but with lower confidence than explicitly mentioned categories."""
 
 MAPPED_REGION_OTHER_INDEX = MAPPED_REGION_NAMES.index("other/miscellaneous")
 
@@ -278,128 +262,6 @@ def extract_categories(text: str) -> Tuple[Set[int], Set[int]]:
             region_categories.add(region_category_mapped)
 
     return object_categories, region_categories
-
-
-def _update_grid_layer(
-    gt_map: GroundTruthGridMap,
-    cognitive_map: CognitiveGridMap,
-    layer_idx_base: int,
-    cat_idx: int,
-    row: int,
-    col: int,
-    category_indices: Set[int],
-) -> None:
-    # Copy positions within MAX_DISTANCE_CELLS
-    up = max(0, row - MAX_DISTANCE_CELLS)
-    left = max(0, col - MAX_DISTANCE_CELLS)
-    down = min(ROWS - 1, row + MAX_DISTANCE_CELLS)
-    right = min(COLS - 1, col + MAX_DISTANCE_CELLS)
-
-    grid_idx = np.s_[
-        layer_idx_base + cat_idx,
-        up : down + 1,
-        left : right + 1,
-    ]
-    subgrid = gt_map.grid[grid_idx].copy()
-    if cat_idx not in category_indices:
-        # Include neighbouring data not in extracted categories, with reduced confidence
-        subgrid *= IRRELEVANT_MULTIPLIER
-    target_slice = cognitive_map.grid[grid_idx]
-    np.maximum(target_slice, subgrid, out=target_slice)
-
-
-def _direction_vector_between(
-    prev_position: List[float],
-    next_position: List[float],
-) -> DirectionVector:
-    """Return normalized (sin, cos) direction using world-space deltas."""
-    dx = next_position[0] - prev_position[0]
-    dz = next_position[2] - prev_position[2]
-    return world_delta_to_direction_vector(dx, dz)
-
-
-def _extract_direction_vectors(
-    positions: List[List[float]],
-) -> List[DirectionVector]:
-    """Extract distinct path directions as normalized (sin, cos) tuples."""
-    directions: List[DirectionVector] = []
-
-    for i in range(len(positions) - 1):
-        direction = _direction_vector_between(positions[i], positions[i + 1])
-        if len(directions) >= 1:
-            prev = directions[-1]
-            similarity = direction[0] * prev[0] + direction[1] * prev[1]
-            if similarity >= DIRECTION_VECTOR_SIM:
-                continue  # Similar to previous one
-
-        directions.append(direction)
-        if len(directions) >= DIRECTION_VECTOR_CNT:
-            break
-
-    while len(directions) < DIRECTION_VECTOR_CNT:
-        directions.append((0.0, 0.0))
-
-    return directions
-
-
-def build_cognitive_map(
-    gt_map: GroundTruthGridMap,
-    instruction: str,
-    positions: List[List[float]],
-    start_direction_vector: DirectionVector,
-) -> CognitiveGridMap:
-    """Build cognitive map from ground truth map, instruction and path."""
-    cognitive_map = CognitiveGridMap()
-    cognitive_map.offset_x = gt_map.offset_x
-    cognitive_map.offset_z = gt_map.offset_z
-    cognitive_map.direction_vectors = _extract_direction_vectors(positions)
-    cognitive_map.start_direction_vector = start_direction_vector
-
-    # Extract relevant object/region categories from instruction
-    object_category_indices, region_category_indices = extract_categories(instruction)
-
-    # Iterate through positions, copying relevant categories and reducing confidence of irrelevant categories
-    for x, y, z in positions:
-        # Filter by the level's Y range so that only waypoints physically on
-        # this floor contribute to this level's cognitive map.
-        # range_y[0] is None for the lowest level (no lower bound).
-        # range_y[1] is None for the highest level (no upper bound).
-        if gt_map.range_y[0] is not None and y < gt_map.range_y[0]:
-            continue
-        if gt_map.range_y[1] is not None and y >= gt_map.range_y[1]:
-            continue
-
-        grid_x, grid_z = gt_map.world_to_grid(x, z)
-        row, col = int(grid_x), int(grid_z)
-        cognitive_map.positions.append((grid_x, grid_z))
-
-        # 1. Process Objects
-        for cat_idx in range(OBJECT_CATEGORIES):
-            _update_grid_layer(
-                gt_map, cognitive_map, 0, cat_idx, row, col, object_category_indices
-            )
-
-        # 2. Process Regions
-        for cat_idx in range(REGION_CATEGORIES):
-            _update_grid_layer(
-                gt_map,
-                cognitive_map,
-                OBJECT_CATEGORIES,
-                cat_idx,
-                row,
-                col,
-                region_category_indices,
-            )
-
-    # Per-layer Gaussian filtering
-    # for layer in range(OBJECT_CATEGORIES + REGION_CATEGORIES):
-    #     gaussian_filter(
-    #         cognitive_map.grid[layer],
-    #         sigma=GAUSSIAN_SIGMA,
-    #         output=cognitive_map.grid[layer],
-    #     )
-
-    return cognitive_map
 
 
 if __name__ == "__main__":
