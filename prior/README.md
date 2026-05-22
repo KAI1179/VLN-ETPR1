@@ -7,10 +7,12 @@ Each npz file contains:
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `range_y`: Y range of the floor. Not useful for our job.
 - `positions`: Waypoint positions along the path.
-- `direction_vectors`: 5 distinct path directions as normalized (cos, sin) tuples. Zeroes used if distinct directions < 5. Dropped if > 5.
+- `direction_vectors`: 5 distinct path directions as normalized (cos, sin) tuples.
+    - Zeroes used if distinct directions < 5.
+    - At most 5 directions are stored. Extra directions are discarded.
 - `start_direction_vector`: Direction vector of the start position.
 
-Together they showcase navigation trajectory of some given instruction, with a radius of 5 cells around each waypoint.
+Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 5 cells around each waypoint.
 
 ## Grid
 
@@ -21,11 +23,12 @@ Together they showcase navigation trajectory of some given instruction, with a r
 
 ## Angles
 
-The angle is defined following mathematical convention in visualization.
+Angles follow standard mathematical convention in visualization space, increasing as you go counter-clockwise. Examples:
 
-- 0° (cos=1, sin=0) is right (-col direction)
-- 90° (cos=0, sin=1) is up (-row direction)
-- Angle increases as you go counter-clockwise
+| Angle | Direction Vector | Visualized Direction | Grid direction |
+| - | - | - | - |
+| 0° | (cos=1, sin=0) | Right | -col |
+| 90° | (cos=0, sin=1) | Up | -row |
 
 ## Categories
 
