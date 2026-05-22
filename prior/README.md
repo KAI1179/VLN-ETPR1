@@ -51,7 +51,7 @@ Angles follow standard mathematical convention in visualization space, increasin
 
 Each json file contains:
 
-- `objects`: 27 arrays of object OBBs, indexed by mapped object category.
+- `objects`: 27 arrays of object boxes, indexed by mapped object category.
 - `regions`: 10 arrays of region AABBs, indexed by mapped region category.
 - `range_y`: Y range of the floor. Not useful for our job.
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
@@ -59,12 +59,12 @@ Each json file contains:
 
 ## Objects
 
-The `objects` field is an array of length 27. `objects[i]` contains 2D oriented bounding boxes of objects of category $i$. Each 2D oriented bounding box consists of:
+The `objects` field is an array of length 27. `objects[i]` contains 2D boxes of objects of category $i$. Each 2D object box consists of:
 
 - `id`: ID of the object. Not useful for our job.
 - `center`: Center coordinate of the box.
-- `half_extents`: Half size along each local box axis.
-- `axes`: Two normalized local axes in world X/Z coordinates.
+- `half_extents`: Half size along X/Z.
+- `rotation`: Box rotation in radians.
 - `mentioned`: Whether category $i$ is mentioned in the instruction.
 
 ## Regions

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import pytest
@@ -93,7 +94,7 @@ def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
             id="0_0_0",
             center=(4.0, 6.0),
             half_extents=(1.0, 2.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
+            rotation=0.0,
         )
     ]
     assert levels[0].regions[7] == [
@@ -147,13 +148,11 @@ def test_scene_semantic_boxes_relevant_to_keeps_nearby_boxes_and_marks_mentions(
             id="near-mentioned-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         ),
         box.OBB2D(
             id="far-mentioned-table",
             center=(10.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         ),
     ]
     level.objects[1] = [
@@ -161,7 +160,6 @@ def test_scene_semantic_boxes_relevant_to_keeps_nearby_boxes_and_marks_mentions(
             id="near-unmentioned-chair",
             center=(0.0, 2.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         )
     ]
     level.regions[7] = [
@@ -203,7 +201,6 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
             id="cached-table",
             center=(3.0, 4.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         )
     )
     cache_dir = tmp_path / scene_id
@@ -237,7 +234,6 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
             id="json-table",
             center=(3.0, 4.0),
             half_extents=(1.0, 2.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
             mentioned=True,
         )
     )
@@ -255,8 +251,40 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
     loaded = box.LevelSemanticBoxes.load(path)
 
     assert isinstance(level, BaseModel)
-    assert path.read_text(encoding="utf-8").startswith("{")
+    assert '"rotation"' in path.read_text(encoding="utf-8")
     assert loaded == level
+
+
+def test_obb_distance_uses_rotation():
+    rotated = box.OBB2D(
+        id="rotated-table",
+        center=(0.0, 0.0),
+        half_extents=(2.0, 0.5),
+        rotation=math.pi / 4.0,
+    )
+
+    assert box._point_to_obb_distance((2**0.5, 2**0.5), rotated) == pytest.approx(0.0)
+    assert box._point_to_obb_distance((1.5, -1.5), rotated) > 1.0
+
+
+def test_level_semantic_boxes_loads_legacy_axes_as_rotation():
+    payload = """
+    {
+      "objects": [[{
+        "id": "legacy-table",
+        "center": [0.0, 0.0],
+        "half_extents": [1.0, 1.0],
+        "axes": [[0.0, 1.0], [-1.0, 0.0]],
+        "mentioned": false
+      }]],
+      "regions": [],
+      "range_y": [null, null]
+    }
+    """
+
+    level = box.LevelSemanticBoxes.from_json(payload)
+
+    assert level.objects[0][0].rotation == pytest.approx(math.pi / 2.0)
 
 
 def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
@@ -272,7 +300,6 @@ def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
             id="mentioned-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         )
     )
     level.objects[1].append(
@@ -280,7 +307,6 @@ def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
             id="unmentioned-chair",
             center=(1.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
         )
     )
 

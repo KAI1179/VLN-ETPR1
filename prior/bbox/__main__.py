@@ -56,7 +56,7 @@ def _find_episode(
 def _print_obb(box: OBB2D) -> None:
     print(
         f"      {box.id} mentioned={box.mentioned} "
-        f"center={box.center} half_extents={box.half_extents} axes={box.axes}"
+        f"center={box.center} half_extents={box.half_extents} rotation={box.rotation}"
     )
 
 

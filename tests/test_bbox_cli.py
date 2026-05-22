@@ -54,7 +54,6 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
             id="wrong-level-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
             mentioned=True,
         )
     ]
@@ -63,7 +62,6 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
             id="table-1",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
             mentioned=True,
         )
     ]
@@ -126,7 +124,6 @@ def test_episode_mode_exports_first_encountered_level_as_single_json_file(
             id="upper-level-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
-            axes=((1.0, 0.0), (0.0, 1.0)),
             mentioned=True,
         )
     )

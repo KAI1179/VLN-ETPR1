@@ -47,12 +47,12 @@ SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
 
 @dataclass(frozen=True)
 class OBB2D:
-    """2D oriented bounding box projected onto world X/Z axes."""
+    """2D object bounding box projected onto world X/Z axes."""
 
     id: str
     center: Point2D
     half_extents: Point2D
-    axes: Tuple[Axis2D, Axis2D]
+    rotation: float = 0.0
     mentioned: bool = False
 
 
@@ -220,23 +220,22 @@ def _normalized_xz(vector) -> Axis2D:
     x, z = _xz(vector)
     norm = math.hypot(x, z)
     if norm == 0.0:
-        return (0.0, 0.0)
+        return (1.0, 0.0)
     return (x / norm, z / norm)
 
 
-def _obb_axes_2d(obb) -> Tuple[Axis2D, Axis2D]:
-    """Return projected local X and local Z axes for a 3D OBB."""
+def _obb_rotation_2d(obb) -> float:
+    """Return projected local X-axis angle in world X/Z coordinates."""
     local_to_world = obb.local_to_world
     if hasattr(local_to_world, "transform_vector"):
-        x_axis = local_to_world.transform_vector(Vector3(1.0, 0.0, 0.0))
-        z_axis = local_to_world.transform_vector(Vector3(0.0, 0.0, 1.0))
-        return (_normalized_xz(x_axis), _normalized_xz(z_axis))
-
-    # Habitat exposes OBB matrices as ndarray in some versions.  Treat columns
-    # 0 and 2 as local X/Z basis vectors in world coordinates.
-    x_axis = (local_to_world[0][0], local_to_world[1][0], local_to_world[2][0])
-    z_axis = (local_to_world[0][2], local_to_world[1][2], local_to_world[2][2])
-    return (_normalized_xz(x_axis), _normalized_xz(z_axis))
+        x_axis = _normalized_xz(local_to_world.transform_vector(Vector3(1.0, 0.0, 0.0)))
+    else:
+        # Habitat exposes OBB matrices as ndarray in some versions. Treat
+        # column 0 as the local X basis vector in world coordinates.
+        x_axis = _normalized_xz(
+            (local_to_world[0][0], local_to_world[1][0], local_to_world[2][0])
+        )
+    return math.atan2(x_axis[1], x_axis[0])
 
 
 def _empty_level_boxes() -> LevelSemanticBoxes:
@@ -256,18 +255,19 @@ def _point_to_aabb_distance(point: Point2D, box: AABB2D) -> float:
 
 
 def _point_to_obb_distance(point: Point2D, box: OBB2D) -> float:
-    """Return shortest 2D distance from a point to an oriented box."""
+    """Return shortest 2D distance from a point to a rotated object box."""
     dx = point[0] - box.center[0]
     dz = point[1] - box.center[1]
-    axis_x, axis_z = box.axes
+    cos_theta = math.cos(box.rotation)
+    sin_theta = math.sin(box.rotation)
 
-    local_x = dx * axis_x[0] + dz * axis_x[1]
-    local_z = dx * axis_z[0] + dz * axis_z[1]
+    local_x = dx * cos_theta + dz * sin_theta
+    local_z = -dx * sin_theta + dz * cos_theta
     clamped_x = min(max(local_x, -box.half_extents[0]), box.half_extents[0])
     clamped_z = min(max(local_z, -box.half_extents[1]), box.half_extents[1])
 
-    closest_x = box.center[0] + clamped_x * axis_x[0] + clamped_z * axis_z[0]
-    closest_z = box.center[1] + clamped_x * axis_x[1] + clamped_z * axis_z[1]
+    closest_x = box.center[0] + clamped_x * cos_theta - clamped_z * sin_theta
+    closest_z = box.center[1] + clamped_x * sin_theta + clamped_z * cos_theta
     return math.hypot(point[0] - closest_x, point[1] - closest_z)
 
 
@@ -410,24 +410,27 @@ def _rasterize_aabb(
 
 
 def _obb_bounds(box: OBB2D) -> tuple[float, float, float, float]:
-    axis_x, axis_z = box.axes
+    cos_theta = math.cos(box.rotation)
+    sin_theta = math.sin(box.rotation)
     corners = []
     for sign_x in (-1.0, 1.0):
         for sign_z in (-1.0, 1.0):
-            x = (
-                box.center[0]
-                + sign_x * box.half_extents[0] * axis_x[0]
-                + sign_z * box.half_extents[1] * axis_z[0]
+            local_x = sign_x * box.half_extents[0]
+            local_z = sign_z * box.half_extents[1]
+            corners.append(
+                (
+                    box.center[0] + local_x * cos_theta - local_z * sin_theta,
+                    box.center[1] + local_x * sin_theta + local_z * cos_theta,
+                )
             )
-            z = (
-                box.center[1]
-                + sign_x * box.half_extents[0] * axis_x[1]
-                + sign_z * box.half_extents[1] * axis_z[1]
-            )
-            corners.append((x, z))
     xs = [corner[0] for corner in corners]
     zs = [corner[1] for corner in corners]
-    return min(xs), max(xs), min(zs), max(zs)
+    return (
+        min(xs),
+        max(xs),
+        min(zs),
+        max(zs),
+    )
 
 
 def _rasterize_obb(
@@ -569,7 +572,7 @@ def _construct_level_semantic_boxes_from_level(
                         float(obb.half_extents[0]),
                         float(obb.half_extents[2]),
                     ),
-                    axes=_obb_axes_2d(obb),
+                    rotation=_obb_rotation_2d(obb),
                 )
             )
 
