@@ -1,3 +1,14 @@
+# Helpers
+
+Following modules could be run with `python -m`:
+
+- `prior`: Generate cognitive maps for all VLNCE entries (R2R + RxR)
+- `prior.bbox`: Show bounding box info for given scene or episode
+- `prior.etp_r1`: Generate cognitive maps for all ETP-R1 entries
+- `prior.grid_map`: Visualizes given cognitive map (`.npz`)
+
+# Saved Data
+
 ## Data Overview
 
 Each npz file contains:
