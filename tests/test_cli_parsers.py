@@ -126,6 +126,30 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.direction_loss_weight == 0.1
     assert args.init_positive_prob == 0.002
     assert args.max_text_len is None
-    assert args.num_workers == 0
+    assert args.num_workers == 2
     assert args.val_limit is None
     assert args.log_every == 1
+
+
+def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
+    from vlnce_baselines.models.etp_imagined import train_map_predictor
+
+    monkeypatch.setattr(
+        train_map_predictor,
+        "load_predictor_examples",
+        lambda *args, **kwargs: [object()],
+    )
+
+    loader = train_map_predictor._build_dataloader(
+        dataset_name="r2r",
+        splits=["train"],
+        max_text_len=16,
+        batch_size=1,
+        num_workers=2,
+        limit=1,
+        shuffle=False,
+    )
+
+    assert loader.num_workers == 2
+    assert loader.multiprocessing_context.get_start_method() == "spawn"
+    assert loader.collate_fn.func is train_map_predictor.collate_predictor_batch

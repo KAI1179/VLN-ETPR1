@@ -8,6 +8,7 @@ Habitat rollout and navigation loss.
 import os
 import random
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
@@ -485,15 +486,17 @@ def _build_dataloader(
         limit=limit,
     )
     dataset = CognitiveMapPredictorDataset(examples)
+    loader_kwargs = {}
+    if num_workers > 0:
+        loader_kwargs["multiprocessing_context"] = "spawn"
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        collate_fn=lambda batch: collate_predictor_batch(
-            batch, max_text_len=max_text_len
-        ),
+        collate_fn=partial(collate_predictor_batch, max_text_len=max_text_len),
+        **loader_kwargs,
     )
 
 
@@ -517,7 +520,7 @@ class TrainMapPredictorArgs(Tap):
     init_positive_prob: float = 0.002
     thresholds: str = "0.001,0.002,0.005,0.01,0.02,0.05"
     max_text_len: Optional[int] = None
-    num_workers: int = 0
+    num_workers: int = 2
     seed: int = 0
     limit: Optional[int] = None
     val_limit: Optional[int] = None
