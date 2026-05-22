@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 from magnum import Matrix4, Vector3
+from pydantic import BaseModel
 
 from prior import bbox as box
 
@@ -221,6 +222,41 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     assert scene_boxes.levels[0].offset_x == 1.0
     assert scene_boxes.levels[0].offset_z == 2.0
     assert scene_boxes.levels[0].objects[3][0].id == "cached-table"
+
+
+def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[-1.0, 2.0],
+        offset_x=1.0,
+        offset_z=2.0,
+    )
+    level.objects[3].append(
+        box.OBB2D(
+            id="json-table",
+            center=(3.0, 4.0),
+            half_extents=(1.0, 2.0),
+            axes=((1.0, 0.0), (0.0, 1.0)),
+            mentioned=True,
+        )
+    )
+    level.regions[7].append(
+        box.AABB2D(
+            id="json-bathroom",
+            min=(2.0, 3.0),
+            max=(8.0, 11.0),
+            mentioned=False,
+        )
+    )
+
+    path = tmp_path / "level.json"
+    level.save(path)
+    loaded = box.LevelSemanticBoxes.load(path)
+
+    assert isinstance(level, BaseModel)
+    assert path.read_text(encoding="utf-8").startswith("{")
+    assert loaded == level
 
 
 def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():

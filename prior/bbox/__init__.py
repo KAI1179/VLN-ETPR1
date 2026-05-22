@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import math
-import json
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Set, Tuple, cast
@@ -18,6 +17,7 @@ from habitat_sim.scene import (
     SemanticScene,
 )
 from magnum import Vector3
+from pydantic import BaseModel
 
 from prior import MP3D_DIR
 from prior import DATA_DIR
@@ -73,8 +73,7 @@ RegionAABB2Ds = List[List[AABB2D]]
 """List indexed by mapped region category id, containing region AABBs of that type."""
 
 
-@dataclass
-class LevelSemanticBoxes:
+class LevelSemanticBoxes(BaseModel):
     """2D semantic boxes for one MP3D semantic level."""
 
     objects: ObjectOBB2Ds
@@ -91,50 +90,29 @@ class LevelSemanticBoxes:
         z = col * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_z
         return (x, z)
 
+    def to_json(self, indent: int | None = 2) -> str:
+        return self.model_dump_json(indent=indent)
+
+    @staticmethod
+    def from_json(payload: str) -> "LevelSemanticBoxes":
+        return LevelSemanticBoxes.model_validate_json(payload)
+
+    def save_json(self, path: str | Path) -> None:
+        Path(path).write_text(self.to_json(), encoding="utf-8")
+
+    @staticmethod
+    def load_json(path: str | Path) -> "LevelSemanticBoxes":
+        return LevelSemanticBoxes.from_json(Path(path).read_text(encoding="utf-8"))
+
     def save(self, path: str | Path) -> None:
-        payload = {
-            "objects": [[asdict(box) for box in boxes] for boxes in self.objects],
-            "regions": [[asdict(box) for box in boxes] for boxes in self.regions],
-            "range_y": self.range_y,
-            "offset_x": self.offset_x,
-            "offset_z": self.offset_z,
-        }
-        np.savez_compressed(path, payload=np.asarray(json.dumps(payload)))
+        path = Path(path)
+        np.savez_compressed(path, payload=np.asarray(self.to_json(indent=None)))
 
     @staticmethod
     def load(path: str | Path) -> "LevelSemanticBoxes":
+        path = Path(path)
         data = np.load(path)
-        payload = json.loads(str(data["payload"]))
-        return LevelSemanticBoxes(
-            objects=[
-                [
-                    OBB2D(
-                        id=box["id"],
-                        center=tuple(box["center"]),
-                        half_extents=tuple(box["half_extents"]),
-                        axes=(tuple(box["axes"][0]), tuple(box["axes"][1])),
-                        mentioned=bool(box["mentioned"]),
-                    )
-                    for box in boxes
-                ]
-                for boxes in payload["objects"]
-            ],
-            regions=[
-                [
-                    AABB2D(
-                        id=box["id"],
-                        min=tuple(box["min"]),
-                        max=tuple(box["max"]),
-                        mentioned=bool(box["mentioned"]),
-                    )
-                    for box in boxes
-                ]
-                for boxes in payload["regions"]
-            ],
-            range_y=list(payload["range_y"]),
-            offset_x=float(payload["offset_x"]),
-            offset_z=float(payload["offset_z"]),
-        )
+        return LevelSemanticBoxes.from_json(str(data["payload"]))
 
 
 @dataclass
