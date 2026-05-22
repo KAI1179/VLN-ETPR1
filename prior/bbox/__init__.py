@@ -95,7 +95,7 @@ class LevelSemanticBoxes(BaseModel):
 
     @staticmethod
     def from_json(payload: str) -> "LevelSemanticBoxes":
-        return LevelSemanticBoxes.model_validate_json(payload)
+        return LevelSemanticBoxes.model_validate(payload)
 
     def save_json(self, path: str | Path) -> None:
         Path(path).write_text(self.to_json(), encoding="utf-8")

@@ -25,6 +25,8 @@ class BoundingBoxArgs(Tap):
     """Dataset to use for relevant episode mode."""
     episode_id: Optional[int] = None
     """Episode id to use for relevant episode mode."""
+    split: Optional[Literal["train", "val_seen", "val_unseen"]] = None
+    """Dataset split to disambiguate duplicate episode ids."""
     output: Optional[Path] = None
     """Optional JSON output path for the selected level."""
 
@@ -45,11 +47,22 @@ def _canonical_dataset(dataset: Literal["r2r", "rxr"]) -> Literal["R2R", "RxR"]:
 def _find_episode(
     dataset: Literal["r2r", "rxr"],
     episode_id: int,
+    split: Optional[Literal["train", "val_seen", "val_unseen"]] = None,
 ) -> VLNCEEpisodeEntry:
     canonical_dataset = _canonical_dataset(dataset)
-    for episode in VLNCEEpisodeEntry.iter_from(canonical_dataset):
-        if episode.episode_id == episode_id:
-            return episode
+    episodes = (
+        VLNCEEpisodeEntry.iter_from(canonical_dataset)
+        if split is None
+        else VLNCEEpisodeEntry.iter_from(canonical_dataset, splits=[split])
+    )
+    matches = [episode for episode in episodes if episode.episode_id == episode_id]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        sources = ", ".join(episode.source for episode in matches)
+        raise ValueError(
+            f"Episode {episode_id} found in multiple splits: {sources}; pass --split"
+        )
     raise ValueError(f"Episode {episode_id} not found in {canonical_dataset}")
 
 
@@ -110,7 +123,7 @@ def _relevant_episode_boxes(
     assert args.dataset is not None
     assert args.episode_id is not None
 
-    episode = _find_episode(args.dataset, args.episode_id)
+    episode = _find_episode(args.dataset, args.episode_id, split=args.split)
     scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
     level_idx, _ = scene_boxes.first_encountered_level(episode.reference_path)
     relevant_scene = scene_boxes.relevant_to(

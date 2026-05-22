@@ -142,6 +142,8 @@ def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
             "r2r",
             "--episode-id",
             "123",
+            "--split",
+            "val_unseen",
             "--output",
             "boxes",
         ]
@@ -151,6 +153,7 @@ def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
     assert args.scenes == ["17DRP5sb8fy"]
     assert args.dataset == "r2r"
     assert args.episode_id == 123
+    assert args.split == "val_unseen"
     assert args.output == Path("boxes")
 
 

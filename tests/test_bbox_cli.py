@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import pytest
+
 from prior import bbox
 from prior.bbox import __main__ as bbox_main
 
@@ -23,6 +25,28 @@ class FakeEpisode:
     @property
     def source(self) -> str:
         return self.split
+
+
+def test_find_episode_requires_split_for_duplicate_episode_ids(monkeypatch):
+    monkeypatch.setattr(
+        bbox_main.VLNCEEpisodeEntry,
+        "iter_from",
+        lambda dataset, splits=("train", "val_unseen"): (
+            episode
+            for episode in [
+                FakeEpisode(episode_id=184, split="train", scene_id="train-scene"),
+                FakeEpisode(episode_id=184, split="val_unseen", scene_id="val-scene"),
+            ]
+            if episode.split in splits
+        ),
+    )
+
+    with pytest.raises(ValueError, match="found in multiple splits"):
+        bbox_main._find_episode("r2r", 184)
+
+    episode = bbox_main._find_episode("r2r", 184, split="val_unseen")
+
+    assert episode.scene_id == "val-scene"
 
 
 def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
