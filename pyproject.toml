@@ -147,3 +147,6 @@ extra-paths = ["./stubs"]
 
 [tool.ruff]
 extend-exclude = ["*.md"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
