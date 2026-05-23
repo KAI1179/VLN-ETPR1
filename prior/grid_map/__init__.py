@@ -4,7 +4,6 @@ This module provides:
 - BaseGridMap: Base class with core grid operations
 - GroundTruthGridMap: Ground truth maps with binary (0/1) values
 - CognitiveGridMap: Incomplete maps with only data near the path available, and the values are in range [0, 1], representing belief
-- Construction: Functions to build maps from MP3D scenes (.from_scene, .from_scene_id, only for GroundTruthGridMap)
 - Visualization: Methods for plotting and ASCII display (.visualize, .print_summary)
 - Saving: `.save` saves the grid map to a `.npz` file.
 """
@@ -14,10 +13,8 @@ from pathlib import Path
 
 from os import PathLike
 from typing import List, Optional, Tuple, Type, TypeVar, cast
-from copy import deepcopy
 
 import numpy as np
-from habitat_sim.scene import SemanticScene
 from numpy.typing import NDArray
 
 from ..constants import (
@@ -308,22 +305,6 @@ class GroundTruthGridMap(BaseGridMap):
         if not np.all(np.isin(self.grid, [0.0, 1.0])):
             return False
         return True
-
-    @staticmethod
-    def from_scene(semantic_scene: SemanticScene) -> List[GroundTruthGridMap]:
-        """Constructs level-wise ground-truth grid maps from the given semantic scene. If you intend to work with MP3D scenes, consider using from_scene_id instead."""
-        from ._construct import construct_grid_maps_from_scene
-
-        return construct_grid_maps_from_scene(semantic_scene)
-
-    @staticmethod
-    def from_scene_id(scene_id: str) -> List[GroundTruthGridMap]:
-        """Constructs level-wise ground-truth grid maps from the given MP3D scene ID. The return value is cached to improve performance, and copied to avoid mutation.
-
-        ALREADY CACHED. DO NOT CACHE TWICE."""
-        from ._construct import construct_grid_maps_from_scene_id
-
-        return [deepcopy(m) for m in construct_grid_maps_from_scene_id(scene_id)]
 
 
 class CognitiveGridMap(BaseGridMap):

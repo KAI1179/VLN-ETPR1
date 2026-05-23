@@ -57,7 +57,10 @@ def _load_cognitive(monkeypatch):
 def test_spacy_noun_extraction_filters_spatial_terms(monkeypatch):
     cognitive = _load_cognitive(monkeypatch)
 
-    lemmas = [token.lemma_.lower() for token in cognitive.extract_nouns("Turn left by the side table.")]
+    lemmas = [
+        token.lemma_.lower()
+        for token in cognitive.extract_nouns("Turn left by the side table.")
+    ]
 
     assert "left" not in lemmas
     assert "side" not in lemmas
@@ -83,7 +86,9 @@ def test_clip_similarity_fallback_maps_synonyms(monkeypatch):
 def test_exact_region_match_suppresses_object_similarity_fallback(monkeypatch):
     cognitive = _load_cognitive(monkeypatch)
 
-    object_categories, region_categories = cognitive.extract_categories("Enter the bedroom.")
+    object_categories, region_categories = cognitive.extract_categories(
+        "Enter the bedroom."
+    )
 
     assert cognitive.MAPPED_REGION_NAMES.index("private room") in region_categories
     assert cognitive.MAPPED_OBJECT_NAMES.index("bed") not in object_categories

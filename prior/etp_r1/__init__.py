@@ -80,7 +80,9 @@ class AnnotationEntry:
     def instruction(self) -> str:
         return decode_tokens(self.instr_encoding)
 
-    def positions(self, connectivity_dir: str = str(CONNECTIVITY_DIR)) -> list[list[float]]:
+    def positions(
+        self, connectivity_dir: str = str(CONNECTIVITY_DIR)
+    ) -> list[list[float]]:
         """Get a list of positions."""
         # `ConnectivityEntry.map_for` is cached, so this is efficient even if called multiple times.
         connectivity = ConnectivityEntry.map_for(self.scan, connectivity_dir)

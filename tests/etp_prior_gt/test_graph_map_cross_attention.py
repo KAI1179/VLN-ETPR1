@@ -76,31 +76,45 @@ def _load_grpo_replay_helper(monkeypatch):
         def register_trainer(self, name):
             return lambda cls: cls
 
-    sys.modules["habitat_baselines.common.baseline_registry"].baseline_registry = FakeRegistry()
-    sys.modules["habitat_baselines.common.environments"].get_env_class = lambda *args, **kwargs: None
+    sys.modules[
+        "habitat_baselines.common.baseline_registry"
+    ].baseline_registry = FakeRegistry()
+    sys.modules["habitat_baselines.common.environments"].get_env_class = (
+        lambda *args, **kwargs: None
+    )
     obs_transformers = sys.modules["habitat_baselines.common.obs_transformers"]
     obs_transformers.apply_obs_transforms_batch = lambda *args, **kwargs: None
     obs_transformers.apply_obs_transforms_obs_space = lambda *args, **kwargs: None
     obs_transformers.get_active_obs_transforms = lambda *args, **kwargs: []
     sys.modules["habitat_baselines.common.tensorboard_utils"].TensorboardWriter = object
-    sys.modules["habitat_baselines.utils.common"].batch_obs = lambda *args, **kwargs: None
+    sys.modules["habitat_baselines.utils.common"].batch_obs = lambda *args, **kwargs: (
+        None
+    )
     sys.modules["vlnce_baselines.common.base_il_trainer"].BaseVLNCETrainer = object
     env_utils = sys.modules["vlnce_baselines.common.env_utils"]
     env_utils.construct_envs = lambda *args, **kwargs: None
     env_utils.is_slurm_batch_job = lambda: False
-    sys.modules["vlnce_baselines.common.utils"].extract_instruction_tokens = lambda *args, **kwargs: None
+    sys.modules["vlnce_baselines.common.utils"].extract_instruction_tokens = (
+        lambda *args, **kwargs: None
+    )
     graph_utils = sys.modules["vlnce_baselines.models.graph_utils"]
     graph_utils.GraphMap = object
     graph_utils.MAX_DIST = 30.0
     ops = sys.modules["vlnce_baselines.common.ops"]
-    ops.pad_tensors_wgrad = lambda tensors: torch.nn.utils.rnn.pad_sequence(tensors, batch_first=True)
-    ops.gen_seq_masks = lambda lengths: torch.ones(len(lengths), int(torch.max(lengths).item()), dtype=torch.bool)
+    ops.pad_tensors_wgrad = lambda tensors: torch.nn.utils.rnn.pad_sequence(
+        tensors, batch_first=True
+    )
+    ops.gen_seq_masks = lambda lengths: torch.ones(
+        len(lengths), int(torch.max(lengths).item()), dtype=torch.bool
+    )
     sys.modules["habitat_extensions.measures"].NDTW = object
     sys.modules["fastdtw"].fastdtw = lambda *args, **kwargs: None
     map_utils = sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"]
     map_utils.build_cognitive_map_for_episode = lambda *args, **kwargs: None
     map_utils.cognitive_map_to_tensors = lambda *args, **kwargs: {}
-    sys.modules["vlnce_baselines.utils"].get_camera_orientations12 = lambda *args, **kwargs: None
+    sys.modules["vlnce_baselines.utils"].get_camera_orientations12 = (
+        lambda *args, **kwargs: None
+    )
 
     package = types.ModuleType("vlnce_baselines")
     package.__path__ = []
@@ -156,7 +170,9 @@ def test_graph_map_cross_attention_handles_masked_map_tokens(monkeypatch):
     assert torch.isfinite(output).all()
 
 
-def test_graph_map_cross_attention_handles_fully_masked_rows_at_initialization(monkeypatch):
+def test_graph_map_cross_attention_handles_fully_masked_rows_at_initialization(
+    monkeypatch,
+):
     vilmodel_cmt = _load_vilmodel_cmt(monkeypatch)
     cross_attention = vilmodel_cmt.GraphMapCrossAttention(
         hidden_size=768, num_heads=12, dropout=0.0

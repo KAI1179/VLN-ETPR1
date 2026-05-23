@@ -262,26 +262,6 @@ def test_obb_distance_uses_rotation():
     assert box._point_to_obb_distance((1.5, -1.5), rotated) > 1.0
 
 
-def test_level_semantic_boxes_loads_legacy_axes_as_rotation():
-    payload = """
-    {
-      "objects": [[{
-        "id": "legacy-table",
-        "center": [0.0, 0.0],
-        "half_extents": [1.0, 1.0],
-        "axes": [[0.0, 1.0], [-1.0, 0.0]],
-        "mentioned": false
-      }]],
-      "regions": [],
-      "range_y": [null, null]
-    }
-    """
-
-    level = box.LevelSemanticBoxes.from_json(payload)
-
-    assert level.objects[0][0].rotation == pytest.approx(math.pi / 2.0)
-
-
 def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
     level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],

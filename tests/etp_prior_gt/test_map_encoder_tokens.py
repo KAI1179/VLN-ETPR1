@@ -21,7 +21,9 @@ def _install_fake_clip(monkeypatch):
 
         def encode_text(self, tokens):
             num_prompts = tokens.size(0)
-            features = torch.arange(num_prompts * 512, dtype=torch.float32).view(num_prompts, 512)
+            features = torch.arange(num_prompts * 512, dtype=torch.float32).view(
+                num_prompts, 512
+            )
             return features + 1.0
 
     def load(name, device="cpu"):
@@ -73,7 +75,9 @@ def test_map_encoder_returns_101_tokens_and_mask(monkeypatch):
     map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
     encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
     batch_size = 2
-    grid = torch.randn(batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE)
+    grid = torch.randn(
+        batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE
+    )
     directions = torch.randn(batch_size, map_utils.DIRECTION_VECTOR_CNT, 2)
     start_directions = torch.randn(batch_size, 2)
     starts = torch.randn(batch_size, 2)
@@ -93,7 +97,9 @@ def test_map_encoder_emits_finite_tokens_for_empty_map_metadata(monkeypatch):
     map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
     encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
     batch_size = 2
-    grid = torch.zeros(batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE)
+    grid = torch.zeros(
+        batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE
+    )
     directions = torch.zeros(batch_size, map_utils.DIRECTION_VECTOR_CNT, 2)
     start_directions = torch.zeros(batch_size, 2)
     starts = torch.zeros(batch_size, 2)
@@ -110,7 +116,9 @@ def test_map_encoder_emits_finite_tokens_for_empty_map_metadata(monkeypatch):
 def test_map_encoder_rejects_bad_grid_shape(monkeypatch):
     map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
     encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
-    bad_grid = torch.randn(2, map_utils.NUM_MAP_CATEGORIES - 1, map_utils.SIZE, map_utils.SIZE)
+    bad_grid = torch.randn(
+        2, map_utils.NUM_MAP_CATEGORIES - 1, map_utils.SIZE, map_utils.SIZE
+    )
     directions = torch.randn(2, map_utils.DIRECTION_VECTOR_CNT, 2)
     start_directions = torch.randn(2, 2)
     starts = torch.randn(2, 2)
@@ -136,4 +144,6 @@ def test_map_encoder_rejects_bad_start_direction_shape(monkeypatch):
     except ValueError as exc:
         assert "start_direction_vectors" in str(exc)
     else:
-        raise AssertionError("Expected ValueError for bad start_direction_vectors shape")
+        raise AssertionError(
+            "Expected ValueError for bad start_direction_vectors shape"
+        )

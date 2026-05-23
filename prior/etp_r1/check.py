@@ -169,14 +169,14 @@ def _iter_r2r_trajectory_matches() -> Iterable[tuple[AnnotationEntry, dict]]:
         trajectory_id = int(trajectory_id_str)
         instruction_idx = int(instruction_idx_str)
 
-        assert (
-            trajectory_id in trajectory_groups
-        ), f"Trajectory {trajectory_id} not found"
+        assert trajectory_id in trajectory_groups, (
+            f"Trajectory {trajectory_id} not found"
+        )
         group = trajectory_groups[trajectory_id]
 
-        assert instruction_idx < len(
-            group
-        ), f"Instruction index {instruction_idx} for trajectory {trajectory_id} is out of bound"
+        assert instruction_idx < len(group), (
+            f"Instruction index {instruction_idx} for trajectory {trajectory_id} is out of bound"
+        )
         yield entry, group[instruction_idx]
 
 
@@ -190,12 +190,12 @@ def _check_r2r_joint_trajectory_alignment() -> None:
         )
         assert _normalize_instruction(
             episode["instruction"]["instruction_text"]
-        ) == _normalize_instruction(
-            entry.instruction
-        ), f"{entry.instr_id}: instruction mismatch"
-        assert len(episode["reference_path"]) == len(
-            entry.path
-        ), f"{entry.instr_id}: reference_path length mismatch"
+        ) == _normalize_instruction(entry.instruction), (
+            f"{entry.instr_id}: instruction mismatch"
+        )
+        assert len(episode["reference_path"]) == len(entry.path), (
+            f"{entry.instr_id}: reference_path length mismatch"
+        )
 
     assert matched_count > 0, "No R2R trajectory matches found"
 

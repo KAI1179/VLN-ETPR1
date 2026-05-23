@@ -27,7 +27,9 @@ def _install_fake_clip(monkeypatch):
 
 def _load_imagined_policy(monkeypatch):
     _install_fake_clip(monkeypatch)
-    fake_baseline_registry = types.ModuleType("habitat_baselines.common.baseline_registry")
+    fake_baseline_registry = types.ModuleType(
+        "habitat_baselines.common.baseline_registry"
+    )
 
     class FakeRegistry:
         def register_policy(self, cls):
@@ -59,9 +61,13 @@ def _load_imagined_policy(monkeypatch):
             self.dim_actions = dim_actions
 
     fake_policy_module.ILPolicy = FakeILPolicy
-    monkeypatch.setitem(sys.modules, "vlnce_baselines.models.policy", fake_policy_module)
+    monkeypatch.setitem(
+        sys.modules, "vlnce_baselines.models.policy", fake_policy_module
+    )
 
-    fake_vlnbert_init = types.ModuleType("vlnce_baselines.models.etp_prior_gt.vlnbert_init")
+    fake_vlnbert_init = types.ModuleType(
+        "vlnce_baselines.models.etp_prior_gt.vlnbert_init"
+    )
     fake_vlnbert_init.get_vlnbert_models = lambda *args, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
@@ -154,7 +160,12 @@ def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
         start_positions=start_positions,
     )
 
-    assert logits.shape == (2, policy_module.NUM_MAP_CATEGORIES, policy_module.SIZE, policy_module.SIZE)
+    assert logits.shape == (
+        2,
+        policy_module.NUM_MAP_CATEGORIES,
+        policy_module.SIZE,
+        policy_module.SIZE,
+    )
     assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)
@@ -193,7 +204,12 @@ def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
         start_positions=torch.zeros(2, 2),
     )
 
-    assert map_logits.shape == (2, policy_module.NUM_MAP_CATEGORIES, policy_module.SIZE, policy_module.SIZE)
+    assert map_logits.shape == (
+        2,
+        policy_module.NUM_MAP_CATEGORIES,
+        policy_module.SIZE,
+        policy_module.SIZE,
+    )
     assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)

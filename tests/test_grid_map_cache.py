@@ -2,7 +2,6 @@ from pathlib import Path
 import numpy as np
 
 from prior.grid_map import CognitiveGridMap, GroundTruthGridMap
-from prior.grid_map import _construct
 
 
 def _map_with_value(value: float) -> GroundTruthGridMap:
@@ -52,52 +51,6 @@ def test_cognitive_grid_map_load_matches_base_classmethod_contract(tmp_path: Pat
     assert loaded.start_direction_vector == grid_map.start_direction_vector
 
 
-def test_construct_grid_maps_from_scene_id_uses_cached_levels_first(
-    tmp_path: Path, monkeypatch
-):
-    scene_id = "scene"
-    cache_dir = tmp_path / scene_id
-    cache_dir.mkdir()
-    _map_with_value(1.0).save(cache_dir / "0.npz")
-    _map_with_value(0.0).save(cache_dir / "1.npz")
-
-    def fail_load(*args, **kwargs):
-        raise AssertionError("scene should not load when cache exists")
-
-    _construct.construct_grid_maps_from_scene_id.cache_clear()
-    monkeypatch.setattr(_construct, "SEMANTIC_MAP_DIR", tmp_path)
-    monkeypatch.setattr(_construct.SemanticScene, "load_mp3d_house", fail_load)
-
-    maps = _construct.construct_grid_maps_from_scene_id(scene_id)
-
-    assert [float(m.grid[0, 0, 0]) for m in maps] == [1.0, 0.0]
-    assert all(isinstance(m, GroundTruthGridMap) for m in maps)
-
-
-def test_construct_grid_maps_from_scene_id_saves_constructed_levels(
-    tmp_path: Path, monkeypatch
-):
-    scene_id = "scene"
-    constructed_maps = [_map_with_value(1.0), _map_with_value(0.0)]
-
-    _construct.construct_grid_maps_from_scene_id.cache_clear()
-    monkeypatch.setattr(_construct, "SEMANTIC_MAP_DIR", tmp_path)
-    monkeypatch.setattr(
-        _construct.SemanticScene, "load_mp3d_house", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        _construct,
-        "construct_grid_maps_from_scene",
-        lambda semantic_scene: constructed_maps,
-    )
-
-    maps = _construct.construct_grid_maps_from_scene_id(scene_id)
-
-    assert maps == constructed_maps
-    assert (tmp_path / scene_id / "0.npz").exists()
-    assert (tmp_path / scene_id / "1.npz").exists()
-    cached_maps = [
-        GroundTruthGridMap.load(tmp_path / scene_id / f"{level}.npz")
-        for level in range(2)
-    ]
-    assert [float(m.grid[0, 0, 0]) for m in cached_maps] == [1.0, 0.0]
+def test_ground_truth_grid_map_has_no_scene_construction_api():
+    assert not hasattr(GroundTruthGridMap, "from_scene")
+    assert not hasattr(GroundTruthGridMap, "from_scene_id")
