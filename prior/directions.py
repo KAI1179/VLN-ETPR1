@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from math import cos, hypot, sin
+from math import cos, sin
 from typing import Sequence, Tuple
-import numpy as np
-from habitat_sim.geo import FRONT
-from habitat_sim.utils.common import quat_from_coeffs, quat_rotate_vector
+
+from magnum import Quaternion, Vector2, Vector3
 
 
 DirectionVector = Tuple[float, float]
+FRONT = Vector3(0.0, 0.0, -1.0)
 
 
 def normalize_direction_vector(
@@ -17,8 +17,8 @@ def normalize_direction_vector(
     cos_value: float,
 ) -> DirectionVector:
     """Normalize a direction vector represented as (sin, cos)."""
-    norm = hypot(sin_value, cos_value)
-    return sin_value / norm, cos_value / norm
+    direction = Vector2(sin_value, cos_value).normalized()
+    return float(direction.x), float(direction.y)
 
 
 def world_delta_to_direction_vector(dx: float, dz: float) -> DirectionVector:
@@ -38,8 +38,15 @@ def start_rotation_to_direction_vector(
 ) -> DirectionVector:
     """Convert Habitat start_rotation quaternion coefficients to (sin, cos)."""
 
-    quaternion = quat_from_coeffs(np.asarray(start_rotation, dtype=float))
-    forward = quat_rotate_vector(quaternion, np.asarray(FRONT, dtype=float))
+    quaternion = Quaternion(
+        Vector3(
+            float(start_rotation[0]),
+            float(start_rotation[1]),
+            float(start_rotation[2]),
+        ),
+        float(start_rotation[3]),
+    ).normalized()
+    forward = quaternion.transform_vector(FRONT)
     return world_delta_to_direction_vector(float(forward[0]), float(forward[2]))
 
 

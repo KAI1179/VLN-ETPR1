@@ -19,7 +19,7 @@
     Verdict: Cannot exploit. R2R has 1,836 duplicated episode ids and RxR has 11,006 duplicated episode ids across `train`, `val_seen`, and `val_unseen`. Treat `dataset + source + episode_id` as the canonical episode key.
 
 - [x] Fix: cognitive grid map save, distinguish split (id in diff splits may collide). If prev todo handled, can be skipped.
-- [ ] Reuse magnum where possible, instead of impl algos ourselves.
+- [x] Reuse magnum where possible, instead of impl algos ourselves.
 - [x] Remove direction vectors. Replace with reference paths.
 - [ ] Reorganize module layout.
 - [x] SemanticBoxes final API
