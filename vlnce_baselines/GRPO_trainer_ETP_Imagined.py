@@ -17,14 +17,12 @@ class RLTrainer(PriorGTGRPOTrainer):
             start_metadata_for_episode(ep)
             for ep in self.envs.current_episodes()[: self.envs.num_envs]
         ]
-        start_direction_vectors = torch.stack([
-            item["start_direction_vector"]
-            for item in metadata
-        ]).to(self.device)
-        start_positions = torch.stack([
-            item["start_position"]
-            for item in metadata
-        ]).to(self.device)
+        start_direction_vectors = torch.stack(
+            [item["start_direction_vector"] for item in metadata]
+        ).to(self.device)
+        start_positions = torch.stack([item["start_position"] for item in metadata]).to(
+            self.device
+        )
         return start_direction_vectors, start_positions
 
     def _prepare_map_inputs(
@@ -38,7 +36,7 @@ class RLTrainer(PriorGTGRPOTrainer):
         if not map_cfg.enabled:
             return None, None
         start_direction_vectors, start_positions = self._start_metadata_inputs()
-        map_logits, direction_vectors = self.policy.net(
+        map_logits, reference_paths = self.policy.net(
             mode="predict_cognitive_map",
             txt_embeds=txt_embeds,
             txt_masks=txt_masks,
@@ -48,7 +46,7 @@ class RLTrainer(PriorGTGRPOTrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=torch.sigmoid(map_logits),
-            direction_vectors=direction_vectors,
+            reference_paths=reference_paths,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )

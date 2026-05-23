@@ -19,10 +19,7 @@ Each npz file contains:
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `range_y`: Y range of the floor. Not useful for our job.
-- `positions`: Waypoint positions along the path.
-- `direction_vectors`: 5 distinct path directions as normalized (cos, sin) tuples.
-    - Zeroes used if distinct directions < 5.
-    - At most 5 directions are stored. Extra directions are discarded.
+- `reference_path`: World-coordinate waypoints along the selected level, as `[x, y, z]`.
 - `start_direction_vector`: Direction vector of the start position.
 
 Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 5 cells around each waypoint.

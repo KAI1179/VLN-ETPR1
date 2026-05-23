@@ -45,7 +45,6 @@ def visualize(
     auto_crop: bool = True,
     crop_margin: int = 5,
     positions: List[Tuple[float, float]] = [],
-    direction_vectors: Optional[List[Tuple[float, float]]] = None,
     start_direction_vector: Optional[Tuple[float, float]] = None,
 ) -> None:
     """Visualize the grid map using matplotlib.
@@ -61,7 +60,6 @@ def visualize(
         auto_crop: Whether to automatically crop to data bounding box.
         crop_margin: Number of cells to add as margin around data (only used if auto_crop=True).
         positions: Optional list of 2D positions (in continuous grid coordinates) to overlay on the visualizations.
-        direction_vectors: Optional list of (sin, cos) direction vectors to display.
         start_direction_vector: Optional start orientation as a (sin, cos) vector.
     """
     if title is None:
@@ -121,59 +119,6 @@ def visualize(
                     xytext=(p_curr[1], p_curr[0]),
                     arrowprops=dict(arrowstyle="->", color="red", lw=1),
                 )
-
-    def draw_direction_vectors():
-        if not direction_vectors:
-            return
-
-        visible_vectors = [
-            (sin_value, cos_value)
-            for sin_value, cos_value in direction_vectors
-            if sin_value != 0.0 or cos_value != 0.0
-        ]
-        if not visible_vectors:
-            return
-
-        inset = fig.add_axes([0.465, 0.69, 0.07, 0.16])
-        inset.set_xlim(-1.15, 1.15)
-        inset.set_ylim(-1.15, 1.15)
-        inset.set_aspect("equal")
-        inset.axis("off")
-        inset.axhline(0, color="0.75", lw=0.6)
-        inset.axvline(0, color="0.75", lw=0.6)
-
-        points = [(0.0, 0.0)]
-        for sin_value, cos_value in visible_vectors:
-            prev_x, prev_y = points[-1]
-            points.append((prev_x + sin_value, prev_y + cos_value))
-
-        max_abs = max(max(abs(x), abs(y)) for x, y in points)
-        scale = 0.9 / max_abs if max_abs > 0.9 else 1.0
-        scaled_points = [(x * scale, y * scale) for x, y in points]
-
-        colors = plt.colormaps["tab10"](np.linspace(0, 1, len(visible_vectors)))
-        for index, ((start_x, start_y), (end_x, end_y), color) in enumerate(
-            zip(scaled_points[:-1], scaled_points[1:], colors),
-            start=1,
-        ):
-            inset.annotate(
-                "",
-                xy=(end_x, end_y),
-                xytext=(start_x, start_y),
-                arrowprops=dict(arrowstyle="->", color=color, lw=1.8),
-            )
-            inset.text(
-                end_x,
-                end_y,
-                str(index),
-                color=color,
-                fontsize=7,
-                ha="center",
-                va="center",
-            )
-
-        inset.text(0, 1.12, "up", fontsize=6, ha="center", va="bottom")
-        inset.text(1.12, 0, "right", fontsize=6, ha="left", va="center")
 
     # == Show objects ==
 
@@ -290,7 +235,6 @@ def visualize(
 
     fig.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    draw_direction_vectors()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

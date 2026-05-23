@@ -20,7 +20,7 @@
 
 - [x] Fix: cognitive grid map save, distinguish split (id in diff splits may collide). If prev todo handled, can be skipped.
 - [ ] Reuse magnum where possible, instead of impl algos ourselves.
-- [ ] Remove direction vectors. Replace with reference paths.
+- [x] Remove direction vectors. Replace with reference paths.
 - [ ] Reorganize module layout.
 - [x] SemanticBoxes final API
     - Remove `SceneSemanticBoxes.first_encountered_level`.

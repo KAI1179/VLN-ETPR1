@@ -4,9 +4,9 @@ from typing import List
 import torch
 from prior.constants import (
     COLS,
-    DIRECTION_VECTOR_CNT as _DIRECTION_VECTOR_CNT,
     MAPPED_OBJECT_NAMES,
     MAPPED_REGION_NAMES,
+    REFERENCE_PATH_LENGTH as _REFERENCE_PATH_LENGTH,
     ROWS,
 )
 from prior.directions import start_rotation_to_direction_vector
@@ -14,7 +14,7 @@ from prior.bbox import SceneSemanticBoxes
 from prior.grid_map import CognitiveGridMap
 
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
-DIRECTION_VECTOR_CNT = _DIRECTION_VECTOR_CNT
+REFERENCE_PATH_LENGTH = _REFERENCE_PATH_LENGTH
 
 SIZE = ROWS
 """Number of rows and cols in the grid map."""
@@ -32,16 +32,34 @@ def _instruction_text(episode) -> str:
     return getattr(instruction, "instruction_text", instruction)
 
 
+def _reference_path_to_grid_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
+    reference_path = torch.zeros(REFERENCE_PATH_LENGTH, 2, dtype=torch.float32)
+    for idx, position in enumerate(
+        cognitive_map.reference_path[:REFERENCE_PATH_LENGTH]
+    ):
+        row, col = cognitive_map.world_to_grid(float(position[0]), float(position[2]))
+        reference_path[idx] = torch.tensor([row, col], dtype=torch.float32)
+    return reference_path
+
+
+def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
+    if not cognitive_map.reference_path:
+        raise ValueError("CognitiveGridMap.reference_path is empty")
+    start_x, _, start_z = cognitive_map.reference_path[0]
+    return torch.tensor(
+        cognitive_map.world_to_grid(float(start_x), float(start_z)),
+        dtype=torch.float32,
+    )
+
+
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
     return {
         "grid": torch.from_numpy(cognitive_map.grid),
-        "direction_vectors": torch.tensor(
-            cognitive_map.direction_vectors, dtype=torch.float32
-        ),
+        "reference_paths": _reference_path_to_grid_tensor(cognitive_map),
         "start_direction_vector": torch.tensor(
             cognitive_map.start_direction_vector, dtype=torch.float32
         ),
-        "start_position": torch.tensor(cognitive_map.positions[0], dtype=torch.float32),
+        "start_position": _start_position_tensor(cognitive_map),
     }
 
 
@@ -51,21 +69,23 @@ def build_cognitive_map(
     reference_path: List[List[float]],
     start_direction_vector,
 ) -> CognitiveGridMap:
-    return SceneSemanticBoxes.from_scene_id(_scene_key(scene_id)).to_cognitive_map(
+    relevant_boxes = SceneSemanticBoxes.from_scene_id(_scene_key(scene_id)).relevant_to(
         instruction,
         reference_path,
         start_direction_vector=start_direction_vector,
     )
+    return relevant_boxes.to_cognitive_map()
 
 
 def start_metadata_to_tensors(scene_id: str, start_position, start_rotation):
     """Build inference-safe start metadata without using the reference path."""
     scene_key = _scene_key(scene_id)
-    _, start_level = SceneSemanticBoxes.from_scene_id(
-        scene_key
-    ).first_encountered_level(
+    relevant_boxes = SceneSemanticBoxes.from_scene_id(scene_key).relevant_to(
+        "",
         [start_position],
+        start_rotation_to_direction_vector(start_rotation),
     )
+    start_level = relevant_boxes.level
     start_x, _, start_z = start_position
     start_grid_position = start_level.world_to_grid(float(start_x), float(start_z))
     return {

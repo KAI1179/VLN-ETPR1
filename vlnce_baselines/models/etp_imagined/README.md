@@ -14,8 +14,8 @@ instruction -> VLN text embeddings
 episode start_rotation/start_position -> start metadata
 text embeddings + start metadata -> InstructionCognitiveMapPredictor
 predicted grid logits -> sigmoid -> soft cognitive grid (B,37,100,100)
-predicted direction vectors (B,5,2)
-soft grid + predicted directions + real start metadata -> PriorGT map_encoding
+predicted reference paths (B,5,2)
+soft grid + predicted reference paths + real start metadata -> PriorGT map_encoding
 map tokens -> GraphMapCrossAttention -> navigation logits
 ```
 
@@ -29,12 +29,12 @@ start_direction_vector + start_position
 -> latent-to-CNN projection
 -> progressive upsample decoder
 -> 37-channel 100x100 map logits
--> pooled latent direction head -> 5 route direction vectors
+-> pooled latent reference-path head -> first 5 route waypoints
 ```
 
 The grid output is still logits, not probabilities. Callers use
 `sigmoid(logits)` before passing the soft map to `EmbeddingGridMapEncoder`.
-`direction_vectors` are predicted by the predictor. `start_direction_vector` and
+`reference_paths` are predicted by the predictor. `start_direction_vector` and
 `start_position` are real episode-start metadata and do not use the reference
 path.
 
@@ -46,7 +46,7 @@ Use:
 - `MODEL.policy_name ImaginedPolicy`
 
 During SS training, ground-truth cognitive maps are loaded only as supervision
-targets for grid BCE and direction-vector MSE. They are not passed to navigation.
+targets for grid BCE and reference-path MSE. They are not passed to navigation.
 During eval or inference, no cognitive-map file is required; the trainer derives
 start metadata from the current episode.
 

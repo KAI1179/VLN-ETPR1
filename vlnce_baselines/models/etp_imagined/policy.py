@@ -10,7 +10,6 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
     SIZE,
 )
@@ -85,7 +84,11 @@ class ImaginedPolicy(ILPolicy):
 
     @classmethod
     def from_config(
-        cls, config: Config, observation_space: Space, action_space: Space, dropout_rate=0.1
+        cls,
+        config: Config,
+        observation_space: Space,
+        action_space: Space,
+        dropout_rate=0.1,
     ):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
@@ -115,7 +118,10 @@ class ETP_Imagined(ETP_PriorGT):
             dropout=0.0,
         )
         self._load_map_module_weights(model_config)
-        print(f"  Imagined map predictor enabled: text + start pose -> (37, {SIZE}, {SIZE}) + directions")
+        print(
+            f"  Imagined map predictor enabled: text + start pose -> "
+            f"({NUM_MAP_CATEGORIES}, {SIZE}, {SIZE}) + reference path"
+        )
 
     def _load_map_module_weights(self, model_config):
         map_cfg = getattr(model_config, "MAP_ENCODER", None)
@@ -183,7 +189,7 @@ class ETP_Imagined(ETP_PriorGT):
         start_direction_vectors=None,
         start_positions=None,
     ):
-        map_logits, direction_vectors = self.forward_predict_cognitive_map(
+        map_logits, reference_paths = self.forward_predict_cognitive_map(
             txt_embeds,
             txt_masks,
             start_direction_vectors=start_direction_vectors,
@@ -198,8 +204,8 @@ class ETP_Imagined(ETP_PriorGT):
         map_tokens, map_token_masks = self.forward(
             mode="map_encoding",
             cognitive_crops=map_probs,
-            direction_vectors=direction_vectors,
+            reference_paths=reference_paths,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
-        return map_logits, direction_vectors, map_tokens, map_token_masks
+        return map_logits, reference_paths, map_tokens, map_token_masks

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Tuple, Optional
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    DIRECTION_VECTOR_CNT,
+    REFERENCE_PATH_LENGTH,
     NUM_MAP_CATEGORIES,
     SIZE,
 )
@@ -148,11 +148,11 @@ class InstructionCognitiveMapPredictor(nn.Module):
             nn.GELU(),
             nn.Conv2d(channels, NUM_MAP_CATEGORIES, kernel_size=1),
         )
-        self.direction_head = nn.Sequential(
+        self.reference_path_head = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, DIRECTION_VECTOR_CNT * 2),
+            nn.Linear(hidden_size, REFERENCE_PATH_LENGTH * 2),
         )
         nn.init.normal_(self.map_queries, std=0.02)
         nn.init.normal_(self.map_pos, std=0.02)
@@ -216,9 +216,9 @@ class InstructionCognitiveMapPredictor(nn.Module):
         for layer in self.layers:
             queries = layer(queries, txt_embeds, txt_key_padding_mask)
         queries = self.output_norm(queries)
-        direction_vectors = self.direction_head(queries.mean(dim=1)).view(
+        reference_paths = self.reference_path_head(queries.mean(dim=1)).view(
             batch_size,
-            DIRECTION_VECTOR_CNT,
+            REFERENCE_PATH_LENGTH,
             2,
         )
         latent = self.latent_projection(queries)
@@ -233,4 +233,4 @@ class InstructionCognitiveMapPredictor(nn.Module):
             logits = F.interpolate(
                 logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False
             )
-        return logits, direction_vectors
+        return logits, reference_paths

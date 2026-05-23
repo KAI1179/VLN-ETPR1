@@ -61,7 +61,7 @@ def test_train_map_predictor_parser_returns_typed_args():
             "7.5",
             "--focal-gamma",
             "1.5",
-            "--direction-loss-weight",
+            "--reference-path-loss-weight",
             "0.25",
             "--init-positive-prob",
             "0.01",
@@ -99,7 +99,7 @@ def test_train_map_predictor_parser_returns_typed_args():
     assert args.loss == "focal"
     assert args.max_pos_weight == 7.5
     assert args.focal_gamma == 1.5
-    assert args.direction_loss_weight == 0.25
+    assert args.reference_path_loss_weight == 0.25
     assert args.init_positive_prob == 0.01
     assert args.thresholds == "0.1,0.2"
     assert args.max_text_len == 16
@@ -124,7 +124,7 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.batch_size == 8
     assert args.max_pos_weight == 20.0
     assert args.focal_gamma == 2.0
-    assert args.direction_loss_weight == 0.1
+    assert args.reference_path_loss_weight == 0.1
     assert args.init_positive_prob == 0.002
     assert args.max_text_len is None
     assert args.num_workers == 2

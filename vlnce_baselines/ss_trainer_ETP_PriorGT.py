@@ -4,7 +4,7 @@ import random
 import re
 import warnings
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict
 import jsonlines
 
 import numpy as np
@@ -47,7 +47,6 @@ from copy import deepcopy
 from torch.cuda.amp import autocast, GradScaler
 from vlnce_baselines.common.ops import pad_tensors_wgrad, gen_seq_masks
 from torch.nn.utils.rnn import pad_sequence
-import cv2
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
@@ -74,11 +73,14 @@ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
     ckpt_list.sort(key=_sort_key)
     return ckpt_list[-1]
 
+
 @baseline_registry.register_trainer(name="SS-ETP-PriorGT")
 class RLTrainer(BaseVLNCETrainer):
     def __init__(self, config=None):
         super().__init__(config)
-        self.max_len = int(config.IL.max_traj_len) #  * 0.97 transfered gt path got 0.96 spl
+        self.max_len = int(
+            config.IL.max_traj_len
+        )  #  * 0.97 transfered gt path got 0.96 spl
         self.illegal_episodes_count = 0
 
     def _make_dirs(self):
@@ -106,14 +108,20 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.TASK_CONFIG.TASK.NDTW.SPLIT = self.split
         self.config.TASK_CONFIG.TASK.SDTW.SPLIT = self.split
         self.config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = -1
-        self.config.SIMULATOR_GPU_IDS = self.config.SIMULATOR_GPU_IDS[self.config.local_rank]
+        self.config.SIMULATOR_GPU_IDS = self.config.SIMULATOR_GPU_IDS[
+            self.config.local_rank
+        ]
         self.config.use_pbar = not is_slurm_batch_job()
-        ''' if choosing image '''
+        """ if choosing image """
         resize_config = self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES
-        crop_config = self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS
+        crop_config = (
+            self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS
+        )
         task_config = self.config.TASK_CONFIG
         camera_orientations = get_camera_orientations12()
-        print(f"init camera information: resize_config:{resize_config}, crop_config:{crop_config}, new_camera_heading:{camera_orientations}")
+        print(
+            f"init camera information: resize_config:{resize_config}, crop_config:{crop_config}, new_camera_heading:{camera_orientations}"
+        )
         for sensor_type in ["RGB", "DEPTH"]:
             resizer_size = dict(resize_config)[sensor_type.lower()]
             cropper_size = dict(crop_config)[sensor_type.lower()]
@@ -128,7 +136,9 @@ class RLTrainer(BaseVLNCETrainer):
                 resize_config.append((camera_template.lower(), resizer_size))
                 crop_config.append((camera_template.lower(), cropper_size))
         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
-        self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = crop_config
+        self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
+            crop_config
+        )
         self.config.TASK_CONFIG = task_config
         self.config.SENSORS = task_config.SIMULATOR.AGENT_0.SENSORS
         if self.config.VIDEO_OPTION:
@@ -137,19 +147,21 @@ class RLTrainer(BaseVLNCETrainer):
             self.config.TASK_CONFIG.TASK.MEASUREMENTS.append("SUCCESS")
             self.config.TASK_CONFIG.TASK.MEASUREMENTS.append("SPL")
             os.makedirs(self.config.VIDEO_DIR, exist_ok=True)
-            shift = 0.
+            shift = 0.0
             orient_dict = {
-                'Back': [0, math.pi + shift, 0],            # Back
-                'Down': [-math.pi / 2, 0 + shift, 0],       # Down
-                'Front':[0, 0 + shift, 0],                  # Front
-                'Right':[0, math.pi / 2 + shift, 0],        # Right
-                'Left': [0, 3 / 2 * math.pi + shift, 0],    # Left
-                'Up':   [math.pi / 2, 0 + shift, 0],        # Up
+                "Back": [0, math.pi + shift, 0],  # Back
+                "Down": [-math.pi / 2, 0 + shift, 0],  # Down
+                "Front": [0, 0 + shift, 0],  # Front
+                "Right": [0, math.pi / 2 + shift, 0],  # Right
+                "Left": [0, 3 / 2 * math.pi + shift, 0],  # Left
+                "Up": [math.pi / 2, 0 + shift, 0],  # Up
             }
             sensor_uuids = []
             H = 224
             for sensor_type in ["RGB"]:
-                sensor = getattr(self.config.TASK_CONFIG.SIMULATOR, f"{sensor_type}_SENSOR")
+                sensor = getattr(
+                    self.config.TASK_CONFIG.SIMULATOR, f"{sensor_type}_SENSOR"
+                )
                 for camera_id, orient in orient_dict.items():
                     camera_template = f"{sensor_type}{camera_id}"
                     camera_config = deepcopy(sensor)
@@ -159,8 +171,14 @@ class RLTrainer(BaseVLNCETrainer):
                     camera_config.UUID = camera_template.lower()
                     camera_config.HFOV = 90
                     sensor_uuids.append(camera_config.UUID)
-                    setattr(self.config.TASK_CONFIG.SIMULATOR, camera_template, camera_config)
-                    self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
+                    setattr(
+                        self.config.TASK_CONFIG.SIMULATOR,
+                        camera_template,
+                        camera_config,
+                    )
+                    self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS.append(
+                        camera_template
+                    )
         self.config.freeze()
 
         self.world_size = self.config.GPU_NUMBERS
@@ -168,7 +186,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.batch_size = self.config.IL.batch_size
         torch.cuda.set_device(self.device)
         if self.world_size > 1:
-            distr.init_process_group(backend='nccl', init_method='env://')
+            distr.init_process_group(backend="nccl", init_method="env://")
             self.device = self.config.TORCH_GPU_IDS[self.local_rank]
             self.config.defrost()
             self.config.TORCH_GPU_ID = self.config.TORCH_GPU_IDS[self.local_rank]
@@ -182,13 +200,13 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.freeze()
 
         self.envs = construct_envs(
-            self.config,
-            get_env_class(self.config.ENV_NAME),
-            auto_reset_done=False
+            self.config, get_env_class(self.config.ENV_NAME), auto_reset_done=False
         )
         env_num = self.envs.num_envs
         dataset_len = sum(self.envs.number_of_episodes)
-        logger.info(f'LOCAL RANK: {self.local_rank}, ENV NUM: {env_num}, DATASET LEN: {dataset_len}')
+        logger.info(
+            f"LOCAL RANK: {self.local_rank}, ENV NUM: {env_num}, DATASET LEN: {dataset_len}"
+        )
         observation_space = self.envs.observation_spaces[0]
         action_space = self.envs.action_spaces[0]
         self.obs_transforms = get_active_obs_transforms(self.config)
@@ -212,12 +230,23 @@ class RLTrainer(BaseVLNCETrainer):
             observation_space=observation_space,
             action_space=action_space,
         )
-        logger.info(f"-------------------Load pretrain weight: {config.MODEL.pretrained_path}-------------------")
-        ''' initialize the waypoint predictor here '''
+        logger.info(
+            f"-------------------Load pretrain weight: {config.MODEL.pretrained_path}-------------------"
+        )
+        """ initialize the waypoint predictor here """
         from vlnce_baselines.waypoint_pred.TRM_net import BinaryDistPredictor_TRM
+
         self.waypoint_predictor = BinaryDistPredictor_TRM(device=self.device)
-        cwp_fn = 'data/wp_pred/check_cwp_bestdist_hfov63' if self.config.MODEL.task_type == 'rxr' else 'data/wp_pred/check_cwp_bestdist_hfov90'
-        self.waypoint_predictor.load_state_dict(torch.load(cwp_fn, map_location = torch.device('cpu'))['predictor']['state_dict'])
+        cwp_fn = (
+            "data/wp_pred/check_cwp_bestdist_hfov63"
+            if self.config.MODEL.task_type == "rxr"
+            else "data/wp_pred/check_cwp_bestdist_hfov90"
+        )
+        self.waypoint_predictor.load_state_dict(
+            torch.load(cwp_fn, map_location=torch.device("cpu"))["predictor"][
+                "state_dict"
+            ]
+        )
         for param in self.waypoint_predictor.parameters():
             param.requires_grad_(False)
 
@@ -225,34 +254,51 @@ class RLTrainer(BaseVLNCETrainer):
         self.waypoint_predictor.to(self.device)
         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
 
-        map_cfg = getattr(config.MODEL, 'MAP_ENCODER', None)
-        freeze_base = map_cfg is not None and getattr(map_cfg, 'freeze_base', False)
+        map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
+        freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
 
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
             for name, param in self.policy.named_parameters():
-                if 'map_encoder' not in name and 'map_predictor' not in name:
+                if "map_encoder" not in name and "map_predictor" not in name:
                     param.requires_grad_(False)
             logger.info("[Map probe] Base model frozen - map modules are trainable.")
 
         if self.config.GPU_NUMBERS > 1:
-            print('Using', self.config.GPU_NUMBERS,'GPU!')
+            print("Using", self.config.GPU_NUMBERS, "GPU!")
             # In probe mode many params are intentionally unused/frozen.
-            self.policy.net = DDP(self.policy.net.to(self.device), device_ids=[self.device],
-                output_device=self.device, find_unused_parameters=freeze_base, broadcast_buffers=False)
+            self.policy.net = DDP(
+                self.policy.net.to(self.device),
+                device_ids=[self.device],
+                output_device=self.device,
+                find_unused_parameters=freeze_base,
+                broadcast_buffers=False,
+            )
 
         param_optimizer = list(self.policy.named_parameters())
-        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer
-                        if p.requires_grad and not any(nd in n for nd in no_decay)],
-            'weight_decay': 0.01},
-            {'params': [p for n, p in param_optimizer
-                        if p.requires_grad and any(nd in n for nd in no_decay)],
-            'weight_decay': 0.0}
+            {
+                "params": [
+                    p
+                    for n, p in param_optimizer
+                    if p.requires_grad and not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in param_optimizer
+                    if p.requires_grad and any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
         ]
 
-        self.optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=self.config.IL.lr)
+        self.optimizer = torch.optim.AdamW(
+            optimizer_grouped_parameters, lr=self.config.IL.lr
+        )
         num_warmup_steps = self.config.IL.warmup_iters
         num_training_steps = self.config.IL.iters
         min_lr_ratio = self.config.IL.min_lr_ratio
@@ -260,11 +306,14 @@ class RLTrainer(BaseVLNCETrainer):
         def lr_lambda(current_step: int):
             if current_step < num_warmup_steps:
                 return float(current_step) / float(max(1, num_warmup_steps))
-            progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+            progress = float(current_step - num_warmup_steps) / float(
+                max(1, num_training_steps - num_warmup_steps)
+            )
             progress = min(1.0, progress)
             cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
             decayed_lr_multiplier = min_lr_ratio + (1.0 - min_lr_ratio) * cosine_decay
             return decayed_lr_multiplier
+
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
         # self.scheduler.step()
 
@@ -279,40 +328,64 @@ class RLTrainer(BaseVLNCETrainer):
             else:
                 start_iter = 0
 
-            if 'module' in list(ckpt_dict['state_dict'].keys())[0] and self.config.GPU_NUMBERS == 1:
-                self.policy.net = torch.nn.DataParallel(self.policy.net.to(self.device),
-                    device_ids=[self.device], output_device=self.device)
-                incompatible_keys = self.policy.load_state_dict(ckpt_dict["state_dict"], strict=False)
+            if (
+                "module" in list(ckpt_dict["state_dict"].keys())[0]
+                and self.config.GPU_NUMBERS == 1
+            ):
+                self.policy.net = torch.nn.DataParallel(
+                    self.policy.net.to(self.device),
+                    device_ids=[self.device],
+                    output_device=self.device,
+                )
+                incompatible_keys = self.policy.load_state_dict(
+                    ckpt_dict["state_dict"], strict=False
+                )
                 self.policy.net = self.policy.net.module
-                self.waypoint_predictor = torch.nn.DataParallel(self.waypoint_predictor.to(self.device),
-                    device_ids=[self.device], output_device=self.device)
-            elif 'module' not in list(ckpt_dict['state_dict'].keys())[0] and self.config.GPU_NUMBERS > 1:
+                self.waypoint_predictor = torch.nn.DataParallel(
+                    self.waypoint_predictor.to(self.device),
+                    device_ids=[self.device],
+                    output_device=self.device,
+                )
+            elif (
+                "module" not in list(ckpt_dict["state_dict"].keys())[0]
+                and self.config.GPU_NUMBERS > 1
+            ):
                 new_state_dict = OrderedDict()
-                for k, v in ckpt_dict['state_dict'].items():
+                for k, v in ckpt_dict["state_dict"].items():
                     if k.startswith("net."):
                         name = k.replace("net.", "net.module.", 1)
                         new_state_dict[name] = v
                     else:
                         new_state_dict[k] = v
-                incompatible_keys = self.policy.load_state_dict(new_state_dict, strict=False)
+                incompatible_keys = self.policy.load_state_dict(
+                    new_state_dict, strict=False
+                )
             else:
-                incompatible_keys = self.policy.load_state_dict(ckpt_dict["state_dict"], strict=False)
+                incompatible_keys = self.policy.load_state_dict(
+                    ckpt_dict["state_dict"], strict=False
+                )
 
             if self.local_rank < 1:
-                print("\n" + "="*25 + " Weight loading mismatch report " + "="*25)
+                print("\n" + "=" * 25 + " Weight loading mismatch report " + "=" * 25)
                 if incompatible_keys.missing_keys:
-                    print("The following network layers exist in the model but are missing in the weight file (initial values will be used):")
+                    print(
+                        "The following network layers exist in the model but are missing in the weight file (initial values will be used):"
+                    )
                     for key in sorted(incompatible_keys.missing_keys):
                         print(f"  - {key}")
                 else:
-                    print("All network layers present in the model were found in the weight file.")
+                    print(
+                        "All network layers present in the model were found in the weight file."
+                    )
                 if incompatible_keys.unexpected_keys:
-                    print("\nThe following network layers exist in the weight file but are missing in the model (will be ignored):")
+                    print(
+                        "\nThe following network layers exist in the weight file but are missing in the model (will be ignored):"
+                    )
                     for key in sorted(incompatible_keys.unexpected_keys):
                         print(f"  - {key}")
                 else:
                     print("\nThere are no extra network layers in the weight file.")
-                print("="*75 + "\n")
+                print("=" * 75 + "\n")
 
             if config.IL.is_requeue:
                 if "optim_state" in ckpt_dict:
@@ -333,26 +406,30 @@ class RLTrainer(BaseVLNCETrainer):
                         ckpt_path,
                         start_iter,
                     )
-            logger.info(f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}")
+            logger.info(
+                f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}"
+            )
 
         params = sum(param.numel() for param in self.policy.parameters())
-        params_t = sum(
-            p.numel() for p in self.policy.parameters() if p.requires_grad
+        params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+        logger.info(
+            f"Agent parameters: {params / 1e6:.2f} MB. Trainable: {params_t / 1e6:.2f} MB."
         )
-        logger.info(f"Agent parameters: {params/1e6:.2f} MB. Trainable: {params_t/1e6:.2f} MB.")
         logger.info("Finished setting up policy.")
 
         return start_iter
 
     def _teacher_action(self, batch_angles, batch_distances, candidate_lengths):
-        if self.config.MODEL.task_type == 'r2r':
+        if self.config.MODEL.task_type == "r2r":
             cand_dists_to_goal = [[] for _ in range(len(batch_angles))]
             oracle_cand_idx = []
             for j in range(len(batch_angles)):
                 for k in range(len(batch_angles[j])):
                     angle_k = batch_angles[j][k]
                     forward_k = batch_distances[j][k]
-                    dist_k = self.envs.call_at(j, "cand_dist_to_goal", {"angle": angle_k, "forward": forward_k})
+                    dist_k = self.envs.call_at(
+                        j, "cand_dist_to_goal", {"angle": angle_k, "forward": forward_k}
+                    )
                     cand_dists_to_goal[j].append(dist_k)
                 curr_dist_to_goal = self.envs.call_at(j, "current_dist_to_goal")
                 # if within target range (which def as 3.0)
@@ -361,43 +438,67 @@ class RLTrainer(BaseVLNCETrainer):
                 else:
                     oracle_cand_idx.append(np.argmin(cand_dists_to_goal[j]))
             return oracle_cand_idx
-        elif self.config.MODEL.task_type == 'rxr':
+        elif self.config.MODEL.task_type == "rxr":
             kargs = []
             current_episodes = self.envs.current_episodes()
             for i in range(self.envs.num_envs):
-                kargs.append({
-                    'ref_path':self.gt_data[str(current_episodes[i].episode_id)]['locations'],
-                    'angles':batch_angles[i],
-                    'distances':batch_distances[i],
-                    'candidate_length':candidate_lengths[i]
-                })
-            oracle_cand_idx = self.envs.call(["get_cand_idx"]*self.envs.num_envs, kargs)
+                kargs.append(
+                    {
+                        "ref_path": self.gt_data[str(current_episodes[i].episode_id)][
+                            "locations"
+                        ],
+                        "angles": batch_angles[i],
+                        "distances": batch_distances[i],
+                        "candidate_length": candidate_lengths[i],
+                    }
+                )
+            oracle_cand_idx = self.envs.call(
+                ["get_cand_idx"] * self.envs.num_envs, kargs
+            )
             return oracle_cand_idx
 
     def _teacher_action_new(self, batch_gmap_vp_ids, batch_no_vp_left, is_train):
         teacher_actions = []
         cur_episodes = self.envs.current_episodes()
-        for i, (gmap_vp_ids, gmap, no_vp_left) in enumerate(zip(batch_gmap_vp_ids, self.gmaps, batch_no_vp_left)):
-            curr_dis_to_goal = self.envs.call_at(i, "current_dist_to_goal", {"is_train": is_train})
+        for i, (gmap_vp_ids, gmap, no_vp_left) in enumerate(
+            zip(batch_gmap_vp_ids, self.gmaps, batch_no_vp_left)
+        ):
+            curr_dis_to_goal = self.envs.call_at(
+                i, "current_dist_to_goal", {"is_train": is_train}
+            )
             if curr_dis_to_goal < 1.5:
                 teacher_actions.append(0)
             else:
                 if no_vp_left:
                     teacher_actions.append(-100)
-                elif self.config.IL.expert_policy == 'spl':
-                    ghost_vp_pos = [(vp, random.choice(pos)) for vp, pos in gmap.ghost_real_pos.items()]
+                elif self.config.IL.expert_policy == "spl":
+                    ghost_vp_pos = [
+                        (vp, random.choice(pos))
+                        for vp, pos in gmap.ghost_real_pos.items()
+                    ]
                     ghost_dis_to_goal = [
-                        self.envs.call_at(i, "point_dist_to_goal", {"pos": p[1], "is_train": is_train})
+                        self.envs.call_at(
+                            i, "point_dist_to_goal", {"pos": p[1], "is_train": is_train}
+                        )
                         for p in ghost_vp_pos
                     ]
                     target_ghost_vp = ghost_vp_pos[np.argmin(ghost_dis_to_goal)][0]
                     teacher_actions.append(gmap_vp_ids.index(target_ghost_vp))
-                elif self.config.IL.expert_policy == 'ndtw':
-                    ghost_vp_pos = [(vp, random.choice(pos)) for vp, pos in gmap.ghost_real_pos.items()]
-                    target_ghost_vp = self.envs.call_at(i, "ghost_dist_to_ref", {
-                        "ghost_vp_pos": ghost_vp_pos,
-                        "ref_path": self.gt_data[str(cur_episodes[i].episode_id)]['locations'],
-                    })
+                elif self.config.IL.expert_policy == "ndtw":
+                    ghost_vp_pos = [
+                        (vp, random.choice(pos))
+                        for vp, pos in gmap.ghost_real_pos.items()
+                    ]
+                    target_ghost_vp = self.envs.call_at(
+                        i,
+                        "ghost_dist_to_ref",
+                        {
+                            "ghost_vp_pos": ghost_vp_pos,
+                            "ref_path": self.gt_data[str(cur_episodes[i].episode_id)][
+                                "locations"
+                            ],
+                        },
+                    )
                     teacher_actions.append(gmap_vp_ids.index(target_ghost_vp))
                 else:
                     raise NotImplementedError
@@ -408,19 +509,19 @@ class RLTrainer(BaseVLNCETrainer):
         batch_nav_types, batch_view_lens = [], []
 
         for i in range(self.envs.num_envs):
-            rgb_fts, dep_fts, loc_fts , nav_types = [], [], [], []
+            rgb_fts, dep_fts, loc_fts, nav_types = [], [], [], []
             cand_idxes = np.zeros(12, dtype=bool)
-            cand_idxes[obs['cand_img_idxes'][i]] = True
+            cand_idxes[obs["cand_img_idxes"][i]] = True
 
-            rgb_fts.append(obs['cand_rgb'][i])
-            dep_fts.append(obs['cand_depth'][i])
-            loc_fts.append(obs['cand_angle_fts'][i])
-            nav_types += [1] * len(obs['cand_angles'][i])
+            rgb_fts.append(obs["cand_rgb"][i])
+            dep_fts.append(obs["cand_depth"][i])
+            loc_fts.append(obs["cand_angle_fts"][i])
+            nav_types += [1] * len(obs["cand_angles"][i])
 
-            rgb_fts.append(obs['pano_rgb'][i][~cand_idxes])
-            dep_fts.append(obs['pano_depth'][i][~cand_idxes])
-            loc_fts.append(obs['pano_angle_fts'][~cand_idxes])
-            nav_types += [0] * (12-np.sum(cand_idxes))
+            rgb_fts.append(obs["pano_rgb"][i][~cand_idxes])
+            dep_fts.append(obs["pano_depth"][i][~cand_idxes])
+            loc_fts.append(obs["pano_angle_fts"][~cand_idxes])
+            nav_types += [0] * (12 - np.sum(cand_idxes))
 
             batch_rgb_fts.append(torch.cat(rgb_fts, dim=0))
             batch_dep_fts.append(torch.cat(dep_fts, dim=0))
@@ -435,8 +536,11 @@ class RLTrainer(BaseVLNCETrainer):
         batch_view_lens = torch.LongTensor(batch_view_lens).cuda()
 
         return {
-            'rgb_fts': batch_rgb_fts, 'dep_fts': batch_dep_fts, 'loc_fts': batch_loc_fts,
-            'nav_types': batch_nav_types, 'view_lens': batch_view_lens,
+            "rgb_fts": batch_rgb_fts,
+            "dep_fts": batch_dep_fts,
+            "loc_fts": batch_loc_fts,
+            "nav_types": batch_nav_types,
+            "view_lens": batch_view_lens,
         }
 
     def _nav_gmap_variable(self, cur_vp, cur_pos, cur_ori, task_type):
@@ -455,11 +559,16 @@ class RLTrainer(BaseVLNCETrainer):
                 batch_no_vp_left.append(False)
 
             gmap_vp_ids = [None] + node_vp_ids + ghost_vp_ids
-            gmap_step_ids = [0] + [gmap.node_stepId[vp] for vp in node_vp_ids] + [0]*len(ghost_vp_ids)
+            gmap_step_ids = (
+                [0]
+                + [gmap.node_stepId[vp] for vp in node_vp_ids]
+                + [0] * len(ghost_vp_ids)
+            )
             gmap_visited_masks = [0] + [1] * len(node_vp_ids) + [0] * len(ghost_vp_ids)
 
-            gmap_img_fts = [gmap.get_node_embeds(vp) for vp in node_vp_ids] + \
-                           [gmap.get_node_embeds(vp) for vp in ghost_vp_ids]
+            gmap_img_fts = [gmap.get_node_embeds(vp) for vp in node_vp_ids] + [
+                gmap.get_node_embeds(vp) for vp in ghost_vp_ids
+            ]
             gmap_img_fts = torch.stack(
                 [torch.zeros_like(gmap_img_fts[0])] + gmap_img_fts, dim=0
             )
@@ -467,20 +576,26 @@ class RLTrainer(BaseVLNCETrainer):
             gmap_pos_fts = gmap.get_pos_fts(
                 cur_vp[i], cur_pos[i], cur_ori[i], gmap_vp_ids
             )
-            gmap_pair_dists = np.zeros((len(gmap_vp_ids), len(gmap_vp_ids)), dtype=np.float32)
+            gmap_pair_dists = np.zeros(
+                (len(gmap_vp_ids), len(gmap_vp_ids)), dtype=np.float32
+            )
             for j in range(1, len(gmap_vp_ids)):
-                for k in range(j+1, len(gmap_vp_ids)):
+                for k in range(j + 1, len(gmap_vp_ids)):
                     vp1 = gmap_vp_ids[j]
                     vp2 = gmap_vp_ids[k]
-                    if not vp1.startswith('g') and not vp2.startswith('g'):
+                    if not vp1.startswith("g") and not vp2.startswith("g"):
                         dist = gmap.shortest_dist[vp1][vp2]
-                    elif not vp1.startswith('g') and vp2.startswith('g'):
+                    elif not vp1.startswith("g") and vp2.startswith("g"):
                         front_dis2, front_vp2 = gmap.front_to_ghost_dist(vp2)
                         dist = gmap.shortest_dist[vp1][front_vp2] + front_dis2
-                    elif vp1.startswith('g') and vp2.startswith('g'):
+                    elif vp1.startswith("g") and vp2.startswith("g"):
                         front_dis1, front_vp1 = gmap.front_to_ghost_dist(vp1)
                         front_dis2, front_vp2 = gmap.front_to_ghost_dist(vp2)
-                        dist = front_dis1 + gmap.shortest_dist[front_vp1][front_vp2] + front_dis2
+                        dist = (
+                            front_dis1
+                            + gmap.shortest_dist[front_vp1][front_vp2]
+                            + front_dis2
+                        )
                     else:
                         raise NotImplementedError
                     gmap_pair_dists[j, k] = gmap_pair_dists[k, j] = dist / MAX_DIST
@@ -488,7 +603,9 @@ class RLTrainer(BaseVLNCETrainer):
             batch_gmap_vp_ids.append(gmap_vp_ids)
             gmap_step_ids_tensor = torch.LongTensor(gmap_step_ids)
             batch_gmap_step_ids.append(gmap_step_ids_tensor)
-            batch_gmap_task_embeddings.append(torch.full_like(gmap_step_ids_tensor, task_type))
+            batch_gmap_task_embeddings.append(
+                torch.full_like(gmap_step_ids_tensor, task_type)
+            )
             batch_gmap_lens.append(len(gmap_vp_ids))
             batch_gmap_img_fts.append(gmap_img_fts)
             batch_gmap_pos_fts.append(torch.from_numpy(gmap_pos_fts))
@@ -496,32 +613,45 @@ class RLTrainer(BaseVLNCETrainer):
             batch_gmap_visited_masks.append(torch.BoolTensor(gmap_visited_masks))
 
         batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).cuda()
-        batch_gmap_task_embeddings = pad_sequence(batch_gmap_task_embeddings, batch_first=True).cuda()
+        batch_gmap_task_embeddings = pad_sequence(
+            batch_gmap_task_embeddings, batch_first=True
+        ).cuda()
         batch_gmap_img_fts = pad_tensors_wgrad(batch_gmap_img_fts)
         batch_gmap_pos_fts = pad_tensors_wgrad(batch_gmap_pos_fts).cuda()
         batch_gmap_lens = torch.LongTensor(batch_gmap_lens)
         batch_gmap_masks = gen_seq_masks(batch_gmap_lens).cuda()
-        batch_gmap_visited_masks = pad_sequence(batch_gmap_visited_masks, batch_first=True).cuda()
+        batch_gmap_visited_masks = pad_sequence(
+            batch_gmap_visited_masks, batch_first=True
+        ).cuda()
 
         bs = self.envs.num_envs
         max_gmap_len = max(batch_gmap_lens)
         gmap_pair_dists = torch.zeros(bs, max_gmap_len, max_gmap_len).float()
         for i in range(bs):
-            gmap_pair_dists[i, :batch_gmap_lens[i], :batch_gmap_lens[i]] = batch_gmap_pair_dists[i]
+            gmap_pair_dists[i, : batch_gmap_lens[i], : batch_gmap_lens[i]] = (
+                batch_gmap_pair_dists[i]
+            )
         gmap_pair_dists = gmap_pair_dists.cuda()
 
         return {
-            'gmap_vp_ids': batch_gmap_vp_ids, 'gmap_step_ids': batch_gmap_step_ids,
-            'gmap_img_fts': batch_gmap_img_fts, 'gmap_pos_fts': batch_gmap_pos_fts,
-            'gmap_masks': batch_gmap_masks, 'gmap_visited_masks': batch_gmap_visited_masks, 'gmap_pair_dists': gmap_pair_dists,
-            'no_vp_left': batch_no_vp_left, 'gmap_task_embeddings': batch_gmap_task_embeddings
+            "gmap_vp_ids": batch_gmap_vp_ids,
+            "gmap_step_ids": batch_gmap_step_ids,
+            "gmap_img_fts": batch_gmap_img_fts,
+            "gmap_pos_fts": batch_gmap_pos_fts,
+            "gmap_masks": batch_gmap_masks,
+            "gmap_visited_masks": batch_gmap_visited_masks,
+            "gmap_pair_dists": gmap_pair_dists,
+            "no_vp_left": batch_no_vp_left,
+            "gmap_task_embeddings": batch_gmap_task_embeddings,
         }
 
     def _history_variable(self, obs):
-        batch_size = obs['pano_rgb'].shape[0]
-        hist_rgb_fts = obs['pano_rgb'][:, 0, ...].cuda()
-        hist_pano_rgb_fts = obs['pano_rgb'].cuda()
-        hist_pano_ang_fts = obs['pano_angle_fts'].unsqueeze(0).expand(batch_size, -1, -1).cuda()
+        batch_size = obs["pano_rgb"].shape[0]
+        hist_rgb_fts = obs["pano_rgb"][:, 0, ...].cuda()
+        hist_pano_rgb_fts = obs["pano_rgb"].cuda()
+        hist_pano_ang_fts = (
+            obs["pano_angle_fts"].unsqueeze(0).expand(batch_size, -1, -1).cuda()
+        )
 
         return hist_rgb_fts, hist_pano_rgb_fts, hist_pano_ang_fts
 
@@ -539,13 +669,15 @@ class RLTrainer(BaseVLNCETrainer):
 
     def train(self):
         self._set_config()
-        if self.config.MODEL.task_type == 'rxr':
+        if self.config.MODEL.task_type == "rxr":
             self.gt_data = {}
             for role in self.config.TASK_CONFIG.DATASET.ROLES:
                 with gzip.open(
                     self.config.TASK_CONFIG.TASK.NDTW.GT_PATH.format(
                         split=self.split, role=role
-                    ), "rt") as f:
+                    ),
+                    "rt",
+                ) as f:
                     self.gt_data.update(json.load(f))
 
         observation_space, action_space = self._init_envs()
@@ -557,11 +689,13 @@ class RLTrainer(BaseVLNCETrainer):
         )
 
         total_iter = self.config.IL.iters
-        log_every  = self.config.IL.log_every
-        writer     = TensorboardWriter(self.config.TENSORBOARD_DIR if self.local_rank < 1 else None)
+        log_every = self.config.IL.log_every
+        writer = TensorboardWriter(
+            self.config.TENSORBOARD_DIR if self.local_rank < 1 else None
+        )
 
         self.scaler = GradScaler()
-        logger.info('Traning Starts... GOOD LUCK!')
+        logger.info("Traning Starts... GOOD LUCK!")
 
         if self.config.local_rank < 1:
             config_path = os.path.join(self.config.CHECKPOINT_FOLDER, "config.yaml")
@@ -570,24 +704,28 @@ class RLTrainer(BaseVLNCETrainer):
             logger.info(f"Configuration saved to {config_path}")
 
         for idx in range(start_iter, total_iter, log_every):
-            interval = min(log_every, max(total_iter-idx, 0))
+            interval = min(log_every, max(total_iter - idx, 0))
             cur_iter = idx + interval
 
-            sample_ratio = self.config.IL.sample_ratio ** ((idx) // self.config.IL.decay_interval + 1)
+            sample_ratio = self.config.IL.sample_ratio ** (
+                (idx) // self.config.IL.decay_interval + 1
+            )
 
             if sample_ratio <= 0.15:
                 sample_ratio = 0.0
             logger.info(f"sample ratio: {sample_ratio}")
-            logs = self._train_interval(interval, self.config.IL.ml_weight, sample_ratio)
+            logs = self._train_interval(
+                interval, self.config.IL.ml_weight, sample_ratio
+            )
 
             if self.local_rank < 1:
-                loss_str = f'iter {cur_iter}: '
+                loss_str = f"iter {cur_iter}: "
                 for k, v in logs.items():
                     logs[k] = np.mean(v)
-                    loss_str += f'{k}: {logs[k]:.3f}, '
-                    writer.add_scalar(f'loss/{k}', logs[k], cur_iter)
-                current_lr = self.optimizer.param_groups[0]['lr']
-                writer.add_scalar('train/lr', current_lr, cur_iter)
+                    loss_str += f"{k}: {logs[k]:.3f}, "
+                    writer.add_scalar(f"loss/{k}", logs[k], cur_iter)
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                writer.add_scalar("train/lr", current_lr, cur_iter)
                 logger.info(loss_str)
                 logger.info(f"lr: {current_lr}")
                 self.save_checkpoint(cur_iter)
@@ -610,20 +748,20 @@ class RLTrainer(BaseVLNCETrainer):
             pbar = range(interval)
         self.logs = defaultdict(list)
 
-        self.sap_loss = 0.
+        self.sap_loss = 0.0
         for idx in pbar:
             self.optimizer.zero_grad()
-            self.loss = 0.
+            self.loss = 0.0
 
             with autocast():
-                self.rollout('train', ml_weight, sample_ratio)
+                self.rollout("train", ml_weight, sample_ratio)
             self.scaler.scale(self.loss).backward()
             self.scaler.step(self.optimizer)
             self.scheduler.step()
             self.scaler.update()
 
             if self.local_rank < 1:
-                pbar.set_postfix({'iter': f'{idx+1}/{interval}'})
+                pbar.set_postfix({"iter": f"{idx + 1}/{interval}"})
         return deepcopy(self.logs)
 
     @torch.no_grad()
@@ -647,19 +785,21 @@ class RLTrainer(BaseVLNCETrainer):
             self.config.TASK_CONFIG.TASK.MEASUREMENTS.append("SPL")
             self.config.VIDEO_DIR = self.config.VIDEO_DIR + "_" + self.config.EVAL.SPLIT
             os.makedirs(self.config.VIDEO_DIR, exist_ok=True)
-            shift = 0.
+            shift = 0.0
             orient_dict = {
-                'Back': [0, math.pi + shift, 0],            # Back
-                'Down': [-math.pi / 2, 0 + shift, 0],       # Down
-                'Front':[0, 0 + shift, 0],                  # Front
-                'Right':[0, math.pi / 2 + shift, 0],        # Right
-                'Left': [0, 3 / 2 * math.pi + shift, 0],    # Left
-                'Up':   [math.pi / 2, 0 + shift, 0],        # Up
+                "Back": [0, math.pi + shift, 0],  # Back
+                "Down": [-math.pi / 2, 0 + shift, 0],  # Down
+                "Front": [0, 0 + shift, 0],  # Front
+                "Right": [0, math.pi / 2 + shift, 0],  # Right
+                "Left": [0, 3 / 2 * math.pi + shift, 0],  # Left
+                "Up": [math.pi / 2, 0 + shift, 0],  # Up
             }
             sensor_uuids = []
             H = 224
             for sensor_type in ["RGB"]:
-                sensor = getattr(self.config.TASK_CONFIG.SIMULATOR, f"{sensor_type}_SENSOR")
+                sensor = getattr(
+                    self.config.TASK_CONFIG.SIMULATOR, f"{sensor_type}_SENSOR"
+                )
                 for camera_id, orient in orient_dict.items():
                     camera_template = f"{sensor_type}{camera_id}"
                     camera_config = deepcopy(sensor)
@@ -669,8 +809,14 @@ class RLTrainer(BaseVLNCETrainer):
                     camera_config.UUID = camera_template.lower()
                     camera_config.HFOV = 90
                     sensor_uuids.append(camera_config.UUID)
-                    setattr(self.config.TASK_CONFIG.SIMULATOR, camera_template, camera_config)
-                    self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
+                    setattr(
+                        self.config.TASK_CONFIG.SIMULATOR,
+                        camera_template,
+                        camera_config,
+                    )
+                    self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS.append(
+                        camera_template
+                    )
         self.config.freeze()
 
         if self.config.EVAL.SAVE_RESULTS:
@@ -678,7 +824,9 @@ class RLTrainer(BaseVLNCETrainer):
                 self.config.RESULTS_DIR,
                 f"stats_ckpt_{checkpoint_index}_{self.config.TASK_CONFIG.DATASET.SPLIT}.json",
             )
-            if os.path.exists(fname) and not os.path.isfile(self.config.EVAL.CKPT_PATH_DIR):
+            if os.path.exists(fname) and not os.path.isfile(
+                self.config.EVAL.CKPT_PATH_DIR
+            ):
                 print("skipping -- evaluation exists.")
                 return
 
@@ -692,10 +840,10 @@ class RLTrainer(BaseVLNCETrainer):
             self.config,
             get_env_class(self.config.ENV_NAME),
             episodes_allowed=episodes_allowed,
-            auto_reset_done=False, # unseen: 11006
+            auto_reset_done=False,  # unseen: 11006
         )
         dataset_length = sum(self.envs.number_of_episodes)
-        print('local rank:', self.local_rank, '|', 'dataset length:', dataset_length)
+        print("local rank:", self.local_rank, "|", "dataset length:", dataset_length)
 
         obs_transforms = get_active_obs_transforms(self.config)
         observation_space = apply_obs_transforms_obs_space(
@@ -713,12 +861,14 @@ class RLTrainer(BaseVLNCETrainer):
         if self.config.EVAL.EPISODE_COUNT == -1:
             eps_to_eval = sum(self.envs.number_of_episodes)
         else:
-            eps_to_eval = min(self.config.EVAL.EPISODE_COUNT, sum(self.envs.number_of_episodes))
+            eps_to_eval = min(
+                self.config.EVAL.EPISODE_COUNT, sum(self.envs.number_of_episodes)
+            )
         self.stat_eps = {}
         self.pbar = tqdm.tqdm(total=eps_to_eval) if self.config.use_pbar else None
 
         while len(self.stat_eps) < eps_to_eval:
-            self.rollout('eval')
+            self.rollout("eval")
 
         self.envs.close()
 
@@ -732,15 +882,17 @@ class RLTrainer(BaseVLNCETrainer):
             )
         total = torch.tensor(num_episodes).cuda()
         if self.world_size > 1:
-            distr.reduce(total,dst=0)
+            distr.reduce(total, dst=0)
         total = total.item()
 
         if self.world_size > 1:
-            logger.info(f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}")
-            for k,v in aggregated_states.items():
-                v = torch.tensor(v*num_episodes).cuda()
-                cat_v = gather_list_and_concat(v,self.world_size)
-                v = (sum(cat_v)/total).item()
+            logger.info(
+                f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}"
+            )
+            for k, v in aggregated_states.items():
+                v = torch.tensor(v * num_episodes).cuda()
+                cat_v = gather_list_and_concat(v, self.world_size)
+                v = (sum(cat_v) / total).item()
                 aggregated_states[k] = v
 
         split = self.config.TASK_CONFIG.DATASET.SPLIT
@@ -778,12 +930,18 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.TASK_CONFIG.DATASET.LANGUAGES = self.config.INFERENCE.LANGUAGES
         self.config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.SHUFFLE = False
         self.config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = -1
-        self.config.TASK_CONFIG.TASK.MEASUREMENTS = ['POSITION_INFER']
-        self.config.TASK_CONFIG.TASK.SENSORS = [s for s in self.config.TASK_CONFIG.TASK.SENSORS if "INSTRUCTION" in s]
-        self.config.SIMULATOR_GPU_IDS = [self.config.SIMULATOR_GPU_IDS[self.config.local_rank]]
+        self.config.TASK_CONFIG.TASK.MEASUREMENTS = ["POSITION_INFER"]
+        self.config.TASK_CONFIG.TASK.SENSORS = [
+            s for s in self.config.TASK_CONFIG.TASK.SENSORS if "INSTRUCTION" in s
+        ]
+        self.config.SIMULATOR_GPU_IDS = [
+            self.config.SIMULATOR_GPU_IDS[self.config.local_rank]
+        ]
 
         resize_config = self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES
-        crop_config = self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS
+        crop_config = (
+            self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS
+        )
         task_config = self.config.TASK_CONFIG
         camera_orientations = get_camera_orientations12()
         for sensor_type in ["RGB", "DEPTH"]:
@@ -800,7 +958,9 @@ class RLTrainer(BaseVLNCETrainer):
                 resize_config.append((camera_template.lower(), resizer_size))
                 crop_config.append((camera_template.lower(), cropper_size))
         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
-        self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = crop_config
+        self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
+            crop_config
+        )
         self.config.TASK_CONFIG = task_config
         self.config.SENSORS = task_config.SIMULATOR.AGENT_0.SENSORS
         self.config.freeze()
@@ -809,7 +969,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.world_size = self.config.GPU_NUMBERS
         self.local_rank = self.config.local_rank
         if self.world_size > 1:
-            distr.init_process_group(backend='nccl', init_method='env://')
+            distr.init_process_group(backend="nccl", init_method="env://")
             self.device = self.config.TORCH_GPU_IDS[self.local_rank]
             torch.cuda.set_device(self.device)
             self.config.defrost()
@@ -840,13 +1000,15 @@ class RLTrainer(BaseVLNCETrainer):
         if self.config.INFERENCE.EPISODE_COUNT == -1:
             eps_to_infer = sum(self.envs.number_of_episodes)
         else:
-            eps_to_infer = min(self.config.INFERENCE.EPISODE_COUNT, sum(self.envs.number_of_episodes))
+            eps_to_infer = min(
+                self.config.INFERENCE.EPISODE_COUNT, sum(self.envs.number_of_episodes)
+            )
         self.path_eps = defaultdict(list)
         self.inst_ids: Dict[str, int] = {}
         self.pbar = tqdm.tqdm(total=eps_to_infer)
 
         while len(self.path_eps) < eps_to_infer:
-            self.rollout('infer')
+            self.rollout("infer")
         self.envs.close()
 
         if self.world_size > 1:
@@ -864,26 +1026,32 @@ class RLTrainer(BaseVLNCETrainer):
                 tmp_inst_dict.update(x)
             self.inst_ids = tmp_inst_dict
 
-
         if self.config.MODEL.task_type == "r2r":
             with open(self.config.INFERENCE.PREDICTIONS_FILE, "w") as f:
                 json.dump(self.path_eps, f, indent=2)
-            logger.info(f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}")
+            logger.info(
+                f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
+            )
         else:  # use 'rxr' format for rxr-habitat leaderboard
             preds = []
-            for k,v in self.path_eps.items():
+            for k, v in self.path_eps.items():
                 # save only positions that changed
                 path = [v[0]["position"]]
                 for p in v[1:]:
-                    if p["position"] != path[-1]: path.append(p["position"])
+                    if p["position"] != path[-1]:
+                        path.append(p["position"])
                 preds.append({"instruction_id": self.inst_ids[k], "path": path})
             preds.sort(key=lambda x: x["instruction_id"])
-            with jsonlines.open(self.config.INFERENCE.PREDICTIONS_FILE, mode="w") as writer:
+            with jsonlines.open(
+                self.config.INFERENCE.PREDICTIONS_FILE, mode="w"
+            ) as writer:
                 writer.write_all(preds)
-            logger.info(f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}")
+            logger.info(
+                f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
+            )
 
     def get_pos_ori(self):
-        pos_ori = self.envs.call(['get_pos_ori']*self.envs.num_envs)
+        pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
         pos = [x[0] for x in pos_ori]
         ori = [x[1] for x in pos_ori]
         return pos, ori
@@ -901,31 +1069,39 @@ class RLTrainer(BaseVLNCETrainer):
         # PriorGT uses the full dynamically generated cognitive map directly.
         if not map_cfg.enabled or cognitive_maps is None:
             return None
-        cognitive_crops = torch.stack([
-            cognitive_map["grid"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
-        direction_vectors = torch.stack([
-            cognitive_map["direction_vectors"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
-        start_direction_vectors = torch.stack([
-            cognitive_map["start_direction_vector"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
-        start_positions = torch.stack([
-            cognitive_map["start_position"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
+        cognitive_crops = torch.stack(
+            [
+                cognitive_map["grid"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
+        reference_paths = torch.stack(
+            [
+                cognitive_map["reference_paths"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
+        start_direction_vectors = torch.stack(
+            [
+                cognitive_map["start_direction_vector"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
+        start_positions = torch.stack(
+            [
+                cognitive_map["start_position"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
         map_tokens, map_token_masks = self.policy.net(
-            mode='map_encoding',
+            mode="map_encoding",
             cognitive_crops=cognitive_crops,
-            direction_vectors=direction_vectors,
+            reference_paths=reference_paths,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
-        nav_inputs['map_tokens'] = map_tokens
-        nav_inputs['map_token_masks'] = map_token_masks
+        nav_inputs["map_tokens"] = map_tokens
+        nav_inputs["map_token_masks"] = map_token_masks
         return None
 
     def _should_load_cognitive_maps(self, mode, map_cfg):
@@ -938,10 +1114,10 @@ class RLTrainer(BaseVLNCETrainer):
         ]
 
     def rollout(self, mode, ml_weight=None, sample_ratio=None):
-        if mode == 'train':
-            feedback = 'sample'
-        elif mode == 'eval' or mode == 'infer':
-            feedback = 'argmax'
+        if mode == "train":
+            feedback = "sample"
+        elif mode == "eval" or mode == "infer":
+            feedback = "argmax"
         else:
             raise NotImplementedError
 
@@ -950,56 +1126,74 @@ class RLTrainer(BaseVLNCETrainer):
 
         instr_max_len = self.config.IL.max_text_len
         instr_pad_id = 1
-        if self.config.MODEL.task_type == 'r2r':
+        if self.config.MODEL.task_type == "r2r":
             task_type = 1
-        elif self.config.MODEL.task_type == 'rxr':
+        elif self.config.MODEL.task_type == "rxr":
             task_type = 2
         else:
             print("self.config.MODEL.task_type Error")
-        observations = extract_instruction_tokens(observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
-                                                  max_length=instr_max_len, pad_id=instr_pad_id, task_type=task_type)
+        observations = extract_instruction_tokens(
+            observations,
+            self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+            max_length=instr_max_len,
+            pad_id=instr_pad_id,
+            task_type=task_type,
+        )
         batch = batch_obs(observations, self.device)
         batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
-        if mode == 'eval':
-            env_to_pause = [i for i, ep in enumerate(self.envs.current_episodes())
-                            if ep.episode_id in self.stat_eps]
+        if mode == "eval":
+            env_to_pause = [
+                i
+                for i, ep in enumerate(self.envs.current_episodes())
+                if ep.episode_id in self.stat_eps
+            ]
             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
-            if self.envs.num_envs == 0: return
-        if mode == 'infer':
-            env_to_pause = [i for i, ep in enumerate(self.envs.current_episodes())
-                            if ep.episode_id in self.path_eps]
+            if self.envs.num_envs == 0:
+                return
+        if mode == "infer":
+            env_to_pause = [
+                i
+                for i, ep in enumerate(self.envs.current_episodes())
+                if ep.episode_id in self.path_eps
+            ]
             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
-            if self.envs.num_envs == 0: return
+            if self.envs.num_envs == 0:
+                return
             curr_eps = self.envs.current_episodes()
             for i in range(self.envs.num_envs):
-                if self.config.MODEL.task_type == 'rxr':
+                if self.config.MODEL.task_type == "rxr":
                     ep_id = curr_eps[i].episode_id
                     k = curr_eps[i].instruction.instruction_id
                     self.inst_ids[ep_id] = int(k)
 
         # encode instructions
-        all_txt_ids = batch['instruction']
-        all_txt_task_encoding = batch['txt_task_encoding']
-        all_txt_masks = (all_txt_ids != instr_pad_id)
+        all_txt_ids = batch["instruction"]
+        all_txt_task_encoding = batch["txt_task_encoding"]
+        all_txt_masks = all_txt_ids != instr_pad_id
         all_txt_embeds = self.policy.net(
-            mode='language',
+            mode="language",
             txt_ids=all_txt_ids,
             txt_task_encoding=all_txt_task_encoding,
             txt_masks=all_txt_masks,
         )
 
-        loss = 0.
+        loss = 0.0
         map_aux_loss_total = None
-        total_actions = 0.
+        total_actions = 0.0
 
         not_done_index = list(range(self.envs.num_envs))
-        have_real_pos = (mode == 'train' or self.config.VIDEO_OPTION)
-        ghost_aug = self.config.IL.ghost_aug if mode == 'train' else 0
-        self.gmaps = [GraphMap(have_real_pos,
-                               self.config.IL.loc_noise,
-                               self.config.MODEL.merge_ghost,
-                               ghost_aug) for _ in range(self.envs.num_envs)]
+        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
+        ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
+        self.gmaps = [
+            GraphMap(
+                have_real_pos,
+                self.config.IL.loc_noise,
+                self.config.MODEL.merge_ghost,
+                ghost_aug,
+            )
+            for _ in range(self.envs.num_envs)
+        ]
         prev_vp = [None] * self.envs.num_envs
 
         # Build cognitive maps for current episodes.
@@ -1015,37 +1209,48 @@ class RLTrainer(BaseVLNCETrainer):
             txt_embeds = all_txt_embeds
 
             wp_outputs = self.policy.net(
-                mode = "waypoint",
-                waypoint_predictor = self.waypoint_predictor,
-                observations = batch,
-                in_train = (mode == 'train' and self.config.IL.waypoint_aug),
+                mode="waypoint",
+                waypoint_predictor=self.waypoint_predictor,
+                observations=batch,
+                in_train=(mode == "train" and self.config.IL.waypoint_aug),
             )
 
             # pano encoder
             vp_inputs = self._vp_feature_variable(wp_outputs)
-            vp_inputs.update({
-                'mode': 'panorama',
-            })
+            vp_inputs.update(
+                {
+                    "mode": "panorama",
+                }
+            )
             pano_embeds, pano_masks = self.policy.net(**vp_inputs)
-            avg_pano_embeds = torch.sum(pano_embeds * pano_masks.unsqueeze(2), 1) / \
-                              torch.sum(pano_masks, 1, keepdim=True)
+            avg_pano_embeds = torch.sum(
+                pano_embeds * pano_masks.unsqueeze(2), 1
+            ) / torch.sum(pano_masks, 1, keepdim=True)
 
             cur_pos, cur_ori = self.get_pos_ori()
             cur_vp, cand_vp, cand_pos = [], [], []
             for i in range(self.envs.num_envs):
                 cur_vp_i, cand_vp_i, cand_pos_i = self.gmaps[i].identify_node(
-                    cur_pos[i], cur_ori[i], wp_outputs['cand_angles'][i], wp_outputs['cand_distances'][i]
+                    cur_pos[i],
+                    cur_ori[i],
+                    wp_outputs["cand_angles"][i],
+                    wp_outputs["cand_distances"][i],
                 )
                 cur_vp.append(cur_vp_i)
                 cand_vp.append(cand_vp_i)
                 cand_pos.append(cand_pos_i)
 
-            if mode == 'train' or self.config.VIDEO_OPTION:
+            if mode == "train" or self.config.VIDEO_OPTION:
                 cand_real_pos = []
                 for i in range(self.envs.num_envs):
                     cand_real_pos_i = [
-                        self.envs.call_at(i, "get_cand_real_pos", {"angle": ang, "forward": dis})
-                        for ang, dis in zip(wp_outputs['cand_angles'][i], wp_outputs['cand_distances'][i])
+                        self.envs.call_at(
+                            i, "get_cand_real_pos", {"angle": ang, "forward": dis}
+                        )
+                        for ang, dis in zip(
+                            wp_outputs["cand_angles"][i],
+                            wp_outputs["cand_distances"][i],
+                        )
                     ]
                     cand_real_pos.append(cand_real_pos_i)
             else:
@@ -1053,19 +1258,28 @@ class RLTrainer(BaseVLNCETrainer):
 
             for i in range(self.envs.num_envs):
                 cur_embeds = avg_pano_embeds[i]
-                cand_embeds = pano_embeds[i][vp_inputs['nav_types'][i]==1]
-                self.gmaps[i].update_graph(prev_vp[i], stepk+1,
-                                        cur_vp[i], cur_pos[i], cur_embeds,
-                                        cand_vp[i], cand_pos[i], cand_embeds,
-                                        cand_real_pos[i])
+                cand_embeds = pano_embeds[i][vp_inputs["nav_types"][i] == 1]
+                self.gmaps[i].update_graph(
+                    prev_vp[i],
+                    stepk + 1,
+                    cur_vp[i],
+                    cur_pos[i],
+                    cur_embeds,
+                    cand_vp[i],
+                    cand_pos[i],
+                    cand_embeds,
+                    cand_real_pos[i],
+                )
 
             nav_inputs = self._nav_gmap_variable(cur_vp, cur_pos, cur_ori, task_type)
-            nav_inputs.update({
-                'mode': 'navigation',
-                'txt_embeds': txt_embeds,
-                'txt_masks': txt_masks,
-            })
-            no_vp_left = nav_inputs.pop('no_vp_left')
+            nav_inputs.update(
+                {
+                    "mode": "navigation",
+                    "txt_embeds": txt_embeds,
+                    "txt_masks": txt_masks,
+                }
+            )
+            no_vp_left = nav_inputs.pop("no_vp_left")
 
             map_aux_loss = self._prepare_map_inputs(
                 nav_inputs,
@@ -1078,15 +1292,19 @@ class RLTrainer(BaseVLNCETrainer):
             )
 
             nav_outs = self.policy.net(**nav_inputs)
-            nav_logits = nav_outs['global_logits']
+            nav_logits = nav_outs["global_logits"]
             nav_probs = F.softmax(nav_logits, 1)
             for i, gmap in enumerate(self.gmaps):
                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
 
-            if mode == 'train' or self.config.VIDEO_OPTION:
-                teacher_actions = self._teacher_action_new(nav_inputs['gmap_vp_ids'], no_vp_left, mode == 'train')
-            if mode == 'train':
-                loss += F.cross_entropy(nav_logits, teacher_actions, reduction='sum', ignore_index=-100)
+            if mode == "train" or self.config.VIDEO_OPTION:
+                teacher_actions = self._teacher_action_new(
+                    nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
+                )
+            if mode == "train":
+                loss += F.cross_entropy(
+                    nav_logits, teacher_actions, reduction="sum", ignore_index=-100
+                )
                 if map_aux_loss is not None:
                     map_aux_loss_total = (
                         map_aux_loss
@@ -1095,12 +1313,16 @@ class RLTrainer(BaseVLNCETrainer):
                     )
 
             # determine action
-            if feedback == 'sample':
+            if feedback == "sample":
                 c = torch.distributions.Categorical(nav_probs)
                 a_t = c.sample().detach()
-                a_t = torch.where(torch.rand_like(a_t, dtype=torch.float)<=sample_ratio, teacher_actions, a_t)
+                a_t = torch.where(
+                    torch.rand_like(a_t, dtype=torch.float) <= sample_ratio,
+                    teacher_actions,
+                    a_t,
+                )
 
-            elif feedback == 'argmax':
+            elif feedback == "argmax":
                 a_t = nav_logits.argmax(dim=-1)
             else:
                 raise NotImplementedError
@@ -1108,40 +1330,50 @@ class RLTrainer(BaseVLNCETrainer):
 
             # make equiv action
             env_actions = []
-            use_tryout = (self.config.IL.tryout and not self.config.TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING)
+            use_tryout = (
+                self.config.IL.tryout
+                and not self.config.TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING
+            )
             for i, gmap in enumerate(self.gmaps):
                 if cpu_a_t[i] == 0 or stepk == self.max_len - 1 or no_vp_left[i]:
                     # stop at node with max stop_prob
-                    vp_stop_scores = [(vp, stop_score) for vp, stop_score in gmap.node_stop_scores.items()]
+                    vp_stop_scores = [
+                        (vp, stop_score)
+                        for vp, stop_score in gmap.node_stop_scores.items()
+                    ]
                     stop_scores = [s[1] for s in vp_stop_scores]
                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
                     stop_pos = gmap.node_pos[stop_vp]
 
-                    if self.config.IL.back_algo == 'control':
-                        back_path = [(vp, gmap.node_pos[vp]) for vp in gmap.shortest_path[cur_vp[i]][stop_vp]]
+                    if self.config.IL.back_algo == "control":
+                        back_path = [
+                            (vp, gmap.node_pos[vp])
+                            for vp in gmap.shortest_path[cur_vp[i]][stop_vp]
+                        ]
                         back_path = back_path[1:]
                     else:
                         back_path = None
                     vis_info = {
-                            'nodes': list(gmap.node_pos.values()),
-                            'ghosts': list(gmap.ghost_aug_pos.values()),
-                            'predict_ghost': stop_pos,
+                        "nodes": list(gmap.node_pos.values()),
+                        "ghosts": list(gmap.ghost_aug_pos.values()),
+                        "predict_ghost": stop_pos,
                     }
                     env_actions.append(
                         {
-                            'action': {
-                                'act': 0,
-                                'cur_vp': cur_vp[i],
-                                'stop_vp': stop_vp, 'stop_pos': stop_pos,
-                                'back_path': back_path,
-                                'tryout': use_tryout
+                            "action": {
+                                "act": 0,
+                                "cur_vp": cur_vp[i],
+                                "stop_vp": stop_vp,
+                                "stop_pos": stop_pos,
+                                "back_path": back_path,
+                                "tryout": use_tryout,
                             },
-                            'vis_info': vis_info,
+                            "vis_info": vis_info,
                         }
                     )
 
                 else:
-                    ghost_vp = nav_inputs['gmap_vp_ids'][i][cpu_a_t[i]]
+                    ghost_vp = nav_inputs["gmap_vp_ids"][i][cpu_a_t[i]]
                     ghost_pos = gmap.ghost_aug_pos[ghost_vp]
                     _, front_vp = gmap.front_to_ghost_dist(ghost_vp)
                     front_pos = gmap.node_pos[front_vp]
@@ -1150,32 +1382,39 @@ class RLTrainer(BaseVLNCETrainer):
                         if teacher_action_cpu in [0, -100]:
                             teacher_ghost = None
                         else:
-                            teacher_ghost = gmap.ghost_aug_pos[nav_inputs['gmap_vp_ids'][i][teacher_action_cpu]]
+                            teacher_ghost = gmap.ghost_aug_pos[
+                                nav_inputs["gmap_vp_ids"][i][teacher_action_cpu]
+                            ]
                         vis_info = {
-                            'nodes': list(gmap.node_pos.values()),
-                            'ghosts': list(gmap.ghost_aug_pos.values()),
-                            'predict_ghost': ghost_pos,
-                            'teacher_ghost': teacher_ghost,
+                            "nodes": list(gmap.node_pos.values()),
+                            "ghosts": list(gmap.ghost_aug_pos.values()),
+                            "predict_ghost": ghost_pos,
+                            "teacher_ghost": teacher_ghost,
                         }
                     else:
                         vis_info = None
                     # teleport to front, then forward to ghost
-                    if self.config.IL.back_algo == 'control':
-                        back_path = [(vp, gmap.node_pos[vp]) for vp in gmap.shortest_path[cur_vp[i]][front_vp]]
+                    if self.config.IL.back_algo == "control":
+                        back_path = [
+                            (vp, gmap.node_pos[vp])
+                            for vp in gmap.shortest_path[cur_vp[i]][front_vp]
+                        ]
                         back_path = back_path[1:]
                     else:
                         back_path = None
                     env_actions.append(
                         {
-                            'action': {
-                                'act': 4,
-                                'cur_vp': cur_vp[i],
-                                'front_vp': front_vp, 'front_pos': front_pos,
-                                'ghost_vp': ghost_vp, 'ghost_pos': ghost_pos,
-                                'back_path': back_path,
-                                'tryout': use_tryout,
+                            "action": {
+                                "act": 4,
+                                "cur_vp": cur_vp[i],
+                                "front_vp": front_vp,
+                                "front_pos": front_pos,
+                                "ghost_vp": ghost_vp,
+                                "ghost_pos": ghost_pos,
+                                "back_path": back_path,
+                                "tryout": use_tryout,
                             },
-                            'vis_info': vis_info,
+                            "vis_info": vis_info,
                         }
                     )
                     prev_vp[i] = front_vp
@@ -1186,37 +1425,47 @@ class RLTrainer(BaseVLNCETrainer):
             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
 
             # calculate metric
-            if mode == 'eval':
+            if mode == "eval":
                 curr_eps = self.envs.current_episodes()
                 for i in range(self.envs.num_envs):
                     if not dones[i]:
                         continue
                     info = infos[i]
                     ep_id = curr_eps[i].episode_id
-                    gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(float)
-                    pred_path = np.array(info['position']['position'])
-                    distances = np.array(info['position']['distance'])
+                    gt_path = np.array(self.gt_data[str(ep_id)]["locations"]).astype(
+                        float
+                    )
+                    pred_path = np.array(info["position"]["position"])
+                    distances = np.array(info["position"]["distance"])
                     metric = {}
-                    metric['steps_taken'] = info['steps_taken']
-                    metric['distance_to_goal'] = distances[-1]
-                    metric['success'] = 1. if distances[-1] <= 3. else 0.
-                    metric['oracle_success'] = 1. if (distances <= 3.).any() else 0.
-                    metric['path_length'] = float(np.linalg.norm(pred_path[1:] - pred_path[:-1],axis=1).sum())
-                    metric['collisions'] = info['collisions']['count'] / len(pred_path)
+                    metric["steps_taken"] = info["steps_taken"]
+                    metric["distance_to_goal"] = distances[-1]
+                    metric["success"] = 1.0 if distances[-1] <= 3.0 else 0.0
+                    metric["oracle_success"] = 1.0 if (distances <= 3.0).any() else 0.0
+                    metric["path_length"] = float(
+                        np.linalg.norm(pred_path[1:] - pred_path[:-1], axis=1).sum()
+                    )
+                    metric["collisions"] = info["collisions"]["count"] / len(pred_path)
                     gt_length = distances[0]
-                    metric['spl'] = metric['success'] * gt_length / max(gt_length, metric['path_length'])
-                    dtw_distance = fastdtw(pred_path, gt_path, dist=NDTW.euclidean_distance)[0]
-                    metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
-                    metric['sdtw'] = metric['ndtw'] * metric['success']
-                    metric['ghost_cnt'] = self.gmaps[i].ghost_cnt
-                    metric['high_level_step'] = stepk
+                    metric["spl"] = (
+                        metric["success"]
+                        * gt_length
+                        / max(gt_length, metric["path_length"])
+                    )
+                    dtw_distance = fastdtw(
+                        pred_path, gt_path, dist=NDTW.euclidean_distance
+                    )[0]
+                    metric["ndtw"] = np.exp(-dtw_distance / (len(gt_path) * 3.0))
+                    metric["sdtw"] = metric["ndtw"] * metric["success"]
+                    metric["ghost_cnt"] = self.gmaps[i].ghost_cnt
+                    metric["high_level_step"] = stepk
                     if ep_id in self.stat_eps:
                         print("ERROR!!!!!!!!!! ", ep_id)
                     self.stat_eps[ep_id] = metric
                     self.pbar.update()
 
             # record path
-            if mode == 'infer':
+            if mode == "infer":
                 curr_eps = self.envs.current_episodes()
                 for i in range(self.envs.num_envs):
                     if not dones[i]:
@@ -1225,20 +1474,21 @@ class RLTrainer(BaseVLNCETrainer):
                     ep_id = curr_eps[i].episode_id
                     self.path_eps[ep_id] = [
                         {
-                            'position': info['position_infer']['position'][0],
-                            'heading': info['position_infer']['heading'][0],
-                            'stop': False
+                            "position": info["position_infer"]["position"][0],
+                            "heading": info["position_infer"]["heading"][0],
+                            "stop": False,
                         }
                     ]
-                    for p, h in zip(info['position_infer']['position'][1:], info['position_infer']['heading'][1:]):
-                        if p != self.path_eps[ep_id][-1]['position']:
-                            self.path_eps[ep_id].append({
-                                'position': p,
-                                'heading': h,
-                                'stop': False
-                            })
+                    for p, h in zip(
+                        info["position_infer"]["position"][1:],
+                        info["position_infer"]["heading"][1:],
+                    ):
+                        if p != self.path_eps[ep_id][-1]["position"]:
+                            self.path_eps[ep_id].append(
+                                {"position": p, "heading": h, "stop": False}
+                            )
                     self.path_eps[ep_id] = self.path_eps[ep_id][:500]
-                    self.path_eps[ep_id][-1]['stop'] = True
+                    self.path_eps[ep_id][-1]["stop"] = True
                     self.pbar.update()
 
             # pause env
@@ -1252,23 +1502,37 @@ class RLTrainer(BaseVLNCETrainer):
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)
-                        all_txt_ids = torch.cat((all_txt_ids[:i], all_txt_ids[i + 1:]), dim=0)
-                        all_txt_task_encoding = torch.cat((all_txt_task_encoding[:i], all_txt_task_encoding[i + 1:]), dim=0)
-                        all_txt_masks = torch.cat((all_txt_masks[:i], all_txt_masks[i + 1:]), dim=0)
-                        all_txt_embeds = torch.cat((all_txt_embeds[:i], all_txt_embeds[i + 1:]), dim=0)
+                        all_txt_ids = torch.cat(
+                            (all_txt_ids[:i], all_txt_ids[i + 1 :]), dim=0
+                        )
+                        all_txt_task_encoding = torch.cat(
+                            (all_txt_task_encoding[:i], all_txt_task_encoding[i + 1 :]),
+                            dim=0,
+                        )
+                        all_txt_masks = torch.cat(
+                            (all_txt_masks[:i], all_txt_masks[i + 1 :]), dim=0
+                        )
+                        all_txt_embeds = torch.cat(
+                            (all_txt_embeds[:i], all_txt_embeds[i + 1 :]), dim=0
+                        )
 
             if self.envs.num_envs == 0:
                 break
 
             # obs for next step
-            observations = extract_instruction_tokens(observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID, \
-                                                                        max_length=instr_max_len, pad_id=instr_pad_id, task_type=task_type)
+            observations = extract_instruction_tokens(
+                observations,
+                self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
+                max_length=instr_max_len,
+                pad_id=instr_pad_id,
+                task_type=task_type,
+            )
             batch = batch_obs(observations, self.device)
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
-        if mode == 'train':
+        if mode == "train":
             loss = ml_weight * loss / total_actions
             if map_aux_loss_total is not None:
                 loss = loss + map_aux_loss_total
             self.loss += loss
-            self.logs['IL_loss'].append(loss.item())
+            self.logs["IL_loss"].append(loss.item())

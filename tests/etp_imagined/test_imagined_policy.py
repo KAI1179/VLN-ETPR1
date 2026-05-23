@@ -81,7 +81,7 @@ def _load_imagined_policy(monkeypatch):
             if mode == "map_encoding":
                 return self.map_encoder(
                     kwargs["cognitive_crops"],
-                    kwargs["direction_vectors"],
+                    kwargs["reference_paths"],
                     kwargs["start_direction_vectors"],
                     kwargs["start_positions"],
                 )
@@ -152,7 +152,7 @@ def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
     start_direction_vectors = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
     start_positions = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
 
-    logits, direction_vectors, map_tokens, map_token_masks = net.forward(
+    logits, reference_paths, map_tokens, map_token_masks = net.forward(
         mode="imagined_map_encoding",
         txt_embeds=txt_embeds,
         txt_masks=txt_masks,
@@ -166,7 +166,7 @@ def test_etp_imagined_encodes_map_tokens_from_text(monkeypatch):
         policy_module.SIZE,
         policy_module.SIZE,
     )
-    assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
+    assert reference_paths.shape == (2, map_utils.REFERENCE_PATH_LENGTH, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)
     assert torch.isfinite(logits).all()
@@ -188,7 +188,7 @@ def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
     txt_embeds = torch.randn(2, 5, 32)
     txt_masks = torch.ones(2, 5, dtype=torch.bool)
 
-    map_logits, direction_vectors = net.forward(
+    map_logits, reference_paths = net.forward(
         mode="predict_cognitive_map",
         txt_embeds=txt_embeds,
         txt_masks=txt_masks,
@@ -199,7 +199,7 @@ def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
     map_tokens, map_token_masks = net.forward(
         mode="map_encoding",
         cognitive_crops=pred_grid,
-        direction_vectors=direction_vectors,
+        reference_paths=reference_paths,
         start_direction_vectors=torch.zeros(2, 2),
         start_positions=torch.zeros(2, 2),
     )
@@ -210,6 +210,6 @@ def test_etp_imagined_splits_prediction_from_gt_map_encoding(monkeypatch):
         policy_module.SIZE,
         policy_module.SIZE,
     )
-    assert direction_vectors.shape == (2, map_utils.DIRECTION_VECTOR_CNT, 2)
+    assert reference_paths.shape == (2, map_utils.REFERENCE_PATH_LENGTH, 2)
     assert map_tokens.shape == (2, 101, 32)
     assert map_token_masks.shape == (2, 101)

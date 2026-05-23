@@ -18,16 +18,14 @@ class RLTrainer(PriorGTRLTrainer):
     def _start_metadata_inputs(self):
         metadata = [
             start_metadata_for_episode(ep)
-            for ep in self.envs.current_episodes()[:self.envs.num_envs]
+            for ep in self.envs.current_episodes()[: self.envs.num_envs]
         ]
-        start_direction_vectors = torch.stack([
-            item["start_direction_vector"]
-            for item in metadata
-        ]).to(self.device)
-        start_positions = torch.stack([
-            item["start_position"]
-            for item in metadata
-        ]).to(self.device)
+        start_direction_vectors = torch.stack(
+            [item["start_direction_vector"] for item in metadata]
+        ).to(self.device)
+        start_positions = torch.stack([item["start_position"] for item in metadata]).to(
+            self.device
+        )
         return start_direction_vectors, start_positions
 
     def _prepare_map_inputs(
@@ -41,7 +39,7 @@ class RLTrainer(PriorGTRLTrainer):
         stepk,
     ):
         start_direction_vectors, start_positions = self._start_metadata_inputs()
-        map_logits, pred_direction_vectors = self.policy.net(
+        map_logits, pred_reference_paths = self.policy.net(
             mode="predict_cognitive_map",
             txt_embeds=txt_embeds,
             txt_masks=txt_masks,
@@ -52,7 +50,7 @@ class RLTrainer(PriorGTRLTrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=pred_grid,
-            direction_vectors=pred_direction_vectors,
+            reference_paths=pred_reference_paths,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
@@ -62,21 +60,25 @@ class RLTrainer(PriorGTRLTrainer):
         if mode != "train" or cognitive_maps is None or stepk != 0:
             return None
 
-        target_grid = torch.stack([
-            cognitive_map["grid"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
-        target_direction_vectors = torch.stack([
-            cognitive_map["direction_vectors"]
-            for cognitive_map in cognitive_maps[:self.envs.num_envs]
-        ]).to(self.device)
+        target_grid = torch.stack(
+            [
+                cognitive_map["grid"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
+        target_reference_paths = torch.stack(
+            [
+                cognitive_map["reference_paths"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+        ).to(self.device)
         map_loss_weight = getattr(map_cfg, "map_loss_weight", 0.1)
         map_loss = F.binary_cross_entropy_with_logits(
             map_logits,
             target_grid,
             reduction="mean",
         )
-        direction_loss = F.mse_loss(pred_direction_vectors, target_direction_vectors)
+        reference_path_loss = F.mse_loss(pred_reference_paths, target_reference_paths)
         self.logs["map_loss"].append(map_loss.item())
-        self.logs["map_direction_loss"].append(direction_loss.item())
-        return map_loss_weight * (map_loss + 0.1 * direction_loss)
+        self.logs["map_reference_path_loss"].append(reference_path_loss.item())
+        return map_loss_weight * (map_loss + 0.1 * reference_path_loss)

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from os import PathLike
-from typing import List, Optional, Tuple, Type, TypeVar, cast
+from typing import List, Optional, Type, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -109,7 +109,7 @@ class BaseGridMap:
             return False
         return True
 
-    def grid_to_world(self, row: int, col: int) -> tuple[float, float]:
+    def grid_to_world(self, row: float, col: float) -> tuple[float, float]:
         """
         Transform grid coordinates to world coordinates (cell center).
 
@@ -317,24 +317,22 @@ class CognitiveGridMap(BaseGridMap):
     probability distributions over categories.
     """
 
-    positions: List[Tuple[float, float]]
+    reference_path: List[List[float]]
     """
-    List of 2D positions (in continuous grid coordinates) along the path.
+    World-coordinate reference path for the episode, as ``[x, y, z]`` waypoints.
+    Only waypoints that fall inside this cognitive map's level are stored.
     """
-
-    direction_vectors: List[Tuple[float, float]]
-    """Direction vectors."""
 
     start_direction_vector: DirectionVector
     """Start orientation as a normalized (sin, cos) direction vector."""
 
     def __init__(self):
         """
-        Initialize a cognitive grid map with zeros and empty positions.
+        Initialize a cognitive grid map with zeros and an empty reference path.
         """
         super().__init__()
-        self.positions = []
-        self.direction_vectors = []
+        self.reference_path = []
+        self.start_direction_vector = (0.0, 0.0)
 
     def visualize(
         self,
@@ -346,7 +344,7 @@ class CognitiveGridMap(BaseGridMap):
     ) -> None:
         """Visualize the cognitive grid map using matplotlib.
         Creates separate visualizations for object and region categories, showing
-        the dominant category at each grid cell, along with the path positions.
+        the dominant category at each grid cell, along with the reference path.
 
         Args:
             save_path: Path to save the figure.
@@ -366,21 +364,22 @@ class CognitiveGridMap(BaseGridMap):
             figsize=figsize,
             auto_crop=auto_crop,
             crop_margin=crop_margin,
-            positions=self.positions,
-            direction_vectors=self.direction_vectors,
+            positions=[
+                self.world_to_grid(float(position[0]), float(position[2]))
+                for position in self.reference_path
+            ],
             start_direction_vector=self.start_direction_vector,
         )
 
     def save(self, save_path: str | PathLike[str] | np._SupportsWrite[bytes]):
-        """Save the cognitive map data with direction vectors."""
+        """Save the cognitive map data with its reference path."""
         np.savez_compressed(
             save_path,
             grid=self.grid,
             offset_x=self.offset_x,
             offset_z=self.offset_z,
             range_y=np.asarray(self.range_y, dtype=object),
-            positions=np.asarray(self.positions, dtype=np.float32),
-            direction_vectors=np.asarray(self.direction_vectors, dtype=np.float32),
+            reference_path=np.asarray(self.reference_path, dtype=np.float32),
             start_direction_vector=np.asarray(
                 self.start_direction_vector,
                 dtype=np.float32,
@@ -399,8 +398,9 @@ class CognitiveGridMap(BaseGridMap):
         grid_map.offset_x = float(data["offset_x"])
         grid_map.offset_z = float(data["offset_z"])
         grid_map.range_y = list(data["range_y"].tolist())
-        grid_map.positions = [tuple(pos) for pos in data["positions"]]
-        grid_map.direction_vectors = [tuple(v) for v in list(data["direction_vectors"])]
+        grid_map.reference_path = [
+            [float(value) for value in position] for position in data["reference_path"]
+        ]
         grid_map.start_direction_vector = tuple(data["start_direction_vector"])
         return grid_map
 

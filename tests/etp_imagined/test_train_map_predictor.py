@@ -13,8 +13,8 @@ from vlnce_baselines.models.etp_imagined.train_map_predictor import (
     save_checkpoint,
 )
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    DIRECTION_VECTOR_CNT,
     NUM_MAP_CATEGORIES,
+    REFERENCE_PATH_LENGTH,
     SIZE,
 )
 
@@ -73,7 +73,7 @@ def _patch_cognitive_map_generation(monkeypatch) -> None:
         "cognitive_map_to_tensors",
         lambda cognitive_map: {
             "grid": grid,
-            "direction_vectors": torch.zeros(DIRECTION_VECTOR_CNT, 2),
+            "reference_paths": torch.zeros(REFERENCE_PATH_LENGTH, 2),
             "start_direction_vector": torch.tensor([0.0, 1.0]),
             "start_position": torch.tensor([10.0, 20.0]),
         },
@@ -112,7 +112,7 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
     assert batch["txt_task_encoding"].tolist() == [[1, 1, 1, 0, 0]]
     assert batch["txt_masks"].tolist() == [[True, True, True, False, False]]
     assert batch["grids"].shape == (1, NUM_MAP_CATEGORIES, SIZE, SIZE)
-    assert batch["direction_vectors"].shape == (1, DIRECTION_VECTOR_CNT, 2)
+    assert batch["reference_paths"].shape == (1, REFERENCE_PATH_LENGTH, 2)
     assert batch["start_direction_vectors"].tolist() == [[0.0, 1.0]]
     assert batch["start_positions"].tolist() == [[10.0, 20.0]]
 

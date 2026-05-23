@@ -294,7 +294,7 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
     row, col = (4, 4)
     assert cognitive_map.grid[3, row, col] == 1.0
     assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
-    assert cognitive_map.positions[0] == (4.0, 4.0)
+    assert cognitive_map.reference_path == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
 
 
 def test_scene_semantic_boxes_has_no_direct_cognitive_map_shortcut():

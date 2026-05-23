@@ -307,11 +307,8 @@ MAX_DISTANCE_CELLS = 5
 GAUSSIAN_SIGMA = 1
 """Sigma parameter for gaussian_filter."""
 
-DIRECTION_VECTOR_CNT = 5
-"""Number of direction vectors."""
-
-DIRECTION_VECTOR_SIM = 0.8
-"""Threshold of considering two direction vectors the same."""
+REFERENCE_PATH_LENGTH = 5
+"""Number of reference path waypoints exposed to model metadata."""
 
 # INTERNAL UTILITY CONSTANTS
 

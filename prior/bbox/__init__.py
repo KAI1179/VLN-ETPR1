@@ -21,12 +21,10 @@ from pydantic import BaseModel
 
 from prior import MP3D_DIR
 from prior import DATA_DIR
-from prior.directions import DirectionVector, world_delta_to_direction_vector
+from prior.directions import DirectionVector
 from ..constants import (
     CELL_SIZE,
     COLS,
-    DIRECTION_VECTOR_CNT,
-    DIRECTION_VECTOR_SIM,
     HABITAT_MP3D_ROTATION_VECTOR,
     MAX_DISTANCE_CELLS,
     OBJECT_CATEGORIES,
@@ -138,12 +136,9 @@ class RelevantSemanticBoxes:
         cognitive_map.offset_x = self.level.offset_x
         cognitive_map.offset_z = self.level.offset_z
         cognitive_map.range_y = list(self.level.range_y)
-        cognitive_map.direction_vectors = _extract_direction_vectors(
-            self.reference_path
-        )
         cognitive_map.start_direction_vector = self.start_direction_vector
-        cognitive_map.positions = [
-            self.level.world_to_grid(float(x), float(z))
+        cognitive_map.reference_path = [
+            [float(x), float(y), float(z)]
             for x, y, z in self.reference_path
             if _is_position_in_level([x, y, z], self.level.range_y)
         ]
@@ -276,38 +271,6 @@ def _near_any_position(
     else:
         distance_func = _point_to_aabb_distance
     return any(distance_func(point, box) <= max_distance for point in points)
-
-
-def _direction_vector_between(
-    prev_position: List[float],
-    next_position: List[float],
-) -> DirectionVector:
-    dx = next_position[0] - prev_position[0]
-    dz = next_position[2] - prev_position[2]
-    return world_delta_to_direction_vector(dx, dz)
-
-
-def _extract_direction_vectors(
-    positions: List[List[float]],
-) -> List[DirectionVector]:
-    directions: List[DirectionVector] = []
-
-    for i in range(len(positions) - 1):
-        direction = _direction_vector_between(positions[i], positions[i + 1])
-        if directions:
-            prev = directions[-1]
-            similarity = direction[0] * prev[0] + direction[1] * prev[1]
-            if similarity >= DIRECTION_VECTOR_SIM:
-                continue
-
-        directions.append(direction)
-        if len(directions) >= DIRECTION_VECTOR_CNT:
-            break
-
-    while len(directions) < DIRECTION_VECTOR_CNT:
-        directions.append((0.0, 0.0))
-
-    return directions
 
 
 def _first_encountered_level(
