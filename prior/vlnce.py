@@ -77,6 +77,11 @@ class VLNCEEpisodeEntry:
         return f"{self.split}.{self.role}"
 
     @property
+    def unique_id(self) -> str:
+        """Return a dataset-wide unique id for file names and cache keys."""
+        return f"{self.dataset}_{self.source}_{self.episode_id}"
+
+    @property
     def start_direction_vector(self) -> DirectionVector:
         """Return start orientation as a normalized (sin, cos) direction vector."""
         return start_rotation_to_direction_vector(self.start_rotation)

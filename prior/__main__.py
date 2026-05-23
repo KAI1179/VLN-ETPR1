@@ -16,20 +16,20 @@ data = [
 
 for i, entry in enumerate(data):
     scene_id = entry.scene_id
-    episode_id = entry.episode_id
     dataset = entry.dataset
+    episode_key = entry.unique_id
     print(
-        f"[{dataset}] Processing episode {i + 1:0>5}/{len(data):0>5} (scene {scene_id})",
+        f"[{dataset}] Processing episode {i + 1:0>5}/{len(data):0>5} ({episode_key}, scene {scene_id})",
         end="\r",
     )
 
     # Create scene directory if it doesn't exist
     scene_output_dir = OUTPUT_DIR / scene_id
     scene_output_dir.mkdir(parents=True, exist_ok=True)
-    save_path = scene_output_dir / f"{dataset}_{episode_id}.npz"
+    save_path = scene_output_dir / f"{episode_key}.npz"
     if save_path.exists():
         print(
-            f"[{dataset}] Cognitive map for episode {episode_id} in scene {scene_id} already exists, skipping."
+            f"[{dataset}] Cognitive map for episode {episode_key} in scene {scene_id} already exists, skipping."
         )
         continue
 
@@ -41,5 +41,5 @@ for i, entry in enumerate(data):
 
     cognitive_map.save(save_path)
     print(
-        f"[{dataset}] Saved cognitive map for episode {episode_id} in scene {scene_id}"
+        f"[{dataset}] Saved cognitive map for episode {episode_key} in scene {scene_id}"
     )

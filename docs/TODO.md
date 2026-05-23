@@ -2,7 +2,7 @@
 
 ## Prior
 
-- [ ] In R2R, duplicated ids seem to only happen on `val_unseen` and `val_seen`. Need to check on RxR, and find if we can exploit it.
+- [x] In R2R, duplicated ids seem to only happen on `val_unseen` and `val_seen`. Need to check on RxR, and find if we can exploit it.
 
     ```python
     ids = dict()
@@ -16,7 +16,9 @@
             print(f"Duplicated id: {id}, {splits}")
     ```
 
-- [ ] Fix: cognitive grid map save, distinguish split (id in diff splits may collide). If prev todo handled, can be skipped.
+    Verdict: Cannot exploit. R2R has 1,836 duplicated episode ids and RxR has 11,006 duplicated episode ids across `train`, `val_seen`, and `val_unseen`. Treat `dataset + source + episode_id` as the canonical episode key.
+
+- [x] Fix: cognitive grid map save, distinguish split (id in diff splits may collide). If prev todo handled, can be skipped.
 - [ ] Reuse magnum where possible, instead of impl algos ourselves.
 - [ ] Remove direction vectors. Replace with reference paths.
 - [ ] Reorganize module layout.
