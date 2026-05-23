@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from gzip import open as gzip_open
 from json import load
-from typing import Iterable, Iterator, Optional, Literal
+from typing import Iterable, Iterator, Literal
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
@@ -25,7 +25,6 @@ class VLNCEEpisodeEntry:
     start_rotation: list[float]
     instruction_tokens: list[int]
     reference_path: list[list[float]]
-    role: Optional[str] = None
 
     @staticmethod
     def iter_from(
@@ -34,7 +33,7 @@ class VLNCEEpisodeEntry:
     ) -> Iterator["VLNCEEpisodeEntry"]:
         """Iterate R2R/RxR VLN-CE episodes with reference-path waypoints."""
         for split in splits:
-            data_path, role = _files_for_split(dataset, split)
+            data_path = _file_for_split(dataset, split)
             if not data_path.exists():
                 continue
 
@@ -59,27 +58,12 @@ class VLNCEEpisodeEntry:
                     start_rotation=episode["start_rotation"],
                     instruction_tokens=instruction_data["instruction_tokens"],
                     reference_path=episode["reference_path"],
-                    role=role,
                 )
-
-    @property
-    def sample_id(self) -> str:
-        """Return a display-safe sample id that preserves RxR role when present."""
-        if self.role is None:
-            return str(self.episode_id)
-        return f"{self.episode_id}.{self.role}"
-
-    @property
-    def source(self) -> str:
-        """Return split/source label for visualization and logs."""
-        if self.role is None:
-            return self.split
-        return f"{self.split}.{self.role}"
 
     @property
     def unique_id(self) -> str:
         """Return a dataset-wide unique id for file names and cache keys."""
-        return f"{self.dataset}_{self.source}_{self.episode_id}"
+        return f"{self.dataset}_{self.split}_{self.episode_id}"
 
     @property
     def start_direction_vector(self) -> DirectionVector:
@@ -92,20 +76,14 @@ def _scene_id_from_episode(raw_scene_id: str) -> str:
     return raw_scene_id.split("/")[1]
 
 
-def _files_for_split(dataset: Literal["R2R", "RxR"], split: str):
+def _file_for_split(dataset: Literal["R2R", "RxR"], split: str):
     if dataset == "R2R":
         split_dir = R2R_DIR / split
-        return (
-            split_dir / f"{split}.json.gz",
-            None,
-        )
+        return split_dir / f"{split}.json.gz"
 
     if dataset == "RxR":
         split_dir = RxR_DIR / split
-        return (
-            split_dir / f"{split}_guide.json.gz",
-            None,
-        )
+        return split_dir / f"{split}_guide.json.gz"
 
     raise ValueError(f"Unsupported dataset: {dataset}")
 

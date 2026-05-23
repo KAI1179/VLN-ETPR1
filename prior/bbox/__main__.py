@@ -59,7 +59,7 @@ def _find_episode(
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
-        sources = ", ".join(episode.source for episode in matches)
+        sources = ", ".join(episode.split for episode in matches)
         raise ValueError(
             f"Episode {episode_id} found in multiple splits: {sources}; pass --split"
         )
@@ -137,7 +137,7 @@ def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
     episode, level_idx, level = _relevant_episode_boxes(args)
     print(
         f"Relevant bounding boxes for {episode.dataset} episode "
-        f"{episode.episode_id} ({episode.source})"
+        f"{episode.episode_id} ({episode.split})"
     )
     print(f"Scene {episode.scene_id}")
     _print_level(level_idx, level)

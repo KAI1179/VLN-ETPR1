@@ -66,7 +66,7 @@ def load_predictor_examples(
     ):
         examples.append(
             PredictorExample(
-                episode_id=entry.sample_id,
+                episode_id=str(entry.episode_id),
                 scene_id=entry.scene_id,
                 instruction_text=entry.instruction,
                 token_ids=entry.instruction_tokens,

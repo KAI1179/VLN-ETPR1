@@ -7,6 +7,12 @@ Following modules could be run with `python -m`:
 - `prior.etp_r1`: Generate cognitive maps for all ETP-R1 entries
 - `prior.grid_map`: Visualizes given cognitive map (`.npz`)
 
+# API
+
+- `SceneSemanticBoxes.from_scene_id` -> `SceneSemanticBoxes` (collection of `LevelSemanticBoxes`)
+- `SceneSemanticBoxes` -`relevant_to`-> `RelevantSemanticBoxes`
+- `RelevantSemanticBoxes` -`to_cognitive_map`-> `CognitiveGridMap`
+
 # Saved NPZ Data
 
 `.npz` is used for first encountered level of cognitive grid maps.

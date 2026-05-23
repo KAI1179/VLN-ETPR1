@@ -38,9 +38,11 @@ def test_vlnce_episode_entry_iter_from_uses_episode_reference_path_without_gt(
     assert entries[0].episode_id == 7
     assert entries[0].reference_path == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
     assert not hasattr(entries[0], "positions")
+    assert not hasattr(entries[0], "sample_id")
+    assert not hasattr(entries[0], "source")
 
 
-def test_vlnce_episode_entry_unique_id_includes_dataset_source_and_episode():
+def test_vlnce_episode_entry_keeps_dataset_split_and_episode_explicit():
     from prior import vlnce
 
     entry = vlnce.VLNCEEpisodeEntry(
@@ -55,4 +57,7 @@ def test_vlnce_episode_entry_unique_id_includes_dataset_source_and_episode():
         reference_path=[],
     )
 
+    assert entry.dataset == "R2R"
+    assert entry.split == "val_unseen"
+    assert entry.episode_id == 184
     assert entry.unique_id == "R2R_val_unseen_184"

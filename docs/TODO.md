@@ -35,5 +35,5 @@
         - `RelevantSemanticBoxes` -`to_cognitive_map`-> `CognitiveGridMap`
     - Reason: By adding a separate type and utilizing type checking, we can reduce bugs.
 - [x] Keep `GroundTruthGridMap` for inspection / visualization only. Remove direct production construction paths.
-- [ ] `VLNCEEpisodeEntry.role` seems stale. Consider removing it and relevant attrs / functions, then fix callers.
-- [ ] API section in readme
+- [x] `VLNCEEpisodeEntry.role` seems stale. Consider removing it and relevant attrs / functions, then fix callers.
+- [x] API section in readme

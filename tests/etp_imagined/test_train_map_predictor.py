@@ -30,7 +30,6 @@ class _EpisodeEntry:
     start_rotation: list = None
     instruction_tokens: list = None
     reference_path: list = None
-    role: str = None
 
     def __post_init__(self):
         if self.start_position is None:
@@ -41,12 +40,6 @@ class _EpisodeEntry:
             self.instruction_tokens = [10, 11, 12]
         if self.reference_path is None:
             self.reference_path = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
-
-    @property
-    def sample_id(self):
-        if self.role is None:
-            return str(self.episode_id)
-        return f"{self.episode_id}.{self.role}"
 
 
 def _patch_episode_entries(monkeypatch, entries=None) -> None:

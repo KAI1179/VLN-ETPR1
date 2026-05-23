@@ -23,10 +23,6 @@ class FakeEpisode:
         if self.reference_path is None:
             self.reference_path = [[0.0, 5.0, 0.0]]
 
-    @property
-    def source(self) -> str:
-        return self.split
-
 
 def test_find_episode_requires_split_for_duplicate_episode_ids(monkeypatch):
     monkeypatch.setattr(
