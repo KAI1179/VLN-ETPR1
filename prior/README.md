@@ -61,7 +61,6 @@ Each json file contains:
 
 The `objects` field is an array of length 27. `objects[i]` contains 2D boxes of objects of category $i$. Each 2D object box consists of:
 
-- `id`: ID of the object. Not useful for our job.
 - `center`: Center coordinate of the box.
 - `half_extents`: Half size along X/Z.
 - `rotation`: Box rotation in radians.
@@ -71,7 +70,6 @@ The `objects` field is an array of length 27. `objects[i]` contains 2D boxes of 
 
 The `regions` field is an array of length 10. `regions[i]` contains 2D axis-aligned bounding boxes of regions of category $i$. Each 2D axis-aligned bounding box consists of:
 
-- `id`: ID of the region. Not useful for our job.
 - `min`: Minimum X/Z coordinate of the box.
 - `max`: Maximum X/Z coordinate of the box.
 - `mentioned`: Whether category $i$ is mentioned in the instruction.

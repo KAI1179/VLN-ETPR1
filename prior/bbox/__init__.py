@@ -49,7 +49,6 @@ SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
 class OBB2D:
     """2D object bounding box projected onto world X/Z axes."""
 
-    id: str
     center: Point2D
     half_extents: Point2D
     rotation: float = 0.0
@@ -60,7 +59,6 @@ class OBB2D:
 class AABB2D:
     """2D axis-aligned bounding box projected onto world X/Z axes."""
 
-    id: str
     min: Point2D
     max: Point2D
     mentioned: bool = False
@@ -123,6 +121,38 @@ class LevelSemanticBoxes(BaseModel):
 
 
 @dataclass
+class RelevantSemanticBoxes:
+    """Instruction/path-relevant semantic boxes for one selected scene level."""
+
+    level_idx: int
+    level: LevelSemanticBoxes
+    instruction: str
+    reference_path: List[List[float]]
+    start_direction_vector: DirectionVector
+
+    def to_cognitive_map(self):
+        """Convert relevant semantic boxes into one CognitiveGridMap."""
+        from prior.grid_map import CognitiveGridMap
+
+        cognitive_map = CognitiveGridMap()
+        cognitive_map.offset_x = self.level.offset_x
+        cognitive_map.offset_z = self.level.offset_z
+        cognitive_map.range_y = list(self.level.range_y)
+        cognitive_map.direction_vectors = _extract_direction_vectors(
+            self.reference_path
+        )
+        cognitive_map.start_direction_vector = self.start_direction_vector
+        cognitive_map.positions = [
+            self.level.world_to_grid(float(x), float(z))
+            for x, y, z in self.reference_path
+            if _is_position_in_level([x, y, z], self.level.range_y)
+        ]
+
+        _rasterize_level_semantic_boxes(self.level, cognitive_map.grid)
+        return cognitive_map
+
+
+@dataclass
 class SceneSemanticBoxes:
     """All level-wise semantic boxes for one MP3D scene."""
 
@@ -141,64 +171,18 @@ class SceneSemanticBoxes:
         self,
         instruction: str,
         reference_path: List[List[float]],
+        start_direction_vector: DirectionVector,
         max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
         category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
-    ) -> "SceneSemanticBoxes":
-        return _extract_relevant_scene_semantic_boxes(
+    ) -> RelevantSemanticBoxes:
+        return _extract_relevant_semantic_boxes(
             self,
             instruction,
             reference_path,
+            start_direction_vector=start_direction_vector,
             max_distance=max_distance,
             category_extractor=category_extractor,
         )
-
-    def first_encountered_level(
-        self, reference_path: List[List[float]]
-    ) -> tuple[int, LevelSemanticBoxes]:
-        if not self.levels:
-            raise ValueError("SceneSemanticBoxes contains no levels")
-
-        for position in reference_path:
-            y = float(position[1])
-            for level_idx, level in enumerate(self.levels):
-                lower, upper = level.range_y
-                if (lower is None or y >= lower) and (upper is None or y < upper):
-                    return level_idx, level
-
-        return 0, self.levels[0]
-
-    def to_cognitive_map(
-        self,
-        instruction: str,
-        reference_path: List[List[float]],
-        start_direction_vector: DirectionVector,
-        category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
-    ):
-        """Convert relevant scene semantic boxes into one CognitiveGridMap."""
-        from prior.grid_map import CognitiveGridMap
-
-        _, selected_level = self.first_encountered_level(reference_path)
-        relevant_scene = SceneSemanticBoxes([selected_level]).relevant_to(
-            instruction,
-            reference_path,
-            category_extractor=category_extractor,
-        )
-        relevant_level = relevant_scene.levels[0]
-
-        cognitive_map = CognitiveGridMap()
-        cognitive_map.offset_x = relevant_level.offset_x
-        cognitive_map.offset_z = relevant_level.offset_z
-        cognitive_map.range_y = list(relevant_level.range_y)
-        cognitive_map.direction_vectors = _extract_direction_vectors(reference_path)
-        cognitive_map.start_direction_vector = start_direction_vector
-        cognitive_map.positions = [
-            relevant_level.world_to_grid(float(x), float(z))
-            for x, y, z in reference_path
-            if _is_position_in_level([x, y, z], relevant_level.range_y)
-        ]
-
-        _rasterize_level_semantic_boxes(relevant_level, cognitive_map.grid)
-        return cognitive_map
 
 
 def _aabb_min(aabb) -> Vector3:
@@ -326,55 +310,76 @@ def _extract_direction_vectors(
     return directions
 
 
-def _extract_relevant_scene_semantic_boxes(
+def _first_encountered_level(
+    scene: SceneSemanticBoxes,
+    reference_path: List[List[float]],
+) -> tuple[int, LevelSemanticBoxes]:
+    if not scene.levels:
+        raise ValueError("SceneSemanticBoxes contains no levels")
+    if not reference_path:
+        raise ValueError("reference_path is empty")
+
+    for position in reference_path:
+        for level_idx, level in enumerate(scene.levels):
+            if _is_position_in_level(position, level.range_y):
+                return level_idx, level
+
+    ranges = [level.range_y for level in scene.levels]
+    raise ValueError(
+        f"reference_path does not intersect any semantic level range: {ranges}"
+    )
+
+
+def _extract_relevant_semantic_boxes(
     scene: SceneSemanticBoxes,
     instruction: str,
     reference_path: List[List[float]],
+    start_direction_vector: DirectionVector,
     max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
     category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
-) -> SceneSemanticBoxes:
-    """Return boxes close to the trajectory, marking categories mentioned in text."""
+) -> RelevantSemanticBoxes:
+    """Return selected-level boxes near the path, marking categories in text."""
     if category_extractor is None:
         from prior.grid_map._cognitive import extract_categories
 
         category_extractor = extract_categories
 
+    level_idx, level = _first_encountered_level(scene, reference_path)
     mentioned_objects, mentioned_regions = category_extractor(instruction)
-    relevant_levels: List[LevelSemanticBoxes] = []
 
-    for level in scene.levels:
-        relevant_level = _empty_level_boxes()
-        relevant_level.range_y = list(level.range_y)
-        relevant_level.offset_x = level.offset_x
-        relevant_level.offset_z = level.offset_z
-        level_points = [
-            (float(position[0]), float(position[2]))
-            for position in reference_path
-            if _is_position_in_level(position, level.range_y)
+    relevant_level = _empty_level_boxes()
+    relevant_level.range_y = list(level.range_y)
+    relevant_level.offset_x = level.offset_x
+    relevant_level.offset_z = level.offset_z
+    level_points = [
+        (float(position[0]), float(position[2]))
+        for position in reference_path
+        if _is_position_in_level(position, level.range_y)
+    ]
+
+    for category_idx, boxes in enumerate(level.objects):
+        mentioned = category_idx in mentioned_objects
+        relevant_level.objects[category_idx] = [
+            replace(box, mentioned=mentioned)
+            for box in boxes
+            if _near_any_position(box, level_points, max_distance)
         ]
-        if not level_points:
-            relevant_levels.append(relevant_level)
-            continue
 
-        for category_idx, boxes in enumerate(level.objects):
-            mentioned = category_idx in mentioned_objects
-            relevant_level.objects[category_idx] = [
-                replace(box, mentioned=mentioned)
-                for box in boxes
-                if _near_any_position(box, level_points, max_distance)
-            ]
+    for category_idx, boxes in enumerate(level.regions):
+        mentioned = category_idx in mentioned_regions
+        relevant_level.regions[category_idx] = [
+            replace(box, mentioned=mentioned)
+            for box in boxes
+            if _near_any_position(box, level_points, max_distance)
+        ]
 
-        for category_idx, boxes in enumerate(level.regions):
-            mentioned = category_idx in mentioned_regions
-            relevant_level.regions[category_idx] = [
-                replace(box, mentioned=mentioned)
-                for box in boxes
-                if _near_any_position(box, level_points, max_distance)
-            ]
-
-        relevant_levels.append(relevant_level)
-
-    return SceneSemanticBoxes(relevant_levels)
+    return RelevantSemanticBoxes(
+        level_idx=level_idx,
+        level=relevant_level,
+        instruction=instruction,
+        reference_path=reference_path,
+        start_direction_vector=start_direction_vector,
+    )
 
 
 def _grid_center_index_range(
@@ -553,7 +558,7 @@ def _construct_level_semantic_boxes_from_level(
         aabb_min = _aabb_min(region.aabb)
         aabb_max = _aabb_max(region.aabb)
         boxes.regions[mapped_region].append(
-            AABB2D(id=region.id, min=_xz(aabb_min), max=_xz(aabb_max))
+            AABB2D(min=_xz(aabb_min), max=_xz(aabb_max))
         )
 
         # semantic_level.objects is always empty for MP3D .house scenes; region
@@ -566,7 +571,6 @@ def _construct_level_semantic_boxes_from_level(
             obb = obj.obb
             boxes.objects[mapped_object].append(
                 OBB2D(
-                    id=obj.id,
                     center=_xz(obb.center),
                     half_extents=(
                         float(obb.half_extents[0]),
@@ -584,5 +588,6 @@ __all__ = [
     "IRRELEVANT_MULTIPLIER",
     "LevelSemanticBoxes",
     "OBB2D",
+    "RelevantSemanticBoxes",
     "SceneSemanticBoxes",
 ]

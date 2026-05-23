@@ -68,13 +68,13 @@ def _find_episode(
 
 def _print_obb(box: OBB2D) -> None:
     print(
-        f"      {box.id} mentioned={box.mentioned} "
-        f"center={box.center} half_extents={box.half_extents} rotation={box.rotation}"
+        f"      mentioned={box.mentioned} center={box.center} "
+        f"half_extents={box.half_extents} rotation={box.rotation}"
     )
 
 
 def _print_aabb(box: AABB2D) -> None:
-    print(f"      {box.id} mentioned={box.mentioned} {box.min} ~ {box.max}")
+    print(f"      mentioned={box.mentioned} {box.min} ~ {box.max}")
 
 
 def _print_level(level_idx: int, level: LevelSemanticBoxes) -> None:
@@ -125,12 +125,12 @@ def _relevant_episode_boxes(
 
     episode = _find_episode(args.dataset, args.episode_id, split=args.split)
     scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
-    level_idx, _ = scene_boxes.first_encountered_level(episode.reference_path)
-    relevant_scene = scene_boxes.relevant_to(
+    relevant = scene_boxes.relevant_to(
         episode.instruction,
         episode.reference_path,
+        episode.start_direction_vector,
     )
-    return episode, level_idx, relevant_scene.levels[level_idx]
+    return episode, relevant.level_idx, relevant.level
 
 
 def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:

@@ -17,6 +17,7 @@ class FakeEpisode:
     episode_id: int = 123
     instruction: str = "Walk to the table."
     reference_path: Optional[list[list[float]]] = None
+    start_direction_vector: tuple[float, float] = (0.0, 1.0)
 
     def __post_init__(self):
         if self.reference_path is None:
@@ -75,15 +76,13 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     ]
     relevant_boxes[0].objects[3] = [
         bbox.OBB2D(
-            id="wrong-level-table",
-            center=(0.0, 0.0),
+            center=(9.0, 9.0),
             half_extents=(1.0, 1.0),
             mentioned=True,
         )
     ]
     relevant_boxes[1].objects[3] = [
         bbox.OBB2D(
-            id="table-1",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
             mentioned=True,
@@ -111,8 +110,14 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     monkeypatch.setattr(
         bbox.SceneSemanticBoxes,
         "relevant_to",
-        lambda self, instruction, reference_path: bbox.SceneSemanticBoxes(
-            relevant_boxes
+        lambda self, instruction, reference_path, start_direction_vector: (
+            bbox.RelevantSemanticBoxes(
+                level_idx=1,
+                level=relevant_boxes[1],
+                instruction=instruction,
+                reference_path=reference_path,
+                start_direction_vector=start_direction_vector,
+            )
         ),
     )
 
@@ -123,8 +128,8 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     assert "Scene 17DRP5sb8fy" in output
     assert "Level 1" in output
     assert "Object table" in output
-    assert "table-1 mentioned=True" in output
-    assert "wrong-level-table" not in output
+    assert "mentioned=True center=(0.0, 0.0)" in output
+    assert "center=(9.0, 9.0)" not in output
 
 
 def test_episode_mode_exports_first_encountered_level_as_single_json_file(
@@ -145,7 +150,6 @@ def test_episode_mode_exports_first_encountered_level_as_single_json_file(
     relevant_levels = [lower_level.model_copy(deep=True), upper_level]
     relevant_levels[1].objects[3].append(
         bbox.OBB2D(
-            id="upper-level-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
             mentioned=True,
@@ -173,8 +177,14 @@ def test_episode_mode_exports_first_encountered_level_as_single_json_file(
     monkeypatch.setattr(
         bbox.SceneSemanticBoxes,
         "relevant_to",
-        lambda self, instruction, reference_path: bbox.SceneSemanticBoxes(
-            relevant_levels
+        lambda self, instruction, reference_path, start_direction_vector: (
+            bbox.RelevantSemanticBoxes(
+                level_idx=1,
+                level=relevant_levels[1],
+                instruction=instruction,
+                reference_path=reference_path,
+                start_direction_vector=start_direction_vector,
+            )
         ),
     )
 

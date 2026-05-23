@@ -33,11 +33,12 @@ for i, entry in enumerate(data):
         )
         continue
 
-    cognitive_map = SceneSemanticBoxes.from_scene_id(scene_id).to_cognitive_map(
+    relevant_boxes = SceneSemanticBoxes.from_scene_id(scene_id).relevant_to(
         entry.instruction,
         entry.reference_path,
-        start_direction_vector=entry.start_direction_vector,
+        entry.start_direction_vector,
     )
+    cognitive_map = relevant_boxes.to_cognitive_map()
 
     cognitive_map.save(save_path)
     print(

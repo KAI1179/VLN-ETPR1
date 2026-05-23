@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import pytest
 from magnum import Matrix4, Vector3
 from pydantic import BaseModel
 
 from prior import bbox as box
+
+
+def test_semantic_box_models_do_not_expose_source_ids():
+    assert "id" not in {field.name for field in fields(box.OBB2D)}
+    assert "id" not in {field.name for field in fields(box.AABB2D)}
 
 
 @dataclass
@@ -91,15 +96,12 @@ def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
     assert levels[0].offset_z == 3.0
     assert levels[0].objects[3] == [
         box.OBB2D(
-            id="0_0_0",
             center=(4.0, 6.0),
             half_extents=(1.0, 2.0),
             rotation=0.0,
         )
     ]
-    assert levels[0].regions[7] == [
-        box.AABB2D(id="0_0", min=(2.0, 3.0), max=(8.0, 11.0))
-    ]
+    assert levels[0].regions[7] == [box.AABB2D(min=(2.0, 3.0), max=(8.0, 11.0))]
 
 
 def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
@@ -111,7 +113,7 @@ def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
     upper_region = FakeRegion(
         id="upper",
         category=FakeCategory(6),
-        aabb=FakeAABB(center=Vector3(0.0, 4.0, 0.0), sizes=Vector3(2.0, 2.0, 2.0)),
+        aabb=FakeAABB(center=Vector3(10.0, 4.0, 10.0), sizes=Vector3(2.0, 2.0, 2.0)),
         objects=[],
     )
     lower_region = FakeRegion(
@@ -129,13 +131,13 @@ def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
 
     levels = box.SceneSemanticBoxes.from_scene(scene).levels
 
-    assert levels[0].regions[6][0].id == "lower"
+    assert levels[0].regions[6][0].min == (-1.0, -1.0)
     assert levels[0].range_y == [None, 3.0]
-    assert levels[1].regions[6][0].id == "upper"
+    assert levels[1].regions[6][0].min == (9.0, 9.0)
     assert levels[1].range_y == [3.0, None]
 
 
-def test_scene_semantic_boxes_relevant_to_keeps_nearby_boxes_and_marks_mentions():
+def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
@@ -145,44 +147,41 @@ def test_scene_semantic_boxes_relevant_to_keeps_nearby_boxes_and_marks_mentions(
     )
     level.objects[3] = [
         box.OBB2D(
-            id="near-mentioned-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
         ),
         box.OBB2D(
-            id="far-mentioned-table",
             center=(10.0, 0.0),
             half_extents=(1.0, 1.0),
         ),
     ]
     level.objects[1] = [
         box.OBB2D(
-            id="near-unmentioned-chair",
             center=(0.0, 2.0),
             half_extents=(1.0, 1.0),
         )
     ]
-    level.regions[7] = [
-        box.AABB2D(id="near-unmentioned-bathroom", min=(-2.0, -2.0), max=(2.0, 2.0))
-    ]
+    level.regions[7] = [box.AABB2D(min=(-2.0, -2.0), max=(2.0, 2.0))]
 
     relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
         reference_path=[[0.0, 0.0, 0.0]],
+        start_direction_vector=(0.0, 1.0),
         max_distance=1.5,
         category_extractor=lambda instruction: ({3}, set()),
     )
 
-    assert [obb.id for obb in relevant.levels[0].objects[3]] == ["near-mentioned-table"]
-    assert relevant.levels[0].objects[3][0].mentioned is True
-    assert [obb.id for obb in relevant.levels[0].objects[1]] == [
-        "near-unmentioned-chair"
-    ]
-    assert relevant.levels[0].objects[1][0].mentioned is False
-    assert [region.id for region in relevant.levels[0].regions[7]] == [
-        "near-unmentioned-bathroom"
-    ]
-    assert relevant.levels[0].regions[7][0].mentioned is False
+    assert isinstance(relevant, box.RelevantSemanticBoxes)
+    assert relevant.level_idx == 0
+    assert relevant.instruction == "walk to the table"
+    assert relevant.reference_path == [[0.0, 0.0, 0.0]]
+    assert relevant.start_direction_vector == (0.0, 1.0)
+    assert [obb.center for obb in relevant.level.objects[3]] == [(0.0, 0.0)]
+    assert relevant.level.objects[3][0].mentioned is True
+    assert [obb.center for obb in relevant.level.objects[1]] == [(0.0, 2.0)]
+    assert relevant.level.objects[1][0].mentioned is False
+    assert [region.min for region in relevant.level.regions[7]] == [(-2.0, -2.0)]
+    assert relevant.level.regions[7][0].mentioned is False
 
 
 def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
@@ -198,7 +197,6 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     )
     level.objects[3].append(
         box.OBB2D(
-            id="cached-table",
             center=(3.0, 4.0),
             half_extents=(1.0, 1.0),
         )
@@ -218,7 +216,7 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
 
     assert scene_boxes.levels[0].offset_x == 1.0
     assert scene_boxes.levels[0].offset_z == 2.0
-    assert scene_boxes.levels[0].objects[3][0].id == "cached-table"
+    assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
 
 
 def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
@@ -231,7 +229,6 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
     )
     level.objects[3].append(
         box.OBB2D(
-            id="json-table",
             center=(3.0, 4.0),
             half_extents=(1.0, 2.0),
             mentioned=True,
@@ -239,7 +236,6 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
     )
     level.regions[7].append(
         box.AABB2D(
-            id="json-bathroom",
             min=(2.0, 3.0),
             max=(8.0, 11.0),
             mentioned=False,
@@ -257,7 +253,6 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
 
 def test_obb_distance_uses_rotation():
     rotated = box.OBB2D(
-        id="rotated-table",
         center=(0.0, 0.0),
         half_extents=(2.0, 0.5),
         rotation=math.pi / 4.0,
@@ -287,7 +282,7 @@ def test_level_semantic_boxes_loads_legacy_axes_as_rotation():
     assert level.objects[0][0].rotation == pytest.approx(math.pi / 2.0)
 
 
-def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
+def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
     level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
@@ -297,27 +292,31 @@ def test_scene_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence():
     )
     level.objects[3].append(
         box.OBB2D(
-            id="mentioned-table",
             center=(0.0, 0.0),
             half_extents=(1.0, 1.0),
         )
     )
     level.objects[1].append(
         box.OBB2D(
-            id="unmentioned-chair",
             center=(1.0, 0.0),
             half_extents=(1.0, 1.0),
         )
     )
 
-    cognitive_map = box.SceneSemanticBoxes([level]).to_cognitive_map(
+    relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
         reference_path=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: ({3}, set()),
     )
+    cognitive_map = relevant.to_cognitive_map()
 
     row, col = (4, 4)
     assert cognitive_map.grid[3, row, col] == 1.0
     assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
     assert cognitive_map.positions[0] == (4.0, 4.0)
+
+
+def test_scene_semantic_boxes_has_no_direct_cognitive_map_shortcut():
+    assert not hasattr(box.SceneSemanticBoxes, "to_cognitive_map")
+    assert not hasattr(box.SceneSemanticBoxes, "first_encountered_level")

@@ -35,14 +35,13 @@ def generate_cognitive_map(annotation_file: str):
             continue
 
         positions = entry.positions()
-        scene_boxes = SceneSemanticBoxes.from_scene_id(scene_id)
-        selected_level, _ = scene_boxes.first_encountered_level(positions)
-
-        cognitive_map = scene_boxes.to_cognitive_map(
+        relevant_boxes = SceneSemanticBoxes.from_scene_id(scene_id).relevant_to(
             entry.instruction,
             positions,
-            start_direction_vector=entry.start_direction_vector,
+            entry.start_direction_vector,
         )
+        selected_level = relevant_boxes.level_idx
+        cognitive_map = relevant_boxes.to_cognitive_map()
         # Save the non-empty cognitive map as a NumPy array
         cognitive_map.save(save_path)
         print(
