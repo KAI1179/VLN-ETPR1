@@ -220,7 +220,7 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
 
 
-def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
+def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
     level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
@@ -242,14 +242,21 @@ def test_level_semantic_boxes_saves_and_loads_json(tmp_path):
             mentioned=False,
         )
     )
+    relevant = box.RelevantSemanticBoxes(
+        level_idx=1,
+        level=level,
+        instruction="walk to the table",
+        reference_path=[[0.0, 0.0, 0.0]],
+        start_direction_vector=(0.0, 1.0),
+    )
 
-    path = tmp_path / "level.json"
-    level.save(path)
-    loaded = box.LevelSemanticBoxes.load(path)
+    path = tmp_path / "relevant.json"
+    relevant.save_json(path)
+    loaded = box.RelevantSemanticBoxes.load_json(path)
 
-    assert isinstance(level, BaseModel)
+    assert isinstance(relevant, BaseModel)
     assert '"rotation"' in path.read_text(encoding="utf-8")
-    assert loaded == level
+    assert loaded == relevant
 
 
 def test_obb_distance_uses_rotation():

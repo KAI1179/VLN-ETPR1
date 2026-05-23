@@ -14,6 +14,7 @@ from . import (
     AABB2D,
     LevelSemanticBoxes,
     OBB2D,
+    RelevantSemanticBoxes,
     SceneSemanticBoxes,
 )
 
@@ -28,7 +29,7 @@ class BoundingBoxArgs(Tap):
     split: Optional[Literal["train", "val_seen", "val_unseen"]] = None
     """Dataset split to disambiguate duplicate episode ids."""
     output: Optional[Path] = None
-    """Optional JSON output path for the selected level."""
+    """Optional JSON output path for relevant episode boxes."""
 
     def configure(self) -> None:
         self.add_argument("scenes", nargs="*")
@@ -102,10 +103,10 @@ def _print_levels(levels: List[LevelSemanticBoxes]) -> None:
         _print_level(level_idx, level)
 
 
-def _export_level_json(level: LevelSemanticBoxes, output: Path) -> None:
+def _export_relevant_json(relevant: RelevantSemanticBoxes, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    level.save(output)
-    print(f"Wrote level JSON file to {output}")
+    relevant.save_json(output)
+    print(f"Wrote relevant boxes JSON file to {output}")
 
 
 def _print_scene_boxes(scene: str) -> None:
@@ -119,7 +120,7 @@ def _scene_boxes(scene: str) -> SceneSemanticBoxes:
 
 def _relevant_episode_boxes(
     args: BoundingBoxArgs,
-) -> tuple[VLNCEEpisodeEntry, int, LevelSemanticBoxes]:
+) -> tuple[VLNCEEpisodeEntry, RelevantSemanticBoxes]:
     assert args.dataset is not None
     assert args.episode_id is not None
 
@@ -130,17 +131,17 @@ def _relevant_episode_boxes(
         episode.reference_path,
         episode.start_direction_vector,
     )
-    return episode, relevant.level_idx, relevant.level
+    return episode, relevant
 
 
 def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
-    episode, level_idx, level = _relevant_episode_boxes(args)
+    episode, relevant = _relevant_episode_boxes(args)
     print(
         f"Relevant bounding boxes for {episode.dataset} episode "
         f"{episode.episode_id} ({episode.split})"
     )
     print(f"Scene {episode.scene_id}")
-    _print_level(level_idx, level)
+    _print_level(relevant.level_idx, relevant.level)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -151,9 +152,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.dataset is not None:
         if args.output is not None:
-            _, level_idx, level = _relevant_episode_boxes(args)
-            print(f"Level {level_idx} ({level.range_y})")
-            _export_level_json(level, args.output)
+            _, relevant = _relevant_episode_boxes(args)
+            print(f"Level {relevant.level_idx} ({relevant.level.range_y})")
+            _export_relevant_json(relevant, args.output)
         else:
             _print_relevant_episode_boxes(args)
         return

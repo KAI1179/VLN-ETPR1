@@ -48,11 +48,19 @@ Angles follow standard mathematical convention in visualization space, increasin
 
 # Saved JSON Data
 
-`.json` is used for first encountered level of semantic boxes.
+`.json` is used for relevant semantic boxes.
 
 ## JSON Overview
 
 Each json file contains:
+
+- `level_idx`: First reference-path level selected for the episode.
+- `level`: Relevant boxes on that selected level.
+- `instruction`: Episode instruction text.
+- `reference_path`: Episode reference-path waypoints.
+- `start_direction_vector`: Direction vector of the start position.
+
+The nested `level` object contains:
 
 - `objects`: 27 arrays of object boxes, indexed by mapped object category.
 - `regions`: 10 arrays of region AABBs, indexed by mapped region category.

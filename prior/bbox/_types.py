@@ -61,19 +61,37 @@ class LevelSemanticBoxes(BaseModel):
         z = col * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_z
         return (x, z)
 
+    def save(self, path: str | Path) -> None:
+        np.savez_compressed(path, payload=np.asarray(self.model_dump_json(indent=None)))
+
+    @staticmethod
+    def load(path: str | Path) -> "LevelSemanticBoxes":
+        data = np.load(path)
+        return LevelSemanticBoxes.model_validate_json(str(data["payload"]))
+
+
+class RelevantSemanticBoxes(BaseModel):
+    """Instruction/path-relevant semantic boxes for one selected scene level."""
+
+    level_idx: int
+    level: LevelSemanticBoxes
+    instruction: str
+    reference_path: List[List[float]]
+    start_direction_vector: DirectionVector
+
     def to_json(self, indent: int | None = 2) -> str:
         return self.model_dump_json(indent=indent)
 
     @staticmethod
-    def from_json(payload: str) -> "LevelSemanticBoxes":
-        return LevelSemanticBoxes.model_validate_json(payload)
+    def from_json(payload: str) -> "RelevantSemanticBoxes":
+        return RelevantSemanticBoxes.model_validate_json(payload)
 
     def save_json(self, path: str | Path) -> None:
         Path(path).write_text(self.to_json(), encoding="utf-8")
 
     @staticmethod
-    def load_json(path: str | Path) -> "LevelSemanticBoxes":
-        return LevelSemanticBoxes.from_json(Path(path).read_text(encoding="utf-8"))
+    def load_json(path: str | Path) -> "RelevantSemanticBoxes":
+        return RelevantSemanticBoxes.from_json(Path(path).read_text(encoding="utf-8"))
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -84,24 +102,13 @@ class LevelSemanticBoxes(BaseModel):
         np.savez_compressed(path, payload=np.asarray(self.to_json(indent=None)))
 
     @staticmethod
-    def load(path: str | Path) -> "LevelSemanticBoxes":
+    def load(path: str | Path) -> "RelevantSemanticBoxes":
         path = Path(path)
         if path.suffix == ".json":
-            return LevelSemanticBoxes.load_json(path)
+            return RelevantSemanticBoxes.load_json(path)
 
         data = np.load(path)
-        return LevelSemanticBoxes.from_json(str(data["payload"]))
-
-
-@dataclass
-class RelevantSemanticBoxes:
-    """Instruction/path-relevant semantic boxes for one selected scene level."""
-
-    level_idx: int
-    level: LevelSemanticBoxes
-    instruction: str
-    reference_path: List[List[float]]
-    start_direction_vector: DirectionVector
+        return RelevantSemanticBoxes.from_json(str(data["payload"]))
 
     def to_cognitive_map(self):
         """Convert relevant semantic boxes into one CognitiveGridMap."""

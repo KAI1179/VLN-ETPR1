@@ -128,7 +128,7 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     assert "center=(9.0, 9.0)" not in output
 
 
-def test_episode_mode_exports_first_encountered_level_as_single_json_file(
+def test_episode_mode_exports_relevant_boxes_as_single_json_file(
     monkeypatch, tmp_path, capsys
 ):
     lower_level = bbox.LevelSemanticBoxes(
@@ -189,8 +189,14 @@ def test_episode_mode_exports_first_encountered_level_as_single_json_file(
         ["--dataset", "r2r", "--episode-id", "123", "--output", str(output_path)]
     )
 
-    loaded = bbox.LevelSemanticBoxes.load(output_path)
-    assert loaded == relevant_levels[1]
+    loaded = bbox.RelevantSemanticBoxes.load_json(output_path)
+    assert loaded == bbox.RelevantSemanticBoxes(
+        level_idx=1,
+        level=relevant_levels[1],
+        instruction="Walk to the table.",
+        reference_path=[[0.0, 5.0, 0.0]],
+        start_direction_vector=(0.0, 1.0),
+    )
     output = capsys.readouterr().out
     assert "Level 1" in output
-    assert "Wrote level JSON file" in output
+    assert "Wrote relevant boxes JSON file" in output
