@@ -1,0 +1,133 @@
+"""Build and cache semantic boxes from Habitat semantic scenes."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Any, List, cast
+
+from habitat_sim.scene import (
+    Mp3dObjectCategory,
+    Mp3dRegionCategory,
+    SemanticLevel,
+    SemanticScene,
+)
+
+from prior import DATA_DIR, MP3D_DIR
+
+from ..constants import (
+    HABITAT_MP3D_ROTATION_VECTOR,
+    OBJECT_MAPPING,
+    REGION_MAPPING,
+)
+from ._geometry import _aabb_max, _aabb_min, _empty_level_boxes, _obb_rotation_2d, _xz
+from ._types import AABB2D, LevelSemanticBoxes, OBB2D, SceneSemanticBoxes
+
+SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
+"""On-disk cache root for per-scene semantic boxes."""
+
+
+def _load_scene_semantic_boxes_from_cache(scene_id: str) -> SceneSemanticBoxes | None:
+    cache_dir = SEMANTIC_BOX_DIR / scene_id
+    levels: List[LevelSemanticBoxes] = []
+    level_idx = 0
+    while (cache_dir / f"{level_idx}.npz").exists():
+        levels.append(LevelSemanticBoxes.load(cache_dir / f"{level_idx}.npz"))
+        level_idx += 1
+    if not levels:
+        return None
+    return SceneSemanticBoxes(levels)
+
+
+@lru_cache(maxsize=100)
+def _scene_semantic_boxes_from_scene_id(scene_id: str) -> SceneSemanticBoxes:
+    """Load cached scene semantic boxes or build/cache them from MP3D."""
+    cached = _load_scene_semantic_boxes_from_cache(scene_id)
+    if cached is not None:
+        return cached
+
+    scene_path = str(MP3D_DIR / scene_id / f"{scene_id}.house")
+    semantic_scene = SemanticScene()
+    SemanticScene.load_mp3d_house(
+        scene_path, semantic_scene, cast(Any, HABITAT_MP3D_ROTATION_VECTOR)
+    )
+    scene_boxes = _construct_scene_semantic_boxes_from_scene(semantic_scene)
+
+    cache_dir = SEMANTIC_BOX_DIR / scene_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for level_idx, level in enumerate(scene_boxes.levels):
+        level.save(cache_dir / f"{level_idx}.npz")
+
+    return scene_boxes
+
+
+def _construct_scene_semantic_boxes_from_scene(
+    semantic_scene: SemanticScene,
+) -> SceneSemanticBoxes:
+    """Construct level-wise 2D semantic boxes from a loaded semantic scene."""
+    if not semantic_scene.levels:
+        return SceneSemanticBoxes([])
+
+    def _level_floor_y(level) -> float:
+        if level.regions:
+            return min(_aabb_min(region.aabb).y for region in level.regions)
+        return float(_aabb_min(level.aabb).y)
+
+    level_pairs = sorted(
+        ((float(_level_floor_y(lvl)), lvl) for lvl in semantic_scene.levels),
+        key=lambda pair: pair[0],
+    )
+
+    floor_ys = [fy for fy, _ in level_pairs]
+    level_boxes: List[LevelSemanticBoxes] = []
+
+    for i, (_, semantic_level) in enumerate(level_pairs):
+        boxes = _construct_level_semantic_boxes_from_level(semantic_level)
+        boxes.range_y = [
+            None if i == 0 else floor_ys[i],
+            floor_ys[i + 1] if i + 1 < len(floor_ys) else None,
+        ]
+        level_boxes.append(boxes)
+
+    return SceneSemanticBoxes(level_boxes)
+
+
+def _construct_level_semantic_boxes_from_level(
+    semantic_level: SemanticLevel,
+) -> LevelSemanticBoxes:
+    """Construct 2D semantic boxes from one semantic level."""
+    boxes = _empty_level_boxes()
+    level_aabb_min = _aabb_min(semantic_level.aabb)
+    boxes.offset_x = float(level_aabb_min.x)
+    boxes.offset_z = float(level_aabb_min.z)
+
+    for region in semantic_level.regions:
+        assert isinstance(region.category, Mp3dRegionCategory), (
+            "Region category is not Mp3dRegionCategory"
+        )
+        mapped_region = REGION_MAPPING[region.category.index()]
+        aabb_min = _aabb_min(region.aabb)
+        aabb_max = _aabb_max(region.aabb)
+        boxes.regions[mapped_region].append(
+            AABB2D(min=_xz(aabb_min), max=_xz(aabb_max))
+        )
+
+        # semantic_level.objects is always empty for MP3D .house scenes; region
+        # objects are populated and match the grid-map construction path.
+        for obj in region.objects:
+            assert isinstance(obj.category, Mp3dObjectCategory), (
+                "Object category is not Mp3dObjectCategory"
+            )
+            mapped_object = OBJECT_MAPPING[obj.category.index()]
+            obb = obj.obb
+            boxes.objects[mapped_object].append(
+                OBB2D(
+                    center=_xz(obb.center),
+                    half_extents=(
+                        float(obb.half_extents[0]),
+                        float(obb.half_extents[2]),
+                    ),
+                    rotation=_obb_rotation_2d(obb),
+                )
+            )
+
+    return boxes

@@ -8,6 +8,7 @@ from magnum import Matrix4, Vector3
 from pydantic import BaseModel
 
 from prior import bbox as box
+from prior.bbox import _construct as box_construct
 
 
 def test_semantic_box_models_do_not_expose_source_ids():
@@ -66,8 +67,8 @@ class FakeScene:
 def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(box, "Mp3dObjectCategory", FakeCategory)
-    monkeypatch.setattr(box, "Mp3dRegionCategory", FakeCategory)
+    monkeypatch.setattr(box_construct, "Mp3dObjectCategory", FakeCategory)
+    monkeypatch.setattr(box_construct, "Mp3dRegionCategory", FakeCategory)
 
     obj = FakeObject(
         id="0_0_0",
@@ -107,8 +108,8 @@ def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
 def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(box, "Mp3dObjectCategory", FakeCategory)
-    monkeypatch.setattr(box, "Mp3dRegionCategory", FakeCategory)
+    monkeypatch.setattr(box_construct, "Mp3dObjectCategory", FakeCategory)
+    monkeypatch.setattr(box_construct, "Mp3dRegionCategory", FakeCategory)
 
     upper_region = FakeRegion(
         id="upper",
@@ -209,8 +210,8 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
         raise AssertionError("scene should not load when cache exists")
 
     box._scene_semantic_boxes_from_scene_id.cache_clear()
-    monkeypatch.setattr(box, "SEMANTIC_BOX_DIR", tmp_path)
-    monkeypatch.setattr(box.SemanticScene, "load_mp3d_house", fail_load)
+    monkeypatch.setattr(box_construct, "SEMANTIC_BOX_DIR", tmp_path)
+    monkeypatch.setattr(box_construct.SemanticScene, "load_mp3d_house", fail_load)
 
     scene_boxes = box.SceneSemanticBoxes.from_scene_id(scene_id)
 
