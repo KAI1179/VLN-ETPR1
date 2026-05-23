@@ -39,3 +39,4 @@
         - Remove the path to generate `GroundTruthGridMap` / `[GroundTruthGridMap]` directly
     - Shortcuts can be kept, like `SceneSemanticBoxes.to_cognitive_map`
     - Reason: By adding a separate type and utilizing type checking, we can reduce bugs.
+- [ ] `VLNCEEpisodeEntry.role` seems stale. Consider removing it and relevant attrs / functions, then fix callers.
