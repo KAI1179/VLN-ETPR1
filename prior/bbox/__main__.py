@@ -138,7 +138,7 @@ def _print_relevant_episode_boxes(args: BoundingBoxArgs) -> None:
     episode, relevant = _relevant_episode_boxes(args)
     print(
         f"Relevant bounding boxes for {episode.dataset} episode "
-        f"{episode.episode_id} ({episode.split})"
+        f"{episode.episode_id} ({episode.split}, scene {episode.scene_id})"
     )
     print(f"Scene {episode.scene_id}")
     _print_level(relevant.level_idx, relevant.level)
@@ -152,8 +152,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.dataset is not None:
         if args.output is not None:
-            _, relevant = _relevant_episode_boxes(args)
-            print(f"Level {relevant.level_idx} ({relevant.level.range_y})")
+            entry, relevant = _relevant_episode_boxes(args)
+            print(
+                f"Level {relevant.level_idx} ({relevant.level.range_y}, scene {entry.scene_id})"
+            )
             _export_relevant_json(relevant, args.output)
         else:
             _print_relevant_episode_boxes(args)
