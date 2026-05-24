@@ -1,10 +1,9 @@
 """Statistics."""
 
-from collections.abc import Mapping
 from sys import argv
 
 from dataclasses import dataclass, field
-from typing import Iterator, Tuple
+from typing import Iterator, Tuple, Dict
 from collections import defaultdict
 
 from prior.bbox import (
@@ -38,7 +37,7 @@ class DatasetStats:
     """Distribution of un-mentioned relevant regions. (cnt -> freq)"""
 
 
-def _show_dist(dist: Mapping[int, int], indent=4):
+def _show_dist(dist: Dict[int, int], indent=4):
     for k, v in sorted(dist.items()):
         print(f"{' ' * indent}{k}: {v}")
 
