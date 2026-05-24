@@ -35,7 +35,7 @@ class DatasetStats:
 
 
 def _show_dist(dist: Dict[int, int], indent=4):
-    for k, v in dist.items():
+    for k, v in sorted(dist.items()):
         print(f"{' ' * indent}{k}: {v}")
 
 
