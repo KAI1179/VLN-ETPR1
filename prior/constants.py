@@ -304,9 +304,6 @@ COLS = int(DEPTH / CELL_SIZE)
 MAX_DISTANCE_CELLS = 5
 """Maximum distance (in cells) to consider as related to the position/path."""
 
-GAUSSIAN_SIGMA = 1
-"""Sigma parameter for gaussian_filter."""
-
 REFERENCE_PATH_LENGTH = 5
 """Number of reference path waypoints exposed to model metadata."""
 
