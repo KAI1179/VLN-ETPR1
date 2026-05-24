@@ -1,7 +1,10 @@
 """Statistics."""
 
+from collections.abc import Mapping
+from sys import argv
+
 from dataclasses import dataclass, field
-from typing import Iterator, Dict, Tuple
+from typing import Iterator, Tuple
 from collections import defaultdict
 
 from prior.bbox import (
@@ -9,6 +12,7 @@ from prior.bbox import (
     ObjectOBB2Ds,
     RegionAABB2Ds,
 )
+from prior.constants import MAX_DISTANCE_CELLS, CELL_SIZE
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
 
 
@@ -34,7 +38,7 @@ class DatasetStats:
     """Distribution of un-mentioned relevant regions. (cnt -> freq)"""
 
 
-def _show_dist(dist: Dict[int, int], indent=4):
+def _show_dist(dist: Mapping[int, int], indent=4):
     for k, v in sorted(dist.items()):
         print(f"{' ' * indent}{k}: {v}")
 
@@ -47,7 +51,7 @@ def _show_stats(stats: DatasetStats):
     _show_dist(stats.objects_unmentioned)
     print("  Regions mentioned dist:")
     _show_dist(stats.regions_mentioned)
-    print("  Regions mentioned dist:")
+    print("  Regions unmentioned dist:")
     _show_dist(stats.regions_unmentioned)
 
 
@@ -64,12 +68,15 @@ def _count_boxes(boxes: "ObjectOBB2Ds | RegionAABB2Ds") -> Tuple[int, int]:
     return mentioned, unmentioned
 
 
-def get_stats(dataset: Iterator[VLNCEEpisodeEntry]) -> DatasetStats:
+def get_stats(dataset: Iterator[VLNCEEpisodeEntry], radius: int) -> DatasetStats:
     stats = DatasetStats()
     for entry in dataset:
         scene_boxes = SceneSemanticBoxes.from_scene_id(entry.scene_id)
         relevant_boxes = scene_boxes.relevant_to(
-            entry.instruction, entry.reference_path, entry.start_direction_vector
+            entry.instruction,
+            entry.reference_path,
+            entry.start_direction_vector,
+            radius * CELL_SIZE,
         )
         objects_mentioned, objects_unmentioned = _count_boxes(
             relevant_boxes.level.objects
@@ -88,8 +95,16 @@ def get_stats(dataset: Iterator[VLNCEEpisodeEntry]) -> DatasetStats:
 
 
 def main():
+    if len(argv) >= 2:
+        radius = int(argv[1])
+    else:
+        radius = MAX_DISTANCE_CELLS
+    print(f"Radius: {radius} cell(s)")
+
     for dataset in ("R2R", "RxR"):
-        stats = get_stats(VLNCEEpisodeEntry.iter_from(dataset, splits=DEFAULT_SPLITS))
+        stats = get_stats(
+            VLNCEEpisodeEntry.iter_from(dataset, splits=DEFAULT_SPLITS), radius
+        )
         print(f"=== {dataset} Stats ===")
         _show_stats(stats)
 

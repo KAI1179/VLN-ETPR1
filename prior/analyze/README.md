@@ -1,10 +1,12 @@
 # Analyze
 
-- `prior.analyze.bbox_stat`: Relevant bounding box statistics for R2R & RxR dataset.
+- `prior.analyze.bbox_stat`: Relevant bounding box statistics for R2R & RxR dataset. Accepts optional radius position param (in unit of cells).
 
 ## Results
 
 ### `bbox_stat`
+
+#### Radius = 5
 
 ```shell
 $ python -m prior.analyze.bbox_stat
@@ -394,7 +396,7 @@ $ python -m prior.analyze.bbox_stat
     11: 25
     12: 4
     13: 4
-  Regions mentioned dist:
+  Regions unmentioned dist:
     0: 385
     1: 1061
     2: 1785
