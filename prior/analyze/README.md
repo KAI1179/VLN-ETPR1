@@ -1,6 +1,7 @@
 # Analyze
 
 - `prior.analyze.bbox_stat`: Relevant bounding box statistics for R2R & RxR dataset. Accepts optional radius position param (in unit of cells).
+- `prior.analyze.vis_json`: Try to visualize JSON (exported or flattened).
 
 ## Results
 
