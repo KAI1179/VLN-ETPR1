@@ -16,15 +16,14 @@ from .common import (
     calculate_vp_rel_pos_fts,
     softmax,
 )
-from prior.etp_r1 import AnnotationEntry
-from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    build_cognitive_map_for_annotation,
-    cognitive_map_to_tensors,
-)
+from prior import DATA_DIR
+from prior.grid_map import CognitiveGridMap
+from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_to_tensors
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
+PRETRAIN_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
 
 
 class ReverieTextPathData(object):
@@ -104,10 +103,10 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
-        cognitive_map = build_cognitive_map_for_annotation(
-            AnnotationEntry.from_dict(item),
-            self.connectivity_dir,
-        )
+        map_path = PRETRAIN_COGNITIVE_MAP_DIR / item["scan"] / f"{item['instr_id']}.npz"
+        if not map_path.is_file():
+            raise FileNotFoundError(f"Missing pretrain cognitive map: {map_path}")
+        cognitive_map = CognitiveGridMap.load(map_path)
         tensors = cognitive_map_to_tensors(cognitive_map)
         return {
             "cognitive_maps": tensors["grid"],
@@ -125,7 +124,8 @@ class ReverieTextPathData(object):
                 view_fts = f[key][...].astype(np.float32)
 
             obj_attrs = {}
-            obj_fts = np.zeros((0, self.obj_feat_size+self.obj_prob_size), dtype=np.float32)
+            obj_feature_size = (self.obj_feat_size or 0) + (self.obj_prob_size or 0)
+            obj_fts = np.zeros((0, obj_feature_size), dtype=np.float32)
             if self.obj_ft_file is not None:
                 if self.obj_feat_size is None or self.obj_prob_size is None:
                     raise ValueError(
@@ -403,7 +403,6 @@ class ReverieTextPathData(object):
         )
 
     def get_gmap_inputs(self, scan, path, cur_heading, cur_elevation):
-        scan_graph = self.graphs[scan]
         cur_vp = path[-1]
 
         visited_vpids, unvisited_vpids = {}, {}
@@ -581,6 +580,7 @@ class R2RTextPathData(ReverieTextPathData):
     ):
         item = self.data[idx]
         scan = item["scan"]
+        start_vp = item["path"][0]
         start_heading = item["heading"]
         gt_path = item["path"]
 
@@ -618,8 +618,15 @@ class R2RTextPathData(ReverieTextPathData):
         )
 
         # local: the first token is [stop]
-        vp_pos_fts = self.get_vp_pos_fts(scan, start_vp, end_vp,
-            traj_cand_vpids[-1], cur_heading, cur_elevation, len(traj_nav_types[-1]))
+        vp_pos_fts = self.get_vp_pos_fts(
+            scan,
+            start_vp,
+            end_vp,
+            traj_cand_vpids[-1],
+            cur_heading,
+            cur_elevation,
+            len(traj_nav_types[-1]),
+        )
 
         outs = {
             "instr_id": item["instr_id"],
@@ -640,6 +647,7 @@ class R2RTextPathData(ReverieTextPathData):
             "gmap_visited_masks": gmap_visited_masks,
             "gmap_pos_fts": gmap_pos_fts,
             "gmap_pair_dists": gmap_pair_dists,
+            "vp_pos_fts": vp_pos_fts,
         }
 
         if return_act_label:

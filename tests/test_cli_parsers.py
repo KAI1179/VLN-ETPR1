@@ -1,6 +1,9 @@
 from functools import partial
+import importlib
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -180,3 +183,69 @@ def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
     assert loader.multiprocessing_context.get_start_method() == "spawn"
     assert isinstance(loader.collate_fn, partial)
     assert loader.collate_fn.func is train_map_predictor.collate_predictor_batch
+
+
+def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+
+    map_path = tmp_path / "scene" / "42_0.npz"
+    map_path.parent.mkdir()
+    map_path.touch()
+    captured = {}
+
+    class FakeCognitiveGridMap:
+        @staticmethod
+        def load(path):
+            captured["path"] = path
+            return "loaded-map"
+
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    monkeypatch.setattr(pretrain_dataset, "CognitiveGridMap", FakeCognitiveGridMap)
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "cognitive_map_to_tensors",
+        lambda cognitive_map: {
+            "grid": cognitive_map,
+            "reference_paths": "reference_paths",
+            "start_direction_vector": "direction",
+            "start_position": "position",
+        },
+    )
+
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+    outputs = nav_db._load_pretrain_cognitive_map(
+        {
+            "instr_id": "42_0",
+            "scan": "scene",
+        }
+    )
+
+    assert captured["path"] == map_path
+    assert outputs == {
+        "cognitive_maps": "loaded-map",
+        "reference_paths": "reference_paths",
+        "start_direction_vectors": "direction",
+        "start_positions": "position",
+    }
+
+
+def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+
+    with pytest.raises(FileNotFoundError, match="Missing pretrain cognitive map"):
+        nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
