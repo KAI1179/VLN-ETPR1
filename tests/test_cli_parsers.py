@@ -180,3 +180,96 @@ def test_train_map_predictor_uses_spawn_context_for_workers(monkeypatch):
     assert loader.multiprocessing_context.get_start_method() == "spawn"
     assert isinstance(loader.collate_fn, partial)
     assert loader.collate_fn.func is train_map_predictor.collate_predictor_batch
+
+
+def test_pretrain_loader_uses_spawn_context_for_workers(monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    from data.loader import build_dataloader
+
+    class TinyDataset:
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, index):
+            return index
+
+    opts = type(
+        "Opts",
+        (),
+        {
+            "train_batch_size": 1,
+            "val_batch_size": 1,
+            "local_rank": -1,
+            "n_workers": 2,
+            "pin_mem": False,
+        },
+    )()
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+
+    loader, _ = build_dataloader(
+        task="mlm",
+        dataset=TinyDataset(),
+        collate_fn=lambda batch: batch,
+        is_train=True,
+        opts=opts,
+    )
+
+    assert loader.num_workers == 2
+    assert loader.multiprocessing_context.get_start_method() == "spawn"
+
+
+def test_pretrain_prior_map_uses_cached_categories(monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    from data import dataset as pretrain_dataset
+
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+    nav_db.connectivity_dir = "connectivity"
+    nav_db._prior_category_by_instr_id = {"42_0": ({3}, {7})}
+    captured = {}
+
+    def fake_build(annotation, connectivity_dir=None, category_extractor=None):
+        captured["connectivity_dir"] = connectivity_dir
+        captured["categories"] = category_extractor("do not decode in worker")
+        return object()
+
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "build_cognitive_map_for_annotation",
+        fake_build,
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "cognitive_map_to_tensors",
+        lambda cognitive_map: {
+            "grid": "grid",
+            "reference_paths": "reference_paths",
+            "start_direction_vector": "direction",
+            "start_position": "position",
+        },
+    )
+
+    outputs = nav_db._load_pretrain_cognitive_map(
+        {
+            "instr_id": "42_0",
+            "scan": "scene",
+            "path": ["a"],
+            "heading": 0.0,
+            "instr_encoding": [2],
+            "task_type_encoding": 1,
+        }
+    )
+
+    assert captured == {
+        "connectivity_dir": "connectivity",
+        "categories": ({3}, {7}),
+    }
+    assert outputs["cognitive_maps"] == "grid"
+    assert outputs["direction_vectors"] == "reference_paths"

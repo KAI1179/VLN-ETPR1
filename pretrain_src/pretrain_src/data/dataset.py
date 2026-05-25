@@ -6,7 +6,7 @@ import jsonlines
 import numpy as np
 import h5py
 import math
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple, Set
 
 from .common import load_nav_graphs, get_angle_fts, get_view_rel_angles, calculate_vp_rel_pos_fts, softmax
 from prior.etp_r1 import AnnotationEntry
@@ -74,19 +74,38 @@ class ReverieTextPathData(object):
             sel_idxs = np.random.permutation(len(self.data))[:val_sample_num]
             self.data = [self.data[sidx] for sidx in sel_idxs]
 
+        self._prior_category_by_instr_id: Dict[str, Tuple[Set[int], Set[int]]] = {}
+        if self.use_prior_gt:
+            self._cache_prior_categories()
+
 
     def __len__(self):
         return len(self.data)
 
+    def _cache_prior_categories(self) -> None:
+        from prior.grid_map._cognitive import extract_categories
+
+        for item in self.data:
+            annotation = AnnotationEntry.from_dict(item)
+            self._prior_category_by_instr_id[annotation.instr_id] = extract_categories(
+                annotation.instruction
+            )
+
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
+        annotation = AnnotationEntry.from_dict(item)
+        categories = self._prior_category_by_instr_id.get(annotation.instr_id)
+        if categories is None:
+            raise KeyError(f"Missing cached prior categories for {annotation.instr_id}")
+
         cognitive_map = build_cognitive_map_for_annotation(
-            AnnotationEntry.from_dict(item),
+            annotation,
             self.connectivity_dir,
+            category_extractor=lambda instruction: categories,
         )
         tensors = cognitive_map_to_tensors(cognitive_map)
         return {
             "cognitive_maps": tensors["grid"],
-            "direction_vectors": tensors["direction_vectors"],
+            "direction_vectors": tensors["reference_paths"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
         }
@@ -101,8 +120,11 @@ class ReverieTextPathData(object):
                 view_fts = f[key][...].astype(np.float32)
 
             obj_attrs = {}
-            obj_fts = np.zeros((0, self.obj_feat_size+self.obj_prob_size), dtype=np.float32)
+            obj_feature_size = (self.obj_feat_size or 0) + (self.obj_prob_size or 0)
+            obj_fts = np.zeros((0, obj_feature_size), dtype=np.float32)
             if self.obj_ft_file is not None:
+                if self.obj_feat_size is None or self.obj_prob_size is None:
+                    raise ValueError("obj feature sizes are required when obj_ft_file is set")
                 with h5py.File(self.obj_ft_file, 'r') as f:
                     if key in f:
                         obj_fts = f[key][...].astype(np.float32)
@@ -125,7 +147,8 @@ class ReverieTextPathData(object):
             obj_label = -100 # ignore
         return obj_label
 
-    def get_act_labels(self, end_vp, item, gmap_vpids, gmap_visited_masks, traj_cand_vpids):
+    def get_act_labels(self, end_vp, *args):
+        item, gmap_vpids, gmap_visited_masks, traj_cand_vpids = args
         scan = item['scan']
         pos_vps = item['pos_vps']
         if end_vp in pos_vps:
@@ -303,7 +326,6 @@ class ReverieTextPathData(object):
                last_vp_angles, last_vp_objids
 
     def get_gmap_inputs(self, scan, path, cur_heading, cur_elevation):
-        scan_graph = self.graphs[scan]
         cur_vp = path[-1]
 
         visited_vpids, unvisited_vpids = {}, {}
@@ -404,7 +426,8 @@ class R2RTextPathData(ReverieTextPathData):
                 self._feature_store_depth[key] = dep_fts
         return view_fts, dep_fts
 
-    def get_act_labels(self, end_vp, end_idx, item, gmap_vpids, traj_cand_vpids):
+    def get_act_labels(self, end_vp, *args):
+        end_idx, item, gmap_vpids, traj_cand_vpids = args
         if end_vp == item['path'][-1]:
             global_act_label = local_act_label = 0
         else:
@@ -423,11 +446,11 @@ class R2RTextPathData(ReverieTextPathData):
         return global_act_label, local_act_label
 
     def get_input(
-        self, idx, end_vp_type, return_img_probs=False, return_act_label=False, end_vp=None
+        self, idx, end_vp_type, return_img_probs=False, return_act_label=False,
+        return_obj_label=False, end_vp=None
     ):
         item = self.data[idx]
         scan = item['scan']
-        start_vp = item['path'][0]
         start_heading = item['heading']
         gt_path = item['path']
 
@@ -456,10 +479,6 @@ class R2RTextPathData(ReverieTextPathData):
 
         gmap_vpids, gmap_step_ids, gmap_visited_masks, gmap_pos_fts, gmap_pair_dists = \
             self.get_gmap_inputs(scan, gt_path, cur_heading, cur_elevation)
-
-        # local: the first token is [stop]
-        vp_pos_fts = self.get_vp_pos_fts(scan, start_vp, end_vp,
-            traj_cand_vpids[-1], cur_heading, cur_elevation, len(traj_nav_types[-1]))
 
         outs = {
             'instr_id': item['instr_id'],
