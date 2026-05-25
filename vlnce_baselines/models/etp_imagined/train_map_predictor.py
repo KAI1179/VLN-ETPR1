@@ -105,6 +105,7 @@ class CognitiveMapPredictorDataset(Dataset):
             example.instruction_text,
             example.reference_path,
             start_rotation_to_direction_vector(example.start_rotation),
+            rotation_augmentation=random.randrange(4),
         )
         tensors = cognitive_map_to_tensors(cognitive_map)
         grid = tensors["grid"].float()

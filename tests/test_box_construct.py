@@ -252,6 +252,53 @@ def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
     assert loaded == relevant
 
 
+def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+    level.objects[3].append(
+        box.OBB2D(
+            center=(2.0, 3.0),
+            half_extents=(0.5, 1.0),
+            rotation=0.25,
+            mentioned=True,
+        )
+    )
+    level.regions[7].append(
+        box.AABB2D(
+            min=(1.0, 2.0),
+            max=(4.0, 5.0),
+            mentioned=True,
+        )
+    )
+    relevant = box.RelevantSemanticBoxes(
+        level_idx=0,
+        level=level,
+        instruction="walk to the table",
+        reference_path=[(1.0, 1.0), (2.0, 3.0)],
+        start_direction_vector=(0.0, 1.0),
+    )
+
+    rotated = relevant.rotate_by_right_angle(1)
+
+    assert rotated.level.objects[3][0] == box.OBB2D(
+        center=(46.5, 2.0),
+        half_extents=(0.5, 1.0),
+        rotation=0.25 + math.pi / 2.0,
+        mentioned=True,
+    )
+    assert rotated.level.regions[7][0] == box.AABB2D(
+        min=(44.5, 1.0),
+        max=(47.5, 4.0),
+        mentioned=True,
+    )
+    assert rotated.reference_path == [(48.5, 1.0), (46.5, 2.0)]
+    assert rotated.start_direction_vector == (-1.0, 0.0)
+    assert rotated.level.world_to_grid(48.5, 1.0) == (97.0, 2.0)
+
+
 def test_obb_distance_uses_rotation():
     rotated = box.OBB2D(
         center=(0.0, 0.0),

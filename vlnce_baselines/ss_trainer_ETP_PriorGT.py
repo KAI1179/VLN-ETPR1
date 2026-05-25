@@ -1107,9 +1107,14 @@ class RLTrainer(BaseVLNCETrainer):
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
 
-    def _build_cognitive_maps(self):
+    def _build_cognitive_maps(self, random_rotation_augmentation=False):
         return [
-            cognitive_map_to_tensors(build_cognitive_map_for_episode(ep))
+            cognitive_map_to_tensors(
+                build_cognitive_map_for_episode(
+                    ep,
+                    random_rotation_augmentation=random_rotation_augmentation,
+                )
+            )
             for ep in self.envs.current_episodes()
         ]
 
@@ -1199,7 +1204,9 @@ class RLTrainer(BaseVLNCETrainer):
         # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
         if self._should_load_cognitive_maps(mode, map_cfg):
-            cognitive_maps = self._build_cognitive_maps()
+            cognitive_maps = self._build_cognitive_maps(
+                random_rotation_augmentation=(mode == "train")
+            )
         else:
             cognitive_maps = None
 

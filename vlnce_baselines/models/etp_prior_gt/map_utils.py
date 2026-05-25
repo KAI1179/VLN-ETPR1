@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import os
+import random
 from typing import List
 
 import torch
@@ -68,12 +71,15 @@ def build_cognitive_map(
     instruction: str,
     reference_path: List[List[float]],
     start_direction_vector,
+    rotation_augmentation: int | None = None,
 ) -> CognitiveGridMap:
     relevant_boxes = SceneSemanticBoxes.from_scene_id(_scene_key(scene_id)).relevant_to(
         instruction,
         reference_path,
         start_direction_vector=start_direction_vector,
     )
+    if rotation_augmentation is not None:
+        relevant_boxes = relevant_boxes.rotate_by_right_angle(rotation_augmentation)
     return relevant_boxes.to_cognitive_map()
 
 
@@ -105,12 +111,18 @@ def start_metadata_for_episode(episode):
     )
 
 
-def build_cognitive_map_for_episode(episode) -> CognitiveGridMap:
+def build_cognitive_map_for_episode(
+    episode,
+    random_rotation_augmentation: bool = False,
+) -> CognitiveGridMap:
     return build_cognitive_map(
         episode.scene_id,
         _instruction_text(episode),
         episode.reference_path,
         start_rotation_to_direction_vector(episode.start_rotation),
+        rotation_augmentation=(
+            random.randrange(4) if random_rotation_augmentation else None
+        ),
     )
 
 

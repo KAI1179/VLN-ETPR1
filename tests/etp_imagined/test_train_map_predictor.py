@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 
@@ -26,10 +27,10 @@ class _EpisodeEntry:
     scene_id: str = "TestScene"
     episode_id: int = 123
     instruction: str = "go to the chair"
-    start_position: list = None
-    start_rotation: list = None
-    instruction_tokens: list = None
-    reference_path: list = None
+    start_position: Optional[list] = None
+    start_rotation: Optional[list] = None
+    instruction_tokens: Optional[list] = None
+    reference_path: Optional[list] = None
 
     def __post_init__(self):
         if self.start_position is None:
@@ -59,7 +60,11 @@ def _patch_cognitive_map_generation(monkeypatch) -> None:
     monkeypatch.setattr(
         train_map_predictor,
         "build_cognitive_map",
-        lambda scene_id, instruction, reference_path, start_direction_vector: object(),
+        lambda scene_id,
+        instruction,
+        reference_path,
+        start_direction_vector,
+        rotation_augmentation=None: object(),
     )
     monkeypatch.setattr(
         train_map_predictor,
@@ -108,6 +113,43 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
     assert batch["reference_paths"].shape == (1, REFERENCE_PATH_LENGTH, 2)
     assert batch["start_direction_vectors"].tolist() == [[0.0, 1.0]]
     assert batch["start_positions"].tolist() == [[10.0, 20.0]]
+
+
+def test_build_cognitive_map_accepts_right_angle_augmentation(monkeypatch):
+    import vlnce_baselines.models.etp_prior_gt.map_utils as map_utils
+
+    class _RelevantBoxes:
+        def __init__(self):
+            self.rotation = None
+
+        def rotate_by_right_angle(self, rotation):
+            self.rotation = rotation
+            return self
+
+        def to_cognitive_map(self):
+            return self.rotation
+
+    relevant = _RelevantBoxes()
+
+    class _SceneBoxes:
+        def relevant_to(self, *args, **kwargs):
+            return relevant
+
+    monkeypatch.setattr(
+        map_utils.SceneSemanticBoxes,
+        "from_scene_id",
+        lambda scene_id: _SceneBoxes(),
+    )
+
+    cognitive_map = map_utils.build_cognitive_map(
+        "scene.glb",
+        "go to the chair",
+        [[1.0, 0.0, 2.0]],
+        (0.0, 1.0),
+        rotation_augmentation=3,
+    )
+
+    assert cognitive_map == 3
 
 
 def test_save_checkpoint_writes_policy_compatible_keys(tmp_path):

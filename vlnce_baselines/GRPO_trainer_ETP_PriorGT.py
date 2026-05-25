@@ -77,9 +77,15 @@ def select_replay_map_inputs(step_map_tokens, step_map_token_masks, active_indic
     return step_map_tokens[active_indices], step_map_token_masks[active_indices]
 
 
-def _build_cognitive_maps_for_episodes(episodes):
+def _build_cognitive_maps_for_episodes(episodes, random_rotation_augmentation=False):
     return [
-        cognitive_map_to_tensors(build_cognitive_map_for_episode(ep)) for ep in episodes
+        cognitive_map_to_tensors(
+            build_cognitive_map_for_episode(
+                ep,
+                random_rotation_augmentation=random_rotation_augmentation,
+            )
+        )
+        for ep in episodes
     ]
 
 
@@ -1168,7 +1174,10 @@ class RLTrainer(BaseVLNCETrainer):
         return map_cfg.enabled
 
     def _build_cognitive_maps(self):
-        return _build_cognitive_maps_for_episodes(self.envs.current_episodes())
+        return _build_cognitive_maps_for_episodes(
+            self.envs.current_episodes(),
+            random_rotation_augmentation=True,
+        )
 
     def _prepare_map_inputs(
         self,

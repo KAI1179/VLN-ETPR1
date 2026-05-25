@@ -10,12 +10,15 @@ import numpy as np
 from pydantic import BaseModel
 
 from prior.directions import DirectionVector
-from ..constants import CELL_SIZE, MAX_DISTANCE_CELLS
+from ..constants import CELL_SIZE, COLS, MAX_DISTANCE_CELLS, ROWS
 
 Point2D = Tuple[float, float]
 Axis2D = Tuple[float, float]
 IRRELEVANT_MULTIPLIER = 0.6
 """Confidence multiplier for trajectory-near boxes not mentioned in the instruction."""
+
+MAX_GRID_X = (ROWS - 1) * CELL_SIZE
+MAX_GRID_Z = (COLS - 1) * CELL_SIZE
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,87 @@ class RelevantSemanticBoxes(BaseModel):
     instruction: str
     reference_path: List[Point2D]
     start_direction_vector: DirectionVector
+
+    @staticmethod
+    def _rotate_point_by_right_angle(point: Point2D, turns: int) -> Point2D:
+        x, z = point
+        turns %= 4
+        if turns == 0:
+            return (float(x), float(z))
+        if turns == 1:
+            return (float(MAX_GRID_Z - z), float(x))
+        if turns == 2:
+            return (float(MAX_GRID_X - x), float(MAX_GRID_Z - z))
+        return (float(z), float(MAX_GRID_X - x))
+
+    @staticmethod
+    def _rotate_direction_by_right_angle(
+        vector: DirectionVector, turns: int
+    ) -> DirectionVector:
+        x, z = vector
+        turns %= 4
+        if turns == 0:
+            return (float(x), float(z))
+        if turns == 1:
+            return (float(-z), float(x))
+        if turns == 2:
+            return (float(-x), float(-z))
+        return (float(z), float(-x))
+
+    @staticmethod
+    def _rotate_aabb_by_right_angle(box: AABB2D, turns: int) -> AABB2D:
+        corners = [
+            (box.min[0], box.min[1]),
+            (box.min[0], box.max[1]),
+            (box.max[0], box.min[1]),
+            (box.max[0], box.max[1]),
+        ]
+        rotated_corners = [
+            RelevantSemanticBoxes._rotate_point_by_right_angle(corner, turns)
+            for corner in corners
+        ]
+        xs = [corner[0] for corner in rotated_corners]
+        zs = [corner[1] for corner in rotated_corners]
+        return AABB2D(
+            min=(min(xs), min(zs)),
+            max=(max(xs), max(zs)),
+            mentioned=box.mentioned,
+        )
+
+    def rotate_by_right_angle(self, turns: int) -> "RelevantSemanticBoxes":
+        turns %= 4
+        rotated_objects = [
+            [
+                OBB2D(
+                    center=self._rotate_point_by_right_angle(box.center, turns),
+                    half_extents=box.half_extents,
+                    rotation=box.rotation + turns * np.pi / 2.0,
+                    mentioned=box.mentioned,
+                )
+                for box in boxes
+            ]
+            for boxes in self.level.objects
+        ]
+        rotated_regions = [
+            [self._rotate_aabb_by_right_angle(box, turns) for box in boxes]
+            for boxes in self.level.regions
+        ]
+        return RelevantSemanticBoxes(
+            level_idx=self.level_idx,
+            level=LevelSemanticBoxes(
+                objects=rotated_objects,
+                regions=rotated_regions,
+                range_y=list(self.level.range_y),
+            ),
+            instruction=self.instruction,
+            reference_path=[
+                self._rotate_point_by_right_angle(point, turns)
+                for point in self.reference_path
+            ],
+            start_direction_vector=self._rotate_direction_by_right_angle(
+                self.start_direction_vector, turns
+            ),
+        )
 
     def to_json(self, indent: int | None = 2) -> str:
         return self.model_dump_json(indent=indent)

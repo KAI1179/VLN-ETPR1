@@ -15,11 +15,14 @@ class RLTrainer(PriorGTRLTrainer):
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return mode == "train"
 
-    def _start_metadata_inputs(self):
-        metadata = [
-            start_metadata_for_episode(ep)
-            for ep in self.envs.current_episodes()[: self.envs.num_envs]
-        ]
+    def _start_metadata_inputs(self, cognitive_maps=None):
+        if cognitive_maps is None:
+            metadata = [
+                start_metadata_for_episode(ep)
+                for ep in self.envs.current_episodes()[: self.envs.num_envs]
+            ]
+        else:
+            metadata = cognitive_maps[: self.envs.num_envs]
         start_direction_vectors = torch.stack(
             [item["start_direction_vector"] for item in metadata]
         ).to(self.device)
@@ -38,7 +41,9 @@ class RLTrainer(PriorGTRLTrainer):
         mode,
         stepk,
     ):
-        start_direction_vectors, start_positions = self._start_metadata_inputs()
+        start_direction_vectors, start_positions = self._start_metadata_inputs(
+            cognitive_maps
+        )
         map_logits, pred_reference_paths = self.policy.net(
             mode="predict_cognitive_map",
             txt_embeds=txt_embeds,
