@@ -301,7 +301,7 @@ COLS = int(DEPTH / CELL_SIZE)
 
 # COGNITIVE MAP PARAMETERS
 
-MAX_DISTANCE_CELLS = 5
+MAX_DISTANCE_CELLS = 3
 """Maximum distance (in cells) to consider as related to the position/path."""
 
 REFERENCE_PATH_LENGTH = 5

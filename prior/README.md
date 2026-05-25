@@ -30,7 +30,7 @@ Each npz file contains:
 - `reference_path`: World-coordinate waypoints along the selected level, as `[x, z]`.
 - `start_direction_vector`: Direction vector of the start position.
 
-Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 5 cells around each waypoint.
+Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 3 cells around each waypoint.
 
 ## Grid
 
@@ -70,7 +70,7 @@ The nested `level` object contains:
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 
-Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 2.5m around each waypoint.
+Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 1.5m around each waypoint.
 
 ## Objects
 
@@ -95,7 +95,7 @@ In visualizations, the upper-right corner is the origin (x=0, z=0). Z coord incr
 
 Angles follow standard mathematical convention in visualization space, increasing as you go counter-clockwise. Examples:
 
-| Angle | Direction Vector | Visualized Direction | Grid direction |
+| Angle | Direction Vector | Visualized Direction | Coordinate direction |
 | - | - | - | - |
 | 0° | (cos=1, sin=0) | Right | -Z |
 | 90° | (cos=0, sin=1) | Up | -X |
