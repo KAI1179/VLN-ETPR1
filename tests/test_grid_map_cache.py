@@ -33,7 +33,7 @@ def test_cognitive_grid_map_load_matches_base_classmethod_contract(tmp_path: Pat
     grid_map.offset_x = 1.0
     grid_map.offset_z = 2.0
     grid_map.range_y = [None, 3.0]
-    grid_map.reference_path = [[1.0, 0.0, 2.0], [2.0, 0.0, 3.0]]
+    grid_map.reference_path = [(1.0, 2.0), (2.0, 3.0)]
     grid_map.start_direction_vector = (0.0, 1.0)
     path = tmp_path / "cognitive.npz"
     grid_map.save(path)

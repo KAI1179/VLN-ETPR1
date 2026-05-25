@@ -567,7 +567,7 @@ def _prediction_to_cognitive_grid_map(
     cognitive_map.reference_path = []
     for row, col in reference_paths.detach().cpu().tolist():
         x, z = cognitive_map.grid_to_world(float(row), float(col))
-        cognitive_map.reference_path.append([float(x), 0.0, float(z)])
+        cognitive_map.reference_path.append((float(x), float(z)))
     cognitive_map.start_direction_vector = (
         float(start_direction_vector[0].detach().cpu()),
         float(start_direction_vector[1].detach().cpu()),
@@ -577,7 +577,7 @@ def _prediction_to_cognitive_grid_map(
             float(start_position[0].detach().cpu()),
             float(start_position[1].detach().cpu()),
         )
-        cognitive_map.reference_path.append([float(start_x), 0.0, float(start_z)])
+        cognitive_map.reference_path.append((float(start_x), float(start_z)))
     return cognitive_map
 
 

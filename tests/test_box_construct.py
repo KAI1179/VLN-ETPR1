@@ -175,7 +175,7 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     assert isinstance(relevant, box.RelevantSemanticBoxes)
     assert relevant.level_idx == 0
     assert relevant.instruction == "walk to the table"
-    assert relevant.reference_path == [[0.0, 0.0, 0.0]]
+    assert relevant.reference_path == [(0.0, 0.0)]
     assert relevant.start_direction_vector == (0.0, 1.0)
     assert [obb.center for obb in relevant.level.objects[3]] == [(0.0, 0.0)]
     assert relevant.level.objects[3][0].mentioned is True
@@ -246,7 +246,7 @@ def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
         level_idx=1,
         level=level,
         instruction="walk to the table",
-        reference_path=[[0.0, 0.0, 0.0]],
+        reference_path=[(0.0, 0.0)],
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -302,7 +302,7 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
     row, col = (4, 4)
     assert cognitive_map.grid[3, row, col] == 1.0
     assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
-    assert cognitive_map.reference_path == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+    assert cognitive_map.reference_path == [(0.0, 0.0), (1.0, 0.0)]
 
 
 def test_scene_semantic_boxes_has_no_direct_cognitive_map_shortcut():

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from os import PathLike
-from typing import List, Optional, Type, TypeVar, cast
+from typing import List, Optional, Tuple, Type, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,6 +28,7 @@ from prior.directions import DirectionVector
 
 
 GridMapT = TypeVar("GridMapT", bound="BaseGridMap")
+Point2D = Tuple[float, float]
 
 
 class BaseGridMap:
@@ -317,9 +318,9 @@ class CognitiveGridMap(BaseGridMap):
     probability distributions over categories.
     """
 
-    reference_path: List[List[float]]
+    reference_path: List[Point2D]
     """
-    World-coordinate reference path for the episode, as ``[x, y, z]`` waypoints.
+    World-coordinate reference path for the selected level, as ``[x, z]`` waypoints.
     Only waypoints that fall inside this cognitive map's level are stored.
     """
 
@@ -365,7 +366,7 @@ class CognitiveGridMap(BaseGridMap):
             auto_crop=auto_crop,
             crop_margin=crop_margin,
             positions=[
-                self.world_to_grid(float(position[0]), float(position[2]))
+                self.world_to_grid(float(position[0]), float(position[1]))
                 for position in self.reference_path
             ],
             start_direction_vector=self.start_direction_vector,
@@ -399,7 +400,8 @@ class CognitiveGridMap(BaseGridMap):
         grid_map.offset_z = float(data["offset_z"])
         grid_map.range_y = list(data["range_y"].tolist())
         grid_map.reference_path = [
-            [float(value) for value in position] for position in data["reference_path"]
+            (float(position[0]), float(position[1]))
+            for position in data["reference_path"]
         ]
         grid_map.start_direction_vector = tuple(data["start_direction_vector"])
         return grid_map

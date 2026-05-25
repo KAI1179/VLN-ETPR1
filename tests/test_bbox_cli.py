@@ -111,7 +111,7 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
                 level_idx=1,
                 level=relevant_boxes[1],
                 instruction=instruction,
-                reference_path=reference_path,
+                reference_path=[(p[0], p[2]) for p in reference_path],
                 start_direction_vector=start_direction_vector,
             )
         ),
@@ -178,7 +178,7 @@ def test_episode_mode_exports_relevant_boxes_as_single_json_file(
                 level_idx=1,
                 level=relevant_levels[1],
                 instruction=instruction,
-                reference_path=reference_path,
+                reference_path=[(p[0], p[2]) for p in reference_path],
                 start_direction_vector=start_direction_vector,
             )
         ),
@@ -194,7 +194,7 @@ def test_episode_mode_exports_relevant_boxes_as_single_json_file(
         level_idx=1,
         level=relevant_levels[1],
         instruction="Walk to the table.",
-        reference_path=[[0.0, 5.0, 0.0]],
+        reference_path=[(0.0, 0.0)],
         start_direction_vector=(0.0, 1.0),
     )
     output = capsys.readouterr().out

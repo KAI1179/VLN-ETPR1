@@ -79,6 +79,6 @@ def _extract_relevant_semantic_boxes(
         level_idx=level_idx,
         level=relevant_level,
         instruction=instruction,
-        reference_path=reference_path,
+        reference_path=level_points,
         start_direction_vector=start_direction_vector,
     )

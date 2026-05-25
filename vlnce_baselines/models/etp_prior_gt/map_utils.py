@@ -37,7 +37,7 @@ def _reference_path_to_grid_tensor(cognitive_map: CognitiveGridMap) -> torch.Ten
     for idx, position in enumerate(
         cognitive_map.reference_path[:REFERENCE_PATH_LENGTH]
     ):
-        row, col = cognitive_map.world_to_grid(float(position[0]), float(position[2]))
+        row, col = cognitive_map.world_to_grid(float(position[0]), float(position[1]))
         reference_path[idx] = torch.tensor([row, col], dtype=torch.float32)
     return reference_path
 
@@ -45,7 +45,7 @@ def _reference_path_to_grid_tensor(cognitive_map: CognitiveGridMap) -> torch.Ten
 def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
     if not cognitive_map.reference_path:
         raise ValueError("CognitiveGridMap.reference_path is empty")
-    start_x, _, start_z = cognitive_map.reference_path[0]
+    start_x, start_z = cognitive_map.reference_path[0]
     return torch.tensor(
         cognitive_map.world_to_grid(float(start_x), float(start_z)),
         dtype=torch.float32,

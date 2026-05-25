@@ -76,7 +76,7 @@ class RelevantSemanticBoxes(BaseModel):
     level_idx: int
     level: LevelSemanticBoxes
     instruction: str
-    reference_path: List[List[float]]
+    reference_path: List[Point2D]
     start_direction_vector: DirectionVector
 
     def to_json(self, indent: int | None = 2) -> str:
@@ -114,7 +114,6 @@ class RelevantSemanticBoxes(BaseModel):
         """Convert relevant semantic boxes into one CognitiveGridMap."""
         from prior.grid_map import CognitiveGridMap
 
-        from ._geometry import _is_position_in_level
         from ._rasterize import _rasterize_level_semantic_boxes
 
         cognitive_map = CognitiveGridMap()
@@ -123,9 +122,7 @@ class RelevantSemanticBoxes(BaseModel):
         cognitive_map.range_y = list(self.level.range_y)
         cognitive_map.start_direction_vector = self.start_direction_vector
         cognitive_map.reference_path = [
-            [float(x), float(y), float(z)]
-            for x, y, z in self.reference_path
-            if _is_position_in_level([x, y, z], self.level.range_y)
+            (float(x), float(z)) for x, z in self.reference_path
         ]
 
         _rasterize_level_semantic_boxes(self.level, cognitive_map.grid)

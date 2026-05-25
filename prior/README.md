@@ -26,8 +26,8 @@ Each npz file contains:
 - `grid`: Grid data of dimension (OBJECT_CATEGORIES + REGION_CATEGORIES) x ROWS x COLS.
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
-- `range_y`: Y range of the floor. Not useful for our job.
-- `reference_path`: World-coordinate waypoints along the selected level, as `[x, y, z]`.
+- `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. Not useful for our job.
+- `reference_path`: World-coordinate waypoints along the selected level, as `[x, z]`.
 - `start_direction_vector`: Direction vector of the start position.
 
 Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 5 cells around each waypoint.
@@ -50,7 +50,7 @@ Angles follow standard mathematical convention in visualization space, increasin
 
 # Saved JSON Data
 
-`.json` is used for relevant semantic boxes.
+`.json` is used for first encountered level of relevant semantic bounding boxes.
 
 ## JSON Overview
 
@@ -59,16 +59,18 @@ Each json file contains:
 - `level_idx`: First reference-path level selected for the episode.
 - `level`: Relevant boxes on that selected level.
 - `instruction`: Episode instruction text.
-- `reference_path`: Episode reference-path waypoints.
-- `start_direction_vector`: Direction vector of the start position.
+- `reference_path`: Selected-level episode waypoints, in the format of `[x, z]`.
+- `start_direction_vector`: Direction vector of the start position, in the format of (cos, sin).
 
 The nested `level` object contains:
 
 - `objects`: 27 arrays of object boxes, indexed by mapped object category.
 - `regions`: 10 arrays of region AABBs, indexed by mapped region category.
-- `range_y`: Y range of the floor. Not useful for our job.
+- `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. When element `null`, indicates no bound. Not useful for our job.
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
+
+Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 2.5m around each waypoint.
 
 ## Objects
 
@@ -86,6 +88,17 @@ The `regions` field is an array of length 10. `regions[i]` contains 2D axis-alig
 - `min`: Minimum X/Z coordinate of the box.
 - `max`: Maximum X/Z coordinate of the box.
 - `mentioned`: Whether category $i$ is mentioned in the instruction.
+
+## Angles
+
+In visualizations, the upper-right corner is the origin (x=0, z=0). Z coord increases going left, and X coord increases going down.
+
+Angles follow standard mathematical convention in visualization space, increasing as you go counter-clockwise. Examples:
+
+| Angle | Direction Vector | Visualized Direction | Grid direction |
+| - | - | - | - |
+| 0° | (cos=1, sin=0) | Right | -Z |
+| 90° | (cos=0, sin=1) | Up | -X |
 
 # Categories
 
