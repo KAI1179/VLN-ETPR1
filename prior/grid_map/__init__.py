@@ -320,7 +320,7 @@ class CognitiveGridMap(BaseGridMap):
 
     reference_path: List[Point2D]
     """
-    World-coordinate reference path for the selected level, as ``[x, z]`` waypoints.
+    Level-local reference path for the selected level, as ``[x, z]`` waypoints.
     Only waypoints that fall inside this cognitive map's level are stored.
     """
 

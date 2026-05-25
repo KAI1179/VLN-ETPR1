@@ -31,8 +31,8 @@ def _rasterize_aabb(
     grid: np.ndarray,
     confidence: float,
 ) -> None:
-    row_range = _grid_center_index_range(box.min[0], box.max[0], level.offset_x, ROWS)
-    col_range = _grid_center_index_range(box.min[1], box.max[1], level.offset_z, COLS)
+    row_range = _grid_center_index_range(box.min[0], box.max[0], 0.0, ROWS)
+    col_range = _grid_center_index_range(box.min[1], box.max[1], 0.0, COLS)
     if row_range is None or col_range is None:
         return
     row_start, row_end = row_range
@@ -75,8 +75,8 @@ def _rasterize_obb(
     confidence: float,
 ) -> None:
     min_x, max_x, min_z, max_z = _obb_bounds(box)
-    row_range = _grid_center_index_range(min_x, max_x, level.offset_x, ROWS)
-    col_range = _grid_center_index_range(min_z, max_z, level.offset_z, COLS)
+    row_range = _grid_center_index_range(min_x, max_x, 0.0, ROWS)
+    col_range = _grid_center_index_range(min_z, max_z, 0.0, COLS)
     if row_range is None or col_range is None:
         return
 

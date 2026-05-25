@@ -86,7 +86,7 @@ def start_metadata_to_tensors(scene_id: str, start_position, start_rotation):
         start_rotation_to_direction_vector(start_rotation),
     )
     start_level = relevant_boxes.level
-    start_x, _, start_z = start_position
+    start_x, start_z = relevant_boxes.reference_path[0]
     start_grid_position = start_level.world_to_grid(float(start_x), float(start_z))
     return {
         "start_direction_vector": torch.tensor(

@@ -93,16 +93,15 @@ def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
 
     assert len(levels) == 1
     assert levels[0].range_y == [None, None]
-    assert levels[0].offset_x == 2.0
-    assert levels[0].offset_z == 3.0
+    assert scene_boxes.level_origins == [(2.0, 3.0)]
     assert levels[0].objects[3] == [
         box.OBB2D(
-            center=(4.0, 6.0),
+            center=(2.0, 3.0),
             half_extents=(1.0, 2.0),
             rotation=0.0,
         )
     ]
-    assert levels[0].regions[7] == [box.AABB2D(min=(2.0, 3.0), max=(8.0, 11.0))]
+    assert levels[0].regions[7] == [box.AABB2D(min=(0.0, 0.0), max=(6.0, 8.0))]
 
 
 def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
@@ -132,9 +131,9 @@ def test_scene_semantic_boxes_from_scene_sorts_levels_by_floor_y(
 
     levels = box.SceneSemanticBoxes.from_scene(scene).levels
 
-    assert levels[0].regions[6][0].min == (-1.0, -1.0)
+    assert levels[0].regions[6][0].min == (0.0, 0.0)
     assert levels[0].range_y == [None, 3.0]
-    assert levels[1].regions[6][0].min == (9.0, 9.0)
+    assert levels[1].regions[6][0].min == (0.0, 0.0)
     assert levels[1].range_y == [3.0, None]
 
 
@@ -143,8 +142,6 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[None, None],
-        offset_x=-5.0,
-        offset_z=-5.0,
     )
     level.objects[3] = [
         box.OBB2D(
@@ -193,8 +190,6 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[None, None],
-        offset_x=1.0,
-        offset_z=2.0,
     )
     level.objects[3].append(
         box.OBB2D(
@@ -205,6 +200,7 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     cache_dir = tmp_path / scene_id
     cache_dir.mkdir()
     level.save(cache_dir / "0.npz")
+    (cache_dir / "origins.json").write_text("[[1.0, 2.0]]", encoding="utf-8")
 
     def fail_load(*args, **kwargs):
         raise AssertionError("scene should not load when cache exists")
@@ -215,8 +211,7 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
 
     scene_boxes = box.SceneSemanticBoxes.from_scene_id(scene_id)
 
-    assert scene_boxes.levels[0].offset_x == 1.0
-    assert scene_boxes.levels[0].offset_z == 2.0
+    assert scene_boxes.level_origins == [(1.0, 2.0)]
     assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
 
 
@@ -225,8 +220,6 @@ def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[-1.0, 2.0],
-        offset_x=1.0,
-        offset_z=2.0,
     )
     level.objects[3].append(
         box.OBB2D(
@@ -275,8 +268,6 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[None, None],
-        offset_x=-2.0,
-        offset_z=-2.0,
     )
     level.objects[3].append(
         box.OBB2D(
@@ -299,7 +290,7 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
     )
     cognitive_map = relevant.to_cognitive_map()
 
-    row, col = (4, 4)
+    row, col = (0, 0)
     assert cognitive_map.grid[3, row, col] == 1.0
     assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
     assert cognitive_map.reference_path == [(0.0, 0.0), (1.0, 0.0)]

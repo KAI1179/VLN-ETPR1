@@ -27,7 +27,7 @@ Each npz file contains:
 - `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. Not useful for our job.
-- `reference_path`: World-coordinate waypoints along the selected level, as `[x, z]`.
+- `reference_path`: Level-local waypoints along the selected level, as `[x, z]`.
 - `start_direction_vector`: Direction vector of the start position.
 
 Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 3 cells around each waypoint.
@@ -67,10 +67,8 @@ The nested `level` object contains:
 - `objects`: 27 arrays of object boxes, indexed by mapped object category.
 - `regions`: 10 arrays of region AABBs, indexed by mapped region category.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. When element `null`, indicates no bound. Not useful for our job.
-- `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
-- `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 
-Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 1.5m around each waypoint.
+Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 1.5m around each waypoint. Every position in each bounding box should be positive.
 
 ## Objects
 
@@ -91,14 +89,12 @@ The `regions` field is an array of length 10. `regions[i]` contains 2D axis-alig
 
 ## Angles
 
-In visualizations, the upper-right corner is the origin (x=0, z=0). Z coord increases going left, and X coord increases going down.
+Angles follow the reverse of standard mathematical convention, but still increasing as you go counter-clockwise. Examples:
 
-Angles follow standard mathematical convention in visualization space, increasing as you go counter-clockwise. Examples:
-
-| Angle | Direction Vector | Visualized Direction | Coordinate direction |
-| - | - | - | - |
-| 0° | (cos=1, sin=0) | Right | -Z |
-| 90° | (cos=0, sin=1) | Up | -X |
+| Angle | Direction Vector | Coordinate direction |
+| - | - | - |
+| 0° | (cos=1, sin=0) | -Z |
+| 90° | (cos=0, sin=1) | -X |
 
 # Categories
 

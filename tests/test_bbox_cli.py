@@ -135,8 +135,6 @@ def test_episode_mode_exports_relevant_boxes_as_single_json_file(
         objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
         range_y=[None, 3.0],
-        offset_x=1.0,
-        offset_z=2.0,
     )
     upper_level = bbox.LevelSemanticBoxes(
         objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],

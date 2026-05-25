@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Set, Tuple
 
@@ -50,15 +50,13 @@ class LevelSemanticBoxes(BaseModel):
     objects: ObjectOBB2Ds
     regions: RegionAABB2Ds
     range_y: List[Optional[float]]
-    offset_x: float = 0.0
-    offset_z: float = 0.0
 
     def world_to_grid(self, x: float, z: float) -> tuple[float, float]:
-        return ((x - self.offset_x) / CELL_SIZE, (z - self.offset_z) / CELL_SIZE)
+        return (x / CELL_SIZE, z / CELL_SIZE)
 
     def grid_to_world(self, row: int, col: int) -> tuple[float, float]:
-        x = row * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_x
-        z = col * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_z
+        x = row * CELL_SIZE + CELL_SIZE / 2.0
+        z = col * CELL_SIZE + CELL_SIZE / 2.0
         return (x, z)
 
     def save(self, path: str | Path) -> None:
@@ -117,8 +115,6 @@ class RelevantSemanticBoxes(BaseModel):
         from ._rasterize import _rasterize_level_semantic_boxes
 
         cognitive_map = CognitiveGridMap()
-        cognitive_map.offset_x = self.level.offset_x
-        cognitive_map.offset_z = self.level.offset_z
         cognitive_map.range_y = list(self.level.range_y)
         cognitive_map.start_direction_vector = self.start_direction_vector
         cognitive_map.reference_path = [
@@ -134,6 +130,13 @@ class SceneSemanticBoxes:
     """All level-wise semantic boxes for one MP3D scene."""
 
     levels: List[LevelSemanticBoxes]
+    level_origins: List[Point2D] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.level_origins:
+            self.level_origins = [(0.0, 0.0) for _ in self.levels]
+        if len(self.level_origins) != len(self.levels):
+            raise ValueError("level_origins length must match levels length")
 
     @staticmethod
     def from_scene_id(scene_id: str) -> "SceneSemanticBoxes":

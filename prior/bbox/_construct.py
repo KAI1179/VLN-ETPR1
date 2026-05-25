@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 from typing import Any, List, cast
 
 from habitat_sim.scene import (
@@ -20,7 +21,7 @@ from ..constants import (
     REGION_MAPPING,
 )
 from ._geometry import _aabb_max, _aabb_min, _empty_level_boxes, _obb_rotation_2d, _xz
-from ._types import AABB2D, LevelSemanticBoxes, OBB2D, SceneSemanticBoxes
+from ._types import AABB2D, LevelSemanticBoxes, OBB2D, Point2D, SceneSemanticBoxes
 
 SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
 """On-disk cache root for per-scene semantic boxes."""
@@ -28,6 +29,10 @@ SEMANTIC_BOX_DIR = DATA_DIR / "semantic_boxes"
 
 def _load_scene_semantic_boxes_from_cache(scene_id: str) -> SceneSemanticBoxes | None:
     cache_dir = SEMANTIC_BOX_DIR / scene_id
+    origins_path = cache_dir / "origins.json"
+    if not origins_path.exists():
+        return None
+
     levels: List[LevelSemanticBoxes] = []
     level_idx = 0
     while (cache_dir / f"{level_idx}.npz").exists():
@@ -35,7 +40,12 @@ def _load_scene_semantic_boxes_from_cache(scene_id: str) -> SceneSemanticBoxes |
         level_idx += 1
     if not levels:
         return None
-    return SceneSemanticBoxes(levels)
+
+    level_origins = [
+        (float(origin[0]), float(origin[1]))
+        for origin in json.loads(origins_path.read_text(encoding="utf-8"))
+    ]
+    return SceneSemanticBoxes(levels, level_origins=level_origins)
 
 
 @lru_cache(maxsize=100)
@@ -56,6 +66,10 @@ def _scene_semantic_boxes_from_scene_id(scene_id: str) -> SceneSemanticBoxes:
     cache_dir.mkdir(parents=True, exist_ok=True)
     for level_idx, level in enumerate(scene_boxes.levels):
         level.save(cache_dir / f"{level_idx}.npz")
+    (cache_dir / "origins.json").write_text(
+        json.dumps(scene_boxes.level_origins),
+        encoding="utf-8",
+    )
 
     return scene_boxes
 
@@ -79,26 +93,32 @@ def _construct_scene_semantic_boxes_from_scene(
 
     floor_ys = [fy for fy, _ in level_pairs]
     level_boxes: List[LevelSemanticBoxes] = []
+    level_origins: List[Point2D] = []
 
     for i, (_, semantic_level) in enumerate(level_pairs):
-        boxes = _construct_level_semantic_boxes_from_level(semantic_level)
+        boxes, origin = _construct_level_semantic_boxes_from_level(semantic_level)
         boxes.range_y = [
             None if i == 0 else floor_ys[i],
             floor_ys[i + 1] if i + 1 < len(floor_ys) else None,
         ]
         level_boxes.append(boxes)
+        level_origins.append(origin)
 
-    return SceneSemanticBoxes(level_boxes)
+    return SceneSemanticBoxes(level_boxes, level_origins=level_origins)
+
+
+def _local_xz(point, origin: Point2D) -> Point2D:
+    x, z = _xz(point)
+    return (x - origin[0], z - origin[1])
 
 
 def _construct_level_semantic_boxes_from_level(
     semantic_level: SemanticLevel,
-) -> LevelSemanticBoxes:
+) -> tuple[LevelSemanticBoxes, Point2D]:
     """Construct 2D semantic boxes from one semantic level."""
     boxes = _empty_level_boxes()
     level_aabb_min = _aabb_min(semantic_level.aabb)
-    boxes.offset_x = float(level_aabb_min.x)
-    boxes.offset_z = float(level_aabb_min.z)
+    origin = _xz(level_aabb_min)
 
     for region in semantic_level.regions:
         assert isinstance(region.category, Mp3dRegionCategory), (
@@ -108,7 +128,7 @@ def _construct_level_semantic_boxes_from_level(
         aabb_min = _aabb_min(region.aabb)
         aabb_max = _aabb_max(region.aabb)
         boxes.regions[mapped_region].append(
-            AABB2D(min=_xz(aabb_min), max=_xz(aabb_max))
+            AABB2D(min=_local_xz(aabb_min, origin), max=_local_xz(aabb_max, origin))
         )
 
         # semantic_level.objects is always empty for MP3D .house scenes; region
@@ -121,7 +141,7 @@ def _construct_level_semantic_boxes_from_level(
             obb = obj.obb
             boxes.objects[mapped_object].append(
                 OBB2D(
-                    center=_xz(obb.center),
+                    center=_local_xz(obb.center, origin),
                     half_extents=(
                         float(obb.half_extents[0]),
                         float(obb.half_extents[2]),
@@ -130,4 +150,4 @@ def _construct_level_semantic_boxes_from_level(
                 )
             )
 
-    return boxes
+    return boxes, origin

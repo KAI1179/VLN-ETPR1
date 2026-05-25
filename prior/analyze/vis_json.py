@@ -24,8 +24,6 @@ def reconstruct(data: dict) -> RelevantSemanticBoxes:
             "objects": data["objects"],
             "regions": data["regions"],
             "range_y": data.get("range_y") or [None, None],
-            "offset_x": data.get("offset_x") or 0,
-            "offset_z": data.get("offset_z") or 0,
         },
         "instruction": "Move down the stairs and then turn left. Move forward and then immediately turn left into the living room. Continue forward and stop in front of the piano. ",
         "reference_path": data["reference_path"],
