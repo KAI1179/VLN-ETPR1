@@ -9,21 +9,15 @@ from typing import Any, Mapping
 
 from sentencepiece import SentencePieceProcessor
 
-from prior import DATA_DIR
 from prior.directions import DirectionVector, heading_to_direction_vector
 
 # Paths
 
 
-ETP_R1_DIR = DATA_DIR / "ETP-R1"
+ETP_R1_DIR = Path("pretrain_src/datasets/R2R")
 """ETP-R1 data directory."""
 
-SENTENCEPIECE_MODEL_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "bert_config"
-    / "xlm-roberta-base"
-    / "sentencepiece.bpe.model"
-)
+SENTENCEPIECE_MODEL_PATH = Path("bert_config/xlm-roberta-base/sentencepiece.bpe.model")
 """SentencePiece model used by ETP-R1 instruction encodings."""
 
 ANNOTATION_DIR = ETP_R1_DIR / "annotations" / "pretrain_R2R_RxR"
