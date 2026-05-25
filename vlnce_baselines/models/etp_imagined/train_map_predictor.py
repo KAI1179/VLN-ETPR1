@@ -80,7 +80,7 @@ def load_predictor_examples(
     return examples
 
 
-def _dataset_name_for_vlnce(dataset: str) -> str:
+def _dataset_name_for_vlnce(dataset: str) -> Literal["R2R", "RxR"]:
     dataset = dataset.lower()
     if dataset == "r2r":
         return "R2R"
@@ -98,8 +98,8 @@ class CognitiveMapPredictorDataset(Dataset):
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, idx: int) -> Dict:
-        example = self.examples[idx]
+    def __getitem__(self, index: int) -> Dict:
+        example = self.examples[index]
         cognitive_map = build_cognitive_map(
             example.scene_id,
             example.instruction_text,
