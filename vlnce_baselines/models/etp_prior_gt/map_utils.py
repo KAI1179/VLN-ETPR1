@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Callable, List, Optional, Set, Tuple
+from typing import List
 
 import torch
 from prior.constants import (
@@ -72,13 +72,11 @@ def build_cognitive_map(
     reference_path: List[List[float]],
     start_direction_vector,
     rotation_augmentation: int | None = None,
-    category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
 ) -> CognitiveGridMap:
     relevant_boxes = SceneSemanticBoxes.from_scene_id(_scene_key(scene_id)).relevant_to(
         instruction,
         reference_path,
         start_direction_vector=start_direction_vector,
-        category_extractor=category_extractor,
     )
     if rotation_augmentation is not None:
         relevant_boxes = relevant_boxes.rotate_by_right_angle(rotation_augmentation)
@@ -131,7 +129,6 @@ def build_cognitive_map_for_episode(
 def build_cognitive_map_for_annotation(
     annotation,
     connectivity_dir=None,
-    category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
 ) -> CognitiveGridMap:
     positions = (
         annotation.positions()
@@ -143,5 +140,4 @@ def build_cognitive_map_for_annotation(
         annotation.instruction,
         positions,
         annotation.start_direction_vector,
-        category_extractor=category_extractor,
     )

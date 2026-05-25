@@ -6,18 +6,14 @@ A prefetch loader to speedup data loading
 Modified from Nvidia Deep Learning Examples
 (https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch).
 """
-from typing import Dict, Iterator, List, Tuple, Union
+import random
+from typing import List, Dict, Tuple, Union, Iterator
 
 import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import bisect
-
-
-def _noop_epoch(epoch):
-    return None
-
 
 class MetaLoader:
     """wraps multiple data loaders"""
@@ -30,17 +26,18 @@ class MetaLoader:
         self.name2iter = {}
         self.name2pre_epoch = {}
         self.names: List[str] = []
-        for n, loader in loaders.items():
-            if isinstance(loader, tuple):
-                loader, _ratio, pre_epoch = loader
-            elif isinstance(loader, DataLoader):
-                pre_epoch = _noop_epoch
+        for n, l in loaders.items():
+            if isinstance(l, tuple):
+                l, r, p = l
+            elif isinstance(l, DataLoader):
+                r = 1
+                p = lambda e: None
             else:
                 raise ValueError()
             self.names.append(n)
-            self.name2loader[n] = loader
-            self.name2iter[n] = iter(loader)
-            self.name2pre_epoch[n] = pre_epoch
+            self.name2loader[n] = l
+            self.name2iter[n] = iter(l)
+            self.name2pre_epoch[n] = p
 
         self.accum_steps = accum_steps
         self.device = device
@@ -64,10 +61,8 @@ class MetaLoader:
                 task_id = torch.multinomial(sampling_ratios, 1)
                 if self.distributed:
                     dist.broadcast(task_id, 0)
-            if task_id is None:
-                raise RuntimeError("MetaLoader task sampling failed")
             self.step += 1
-            task = self.names[int(task_id.cpu().item())]
+            task = self.names[task_id.cpu().item()]
             iter_ = self.name2iter[task]
             try:
                 batch = next(iter_)
@@ -142,7 +137,7 @@ def build_dataloader(task, dataset, collate_fn, is_train: bool, opts):
             sampler = SequentialSampler(dataset)
 
         size = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        pre_epoch = _noop_epoch
+        pre_epoch = lambda e: None
 
         # DataParallel: scale the batch size by the number of GPUs
         if size > 1:
@@ -163,7 +158,6 @@ def build_dataloader(task, dataset, collate_fn, is_train: bool, opts):
         pin_memory=opts.pin_mem,
         collate_fn=collate_fn,
         drop_last=False,
-        multiprocessing_context="spawn" if opts.n_workers > 0 else None,
     )
 
     return loader, pre_epoch

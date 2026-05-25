@@ -7,7 +7,7 @@ import jsonlines
 import numpy as np
 import h5py
 import math
-from typing import Any, Dict, List, Tuple, Set
+from typing import Any, Dict, List
 
 from .common import (
     load_nav_graphs,
@@ -100,32 +100,13 @@ class ReverieTextPathData(object):
             sel_idxs = np.random.permutation(len(self.data))[:val_sample_num]
             self.data = [self.data[sidx] for sidx in sel_idxs]
 
-        self._prior_category_by_instr_id: Dict[str, Tuple[Set[int], Set[int]]] = {}
-        if self.use_prior_gt:
-            self._cache_prior_categories()
-
     def __len__(self):
         return len(self.data)
 
-    def _cache_prior_categories(self) -> None:
-        from prior.grid_map._cognitive import extract_categories
-
-        for item in self.data:
-            annotation = AnnotationEntry.from_dict(item)
-            self._prior_category_by_instr_id[annotation.instr_id] = extract_categories(
-                annotation.instruction
-            )
-
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
-        annotation = AnnotationEntry.from_dict(item)
-        categories = self._prior_category_by_instr_id.get(annotation.instr_id)
-        if categories is None:
-            raise KeyError(f"Missing cached prior categories for {annotation.instr_id}")
-
         cognitive_map = build_cognitive_map_for_annotation(
-            annotation,
+            AnnotationEntry.from_dict(item),
             self.connectivity_dir,
-            category_extractor=lambda instruction: categories,
         )
         tensors = cognitive_map_to_tensors(cognitive_map)
         return {
@@ -144,8 +125,7 @@ class ReverieTextPathData(object):
                 view_fts = f[key][...].astype(np.float32)
 
             obj_attrs = {}
-            obj_feature_size = (self.obj_feat_size or 0) + (self.obj_prob_size or 0)
-            obj_fts = np.zeros((0, obj_feature_size), dtype=np.float32)
+            obj_fts = np.zeros((0, self.obj_feat_size+self.obj_prob_size), dtype=np.float32)
             if self.obj_ft_file is not None:
                 if self.obj_feat_size is None or self.obj_prob_size is None:
                     raise ValueError(
@@ -423,6 +403,7 @@ class ReverieTextPathData(object):
         )
 
     def get_gmap_inputs(self, scan, path, cur_heading, cur_elevation):
+        scan_graph = self.graphs[scan]
         cur_vp = path[-1]
 
         visited_vpids, unvisited_vpids = {}, {}
@@ -635,6 +616,10 @@ class R2RTextPathData(ReverieTextPathData):
         gmap_vpids, gmap_step_ids, gmap_visited_masks, gmap_pos_fts, gmap_pair_dists = (
             self.get_gmap_inputs(scan, gt_path, cur_heading, cur_elevation)
         )
+
+        # local: the first token is [stop]
+        vp_pos_fts = self.get_vp_pos_fts(scan, start_vp, end_vp,
+            traj_cand_vpids[-1], cur_heading, cur_elevation, len(traj_nav_types[-1]))
 
         outs = {
             "instr_id": item["instr_id"],
