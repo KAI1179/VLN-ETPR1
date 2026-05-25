@@ -7,34 +7,48 @@ import torch.nn.functional as F
 
 from transformers import BertPreTrainedModel
 
-from .vilmodel import BertLayerNorm, BertOnlyMLMHead, GlocalTextPathCMT, gelu, BertOutAttention
+from .vilmodel import (
+    BertLayerNorm,
+    BertOnlyMLMHead,
+    GlocalTextPathCMT,
+    gelu,
+    BertOutAttention,
+)
 from .ops import pad_tensors_wgrad, gen_seq_masks, extend_neg_masks
 
+
 class RegionClassification(nn.Module):
-    " for MRC(-kl)"
+    "for MRC(-kl)"
+
     def __init__(self, config, hidden_size, label_dim):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(hidden_size, hidden_size),
-                                 nn.ReLU(),
-                                 BertLayerNorm(hidden_size, eps=config.layer_norm_eps),
-                                 nn.Linear(hidden_size, label_dim))
+        self.net = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            BertLayerNorm(hidden_size, eps=config.layer_norm_eps),
+            nn.Linear(hidden_size, label_dim),
+        )
 
     def forward(self, input_):
         output = self.net(input_)
         return output
+
 
 class ClsPrediction(nn.Module):
     def __init__(self, config, hidden_size, input_size=None):
         super().__init__()
         if input_size is None:
             input_size = hidden_size
-        self.net = nn.Sequential(nn.Linear(input_size, hidden_size),
-                                 nn.ReLU(),
-                                 BertLayerNorm(hidden_size, eps=config.layer_norm_eps),
-                                 nn.Linear(hidden_size, 1))
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            BertLayerNorm(hidden_size, eps=config.layer_norm_eps),
+            nn.Linear(hidden_size, 1),
+        )
 
     def forward(self, x):
         return self.net(x)
+
 
 class ResidualTransformBlock(nn.Module):
     def __init__(self, config, hidden_size, dropout_rate=0.1):
@@ -57,17 +71,21 @@ class ResidualTransformBlock(nn.Module):
         x = self.LayerNorm(x)
         return x
 
+
 class NextActionPrediction(nn.Module):
     def __init__(self, config, hidden_size, dropout_rate):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(hidden_size*2, hidden_size*2),
-                                 nn.ReLU(),
-                                 BertLayerNorm(hidden_size*2, eps=config.layer_norm_eps),
-                                 nn.Dropout(dropout_rate),
-                                 nn.Linear(hidden_size*2, 1))
+        self.net = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size * 2),
+            nn.ReLU(),
+            BertLayerNorm(hidden_size * 2, eps=config.layer_norm_eps),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size * 2, 1),
+        )
 
     def forward(self, x):
         return self.net(x)
+
 
 class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
     def __init__(self, config):
@@ -79,19 +97,34 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.use_prior_gt = getattr(config, "use_prior_gt", False)
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
 
-        if 'mlm' in config.pretrain_tasks:
+        if "mlm" in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
-        if 'sap' in config.pretrain_tasks:
+        if "sap" in config.pretrain_tasks:
             self.graph_query_text = BertOutAttention(config)
-            self.graph_attentioned_txt_embeds_transform = ResidualTransformBlock(self.config, self.config.hidden_size, self.config.hidden_dropout_prob)
-            self.global_sap_head = NextActionPrediction(self.config, self.config.hidden_size, self.config.pred_head_dropout_prob)
+            self.graph_attentioned_txt_embeds_transform = ResidualTransformBlock(
+                self.config, self.config.hidden_size, self.config.hidden_dropout_prob
+            )
+            self.global_sap_head = NextActionPrediction(
+                self.config, self.config.hidden_size, self.config.pred_head_dropout_prob
+            )
 
         try:
             import sys, os
-            if 'vlnce_baselines' not in sys.modules:
-                sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../..')))
-            from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
-            print("Successfully imported EmbeddingGridMapEncoder, initializing map encoder...")
+
+            if "vlnce_baselines" not in sys.modules:
+                sys.path.insert(
+                    0,
+                    os.path.abspath(
+                        os.path.join(os.path.dirname(__file__), "../../../..")
+                    ),
+                )
+            from vlnce_baselines.models.etp_prior_gt.map_encoder import (
+                EmbeddingGridMapEncoder,
+            )
+
+            print(
+                "Successfully imported EmbeddingGridMapEncoder, initializing map encoder..."
+            )
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=self.config.hidden_size
             )
@@ -99,13 +132,16 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
                     InstructionCognitiveMapPredictor,
                 )
+
                 self.map_predictor = InstructionCognitiveMapPredictor(
                     hidden_size=self.config.hidden_size,
                     num_heads=self.config.num_attention_heads,
                     num_layers=2,
                     dropout=0.0,
                 )
-                print("Successfully initialized InstructionCognitiveMapPredictor for imagined pretraining")
+                print(
+                    "Successfully initialized InstructionCognitiveMapPredictor for imagined pretraining"
+                )
         except ImportError:
             self.map_encoder = None
             self.map_predictor = None
@@ -121,7 +157,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
             raise FileNotFoundError(checkpoint_path)
-        if not getattr(self, "use_imagined", False) or getattr(self, "map_predictor", None) is None:
+        if (
+            not getattr(self, "use_imagined", False)
+            or getattr(self, "map_predictor", None) is None
+        ):
             raise ValueError("--map_predictor_checkpoint requires --use_imagined")
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -133,11 +172,11 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             for key, value in raw_state_dict.items():
                 normalized_key = key
                 if normalized_key.startswith("module."):
-                    normalized_key = normalized_key[len("module."):]
+                    normalized_key = normalized_key[len("module.") :]
                 if normalized_key.startswith("map_predictor."):
-                    normalized_key = normalized_key[len("map_predictor."):]
+                    normalized_key = normalized_key[len("map_predictor.") :]
                 elif normalized_key.startswith("predictor."):
-                    normalized_key = normalized_key[len("predictor."):]
+                    normalized_key = normalized_key[len("predictor.") :]
                 else:
                     continue
                 state_dict[normalized_key] = value
@@ -150,107 +189,183 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         )
 
     def tie_weights(self):
-        if 'mlm' in self.config.pretrain_tasks:
-            self._tie_or_clone_weights(self.mlm_head.predictions.decoder,
-                self.bert.embeddings.word_embeddings)
+        if "mlm" in self.config.pretrain_tasks:
+            self._tie_or_clone_weights(
+                self.mlm_head.predictions.decoder, self.bert.embeddings.word_embeddings
+            )
 
     def forward(self, batch, task, compute_loss=True):
         batch = defaultdict(lambda: None, batch)
 
-        map_tokens, map_token_masks, map_loss = self._prepare_map_inputs(batch, compute_loss)
+        map_tokens, map_token_masks, map_loss = self._prepare_map_inputs(
+            batch, compute_loss
+        )
 
-        if task.startswith('mlm'):
+        if task.startswith("mlm"):
             losses = self.forward_mlm(
-                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
-                batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'],
-                batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'],
-                batch['traj_vpids'], batch['traj_cand_vpids'],
-                batch['gmap_lens'], batch['gmap_step_ids'], batch['gmap_task_embeddings'], batch['gmap_pos_fts'],
-                batch['gmap_pair_dists'], batch['gmap_vpids'],
-                batch['txt_labels'], compute_loss,
-                map_tokens=map_tokens, map_token_masks=map_token_masks
+                batch["txt_ids"],
+                batch["txt_lens"],
+                batch["txt_task_encoding"],
+                batch["traj_view_img_fts"],
+                batch["traj_view_dep_fts"],
+                batch["traj_obj_img_fts"],
+                batch["traj_loc_fts"],
+                batch["traj_nav_types"],
+                batch["traj_step_lens"],
+                batch["traj_vp_view_lens"],
+                batch["traj_vp_obj_lens"],
+                batch["traj_vpids"],
+                batch["traj_cand_vpids"],
+                batch["gmap_lens"],
+                batch["gmap_step_ids"],
+                batch["gmap_task_embeddings"],
+                batch["gmap_pos_fts"],
+                batch["gmap_pair_dists"],
+                batch["gmap_vpids"],
+                batch["txt_labels"],
+                compute_loss,
+                map_tokens=map_tokens,
+                map_token_masks=map_token_masks,
             )
-            return losses + map_loss if compute_loss and map_loss is not None else losses
-        elif task.startswith('sap'):
+            return (
+                losses + map_loss if compute_loss and map_loss is not None else losses
+            )
+        elif task.startswith("sap"):
             losses = self.forward_sap(
-                batch['txt_ids'], batch['txt_lens'], batch['txt_task_encoding'], batch['traj_view_img_fts'], batch['traj_view_dep_fts'],
-                batch['traj_obj_img_fts'], batch['traj_loc_fts'], batch['traj_nav_types'],
-                batch['traj_step_lens'], batch['traj_vp_view_lens'], batch['traj_vp_obj_lens'],
-                batch['traj_vpids'], batch['traj_cand_vpids'],
-                batch['gmap_lens'], batch['gmap_step_ids'], batch['gmap_task_embeddings'], batch['gmap_pos_fts'],
-                batch['gmap_pair_dists'], batch['gmap_vpids'], batch['gmap_visited_masks'],
-                batch['global_act_labels'], batch['local_act_labels'], compute_loss,
-                map_tokens=map_tokens, map_token_masks=map_token_masks
+                batch["txt_ids"],
+                batch["txt_lens"],
+                batch["txt_task_encoding"],
+                batch["traj_view_img_fts"],
+                batch["traj_view_dep_fts"],
+                batch["traj_obj_img_fts"],
+                batch["traj_loc_fts"],
+                batch["traj_nav_types"],
+                batch["traj_step_lens"],
+                batch["traj_vp_view_lens"],
+                batch["traj_vp_obj_lens"],
+                batch["traj_vpids"],
+                batch["traj_cand_vpids"],
+                batch["gmap_lens"],
+                batch["gmap_step_ids"],
+                batch["gmap_task_embeddings"],
+                batch["gmap_pos_fts"],
+                batch["gmap_pair_dists"],
+                batch["gmap_vpids"],
+                batch["gmap_visited_masks"],
+                batch["global_act_labels"],
+                batch["local_act_labels"],
+                compute_loss,
+                map_tokens=map_tokens,
+                map_token_masks=map_token_masks,
             )
-            return losses + map_loss if compute_loss and map_loss is not None else losses
+            return (
+                losses + map_loss if compute_loss and map_loss is not None else losses
+            )
         else:
-            raise ValueError('invalid task')
+            raise ValueError("invalid task")
 
     def _prepare_map_inputs(self, batch, compute_loss=True):
         if (
-            'cognitive_maps' not in batch
-            or batch['cognitive_maps'] is None
-            or getattr(self, 'map_encoder', None) is None
+            "cognitive_maps" not in batch
+            or batch["cognitive_maps"] is None
+            or getattr(self, "map_encoder", None) is None
         ):
             return None, None, None
 
         if self.use_imagined:
-            txt_token_type_ids = torch.zeros_like(batch['txt_ids'])
+            txt_token_type_ids = torch.zeros_like(batch["txt_ids"])
             txt_embeds = self.bert.embeddings(
-                batch['txt_ids'],
-                batch['txt_task_encoding'],
+                batch["txt_ids"],
+                batch["txt_task_encoding"],
                 token_type_ids=txt_token_type_ids,
             )
-            txt_masks = gen_seq_masks(batch['txt_lens'])
+            txt_masks = gen_seq_masks(batch["txt_lens"])
             txt_embeds = self.bert.lang_encoder(txt_embeds, txt_masks)
             map_logits, pred_direction_vectors = self.map_predictor(
                 txt_embeds,
                 txt_masks,
-                start_direction_vectors=batch['start_direction_vectors'],
-                start_positions=batch['start_positions'],
+                start_direction_vectors=batch["start_direction_vectors"],
+                start_positions=batch["start_positions"],
             )
             map_tokens, map_token_masks = self.map_encoder(
                 torch.sigmoid(map_logits),
                 pred_direction_vectors,
-                batch['start_direction_vectors'],
-                batch['start_positions'],
+                batch["start_direction_vectors"],
+                batch["start_positions"],
             )
             map_loss = None
             if compute_loss:
                 map_loss = F.binary_cross_entropy_with_logits(
                     map_logits,
-                    batch['cognitive_maps'],
-                    reduction='mean',
+                    batch["cognitive_maps"],
+                    reduction="mean",
                 )
                 direction_loss = F.mse_loss(
                     pred_direction_vectors,
-                    batch['direction_vectors'],
+                    batch["reference_paths"],
                 )
                 map_loss = self.map_loss_weight * (map_loss + 0.1 * direction_loss)
             return map_tokens, map_token_masks, map_loss
 
         if self.use_prior_gt:
             map_tokens, map_token_masks = self.map_encoder(
-                batch['cognitive_maps'],
-                batch['direction_vectors'],
-                batch['start_direction_vectors'],
-                batch['start_positions'],
+                batch["cognitive_maps"],
+                batch["reference_paths"],
+                batch["start_direction_vectors"],
+                batch["start_positions"],
             )
             return map_tokens, map_token_masks, None
 
         return None, None, None
 
     def forward_mlm(
-        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
-        traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-        gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-        txt_labels, compute_loss, map_tokens=None, map_token_masks=None
+        self,
+        txt_ids,
+        txt_lens,
+        txt_task_encoding,
+        traj_view_img_fts,
+        traj_view_dep_fts,
+        traj_obj_img_fts,
+        traj_loc_fts,
+        traj_nav_types,
+        traj_step_lens,
+        traj_vp_view_lens,
+        traj_vp_obj_lens,
+        traj_vpids,
+        traj_cand_vpids,
+        gmap_lens,
+        gmap_step_ids,
+        gmap_task_embeddings,
+        gmap_pos_fts,
+        gmap_pair_dists,
+        gmap_vpids,
+        txt_labels,
+        compute_loss,
+        map_tokens=None,
+        map_token_masks=None,
     ):
         txt_embeds, _ = self.bert(
-            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
-            traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-            map_tokens=map_tokens, map_token_masks=map_token_masks
+            txt_ids,
+            txt_lens,
+            txt_task_encoding,
+            traj_view_img_fts,
+            traj_view_dep_fts,
+            traj_obj_img_fts,
+            traj_loc_fts,
+            traj_nav_types,
+            traj_step_lens,
+            traj_vp_view_lens,
+            traj_vp_obj_lens,
+            traj_vpids,
+            traj_cand_vpids,
+            gmap_lens,
+            gmap_step_ids,
+            gmap_task_embeddings,
+            gmap_pos_fts,
+            gmap_pair_dists,
+            gmap_vpids,
+            map_tokens=map_tokens,
+            map_token_masks=map_token_masks,
         )
 
         masked_output = self._compute_masked_hidden(txt_embeds, txt_labels != -1)
@@ -258,46 +373,92 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
 
         if compute_loss:
             mask_loss = F.cross_entropy(
-                prediction_scores, txt_labels[txt_labels != -1], reduction='none'
+                prediction_scores, txt_labels[txt_labels != -1], reduction="none"
             )
             return mask_loss
         else:
             return prediction_scores
 
     def _compute_masked_hidden(self, hidden, mask):
-        '''get only the masked region (don't compute unnecessary hiddens)'''
+        """get only the masked region (don't compute unnecessary hiddens)"""
         mask = mask.unsqueeze(-1).expand_as(hidden)
         hidden_masked = hidden[mask].contiguous().view(-1, hidden.size(-1))
         return hidden_masked
 
     def forward_sap(
-        self, txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
-        traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-        gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-        gmap_visited_masks, global_act_labels, local_act_labels, compute_loss,
-        map_tokens=None, map_token_masks=None
+        self,
+        txt_ids,
+        txt_lens,
+        txt_task_encoding,
+        traj_view_img_fts,
+        traj_view_dep_fts,
+        traj_obj_img_fts,
+        traj_loc_fts,
+        traj_nav_types,
+        traj_step_lens,
+        traj_vp_view_lens,
+        traj_vp_obj_lens,
+        traj_vpids,
+        traj_cand_vpids,
+        gmap_lens,
+        gmap_step_ids,
+        gmap_task_embeddings,
+        gmap_pos_fts,
+        gmap_pair_dists,
+        gmap_vpids,
+        gmap_visited_masks,
+        global_act_labels,
+        local_act_labels,
+        compute_loss,
+        map_tokens=None,
+        map_token_masks=None,
     ):
         batch_size = txt_ids.size(0)
         txt_embeds, gmap_embeds = self.bert(
-            txt_ids, txt_lens, txt_task_encoding, traj_view_img_fts, traj_view_dep_fts, traj_obj_img_fts, traj_loc_fts, traj_nav_types,
-            traj_step_lens, traj_vp_view_lens, traj_vp_obj_lens, traj_vpids, traj_cand_vpids,
-            gmap_lens, gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_pair_dists, gmap_vpids,
-            map_tokens=map_tokens, map_token_masks=map_token_masks
+            txt_ids,
+            txt_lens,
+            txt_task_encoding,
+            traj_view_img_fts,
+            traj_view_dep_fts,
+            traj_obj_img_fts,
+            traj_loc_fts,
+            traj_nav_types,
+            traj_step_lens,
+            traj_vp_view_lens,
+            traj_vp_obj_lens,
+            traj_vpids,
+            traj_cand_vpids,
+            gmap_lens,
+            gmap_step_ids,
+            gmap_task_embeddings,
+            gmap_pos_fts,
+            gmap_pair_dists,
+            gmap_vpids,
+            map_tokens=map_tokens,
+            map_token_masks=map_token_masks,
         )
 
         txt_masks = gen_seq_masks(txt_lens)
         extended_txt_masks = extend_neg_masks(txt_masks)
-        graph_attentioned_txt_embeds, _ = self.graph_query_text(gmap_embeds, txt_embeds, attention_mask=extended_txt_masks)
-        graph_attentioned_txt_embeds = self.graph_attentioned_txt_embeds_transform(graph_attentioned_txt_embeds)
+        graph_attentioned_txt_embeds, _ = self.graph_query_text(
+            gmap_embeds, txt_embeds, attention_mask=extended_txt_masks
+        )
+        graph_attentioned_txt_embeds = self.graph_attentioned_txt_embeds_transform(
+            graph_attentioned_txt_embeds
+        )
         fusion_input = torch.cat([gmap_embeds, graph_attentioned_txt_embeds], dim=-1)
         global_logits = self.global_sap_head(fusion_input).squeeze(2)
 
-        global_logits.masked_fill_(gmap_visited_masks, -float('inf'))
-        global_logits.masked_fill_(gen_seq_masks(gmap_lens).logical_not(), -float('inf'))
+        global_logits.masked_fill_(gmap_visited_masks, -float("inf"))
+        global_logits.masked_fill_(
+            gen_seq_masks(gmap_lens).logical_not(), -float("inf")
+        )
 
         if compute_loss:
-            global_losses = F.cross_entropy(global_logits, global_act_labels, reduction='none')
+            global_losses = F.cross_entropy(
+                global_logits, global_act_labels, reduction="none"
+            )
             losses = global_losses
             return losses
         else:
-            return global_logits,  global_act_labels
+            return global_logits, global_act_labels

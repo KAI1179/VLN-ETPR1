@@ -272,4 +272,4 @@ def test_pretrain_prior_map_uses_cached_categories(monkeypatch):
         "categories": ({3}, {7}),
     }
     assert outputs["cognitive_maps"] == "grid"
-    assert outputs["direction_vectors"] == "reference_paths"
+    assert outputs["reference_paths"] == "reference_paths"
