@@ -90,16 +90,16 @@ def _rotate_grid_points_by_right_angle(
 
 
 def _rotate_direction_by_right_angle(vector: torch.Tensor, turns: int) -> torch.Tensor:
-    x = vector[..., 0]
-    z = vector[..., 1]
+    sin_value = vector[..., 0]
+    cos_value = vector[..., 1]
     turns %= 4
     if turns == 0:
         return vector
     if turns == 1:
-        return torch.stack((-z, x), dim=-1)
+        return torch.stack((cos_value, -sin_value), dim=-1)
     if turns == 2:
-        return torch.stack((-x, -z), dim=-1)
-    return torch.stack((z, -x), dim=-1)
+        return torch.stack((-sin_value, -cos_value), dim=-1)
+    return torch.stack((-cos_value, sin_value), dim=-1)
 
 
 def rotate_cognitive_map_tensors_by_right_angle(

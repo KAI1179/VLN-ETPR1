@@ -88,15 +88,15 @@ class RelevantSemanticBoxes(BaseModel):
     def _rotate_direction_by_right_angle(
         vector: DirectionVector, turns: int
     ) -> DirectionVector:
-        x, z = vector
+        sin_value, cos_value = vector
         turns %= 4
         if turns == 0:
-            return (float(x), float(z))
+            return (float(sin_value), float(cos_value))
         if turns == 1:
-            return (float(-z), float(x))
+            return (float(cos_value), float(-sin_value))
         if turns == 2:
-            return (float(-x), float(-z))
-        return (float(z), float(-x))
+            return (float(-sin_value), float(-cos_value))
+        return (float(-cos_value), float(sin_value))
 
     @staticmethod
     def _rotate_aabb_by_right_angle(box: AABB2D, turns: int) -> AABB2D:

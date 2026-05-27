@@ -256,9 +256,9 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
     ("turns", "expected_paths", "expected_start", "expected_direction"),
     [
         (0, [[10.0, 20.0], [30.0, 40.0]], [10.0, 20.0], [1.0, 2.0]),
-        (1, [[80.0, 10.0], [60.0, 30.0]], [80.0, 10.0], [-2.0, 1.0]),
+        (1, [[80.0, 10.0], [60.0, 30.0]], [80.0, 10.0], [2.0, -1.0]),
         (2, [[90.0, 80.0], [70.0, 60.0]], [90.0, 80.0], [-1.0, -2.0]),
-        (3, [[20.0, 90.0], [40.0, 70.0]], [20.0, 90.0], [2.0, -1.0]),
+        (3, [[20.0, 90.0], [40.0, 70.0]], [20.0, 90.0], [-2.0, 1.0]),
     ],
 )
 def test_pretrain_prior_map_rotates_tensor_bundle(
@@ -335,4 +335,4 @@ def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
 
     assert outputs["reference_paths"].tolist() == [[80.0, 10.0]]
     assert outputs["start_positions"].tolist() == [80.0, 10.0]
-    assert outputs["start_direction_vectors"].tolist() == [-2.0, 1.0]
+    assert outputs["start_direction_vectors"].tolist() == [2.0, -1.0]

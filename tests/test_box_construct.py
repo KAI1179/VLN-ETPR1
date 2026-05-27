@@ -303,7 +303,7 @@ def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
         mentioned=True,
     )
     assert rotated.reference_path == [(48.5, 1.0), (46.5, 2.0)]
-    assert rotated.start_direction_vector == (-1.0, 0.0)
+    assert rotated.start_direction_vector == (1.0, -0.0)
     assert meters_to_grid(48.5, 1.0) == (97.0, 2.0)
 
 
