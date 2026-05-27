@@ -45,7 +45,7 @@ def _load_scene_semantic_boxes_from_cache(scene_id: str) -> SceneSemanticBoxes |
         (float(origin[0]), float(origin[1]))
         for origin in json.loads(origins_path.read_text(encoding="utf-8"))
     ]
-    return SceneSemanticBoxes(levels, level_origins=level_origins)
+    return SceneSemanticBoxes(levels, _level_origins=level_origins)
 
 
 @lru_cache(maxsize=100)
@@ -67,7 +67,7 @@ def _scene_semantic_boxes_from_scene_id(scene_id: str) -> SceneSemanticBoxes:
     for level_idx, level in enumerate(scene_boxes.levels):
         level.save(cache_dir / f"{level_idx}.npz")
     (cache_dir / "origins.json").write_text(
-        json.dumps(scene_boxes.level_origins),
+        json.dumps(scene_boxes._level_origins),
         encoding="utf-8",
     )
 
@@ -104,7 +104,7 @@ def _construct_scene_semantic_boxes_from_scene(
         level_boxes.append(boxes)
         level_origins.append(origin)
 
-    return SceneSemanticBoxes(level_boxes, level_origins=level_origins)
+    return SceneSemanticBoxes(level_boxes, _level_origins=level_origins)
 
 
 def _local_xz(point, origin: Point2D) -> Point2D:

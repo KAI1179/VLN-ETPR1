@@ -6,6 +6,7 @@ import math
 
 import numpy as np
 
+from .._coords import grid_to_meters
 from ..constants import CELL_SIZE, COLS, OBJECT_CATEGORIES, ROWS
 from ._geometry import _point_to_obb_distance
 from ._types import AABB2D, IRRELEVANT_MULTIPLIER, LevelSemanticBoxes, OBB2D
@@ -14,11 +15,10 @@ from ._types import AABB2D, IRRELEVANT_MULTIPLIER, LevelSemanticBoxes, OBB2D
 def _grid_center_index_range(
     min_coord: float,
     max_coord: float,
-    offset: float,
     limit: int,
 ) -> tuple[int, int] | None:
-    start = math.ceil((min_coord - offset - CELL_SIZE / 2.0) / CELL_SIZE)
-    end = math.floor((max_coord - offset - CELL_SIZE / 2.0) / CELL_SIZE)
+    start = math.ceil((min_coord - CELL_SIZE / 2.0) / CELL_SIZE)
+    end = math.floor((max_coord - CELL_SIZE / 2.0) / CELL_SIZE)
     if end < 0 or start >= limit:
         return None
     return max(0, start), min(limit - 1, end)
@@ -31,8 +31,8 @@ def _rasterize_aabb(
     grid: np.ndarray,
     confidence: float,
 ) -> None:
-    row_range = _grid_center_index_range(box.min[0], box.max[0], 0.0, ROWS)
-    col_range = _grid_center_index_range(box.min[1], box.max[1], 0.0, COLS)
+    row_range = _grid_center_index_range(box.min[0], box.max[0], ROWS)
+    col_range = _grid_center_index_range(box.min[1], box.max[1], COLS)
     if row_range is None or col_range is None:
         return
     row_start, row_end = row_range
@@ -75,8 +75,8 @@ def _rasterize_obb(
     confidence: float,
 ) -> None:
     min_x, max_x, min_z, max_z = _obb_bounds(box)
-    row_range = _grid_center_index_range(min_x, max_x, 0.0, ROWS)
-    col_range = _grid_center_index_range(min_z, max_z, 0.0, COLS)
+    row_range = _grid_center_index_range(min_x, max_x, ROWS)
+    col_range = _grid_center_index_range(min_z, max_z, COLS)
     if row_range is None or col_range is None:
         return
 
@@ -84,7 +84,7 @@ def _rasterize_obb(
     col_start, col_end = col_range
     for row in range(row_start, row_end + 1):
         for col in range(col_start, col_end + 1):
-            point = level.grid_to_world(row, col)
+            point = grid_to_meters(row, col)
             if _point_to_obb_distance(point, box) <= 1e-6:
                 grid[layer_idx, row, col] = max(grid[layer_idx, row, col], confidence)
 

@@ -24,8 +24,6 @@ For analyzing, see `./analyze/README.md`.
 Each npz file contains:
 
 - `grid`: Grid data of dimension (OBJECT_CATEGORIES + REGION_CATEGORIES) x ROWS x COLS.
-- `offset_x`: X offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
-- `offset_z`: Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive. Not useful for our job.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. Not useful for our job.
 - `reference_path`: Level-local waypoints along the selected level, as `[x, z]`.
 - `start_direction_vector`: Direction vector of the start position.

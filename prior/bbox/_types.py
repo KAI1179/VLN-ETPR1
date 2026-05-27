@@ -54,14 +54,6 @@ class LevelSemanticBoxes(BaseModel):
     regions: RegionAABB2Ds
     range_y: List[Optional[float]]
 
-    def world_to_grid(self, x: float, z: float) -> tuple[float, float]:
-        return (x / CELL_SIZE, z / CELL_SIZE)
-
-    def grid_to_world(self, row: int, col: int) -> tuple[float, float]:
-        x = row * CELL_SIZE + CELL_SIZE / 2.0
-        z = col * CELL_SIZE + CELL_SIZE / 2.0
-        return (x, z)
-
     def save(self, path: str | Path) -> None:
         np.savez_compressed(path, payload=np.asarray(self.model_dump_json(indent=None)))
 
@@ -214,13 +206,13 @@ class SceneSemanticBoxes:
     """All level-wise semantic boxes for one MP3D scene."""
 
     levels: List[LevelSemanticBoxes]
-    level_origins: List[Point2D] = field(default_factory=list)
+    _level_origins: List[Point2D] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if not self.level_origins:
-            self.level_origins = [(0.0, 0.0) for _ in self.levels]
-        if len(self.level_origins) != len(self.levels):
-            raise ValueError("level_origins length must match levels length")
+        if not self._level_origins:
+            self._level_origins = [(0.0, 0.0) for _ in self.levels]
+        if len(self._level_origins) != len(self.levels):
+            raise ValueError("_level_origins length must match levels length")
 
     @staticmethod
     def from_scene_id(scene_id: str) -> "SceneSemanticBoxes":

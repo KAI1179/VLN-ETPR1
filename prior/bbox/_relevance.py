@@ -52,7 +52,7 @@ def _extract_relevant_semantic_boxes(
         category_extractor = extract_categories
 
     level_idx, level = _first_encountered_level(scene, reference_path)
-    origin = scene.level_origins[level_idx]
+    origin = scene._level_origins[level_idx]
     mentioned_objects, mentioned_regions = category_extractor(instruction)
 
     relevant_level = _empty_level_boxes()

@@ -7,6 +7,7 @@ import pytest
 from magnum import Matrix4, Vector3
 from pydantic import BaseModel
 
+from prior._coords import meters_to_grid
 from prior import bbox as box
 from prior.bbox import _construct as box_construct
 
@@ -93,7 +94,7 @@ def test_scene_semantic_boxes_from_scene_groups_2d_boxes_by_mapped_category(
 
     assert len(levels) == 1
     assert levels[0].range_y == [None, None]
-    assert scene_boxes.level_origins == [(2.0, 3.0)]
+    assert not hasattr(scene_boxes, "level_origins")
     assert levels[0].objects[3] == [
         box.OBB2D(
             center=(2.0, 3.0),
@@ -211,8 +212,15 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
 
     scene_boxes = box.SceneSemanticBoxes.from_scene_id(scene_id)
 
-    assert scene_boxes.level_origins == [(1.0, 2.0)]
+    assert not hasattr(scene_boxes, "level_origins")
     assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
+    relevant = scene_boxes.relevant_to(
+        "",
+        reference_path=[[4.0, 0.0, 6.0]],
+        start_direction_vector=(0.0, 1.0),
+        category_extractor=lambda instruction: (set(), set()),
+    )
+    assert relevant.reference_path == [(3.0, 4.0)]
 
 
 def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
@@ -296,7 +304,7 @@ def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
     )
     assert rotated.reference_path == [(48.5, 1.0), (46.5, 2.0)]
     assert rotated.start_direction_vector == (-1.0, 0.0)
-    assert rotated.level.world_to_grid(48.5, 1.0) == (97.0, 2.0)
+    assert meters_to_grid(48.5, 1.0) == (97.0, 2.0)
 
 
 def test_obb_distance_uses_rotation():

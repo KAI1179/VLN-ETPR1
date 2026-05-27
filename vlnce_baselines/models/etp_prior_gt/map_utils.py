@@ -5,6 +5,7 @@ import random
 from typing import List
 
 import torch
+from prior._coords import meters_to_grid
 from prior.constants import (
     COLS,
     MAPPED_OBJECT_NAMES,
@@ -40,7 +41,7 @@ def _reference_path_to_grid_tensor(cognitive_map: CognitiveGridMap) -> torch.Ten
     for idx, position in enumerate(
         cognitive_map.reference_path[:REFERENCE_PATH_LENGTH]
     ):
-        row, col = cognitive_map.world_to_grid(float(position[0]), float(position[1]))
+        row, col = meters_to_grid(float(position[0]), float(position[1]))
         reference_path[idx] = torch.tensor([row, col], dtype=torch.float32)
     return reference_path
 
@@ -50,7 +51,7 @@ def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
         raise ValueError("CognitiveGridMap.reference_path is empty")
     start_x, start_z = cognitive_map.reference_path[0]
     return torch.tensor(
-        cognitive_map.world_to_grid(float(start_x), float(start_z)),
+        meters_to_grid(float(start_x), float(start_z)),
         dtype=torch.float32,
     )
 
@@ -58,6 +59,7 @@ def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
     return {
         "grid": torch.from_numpy(cognitive_map.grid),
+        # FIXME: Rename to reference_path?
         "reference_paths": _reference_path_to_grid_tensor(cognitive_map),
         "start_direction_vector": torch.tensor(
             cognitive_map.start_direction_vector, dtype=torch.float32
@@ -91,9 +93,8 @@ def start_metadata_to_tensors(scene_id: str, start_position, start_rotation):
         [start_position],
         start_rotation_to_direction_vector(start_rotation),
     )
-    start_level = relevant_boxes.level
     start_x, start_z = relevant_boxes.reference_path[0]
-    start_grid_position = start_level.world_to_grid(float(start_x), float(start_z))
+    start_grid_position = meters_to_grid(float(start_x), float(start_z))
     return {
         "start_direction_vector": torch.tensor(
             start_rotation_to_direction_vector(start_rotation),

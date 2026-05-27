@@ -22,7 +22,7 @@ def _aabb_max(aabb) -> Vector3:
 
 
 def _xz(point) -> Point2D:
-    """Project a 3D point/vector to 2D world X/Z coordinates."""
+    """Project a 3D point/vector to its X/Z components."""
     return (float(point[0]), float(point[2]))
 
 

@@ -30,6 +30,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
+from prior._coords import grid_to_meters
 from prior.directions import start_rotation_to_direction_vector
 from prior.grid_map import CognitiveGridMap
 from prior.vlnce import VLNCEEpisodeEntry
@@ -567,14 +568,14 @@ def _prediction_to_cognitive_grid_map(
     cognitive_map.grid = grid.detach().cpu().numpy().astype(np.float32)
     cognitive_map.reference_path = []
     for row, col in reference_paths.detach().cpu().tolist():
-        x, z = cognitive_map.grid_to_world(float(row), float(col))
+        x, z = grid_to_meters(float(row), float(col))
         cognitive_map.reference_path.append((float(x), float(z)))
     cognitive_map.start_direction_vector = (
         float(start_direction_vector[0].detach().cpu()),
         float(start_direction_vector[1].detach().cpu()),
     )
     if not cognitive_map.reference_path:
-        start_x, start_z = cognitive_map.grid_to_world(
+        start_x, start_z = grid_to_meters(
             float(start_position[0].detach().cpu()),
             float(start_position[1].detach().cpu()),
         )

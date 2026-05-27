@@ -17,13 +17,8 @@ from typing import List, Optional, Tuple, Type, TypeVar, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from ..constants import (
-    CELL_SIZE,
-    COLS,
-    OBJECT_CATEGORIES,
-    REGION_CATEGORIES,
-    ROWS,
-)
+from .._coords import meters_to_grid
+from ..constants import COLS, OBJECT_CATEGORIES, REGION_CATEGORIES, ROWS
 from prior.directions import DirectionVector
 
 
@@ -49,16 +44,6 @@ class BaseGridMap:
 
     Each element is in the range [0.0, 1.0], representing the confidence level of the
     presence of a specific category at a specific grid cell.
-    """
-
-    offset_x: float = 0.0
-    """
-    X offset to transform world coordinates to grid coordinates, in order to keep indexing positive.
-    """
-
-    offset_z: float = 0.0
-    """
-    Z offset to transform world coordinates to grid coordinates, in order to keep indexing positive.
     """
 
     range_y: List[Optional[float]]
@@ -109,36 +94,6 @@ class BaseGridMap:
         if not np.all((0.0 <= self.grid) & (self.grid <= 1.0)):
             return False
         return True
-
-    def grid_to_world(self, row: float, col: float) -> tuple[float, float]:
-        """
-        Transform grid coordinates to world coordinates (cell center).
-
-        Args:
-            row: Row index of the grid cell.
-            col: Column index of the grid cell.
-
-        Returns:
-            tuple[float, float]: World coordinates (x, z) of the cell center.
-        """
-        x = row * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_x
-        z = col * CELL_SIZE + CELL_SIZE / 2.0 + self.offset_z
-        return (x, z)
-
-    def world_to_grid(self, x: float, z: float) -> tuple[float, float]:
-        """
-        Transform world coordinates to continuous grid coordinates.
-
-        Args:
-            x: World x-coordinate.
-            z: World z-coordinate.
-
-        Returns:
-            tuple[float, float]: Grid coordinates.
-        """
-        row = (x - self.offset_x) / CELL_SIZE
-        col = (z - self.offset_z) / CELL_SIZE
-        return (row, col)
 
     def get_object_cell(self, row: int, col: int, mapped_category: int) -> float:
         """
@@ -262,8 +217,6 @@ class BaseGridMap:
         np.savez_compressed(
             save_path,
             grid=self.grid,
-            offset_x=self.offset_x,
-            offset_z=self.offset_z,
             range_y=np.asarray(self.range_y, dtype=object),
         )
 
@@ -276,8 +229,6 @@ class BaseGridMap:
         data = np.load(load_path, allow_pickle=True)
         grid_map = cls()
         grid_map.grid = data["grid"]
-        grid_map.offset_x = float(data["offset_x"])
-        grid_map.offset_z = float(data["offset_z"])
         grid_map.range_y = list(data["range_y"].tolist())
         return grid_map
 
@@ -366,7 +317,7 @@ class CognitiveGridMap(BaseGridMap):
             auto_crop=auto_crop,
             crop_margin=crop_margin,
             positions=[
-                self.world_to_grid(float(position[0]), float(position[1]))
+                meters_to_grid(float(position[0]), float(position[1]))
                 for position in self.reference_path
             ],
             start_direction_vector=self.start_direction_vector,
@@ -377,8 +328,6 @@ class CognitiveGridMap(BaseGridMap):
         np.savez_compressed(
             save_path,
             grid=self.grid,
-            offset_x=self.offset_x,
-            offset_z=self.offset_z,
             range_y=np.asarray(self.range_y, dtype=object),
             reference_path=np.asarray(self.reference_path, dtype=np.float32),
             start_direction_vector=np.asarray(
@@ -396,8 +345,6 @@ class CognitiveGridMap(BaseGridMap):
         data = np.load(load_path, allow_pickle=True)
         grid_map = cls()
         grid_map.grid = data["grid"]
-        grid_map.offset_x = float(data["offset_x"])
-        grid_map.offset_z = float(data["offset_z"])
         grid_map.range_y = list(data["range_y"].tolist())
         grid_map.reference_path = [
             (float(position[0]), float(position[1]))
