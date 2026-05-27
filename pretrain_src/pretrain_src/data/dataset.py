@@ -10,8 +10,6 @@ import h5py
 import math
 from typing import Any, Dict, List
 
-import torch
-
 from .common import (
     load_nav_graphs,
     get_angle_fts,
@@ -21,70 +19,15 @@ from .common import (
 )
 from prior import DATA_DIR
 from prior.grid_map import CognitiveGridMap
-from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_to_tensors
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    cognitive_map_to_tensors,
+    rotate_cognitive_map_tensors_by_right_angle,
+)
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
-
-
-def _rotate_points_by_right_angle(
-    points: torch.Tensor,
-    turns: int,
-    rows: int,
-    cols: int,
-) -> torch.Tensor:
-    row = points[..., 0]
-    col = points[..., 1]
-    turns %= 4
-    if turns == 0:
-        return points
-    if turns == 1:
-        return torch.stack((col.new_tensor(float(cols)) - col, row), dim=-1)
-    if turns == 2:
-        return torch.stack(
-            (row.new_tensor(float(rows)) - row, col.new_tensor(float(cols)) - col),
-            dim=-1,
-        )
-    return torch.stack((col, row.new_tensor(float(rows)) - row), dim=-1)
-
-
-def _rotate_direction_by_right_angle(vector: torch.Tensor, turns: int) -> torch.Tensor:
-    x = vector[..., 0]
-    z = vector[..., 1]
-    turns %= 4
-    if turns == 0:
-        return vector
-    if turns == 1:
-        return torch.stack((-z, x), dim=-1)
-    if turns == 2:
-        return torch.stack((-x, -z), dim=-1)
-    return torch.stack((z, -x), dim=-1)
-
-
-def _rotate_cognitive_map_tensors_by_right_angle(
-    tensors: Dict[str, torch.Tensor], turns: int
-) -> Dict[str, torch.Tensor]:
-    turns %= 4
-    if turns == 0:
-        return dict(tensors)
-
-    grid = torch.rot90(tensors["grid"], turns, dims=(-2, -1)).contiguous()
-    rows = int(tensors["grid"].shape[-2])
-    cols = int(tensors["grid"].shape[-1])
-    rotated = dict(tensors)
-    rotated["grid"] = grid
-    rotated["reference_paths"] = _rotate_points_by_right_angle(
-        tensors["reference_paths"], turns, rows, cols
-    )
-    rotated["start_position"] = _rotate_points_by_right_angle(
-        tensors["start_position"], turns, rows, cols
-    )
-    rotated["start_direction_vector"] = _rotate_direction_by_right_angle(
-        tensors["start_direction_vector"], turns
-    )
-    return rotated
 
 
 class ReverieTextPathData(object):
@@ -172,7 +115,7 @@ class ReverieTextPathData(object):
         cognitive_map = CognitiveGridMap.load(map_path)
         tensors = cognitive_map_to_tensors(cognitive_map)
         if getattr(self, "random_rotation_augmentation", False):
-            tensors = _rotate_cognitive_map_tensors_by_right_angle(
+            tensors = rotate_cognitive_map_tensors_by_right_angle(
                 tensors, random.randrange(4)
             )
         return {

@@ -268,7 +268,6 @@ def test_pretrain_prior_map_rotates_tensor_bundle(
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
 
-    pretrain_dataset = importlib.import_module("data.dataset")
     grid = torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100)
     tensors = {
         "grid": grid,
@@ -279,9 +278,11 @@ def test_pretrain_prior_map_rotates_tensor_bundle(
         "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
     }
 
-    rotated = pretrain_dataset._rotate_cognitive_map_tensors_by_right_angle(
-        tensors, turns
+    from vlnce_baselines.models.etp_prior_gt.map_utils import (
+        rotate_cognitive_map_tensors_by_right_angle,
     )
+
+    rotated = rotate_cognitive_map_tensors_by_right_angle(tensors, turns)
 
     assert torch.equal(rotated["grid"], torch.rot90(grid, turns % 4, dims=(-2, -1)))
     assert torch.allclose(rotated["reference_paths"], torch.tensor(expected_paths))

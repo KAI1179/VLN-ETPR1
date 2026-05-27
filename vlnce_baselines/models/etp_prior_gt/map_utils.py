@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import random
-from typing import List
+from typing import Dict, List
 
 import torch
 from prior._coords import meters_to_grid
@@ -66,6 +66,64 @@ def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
         ),
         "start_position": _start_position_tensor(cognitive_map),
     }
+
+
+def _rotate_grid_points_by_right_angle(
+    points: torch.Tensor,
+    turns: int,
+    rows: int,
+    cols: int,
+) -> torch.Tensor:
+    row = points[..., 0]
+    col = points[..., 1]
+    turns %= 4
+    if turns == 0:
+        return points
+    if turns == 1:
+        return torch.stack((col.new_tensor(float(cols)) - col, row), dim=-1)
+    if turns == 2:
+        return torch.stack(
+            (row.new_tensor(float(rows)) - row, col.new_tensor(float(cols)) - col),
+            dim=-1,
+        )
+    return torch.stack((col, row.new_tensor(float(rows)) - row), dim=-1)
+
+
+def _rotate_direction_by_right_angle(vector: torch.Tensor, turns: int) -> torch.Tensor:
+    x = vector[..., 0]
+    z = vector[..., 1]
+    turns %= 4
+    if turns == 0:
+        return vector
+    if turns == 1:
+        return torch.stack((-z, x), dim=-1)
+    if turns == 2:
+        return torch.stack((-x, -z), dim=-1)
+    return torch.stack((z, -x), dim=-1)
+
+
+def rotate_cognitive_map_tensors_by_right_angle(
+    tensors: Dict[str, torch.Tensor], turns: int
+) -> Dict[str, torch.Tensor]:
+    turns %= 4
+    if turns == 0:
+        return dict(tensors)
+
+    grid = torch.rot90(tensors["grid"], turns, dims=(-2, -1)).contiguous()
+    rows = int(tensors["grid"].shape[-2])
+    cols = int(tensors["grid"].shape[-1])
+    rotated = dict(tensors)
+    rotated["grid"] = grid
+    rotated["reference_paths"] = _rotate_grid_points_by_right_angle(
+        tensors["reference_paths"], turns, rows, cols
+    )
+    rotated["start_position"] = _rotate_grid_points_by_right_angle(
+        tensors["start_position"], turns, rows, cols
+    )
+    rotated["start_direction_vector"] = _rotate_direction_by_right_angle(
+        tensors["start_direction_vector"], turns
+    )
+    return rotated
 
 
 def build_cognitive_map(

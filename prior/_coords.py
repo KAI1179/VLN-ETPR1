@@ -10,6 +10,10 @@ def meters_to_grid(x: float, z: float) -> tuple[float, float]:
 
 
 def grid_to_meters(row: float, col: float) -> tuple[float, float]:
+    return (row * CELL_SIZE, col * CELL_SIZE)
+
+
+def grid_cell_center_to_meters(row: float, col: float) -> tuple[float, float]:
     return (
         row * CELL_SIZE + CELL_SIZE / 2.0,
         col * CELL_SIZE + CELL_SIZE / 2.0,

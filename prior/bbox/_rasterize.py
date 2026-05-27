@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from .._coords import grid_to_meters
+from .._coords import grid_cell_center_to_meters
 from ..constants import CELL_SIZE, COLS, OBJECT_CATEGORIES, ROWS
 from ._geometry import _point_to_obb_distance
 from ._types import AABB2D, IRRELEVANT_MULTIPLIER, LevelSemanticBoxes, OBB2D
@@ -84,7 +84,7 @@ def _rasterize_obb(
     col_start, col_end = col_range
     for row in range(row_start, row_end + 1):
         for col in range(col_start, col_end + 1):
-            point = grid_to_meters(row, col)
+            point = grid_cell_center_to_meters(row, col)
             if _point_to_obb_distance(point, box) <= 1e-6:
                 grid[layer_idx, row, col] = max(grid[layer_idx, row, col], confidence)
 
