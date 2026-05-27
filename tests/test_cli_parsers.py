@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -249,3 +250,88 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="Missing pretrain cognitive map"):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
+
+
+@pytest.mark.parametrize(
+    ("turns", "expected_paths", "expected_start", "expected_direction"),
+    [
+        (0, [[10.0, 20.0], [30.0, 40.0]], [10.0, 20.0], [1.0, 2.0]),
+        (1, [[80.0, 10.0], [60.0, 30.0]], [80.0, 10.0], [-2.0, 1.0]),
+        (2, [[90.0, 80.0], [70.0, 60.0]], [90.0, 80.0], [-1.0, -2.0]),
+        (3, [[20.0, 90.0], [40.0, 70.0]], [20.0, 90.0], [2.0, -1.0]),
+    ],
+)
+def test_pretrain_prior_map_rotates_tensor_bundle(
+    turns, expected_paths, expected_start, expected_direction
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    grid = torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100)
+    tensors = {
+        "grid": grid,
+        "reference_paths": torch.tensor(
+            [[10.0, 20.0], [30.0, 40.0]], dtype=torch.float32
+        ),
+        "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
+        "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
+    }
+
+    rotated = pretrain_dataset._rotate_cognitive_map_tensors_by_right_angle(
+        tensors, turns
+    )
+
+    assert torch.equal(rotated["grid"], torch.rot90(grid, turns % 4, dims=(-2, -1)))
+    assert torch.allclose(rotated["reference_paths"], torch.tensor(expected_paths))
+    assert torch.allclose(rotated["start_position"], torch.tensor(expected_start))
+    assert torch.allclose(
+        rotated["start_direction_vector"], torch.tensor(expected_direction)
+    )
+
+
+def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    map_path = tmp_path / "scene" / "42_0.npz"
+    map_path.parent.mkdir()
+    map_path.touch()
+
+    class FakeCognitiveGridMap:
+        @staticmethod
+        def load(path):
+            return "loaded-map"
+
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    monkeypatch.setattr(pretrain_dataset, "CognitiveGridMap", FakeCognitiveGridMap)
+    monkeypatch.setattr(pretrain_dataset.random, "randrange", lambda upper: 1)
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "cognitive_map_to_tensors",
+        lambda cognitive_map: {
+            "grid": torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100),
+            "reference_paths": torch.tensor([[10.0, 20.0]], dtype=torch.float32),
+            "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
+            "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
+        },
+    )
+
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+    nav_db.random_rotation_augmentation = True
+
+    outputs = nav_db._load_pretrain_cognitive_map(
+        {
+            "instr_id": "42_0",
+            "scan": "scene",
+        }
+    )
+
+    assert outputs["reference_paths"].tolist() == [[80.0, 10.0]]
+    assert outputs["start_positions"].tolist() == [80.0, 10.0]
+    assert outputs["start_direction_vectors"].tolist() == [-2.0, 1.0]

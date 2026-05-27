@@ -1,7 +1,4 @@
 import os
-import sys
-import json
-import argparse
 import time
 from collections import defaultdict
 from easydict import EasyDict
@@ -9,7 +6,6 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-import torch.distributed as dist
 
 import torch.cuda.amp as amp   # TODO
 
@@ -185,6 +181,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=None,
         use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
+        random_rotation_augmentation=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
     )
     val_r2r_nav_db = R2RTextPathData(
         data_cfg.val_unseen_r2r_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -231,7 +228,6 @@ def main(opts):
 
     # Prepare optimizer
     optimizer = build_optimizer(model, opts)
-    task2scaler = {t: i for i, t in enumerate(train_dataloaders.keys())}
 
     if opts.fp16:
         grad_scaler = amp.GradScaler()
@@ -274,7 +270,6 @@ def main(opts):
         if opts.gradient_accumulation_steps > 1:
             loss = loss / opts.gradient_accumulation_steps
 
-        delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
         if opts.fp16:
             grad_scaler.scale(loss).backward()
         else:

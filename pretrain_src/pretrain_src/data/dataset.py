@@ -3,11 +3,14 @@ Instruction and trajectory (view and object features) dataset
 """
 
 import json
+import random
 import jsonlines
 import numpy as np
 import h5py
 import math
 from typing import Any, Dict, List
+
+import torch
 
 from .common import (
     load_nav_graphs,
@@ -24,6 +27,64 @@ MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
+
+
+def _rotate_points_by_right_angle(
+    points: torch.Tensor,
+    turns: int,
+    rows: int,
+    cols: int,
+) -> torch.Tensor:
+    row = points[..., 0]
+    col = points[..., 1]
+    turns %= 4
+    if turns == 0:
+        return points
+    if turns == 1:
+        return torch.stack((col.new_tensor(float(cols)) - col, row), dim=-1)
+    if turns == 2:
+        return torch.stack(
+            (row.new_tensor(float(rows)) - row, col.new_tensor(float(cols)) - col),
+            dim=-1,
+        )
+    return torch.stack((col, row.new_tensor(float(rows)) - row), dim=-1)
+
+
+def _rotate_direction_by_right_angle(vector: torch.Tensor, turns: int) -> torch.Tensor:
+    x = vector[..., 0]
+    z = vector[..., 1]
+    turns %= 4
+    if turns == 0:
+        return vector
+    if turns == 1:
+        return torch.stack((-z, x), dim=-1)
+    if turns == 2:
+        return torch.stack((-x, -z), dim=-1)
+    return torch.stack((z, -x), dim=-1)
+
+
+def _rotate_cognitive_map_tensors_by_right_angle(
+    tensors: Dict[str, torch.Tensor], turns: int
+) -> Dict[str, torch.Tensor]:
+    turns %= 4
+    if turns == 0:
+        return dict(tensors)
+
+    grid = torch.rot90(tensors["grid"], turns, dims=(-2, -1)).contiguous()
+    rows = int(tensors["grid"].shape[-2])
+    cols = int(tensors["grid"].shape[-1])
+    rotated = dict(tensors)
+    rotated["grid"] = grid
+    rotated["reference_paths"] = _rotate_points_by_right_angle(
+        tensors["reference_paths"], turns, rows, cols
+    )
+    rotated["start_position"] = _rotate_points_by_right_angle(
+        tensors["start_position"], turns, rows, cols
+    )
+    rotated["start_direction_vector"] = _rotate_direction_by_right_angle(
+        tensors["start_direction_vector"], turns
+    )
+    return rotated
 
 
 class ReverieTextPathData(object):
@@ -47,8 +108,10 @@ class ReverieTextPathData(object):
         act_visited_node=False,
         val_sample_num=None,
         use_prior_gt=False,
+        random_rotation_augmentation=False,
     ):
         self.use_prior_gt = use_prior_gt
+        self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
         self.dep_ft_file = dep_ft_file
@@ -108,6 +171,10 @@ class ReverieTextPathData(object):
             raise FileNotFoundError(f"Missing pretrain cognitive map: {map_path}")
         cognitive_map = CognitiveGridMap.load(map_path)
         tensors = cognitive_map_to_tensors(cognitive_map)
+        if getattr(self, "random_rotation_augmentation", False):
+            tensors = _rotate_cognitive_map_tensors_by_right_angle(
+                tensors, random.randrange(4)
+            )
         return {
             "cognitive_maps": tensors["grid"],
             "reference_paths": tensors["reference_paths"],
@@ -513,6 +580,7 @@ class R2RTextPathData(ReverieTextPathData):
         val_sample_num=None,
         start_vp_file=None,
         use_prior_gt=False,
+        random_rotation_augmentation=False,
     ):
         super().__init__(
             anno_files,
@@ -533,6 +601,7 @@ class R2RTextPathData(ReverieTextPathData):
             act_visited_node=act_visited_node,
             val_sample_num=val_sample_num,
             use_prior_gt=use_prior_gt,
+            random_rotation_augmentation=random_rotation_augmentation,
         )
 
     def get_scanvp_feature(self, scan, viewpoint):
