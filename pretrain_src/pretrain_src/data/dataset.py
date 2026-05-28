@@ -3,7 +3,6 @@ Instruction and trajectory (view and object features) dataset
 """
 
 import json
-import random
 import jsonlines
 import numpy as np
 import h5py
@@ -17,17 +16,15 @@ from .common import (
     calculate_vp_rel_pos_fts,
     softmax,
 )
-from prior import DATA_DIR
-from prior.grid_map import CognitiveGridMap
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    cognitive_map_to_tensors,
-    rotate_cognitive_map_tensors_by_right_angle,
+    ETP_R1_COGNITIVE_MAP_DIR,
+    cached_cognitive_map_to_tensors,
 )
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
-PRETRAIN_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
+PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
 
 
 class ReverieTextPathData(object):
@@ -109,15 +106,14 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
-        map_path = PRETRAIN_COGNITIVE_MAP_DIR / item["scan"] / f"{item['instr_id']}.npz"
-        if not map_path.is_file():
-            raise FileNotFoundError(f"Missing pretrain cognitive map: {map_path}")
-        cognitive_map = CognitiveGridMap.load(map_path)
-        tensors = cognitive_map_to_tensors(cognitive_map)
-        if getattr(self, "random_rotation_augmentation", False):
-            tensors = rotate_cognitive_map_tensors_by_right_angle(
-                tensors, random.randrange(4)
-            )
+        tensors = cached_cognitive_map_to_tensors(
+            item["scan"],
+            item["instr_id"],
+            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            random_rotation_augmentation=getattr(
+                self, "random_rotation_augmentation", False
+            ),
+        )
         return {
             "cognitive_maps": tensors["grid"],
             "reference_paths": tensors["reference_paths"],

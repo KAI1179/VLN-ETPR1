@@ -46,8 +46,7 @@ import copy
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    build_cognitive_map_for_episode,
-    cognitive_map_to_tensors,
+    cached_cognitive_map_to_tensors,
 )
 
 
@@ -77,13 +76,21 @@ def select_replay_map_inputs(step_map_tokens, step_map_token_masks, active_indic
     return step_map_tokens[active_indices], step_map_token_masks[active_indices]
 
 
-def _build_cognitive_maps_for_episodes(episodes, random_rotation_augmentation=False):
+def _cognitive_map_cache_id(dataset: str, split: str, episode) -> str:
+    return f"{dataset.upper()}_{split}_{episode.episode_id}"
+
+
+def _build_cognitive_maps_for_episodes(
+    episodes,
+    dataset: str,
+    split: str,
+    random_rotation_augmentation=False,
+):
     return [
-        cognitive_map_to_tensors(
-            build_cognitive_map_for_episode(
-                ep,
-                random_rotation_augmentation=random_rotation_augmentation,
-            )
+        cached_cognitive_map_to_tensors(
+            ep.scene_id,
+            _cognitive_map_cache_id(dataset, split, ep),
+            random_rotation_augmentation=random_rotation_augmentation,
         )
         for ep in episodes
     ]
@@ -1176,6 +1183,8 @@ class RLTrainer(BaseVLNCETrainer):
     def _build_cognitive_maps(self):
         return _build_cognitive_maps_for_episodes(
             self.envs.current_episodes(),
+            self.config.MODEL.task_type,
+            self.config.TASK_CONFIG.DATASET.SPLIT,
             random_rotation_augmentation=True,
         )
 

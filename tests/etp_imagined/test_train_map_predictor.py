@@ -9,6 +9,7 @@ from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
 from vlnce_baselines.models.etp_imagined import train_map_predictor
 from vlnce_baselines.models.etp_imagined.train_map_predictor import (
     CognitiveMapPredictorDataset,
+    PredictorExample,
     collate_predictor_batch,
     load_predictor_examples,
     save_checkpoint,
@@ -42,6 +43,10 @@ class _EpisodeEntry:
         if self.reference_path is None:
             self.reference_path = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
 
+    @property
+    def unique_id(self):
+        return f"{self.dataset}_{self.split}_{self.episode_id}"
+
 
 def _patch_episode_entries(monkeypatch, entries=None) -> None:
     if entries is None:
@@ -59,17 +64,8 @@ def _patch_cognitive_map_generation(monkeypatch) -> None:
 
     monkeypatch.setattr(
         train_map_predictor,
-        "build_cognitive_map",
-        lambda scene_id,
-        instruction,
-        reference_path,
-        start_direction_vector,
-        rotation_augmentation=None: object(),
-    )
-    monkeypatch.setattr(
-        train_map_predictor,
-        "cognitive_map_to_tensors",
-        lambda cognitive_map: {
+        "cached_cognitive_map_to_tensors",
+        lambda scene_id, cache_id, random_rotation_augmentation=False: {
             "grid": grid,
             "reference_paths": torch.zeros(REFERENCE_PATH_LENGTH, 2),
             "start_direction_vector": torch.tensor([0.0, 1.0]),
@@ -88,6 +84,7 @@ def test_load_predictor_examples_matches_dataset_scene_episode(monkeypatch):
 
     assert len(examples) == 1
     assert examples[0].episode_id == "123"
+    assert examples[0].cache_id == "R2R_train_123"
     assert examples[0].scene_id == "TestScene"
     assert examples[0].instruction_text == "go to the chair"
     assert examples[0].token_ids == [10, 11, 12]
@@ -115,41 +112,43 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
     assert batch["start_positions"].tolist() == [[10.0, 20.0]]
 
 
-def test_build_cognitive_map_accepts_right_angle_augmentation(monkeypatch):
-    import vlnce_baselines.models.etp_prior_gt.map_utils as map_utils
+def test_predictor_dataset_loads_cached_map_with_train_rotation(monkeypatch):
+    example = PredictorExample(
+        episode_id="123",
+        cache_id="R2R_train_123",
+        scene_id="scene.glb",
+        dataset="R2R",
+        instruction_text="go to the chair",
+        token_ids=[1, 2, 3],
+        reference_path=[[1.0, 0.0, 2.0]],
+        start_rotation=[0.0, 0.0, 0.0, 1.0],
+    )
+    captured = {}
 
-    class _RelevantBoxes:
-        def __init__(self):
-            self.rotation = None
-
-        def rotate_by_right_angle(self, rotation):
-            self.rotation = rotation
-            return self
-
-        def to_cognitive_map(self):
-            return self.rotation
-
-    relevant = _RelevantBoxes()
-
-    class _SceneBoxes:
-        def relevant_to(self, *args, **kwargs):
-            return relevant
+    def fake_cached_map(scene_id, cache_id, random_rotation_augmentation=False):
+        captured["scene_id"] = scene_id
+        captured["cache_id"] = cache_id
+        captured["random_rotation_augmentation"] = random_rotation_augmentation
+        return {
+            "grid": torch.zeros(NUM_MAP_CATEGORIES, SIZE, SIZE),
+            "reference_paths": torch.zeros(REFERENCE_PATH_LENGTH, 2),
+            "start_direction_vector": torch.tensor([0.0, 1.0]),
+            "start_position": torch.tensor([10.0, 20.0]),
+        }
 
     monkeypatch.setattr(
-        map_utils.SceneSemanticBoxes,
-        "from_scene_id",
-        lambda scene_id: _SceneBoxes(),
+        train_map_predictor,
+        "cached_cognitive_map_to_tensors",
+        fake_cached_map,
     )
 
-    cognitive_map = map_utils.build_cognitive_map(
-        "scene.glb",
-        "go to the chair",
-        [[1.0, 0.0, 2.0]],
-        (0.0, 1.0),
-        rotation_augmentation=3,
-    )
+    CognitiveMapPredictorDataset([example])[0]
 
-    assert cognitive_map == 3
+    assert captured == {
+        "scene_id": "scene.glb",
+        "cache_id": "R2R_train_123",
+        "random_rotation_augmentation": True,
+    }
 
 
 def test_save_checkpoint_writes_policy_compatible_keys(tmp_path):

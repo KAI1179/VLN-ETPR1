@@ -50,8 +50,7 @@ from torch.nn.utils.rnn import pad_sequence
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    build_cognitive_map_for_episode,
-    cognitive_map_to_tensors,
+    cached_cognitive_map_to_tensors,
 )
 
 
@@ -1107,13 +1106,17 @@ class RLTrainer(BaseVLNCETrainer):
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
 
+    def _cognitive_map_cache_id(self, episode):
+        dataset = self.config.MODEL.task_type.upper()
+        split = self.config.TASK_CONFIG.DATASET.SPLIT
+        return f"{dataset}_{split}_{episode.episode_id}"
+
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         return [
-            cognitive_map_to_tensors(
-                build_cognitive_map_for_episode(
-                    ep,
-                    random_rotation_augmentation=random_rotation_augmentation,
-                )
+            cached_cognitive_map_to_tensors(
+                ep.scene_id,
+                self._cognitive_map_cache_id(ep),
+                random_rotation_augmentation=random_rotation_augmentation,
             )
             for ep in self.envs.current_episodes()
         ]

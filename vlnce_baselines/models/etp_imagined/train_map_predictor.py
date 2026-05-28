@@ -1,16 +1,20 @@
 """Offline trainer for instruction-to-cognitive-map prediction.
 
 This script trains only InstructionCognitiveMapPredictor from paired VLN
-instructions and on-the-fly cognitive-map targets. It deliberately avoids
-Habitat rollout and navigation loss.
+instructions and cached cognitive-map targets. It deliberately avoids Habitat
+rollout and navigation loss.
 """
+
+from __future__ import annotations
 
 import os
 import random
+from collections import OrderedDict
+from collections.abc import Sized
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -26,12 +30,11 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     REFERENCE_PATH_LENGTH,
     NUM_MAP_CATEGORIES,
     SIZE,
-    build_cognitive_map,
-    cognitive_map_to_tensors,
+    cached_cognitive_map_to_tensors,
+    load_cached_cognitive_map,
 )
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from prior._coords import grid_to_meters
-from prior.directions import start_rotation_to_direction_vector
 from prior.grid_map import CognitiveGridMap
 from prior.vlnce import VLNCEEpisodeEntry
 
@@ -43,6 +46,7 @@ TASK_TYPE_IDS = {"r2r": 1, "rxr": 2}
 @dataclass(frozen=True)
 class PredictorExample:
     episode_id: str
+    cache_id: str
     scene_id: str
     instruction_text: str
     token_ids: List[int]
@@ -68,6 +72,7 @@ def load_predictor_examples(
         examples.append(
             PredictorExample(
                 episode_id=str(entry.episode_id),
+                cache_id=entry.unique_id,
                 scene_id=entry.scene_id,
                 instruction_text=entry.instruction,
                 token_ids=entry.instruction_tokens,
@@ -101,14 +106,11 @@ class CognitiveMapPredictorDataset(Dataset):
 
     def __getitem__(self, index: int) -> Dict:
         example = self.examples[index]
-        cognitive_map = build_cognitive_map(
+        tensors = cached_cognitive_map_to_tensors(
             example.scene_id,
-            example.instruction_text,
-            example.reference_path,
-            start_rotation_to_direction_vector(example.start_rotation),
-            rotation_augmentation=random.randrange(4),
+            example.cache_id,
+            random_rotation_augmentation=True,  # TODO: False?
         )
-        tensors = cognitive_map_to_tensors(cognitive_map)
         grid = tensors["grid"].float()
         reference_paths = tensors["reference_paths"].float()
         start_direction_vector = tensors["start_direction_vector"].float()
@@ -151,7 +153,7 @@ class CognitiveMapPredictionModel(torch.nn.Module):
         predictor: InstructionCognitiveMapPredictor,
     ) -> None:
         super().__init__()
-        self.vln_bert = vln_bert
+        self.vln_bert: Any = vln_bert
         self.predictor = predictor
 
     def forward(
@@ -405,8 +407,12 @@ def _iterate_batches(
 
 
 def _args_to_dict(args: object) -> Dict[str, object]:
-    if hasattr(args, "as_dict"):
-        return args.as_dict()
+    as_dict = getattr(args, "as_dict", None)
+    if callable(as_dict):
+        values = as_dict()
+        if not isinstance(values, dict):
+            raise TypeError("args.as_dict() must return a dict")
+        return values
     return vars(args)
 
 
@@ -427,6 +433,8 @@ def save_checkpoint(
         if hasattr(unwrapped_model, "predictor")
         else unwrapped_model
     )
+    if not isinstance(predictor, torch.nn.Module):
+        raise TypeError("model predictor must be a torch.nn.Module")
     map_predictor = predictor.state_dict()
     torch.save(
         {
@@ -443,13 +451,15 @@ def save_checkpoint(
     )
 
 
-def _load_predictor_state_dict(checkpoint_path: Path) -> Dict[str, torch.Tensor]:
+def _load_predictor_state_dict(
+    checkpoint_path: Path,
+) -> OrderedDict[str, torch.Tensor]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     if "map_predictor" in checkpoint:
-        return checkpoint["map_predictor"]
+        return OrderedDict(checkpoint["map_predictor"])
 
     state_dict = checkpoint.get("state_dict", checkpoint)
-    predictor_state_dict = {}
+    predictor_state_dict: OrderedDict[str, torch.Tensor] = OrderedDict()
     for key, value in state_dict.items():
         normalized_key = key
         if normalized_key.startswith("module."):
@@ -484,7 +494,7 @@ def _build_dataloader(
         limit=limit,
     )
     dataset = CognitiveMapPredictorDataset(examples)
-    loader_kwargs = {}
+    loader_kwargs: Dict[str, Any] = {}
     if num_workers > 0:
         loader_kwargs["multiprocessing_context"] = "spawn"
     return DataLoader(
@@ -532,8 +542,15 @@ class TrainMapPredictorArgs(Tap):
     skip_ground_truth: bool = False
 
 
-def parse_args(argv: Optional[Iterable[str]] = None) -> TrainMapPredictorArgs:
+def parse_args(argv: Optional[Sequence[str]] = None) -> TrainMapPredictorArgs:
     return TrainMapPredictorArgs(underscores_to_dashes=True).parse_args(argv)
+
+
+def _dataset_len(loader: DataLoader) -> int:
+    dataset = loader.dataset
+    if not isinstance(dataset, Sized):
+        raise TypeError("DataLoader dataset must define __len__")
+    return len(dataset)
 
 
 def _select_visualize_example(args: TrainMapPredictorArgs) -> PredictorExample:
@@ -650,11 +667,9 @@ def visualize_prediction(args: TrainMapPredictorArgs) -> None:
     )
 
     if not args.skip_ground_truth:
-        ground_truth_map = build_cognitive_map(
+        ground_truth_map = load_cached_cognitive_map(
             example.scene_id,
-            example.instruction_text,
-            example.reference_path,
-            start_rotation_to_direction_vector(example.start_rotation),
+            example.cache_id,
         )
         ground_truth_path = output_dir / "ground_truth.png"
         ground_truth_map.visualize(
@@ -669,7 +684,7 @@ def visualize_prediction(args: TrainMapPredictorArgs) -> None:
         print(f"saved_ground_truth={ground_truth_path}")
 
 
-def main(argv: Optional[Iterable[str]] = None) -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
     if args.mode == "visualize":
         visualize_prediction(args)
@@ -734,9 +749,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             shuffle=False,
         )
 
-    print(f"Train examples: {len(train_loader.dataset)}")
+    print(f"Train examples: {_dataset_len(train_loader)}")
     if val_loader is not None:
-        print(f"Val examples: {len(val_loader.dataset)}")
+        print(f"Val examples: {_dataset_len(val_loader)}")
 
     best_metric = float("inf")
     for epoch in range(1, args.epochs + 1):

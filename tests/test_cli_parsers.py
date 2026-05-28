@@ -193,28 +193,30 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
 
     pretrain_dataset = importlib.import_module("data.dataset")
 
-    map_path = tmp_path / "scene" / "42_0.npz"
-    map_path.parent.mkdir()
-    map_path.touch()
     captured = {}
 
-    class FakeCognitiveGridMap:
-        @staticmethod
-        def load(path):
-            captured["path"] = path
-            return "loaded-map"
-
-    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
-    monkeypatch.setattr(pretrain_dataset, "CognitiveGridMap", FakeCognitiveGridMap)
-    monkeypatch.setattr(
-        pretrain_dataset,
-        "cognitive_map_to_tensors",
-        lambda cognitive_map: {
-            "grid": cognitive_map,
+    def fake_cached_cognitive_map_to_tensors(
+        scene_id,
+        cache_id,
+        cache_dir,
+        random_rotation_augmentation,
+    ):
+        captured["scene_id"] = scene_id
+        captured["cache_id"] = cache_id
+        captured["cache_dir"] = cache_dir
+        captured["random_rotation_augmentation"] = random_rotation_augmentation
+        return {
+            "grid": "loaded-grid",
             "reference_paths": "reference_paths",
             "start_direction_vector": "direction",
             "start_position": "position",
-        },
+        }
+
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "cached_cognitive_map_to_tensors",
+        fake_cached_cognitive_map_to_tensors,
     )
 
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
@@ -227,9 +229,14 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         }
     )
 
-    assert captured["path"] == map_path
+    assert captured == {
+        "scene_id": "scene",
+        "cache_id": "42_0",
+        "cache_dir": tmp_path,
+        "random_rotation_augmentation": False,
+    }
     assert outputs == {
-        "cognitive_maps": "loaded-map",
+        "cognitive_maps": "loaded-grid",
         "reference_paths": "reference_paths",
         "start_direction_vectors": "direction",
         "start_positions": "position",
@@ -248,7 +255,7 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
         pretrain_dataset.ReverieTextPathData
     )
 
-    with pytest.raises(FileNotFoundError, match="Missing pretrain cognitive map"):
+    with pytest.raises(FileNotFoundError, match="Missing cached cognitive map"):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
 
@@ -298,27 +305,30 @@ def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
         sys.path.insert(0, str(pretrain_src))
 
     pretrain_dataset = importlib.import_module("data.dataset")
-    map_path = tmp_path / "scene" / "42_0.npz"
-    map_path.parent.mkdir()
-    map_path.touch()
+    captured = {}
 
-    class FakeCognitiveGridMap:
-        @staticmethod
-        def load(path):
-            return "loaded-map"
-
-    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
-    monkeypatch.setattr(pretrain_dataset, "CognitiveGridMap", FakeCognitiveGridMap)
-    monkeypatch.setattr(pretrain_dataset.random, "randrange", lambda upper: 1)
-    monkeypatch.setattr(
-        pretrain_dataset,
-        "cognitive_map_to_tensors",
-        lambda cognitive_map: {
+    def fake_cached_cognitive_map_to_tensors(
+        scene_id,
+        cache_id,
+        cache_dir,
+        random_rotation_augmentation,
+    ):
+        captured["scene_id"] = scene_id
+        captured["cache_id"] = cache_id
+        captured["cache_dir"] = cache_dir
+        captured["random_rotation_augmentation"] = random_rotation_augmentation
+        return {
             "grid": torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100),
             "reference_paths": torch.tensor([[10.0, 20.0]], dtype=torch.float32),
             "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
             "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
-        },
+        }
+
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "cached_cognitive_map_to_tensors",
+        fake_cached_cognitive_map_to_tensors,
     )
 
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
@@ -333,6 +343,12 @@ def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
         }
     )
 
-    assert outputs["reference_paths"].tolist() == [[80.0, 10.0]]
-    assert outputs["start_positions"].tolist() == [80.0, 10.0]
-    assert outputs["start_direction_vectors"].tolist() == [2.0, -1.0]
+    assert captured == {
+        "scene_id": "scene",
+        "cache_id": "42_0",
+        "cache_dir": tmp_path,
+        "random_rotation_augmentation": True,
+    }
+    assert outputs["reference_paths"].tolist() == [[10.0, 20.0]]
+    assert outputs["start_positions"].tolist() == [10.0, 20.0]
+    assert outputs["start_direction_vectors"].tolist() == [1.0, 2.0]

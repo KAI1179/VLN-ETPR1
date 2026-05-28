@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, Optional
 
 import torch
+from prior import DATA_DIR
 from prior._coords import meters_to_grid
 from prior.constants import (
     COLS,
@@ -19,6 +21,8 @@ from prior.grid_map import CognitiveGridMap
 
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
 REFERENCE_PATH_LENGTH = _REFERENCE_PATH_LENGTH
+VLNCE_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps"
+ETP_R1_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
 
 SIZE = ROWS
 """Number of rows and cols in the grid map."""
@@ -29,11 +33,6 @@ if ROWS != COLS:
 
 def _scene_key(scene_id: str) -> str:
     return os.path.splitext(os.path.basename(scene_id))[0]
-
-
-def _instruction_text(episode) -> str:
-    instruction = episode.instruction
-    return getattr(instruction, "instruction_text", instruction)
 
 
 def _reference_path_to_grid_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
@@ -66,6 +65,44 @@ def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
         ),
         "start_position": _start_position_tensor(cognitive_map),
     }
+
+
+def cognitive_map_cache_path(
+    scene_id: str,
+    cache_id: str,
+    cache_dir: Optional[Path] = None,
+) -> Path:
+    if cache_dir is None:
+        cache_dir = VLNCE_COGNITIVE_MAP_DIR
+    return cache_dir / _scene_key(scene_id) / f"{cache_id}.npz"
+
+
+def load_cached_cognitive_map(
+    scene_id: str,
+    cache_id: str,
+    cache_dir: Optional[Path] = None,
+) -> CognitiveGridMap:
+    cache_path = cognitive_map_cache_path(scene_id, cache_id, cache_dir)
+    if not cache_path.is_file():
+        raise FileNotFoundError(f"Missing cached cognitive map: {cache_path}")
+    return CognitiveGridMap.load(cache_path)
+
+
+def cached_cognitive_map_to_tensors(
+    scene_id: str,
+    cache_id: str,
+    cache_dir: Optional[Path] = None,
+    random_rotation_augmentation: bool = False,
+) -> Dict[str, torch.Tensor]:
+    tensors = cognitive_map_to_tensors(
+        load_cached_cognitive_map(scene_id, cache_id, cache_dir)
+    )
+    if random_rotation_augmentation:
+        tensors = rotate_cognitive_map_tensors_by_right_angle(
+            tensors,
+            random.randrange(4),
+        )
+    return tensors
 
 
 def _rotate_grid_points_by_right_angle(
@@ -126,23 +163,6 @@ def rotate_cognitive_map_tensors_by_right_angle(
     return rotated
 
 
-def build_cognitive_map(
-    scene_id: str,
-    instruction: str,
-    reference_path: List[List[float]],
-    start_direction_vector,
-    rotation_augmentation: int | None = None,
-) -> CognitiveGridMap:
-    relevant_boxes = SceneSemanticBoxes.from_scene_id(_scene_key(scene_id)).relevant_to(
-        instruction,
-        reference_path,
-        start_direction_vector=start_direction_vector,
-    )
-    if rotation_augmentation is not None:
-        relevant_boxes = relevant_boxes.rotate_by_right_angle(rotation_augmentation)
-    return relevant_boxes.to_cognitive_map()
-
-
 def start_metadata_to_tensors(scene_id: str, start_position, start_rotation):
     """Build inference-safe start metadata without using the reference path."""
     scene_key = _scene_key(scene_id)
@@ -167,36 +187,4 @@ def start_metadata_for_episode(episode):
         episode.scene_id,
         episode.start_position,
         episode.start_rotation,
-    )
-
-
-def build_cognitive_map_for_episode(
-    episode,
-    random_rotation_augmentation: bool = False,
-) -> CognitiveGridMap:
-    return build_cognitive_map(
-        episode.scene_id,
-        _instruction_text(episode),
-        episode.reference_path,
-        start_rotation_to_direction_vector(episode.start_rotation),
-        rotation_augmentation=(
-            random.randrange(4) if random_rotation_augmentation else None
-        ),
-    )
-
-
-def build_cognitive_map_for_annotation(
-    annotation,
-    connectivity_dir=None,
-) -> CognitiveGridMap:
-    positions = (
-        annotation.positions()
-        if connectivity_dir is None
-        else annotation.positions(connectivity_dir)
-    )
-    return build_cognitive_map(
-        annotation.scan,
-        annotation.instruction,
-        positions,
-        annotation.start_direction_vector,
     )
