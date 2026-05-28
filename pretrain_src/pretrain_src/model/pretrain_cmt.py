@@ -281,7 +281,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             txt_masks = gen_seq_masks(batch["txt_lens"])
             txt_embeds = self.bert.lang_encoder(txt_embeds, txt_masks)
-            map_logits, pred_direction_vectors = self.map_predictor(
+            map_logits, pred_reference_path = self.map_predictor(
                 txt_embeds,
                 txt_masks,
                 start_direction_vectors=batch["start_direction_vectors"],
@@ -289,7 +289,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             map_tokens, map_token_masks = self.map_encoder(
                 torch.sigmoid(map_logits),
-                pred_direction_vectors,
+                pred_reference_path,
                 batch["start_direction_vectors"],
                 batch["start_positions"],
             )
@@ -301,7 +301,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                     reduction="mean",
                 )
                 direction_loss = F.mse_loss(
-                    pred_direction_vectors,
+                    pred_reference_path,
                     batch["reference_paths"],
                 )
                 map_loss = self.map_loss_weight * (map_loss + 0.1 * direction_loss)

@@ -109,7 +109,7 @@ class CognitiveMapPredictorDataset(Dataset):
         tensors = cached_cognitive_map_to_tensors(
             example.scene_id,
             example.cache_id,
-            random_rotation_augmentation=True,  # TODO: False?
+            random_rotation_augmentation=True,
         )
         grid = tensors["grid"].float()
         reference_paths = tensors["reference_paths"].float()
