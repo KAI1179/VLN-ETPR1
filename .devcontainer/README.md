@@ -95,6 +95,12 @@ python copy_extra_files.py
 rm -rf extra_files extra_files.zip
 ```
 
+## Model Download
+
+```shell
+cd ETP-R1/data/models/ && hfd.sh t5-large
+```
+
 ## Working With uv
 
 ### Adding Packages
