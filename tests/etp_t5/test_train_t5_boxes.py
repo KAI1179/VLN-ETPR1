@@ -506,13 +506,15 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     assert "json_valid_rate" not in metrics
     assert "category_aware_raster_support" not in metrics
 
-    valid_artifact = json.loads((tmp_path / "valid_example.json").read_text())
+    artifact_dir = tmp_path / "artifacts"
+    valid_artifact = json.loads((artifact_dir / "valid_example.json").read_text())
     invalid_schema_artifact = json.loads(
-        (tmp_path / "invalid_schema_example.json").read_text()
+        (artifact_dir / "invalid_schema_example.json").read_text()
     )
-    malformed_artifact = json.loads((tmp_path / "malformed_example.json").read_text())
-    array_artifact = json.loads((tmp_path / "json_array_example.json").read_text())
-    string_artifact = json.loads((tmp_path / "json_string_example.json").read_text())
+    malformed_artifact = json.loads((artifact_dir / "malformed_example.json").read_text())
+    array_artifact = json.loads((artifact_dir / "json_array_example.json").read_text())
+    string_artifact = json.loads((artifact_dir / "json_string_example.json").read_text())
+    assert not (tmp_path / "valid_example.json").exists()
     assert valid_artifact["objects"][0]["category"] == "chair"
     assert invalid_schema_artifact["raw_text"].startswith('{"objects"')
     assert "unknown object category" in invalid_schema_artifact["error"]
@@ -563,12 +565,17 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
 
 
 def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp_path):
-    monkeypatch.setattr(train_t5_boxes, "load_t5_boxes_examples", lambda *args, **kwargs: [])
+    calls = []
+
+    def fake_load(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(train_t5_boxes, "load_t5_boxes_examples", fake_load)
     args = argparse.Namespace(
         model_name_or_path="unused",
         output_dir=str(tmp_path),
         dataset="R2R",
-        splits=["train"],
         max_input_length=32,
         max_output_length=64,
         batch_size=2,
@@ -581,6 +588,39 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
 
     with pytest.raises(ValueError, match="No T5-Boxes training examples"):
         train_t5_boxes.train_model(args)
+    assert list(calls[0][0][1]) == ["train"]
+
+
+def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_load(dataset, splits, limit=None, quiet=False):
+        calls.append(("load", dataset, list(splits), limit, quiet))
+        return ["example"]
+
+    def fake_evaluate(model, tokenizer, dataset, args):
+        calls.append(("eval", args.output_dir, list(dataset)))
+        return {"examples": 1.0}
+
+    monkeypatch.setattr(
+        train_t5_boxes,
+        "_load_seq2seq_model_and_tokenizer",
+        lambda path: ("model", "tokenizer"),
+    )
+    monkeypatch.setattr(train_t5_boxes, "load_t5_boxes_examples", fake_load)
+    monkeypatch.setattr(train_t5_boxes, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(train_t5_boxes, "T5BoxesDataset", lambda examples: examples)
+
+    metrics = train_t5_boxes.main(
+        ["eval", "--output-dir", str(tmp_path), "--limit", "1", "--quiet"]
+    )
+
+    assert metrics == {"examples": 1.0}
+    assert calls == [
+        ("load", "R2R", ["val_seen", "val_unseen"], 1, True),
+        ("eval", str(tmp_path), ["example"]),
+    ]
+    assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
 
 
 def test_cli_parser_supports_train_and_eval_modes():
@@ -593,8 +633,6 @@ def test_cli_parser_supports_train_and_eval_modes():
             "out",
             "--dataset",
             "RxR",
-            "--splits",
-            "train,val_seen",
             "--max-input-length",
             "128",
             "--max-output-length",
@@ -618,7 +656,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.model_name_or_path == "tiny-t5"
     assert train_args.output_dir == "out"
     assert train_args.dataset == "RxR"
-    assert train_args.splits == ["train", "val_seen"]
+    assert not hasattr(train_args, "splits")
     assert train_args.max_input_length == 128
     assert train_args.max_output_length == 256
     assert train_args.batch_size == 4
@@ -630,6 +668,11 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == "data/models/t5-large"
     assert eval_args.quiet is False
+
+
+def test_cli_parser_rejects_splits_arg():
+    with pytest.raises(SystemExit):
+        train_t5_boxes.parse_args(["train", "--splits", "train,val_seen"])
 
 
 def test_cli_device_defaults_to_cuda_when_available_else_cpu(monkeypatch):

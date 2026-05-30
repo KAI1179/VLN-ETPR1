@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Seque
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
-from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
+from prior.vlnce import VLNCEEpisodeEntry
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
 
@@ -27,6 +27,8 @@ from .boxes_schema import (
 )
 
 DEFAULT_MODEL_NAME_OR_PATH = "data/models/t5-large"
+TRAIN_SPLITS = ("train",)
+EVAL_SPLITS = ("val_seen", "val_unseen")
 AGGREGATE_METRIC_KEYS: Dict[str, str] = {
     "category_precision": "category_precision",
     "category_recall": "category_recall",
@@ -193,7 +195,7 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
     quiet = bool(getattr(args, "quiet", False))
     examples = load_t5_boxes_examples(
         args.dataset,
-        args.splits,
+        TRAIN_SPLITS,
         limit=args.limit,
         quiet=quiet,
     )
@@ -202,10 +204,8 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
 
     import torch
     from torch.utils.data import DataLoader
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+    model, tokenizer = _load_seq2seq_model_and_tokenizer(args.model_name_or_path)
     device = torch.device(args.device)
     model.to(device)
 
@@ -309,7 +309,7 @@ def evaluate_model(
                     pred_spec = parse_t5_boxes_json(generated_text)
                 except Exception as exc:
                     write_prediction_artifact(
-                        args.output_dir,
+                        _artifact_dir(args.output_dir),
                         item["example_id"],
                         invalid_text=generated_text,
                         error=exc,
@@ -318,7 +318,7 @@ def evaluate_model(
 
                 schema_valid_count += 1
                 write_prediction_artifact(
-                    args.output_dir,
+                    _artifact_dir(args.output_dir),
                     item["example_id"],
                     valid_spec=pred_spec,
                 )
@@ -372,6 +372,14 @@ def save_t5_boxes_checkpoint(
     tokenizer.save_pretrained(output_path)
 
 
+def _load_seq2seq_model_and_tokenizer(model_name_or_path: str) -> Tuple[Any, Any]:
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path)
+    return model, tokenizer
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -385,13 +393,10 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     if args.mode == "train":
         return train_model(args)
 
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+    model, tokenizer = _load_seq2seq_model_and_tokenizer(args.model_name_or_path)
     examples = load_t5_boxes_examples(
         args.dataset,
-        args.splits,
+        EVAL_SPLITS,
         limit=args.limit,
         quiet=args.quiet,
     )
@@ -412,7 +417,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--output-dir", default=Path("./data/logs/t5/"))
     parser.add_argument("--dataset", default="R2R", choices=["R2R", "RxR"])
-    parser.add_argument("--splits", type=_split_csv, default=list(DEFAULT_SPLITS))
     parser.add_argument("--max-input-length", type=int, default=512)
     parser.add_argument("--max-output-length", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -421,10 +425,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
     parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
-
-
-def _split_csv(value: str) -> List[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _mask_pad_tokens(labels: Any, pad_token_id: Optional[int]) -> Any:
@@ -454,6 +454,10 @@ def _level_local_start_position(example: T5BoxesExample) -> Sequence[float]:
     if example.target_relevant.reference_path:
         return example.target_relevant.reference_path[0]
     return example.start_position
+
+
+def _artifact_dir(output_dir: str | Path) -> Path:
+    return Path(output_dir) / "artifacts"
 
 
 def _model_batch(
