@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Sized
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    TypedDict,
+)
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
@@ -19,9 +31,9 @@ from .boxes_metrics import evaluate_t5_boxes_prediction
 from .boxes_schema import (
     T5BoxesSpec,
     build_t5_boxes_input,
-    parse_t5_boxes_json,
+    parse_t5_boxes_text,
     relevant_semantic_boxes_to_spec,
-    spec_to_json,
+    spec_to_t5_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
@@ -131,7 +143,7 @@ class T5BoxesDataset(Dataset):
                 _level_local_start_position(example),
                 example.start_direction,
             ),
-            "target_text": spec_to_json(example.target_spec),
+            "target_text": spec_to_t5_boxes_text(example.target_spec),
             "example_id": example.example_id,
             "target_spec": example.target_spec,
             "target_relevant": example.target_relevant,
@@ -242,8 +254,13 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             set_postfix = getattr(progress_loader, "set_postfix", None)
             if callable(set_postfix):
                 set_postfix(loss=float(loss.detach().cpu()))
+        save_t5_boxes_checkpoint(
+            model,
+            tokenizer,
+            _checkpoint_dir(args.output_dir, f"epoch-{epoch + 1}"),
+        )
 
-    save_t5_boxes_checkpoint(model, tokenizer, args.output_dir)
+    save_t5_boxes_checkpoint(model, tokenizer, _checkpoint_dir(args.output_dir, "final"))
     return {"train_loss": total_loss / steps if steps else 0.0, "steps": float(steps)}
 
 
@@ -280,7 +297,6 @@ def evaluate_model(
 
     metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
     example_count = 0
-    json_parse_count = 0
     schema_valid_count = 0
     entity_valid_rate_sum = 0.0
     entity_valid_support_sum = 0.0
@@ -296,17 +312,14 @@ def evaluate_model(
 
             for item, generated_text in zip(batch["items"], decoded):
                 example_count += 1
-                json_parsed, parsed_json = _parse_json_value(generated_text)
-                if json_parsed:
-                    json_parse_count += 1
                 entity_valid_rate, entity_valid_support = _entity_valid_stats(
-                    parsed_json if json_parsed else None
+                    generated_text
                 )
                 entity_valid_rate_sum += entity_valid_rate
                 entity_valid_support_sum += entity_valid_support
 
                 try:
-                    pred_spec = parse_t5_boxes_json(generated_text)
+                    pred_spec = parse_t5_boxes_text(generated_text)
                 except Exception as exc:
                     write_prediction_artifact(
                         _artifact_dir(args.output_dir),
@@ -348,12 +361,10 @@ def evaluate_model(
         else {}
     )
     metrics["examples"] = float(example_count)
-    metrics["json_parse_rate"] = (
-        float(json_parse_count) / float(example_count) if example_count else 0.0
-    )
     metrics["schema_valid_rate"] = (
         float(schema_valid_count) / float(example_count) if example_count else 0.0
     )
+    metrics["format_parse_rate"] = metrics["schema_valid_rate"]
     metrics["entity_valid_rate"] = (
         entity_valid_rate_sum / float(example_count) if example_count else 0.0
     )
@@ -420,7 +431,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-input-length", type=int, default=512)
     parser.add_argument("--max-output-length", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
@@ -460,6 +471,10 @@ def _artifact_dir(output_dir: str | Path) -> Path:
     return Path(output_dir) / "artifacts"
 
 
+def _checkpoint_dir(output_dir: str | Path, name: str) -> Path:
+    return Path(output_dir) / "checkpoints" / name
+
+
 def _model_batch(
     batch: Dict[str, Any],
     device: Any,
@@ -479,7 +494,7 @@ def _model_batch(
 def _target_text(item: T5BoxesItem) -> str:
     if "target_text" in item:
         return item["target_text"]
-    return spec_to_json(item["target_spec"])
+    return spec_to_t5_boxes_text(item["target_spec"])
 
 
 def _iter_collated_batches(
@@ -519,46 +534,30 @@ def _batch_count(dataset: Iterable[Any], batch_size: int) -> Optional[int]:
     return (item_count + batch_size - 1) // batch_size
 
 
-def _parse_json_value(text: str) -> Tuple[bool, Any]:
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return False, None
-    return True, payload
-
-
-def _entity_valid_stats(payload: Any) -> Tuple[float, int]:
-    if not isinstance(payload, dict):
-        return 0.0, 0
-
-    object_items = payload.get("objects", [])
-    region_items = payload.get("regions", [])
-    if not isinstance(object_items, list):
-        object_items = []
-    if not isinstance(region_items, list):
-        region_items = []
-
-    total_entities = len(object_items) + len(region_items)
-    if total_entities == 0:
+def _entity_valid_stats(text: str) -> Tuple[float, int]:
+    stripped = text.strip()
+    if stripped == "none" or stripped == "":
         try:
-            parse_t5_boxes_json(json.dumps(payload, ensure_ascii=True))
+            parse_t5_boxes_text(stripped)
         except Exception:
             return 0.0, 0
         return 1.0, 0
 
+    raw_entities = re.findall(r"\[[^\[\]]+\]", stripped)
+    total_entities = len(raw_entities)
+    if total_entities == 0:
+        return 0.0, 0
+
     valid_entities = 0
-    for item in object_items:
-        if _entity_is_valid({"objects": [item], "regions": []}):
-            valid_entities += 1
-    for item in region_items:
-        if _entity_is_valid({"objects": [], "regions": [item]}):
+    for raw_entity in raw_entities:
+        if _entity_is_valid(raw_entity):
             valid_entities += 1
     return float(valid_entities) / float(total_entities), total_entities
 
 
-def _entity_is_valid(payload: Dict[str, Any]) -> bool:
+def _entity_is_valid(text: str) -> bool:
     try:
-        parse_t5_boxes_json(json.dumps(payload, ensure_ascii=True))
+        parse_t5_boxes_text(text)
     except Exception:
         return False
     return True

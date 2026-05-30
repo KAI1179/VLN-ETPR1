@@ -8,9 +8,9 @@ from .boxes_schema import (
     T5BoxesSpec,
     T5BoxesValidationError,
     build_t5_boxes_input,
-    parse_t5_boxes_json,
+    parse_t5_boxes_text,
     relevant_semantic_boxes_to_spec,
-    spec_to_json,
+    spec_to_t5_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
@@ -23,9 +23,9 @@ __all__ = [
     "T5BoxesSpec",
     "T5BoxesValidationError",
     "build_t5_boxes_input",
-    "parse_t5_boxes_json",
+    "parse_t5_boxes_text",
     "relevant_semantic_boxes_to_spec",
-    "spec_to_json",
+    "spec_to_t5_boxes_text",
     "spec_to_relevant_semantic_boxes",
     "write_prediction_artifact",
 ]

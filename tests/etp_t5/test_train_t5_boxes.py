@@ -7,7 +7,7 @@ import prior.bbox as bbox
 from vlnce_baselines.models.etp_t5.boxes_schema import (
     ObjectBoxSpec,
     T5BoxesSpec,
-    spec_to_json,
+    parse_t5_boxes_text,
 )
 from vlnce_baselines.models.etp_t5 import train_t5_boxes
 
@@ -199,16 +199,17 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
     item = train_t5_boxes.T5BoxesDataset([example])[0]
 
     assert item["example_id"] == "RxR_val_seen_9"
-    assert json.loads(item["input_text"]) == {
-        "dataset": "RxR",
-        "start_position": [0.0, 0.0],
-        "start_direction": [1.0, 0.0],
-        "instruction": "Walk into the living room.",
-    }
-    assert json.loads(item["target_text"]) == json.loads(spec_to_json(example.target_spec))
+    assert item["input_text"] == (
+        "dataset RxR | start x = 0.0 | start z = 0.0 | "
+        "direction x = 1.0 | direction z = 0.0 | "
+        "instruction Walk into the living room."
+    )
+    assert parse_t5_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
     assert "scene" not in item["input_text"].lower()
+    assert "{" not in item["input_text"]
+    assert "{" not in item["target_text"]
 
 
 def test_t5_boxes_dataset_item_uses_level_local_start_position():
@@ -228,7 +229,7 @@ def test_t5_boxes_dataset_item_uses_level_local_start_position():
 
     item = train_t5_boxes.T5BoxesDataset([example])[0]
 
-    assert json.loads(item["input_text"])["start_position"] == [1.2, 3.0]
+    assert "start x = 1.2 | start z = 3.0" in item["input_text"]
 
 
 class _BatchEncoding(dict):
@@ -411,11 +412,11 @@ class _EvalTokenizer:
 
     def __init__(self):
         self._decoded = [
-            '{"objects":[{"category":"chair","center":[1,2],"half_extents":[0.5,0.5],"rotation":0}],"regions":[]}',
-            '{"objects":[{"category":"chair","center":[1,2],"half_extents":[0.5,0.5],"rotation":0},{"category":"alien","center":[1,2],"half_extents":[0.5,0.5],"rotation":0}],"regions":[]}',
-            "not-json",
-            "[]",
-            '"text"',
+            "[ object chair | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ]",
+            "[ object chair | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ] [ object alien | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ]",
+            "not parseable",
+            "none",
+            "[ region circulation | min x = 0 | min z = 0 | max x = 0 | max z = 1 ]",
         ]
         self._decode_offset = 0
 
@@ -476,7 +477,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
         return {
             "category_f1": float(len(pred_spec.objects)),
-            "category_aware_raster_support": 2,
+            "category_aware_raster_support": 2 if pred_spec.objects else 0,
         }
 
     monkeypatch.setattr(train_t5_boxes, "evaluate_t5_boxes_prediction", fake_metrics)
@@ -497,33 +498,34 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     )
 
     assert metrics["examples"] == 5
-    assert metrics["json_parse_rate"] == pytest.approx(4 / 5)
-    assert metrics["schema_valid_rate"] == pytest.approx(1 / 5)
-    assert metrics["entity_valid_rate"] == pytest.approx(0.3)
-    assert metrics["entity_valid_support_mean"] == pytest.approx(0.6)
+    assert metrics["format_parse_rate"] == pytest.approx(2 / 5)
+    assert metrics["schema_valid_rate"] == pytest.approx(2 / 5)
+    assert metrics["entity_valid_rate"] == pytest.approx(0.5)
+    assert metrics["entity_valid_support_mean"] == pytest.approx(0.8)
     assert metrics["category_f1"] == pytest.approx(1 / 5)
     assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
-    assert "json_valid_rate" not in metrics
+    assert "json_parse_rate" not in metrics
     assert "category_aware_raster_support" not in metrics
 
     artifact_dir = tmp_path / "artifacts"
-    valid_artifact = json.loads((artifact_dir / "valid_example.json").read_text())
-    invalid_schema_artifact = json.loads(
-        (artifact_dir / "invalid_schema_example.json").read_text()
+    valid_artifact = (artifact_dir / "valid_example.txt").read_text()
+    invalid_schema_artifact = (
+        artifact_dir / "invalid_schema_example.txt"
+    ).read_text()
+    malformed_artifact = (artifact_dir / "malformed_example.txt").read_text()
+    array_artifact = (artifact_dir / "json_array_example.txt").read_text()
+    string_artifact = (artifact_dir / "json_string_example.txt").read_text()
+    assert not (tmp_path / "valid_example.txt").exists()
+    assert valid_artifact.startswith("[ object chair")
+    assert valid_artifact.endswith("\n")
+    assert invalid_schema_artifact.startswith("[ object chair")
+    assert "# error: unknown object category" in invalid_schema_artifact
+    assert malformed_artifact == (
+        "not parseable\n\n# error: unparsed text outside entities\n"
     )
-    malformed_artifact = json.loads((artifact_dir / "malformed_example.json").read_text())
-    array_artifact = json.loads((artifact_dir / "json_array_example.json").read_text())
-    string_artifact = json.loads((artifact_dir / "json_string_example.json").read_text())
-    assert not (tmp_path / "valid_example.json").exists()
-    assert valid_artifact["objects"][0]["category"] == "chair"
-    assert invalid_schema_artifact["raw_text"].startswith('{"objects"')
-    assert "unknown object category" in invalid_schema_artifact["error"]
-    assert malformed_artifact["raw_text"] == "not-json"
-    assert "malformed JSON" in malformed_artifact["error"]
-    assert array_artifact["raw_text"] == "[]"
-    assert "top-level JSON must be an object" in array_artifact["error"]
-    assert string_artifact["raw_text"] == '"text"'
-    assert "top-level JSON must be an object" in string_artifact["error"]
+    assert array_artifact == "none\n"
+    assert string_artifact.startswith("[ region circulation")
+    assert "# error: region.max must be greater than min" in string_artifact
 
 
 def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
@@ -534,7 +536,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
 
     class InvalidTokenizer(_EvalTokenizer):
         def __init__(self):
-            self._decoded = ["not-json"] * 5
+            self._decoded = ["not parseable"] * 5
             self._decode_offset = 0
 
     monkeypatch.setattr(train_t5_boxes, "evaluate_t5_boxes_prediction", fake_metrics)
@@ -556,6 +558,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
 
     assert metrics["examples"] == 5
     assert metrics["schema_valid_rate"] == 0.0
+    assert metrics["format_parse_rate"] == 0.0
     assert metrics["category_precision"] == 0.0
     assert metrics["category_recall"] == 0.0
     assert metrics["category_f1"] == 0.0
@@ -589,6 +592,15 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
     with pytest.raises(ValueError, match="No T5-Boxes training examples"):
         train_t5_boxes.train_model(args)
     assert list(calls[0][0][1]) == ["train"]
+
+
+def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
+    assert train_t5_boxes._checkpoint_dir(tmp_path, "epoch-1") == (
+        tmp_path / "checkpoints" / "epoch-1"
+    )
+    assert train_t5_boxes._checkpoint_dir(tmp_path, "final") == (
+        tmp_path / "checkpoints" / "final"
+    )
 
 
 def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):

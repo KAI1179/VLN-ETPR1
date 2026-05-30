@@ -1,13 +1,12 @@
-"""Structured T5-Boxes JSON schema and semantic-box conversion helpers."""
+"""Structured T5-Boxes schema and semantic-box conversion helpers."""
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import prior.bbox as bbox
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
@@ -24,7 +23,7 @@ REGION_CATEGORY_TO_ID = {
 
 
 class T5BoxesValidationError(ValueError):
-    """Raised when generated T5-Boxes JSON fails deterministic validation."""
+    """Raised when generated T5-Boxes text fails deterministic validation."""
 
 
 @dataclass(frozen=True)
@@ -58,22 +57,21 @@ def build_t5_boxes_input(
     start_position: Sequence[float],
     start_direction: Sequence[float],
 ) -> str:
-    """Build the scene-anonymous T5-Boxes prompt payload.
+    """Build the scene-anonymous T5-Boxes input text.
 
     ``start_position`` may be level-local ``(x, z)`` or scene-style
-    ``(x, y, z)``; the prompt always stores level-local/projected ``[x, z]``.
+    ``(x, y, z)``; the text always stores level-local/projected ``(x, z)``.
     """
-    payload = {
-        "dataset": str(dataset_tag),
-        "start_position": [
-            _round_coord(value) for value in _xz_point(start_position, "start_position")
-        ],
-        "start_direction": [
-            _round_rotation(value) for value in _point2(start_direction)
-        ],
-        "instruction": str(instruction),
-    }
-    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    start_x, start_z = _xz_point(start_position, "start_position")
+    direction_x, direction_z = _point2(start_direction)
+    return (
+        f"dataset {dataset_tag} | "
+        f"start x = {_round_coord(start_x)} | "
+        f"start z = {_round_coord(start_z)} | "
+        f"direction x = {_round_rotation(direction_x)} | "
+        f"direction z = {_round_rotation(direction_z)} | "
+        f"instruction {instruction}"
+    )
 
 
 def relevant_semantic_boxes_to_spec(
@@ -165,66 +163,70 @@ def spec_to_relevant_semantic_boxes(
     )
 
 
-def parse_t5_boxes_json(text: str) -> T5BoxesSpec:
-    """Parse and validate a strict T5-Boxes JSON prediction."""
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise T5BoxesValidationError(f"malformed JSON: {exc.msg}") from exc
-
-    if not isinstance(payload, dict):
-        raise T5BoxesValidationError("top-level JSON must be an object")
-    if set(payload.keys()) != {"objects", "regions"}:
-        raise T5BoxesValidationError(
-            "top-level JSON must contain exactly objects and regions"
+def spec_to_t5_boxes_text(spec: T5BoxesSpec) -> str:
+    """Serialize a spec in the T5-friendly linear grammar."""
+    normalized = _normalize_spec(spec)
+    parts: List[str] = []
+    for item in normalized.objects:
+        parts.append(
+            "[ "
+            f"object {item.category} | "
+            f"center x = {item.center[0]} | "
+            f"center z = {item.center[1]} | "
+            f"half x = {item.half_extents[0]} | "
+            f"half z = {item.half_extents[1]} | "
+            f"rotation = {item.rotation}"
+            " ]"
         )
-    if not isinstance(payload["objects"], list):
-        raise T5BoxesValidationError("objects must be an array")
-    if not isinstance(payload["regions"], list):
-        raise T5BoxesValidationError("regions must be an array")
+    for item in normalized.regions:
+        parts.append(
+            "[ "
+            f"region {item.category} | "
+            f"min x = {item.min[0]} | "
+            f"min z = {item.min[1]} | "
+            f"max x = {item.max[0]} | "
+            f"max z = {item.max[1]}"
+            " ]"
+        )
+    return " ".join(parts) if parts else "none"
 
+
+def parse_t5_boxes_text(text: str) -> T5BoxesSpec:
+    """Parse and validate the T5-friendly linear grammar."""
+    stripped = text.strip()
+    if stripped == "none" or stripped == "":
+        return T5BoxesSpec(objects=(), regions=())
+
+    groups = list(re.finditer(r"\[([^\[\]]+)\]", stripped))
+    if not groups:
+        raise T5BoxesValidationError("unparsed text outside entities")
+
+    outside = re.sub(r"\[([^\[\]]+)\]", "", stripped).strip()
+    if outside:
+        raise T5BoxesValidationError("unparsed text outside entities")
+
+    objects: List[ObjectBoxSpec] = []
+    regions: List[RegionBoxSpec] = []
+    for idx, group in enumerate(groups):
+        _parse_t5_boxes_entity(group.group(1), idx, objects, regions)
+    return T5BoxesSpec(objects=tuple(objects), regions=tuple(regions))
+
+
+def _normalize_spec(spec: T5BoxesSpec) -> T5BoxesSpec:
     return T5BoxesSpec(
         objects=tuple(
-            _parse_object(item, idx) for idx, item in enumerate(payload["objects"])
+            sorted(
+                [_normalize_object(item) for item in spec.objects],
+                key=_object_sort_key,
+            )
         ),
         regions=tuple(
-            _parse_region(item, idx) for idx, item in enumerate(payload["regions"])
+            sorted(
+                [_normalize_region(item) for item in spec.regions],
+                key=_region_sort_key,
+            )
         ),
     )
-
-
-def spec_to_json(spec: T5BoxesSpec) -> str:
-    """Serialize a spec as normalized JSON with deterministic ordering."""
-    normalized = T5BoxesSpec(
-        objects=tuple(sorted(
-            [_normalize_object(item) for item in spec.objects],
-            key=_object_sort_key,
-        )),
-        regions=tuple(sorted(
-            [_normalize_region(item) for item in spec.regions],
-            key=_region_sort_key,
-        )),
-    )
-    payload = {
-        "objects": [
-            {
-                "category": item.category,
-                "center": list(item.center),
-                "half_extents": list(item.half_extents),
-                "rotation": item.rotation,
-            }
-            for item in normalized.objects
-        ],
-        "regions": [
-            {
-                "category": item.category,
-                "min": list(item.min),
-                "max": list(item.max),
-            }
-            for item in normalized.regions
-        ],
-    }
-    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def write_prediction_artifact(
@@ -234,7 +236,7 @@ def write_prediction_artifact(
     invalid_text: Optional[str] = None,
     error: Optional[BaseException] = None,
 ) -> None:
-    """Write either normalized valid JSON or invalid raw text plus error."""
+    """Write either normalized valid T5 text or invalid raw text plus error."""
     valid_mode = valid_spec is not None
     invalid_mode = invalid_text is not None or error is not None
     if valid_mode == invalid_mode:
@@ -242,20 +244,18 @@ def write_prediction_artifact(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    artifact_path = output_path / f"{_safe_artifact_stem(example_id)}.json"
+    artifact_path = output_path / f"{_safe_artifact_stem(example_id)}.txt"
 
     if valid_spec is not None:
-        artifact_path.write_text(spec_to_json(valid_spec), encoding="utf-8")
+        artifact_path.write_text(
+            f"{spec_to_t5_boxes_text(valid_spec)}\n",
+            encoding="utf-8",
+        )
         return
 
-    payload = {
-        "raw_text": "" if invalid_text is None else str(invalid_text),
-        "error": "" if error is None else str(error),
-    }
-    artifact_path.write_text(
-        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    raw_text = "" if invalid_text is None else str(invalid_text)
+    error_text = "" if error is None else str(error)
+    artifact_path.write_text(f"{raw_text}\n\n# error: {error_text}\n", encoding="utf-8")
 
 
 def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
@@ -296,6 +296,100 @@ def _parse_region(item: Any, idx: int) -> RegionBoxSpec:
             f"regions[{idx}].max must be greater than min on both axes"
         )
     return RegionBoxSpec(category=category, min=min_point, max=max_point)
+
+
+def _parse_t5_boxes_entity(
+    raw_entity: str,
+    idx: int,
+    objects: List[ObjectBoxSpec],
+    regions: List[RegionBoxSpec],
+) -> None:
+    parts = [part.strip() for part in raw_entity.split("|")]
+    if not parts or not parts[0]:
+        raise T5BoxesValidationError(f"entity[{idx}] must not be empty")
+
+    header = parts[0]
+    fields = _parse_linear_fields(parts[1:], f"entity[{idx}]")
+    if header.startswith("object "):
+        _reject_unexpected_fields(
+            fields,
+            {"center x", "center z", "half x", "half z", "rotation"},
+            f"entity[{idx}]",
+        )
+        category = header[len("object ") :].strip()
+        item = ObjectBoxSpec(
+            category=category,
+            center=(
+                _required_field(fields, "center x", f"entity[{idx}]"),
+                _required_field(fields, "center z", f"entity[{idx}]"),
+            ),
+            half_extents=(
+                _required_field(fields, "half x", f"entity[{idx}]"),
+                _required_field(fields, "half z", f"entity[{idx}]"),
+            ),
+            rotation=_required_field(fields, "rotation", f"entity[{idx}]"),
+        )
+        objects.append(_normalize_object(item))
+        return
+
+    if header.startswith("region "):
+        _reject_unexpected_fields(
+            fields,
+            {"min x", "min z", "max x", "max z"},
+            f"entity[{idx}]",
+        )
+        category = header[len("region ") :].strip()
+        item = RegionBoxSpec(
+            category=category,
+            min=(
+                _required_field(fields, "min x", f"entity[{idx}]"),
+                _required_field(fields, "min z", f"entity[{idx}]"),
+            ),
+            max=(
+                _required_field(fields, "max x", f"entity[{idx}]"),
+                _required_field(fields, "max z", f"entity[{idx}]"),
+            ),
+        )
+        regions.append(_normalize_region(item))
+        return
+
+    raise T5BoxesValidationError(f"entity[{idx}] must start with object or region")
+
+
+def _parse_linear_fields(parts: Sequence[str], entity_name: str) -> Dict[str, float]:
+    fields: Dict[str, float] = {}
+    for part in parts:
+        if "=" not in part:
+            raise T5BoxesValidationError(f"{entity_name} fields must use key = value")
+        raw_key, raw_value = part.split("=", 1)
+        key = raw_key.strip()
+        if key in fields:
+            raise T5BoxesValidationError(f"{entity_name}.{key} is duplicated")
+        fields[key] = _parse_float_text(raw_value.strip(), f"{entity_name}.{key}")
+    return fields
+
+
+def _reject_unexpected_fields(
+    fields: Dict[str, float], allowed_fields: Set[str], entity_name: str
+) -> None:
+    unexpected_fields = set(fields) - allowed_fields
+    if unexpected_fields:
+        unexpected = sorted(unexpected_fields)[0]
+        raise T5BoxesValidationError(f"{entity_name}.{unexpected} is not supported")
+
+
+def _required_field(fields: Dict[str, float], key: str, entity_name: str) -> float:
+    if key not in fields:
+        raise T5BoxesValidationError(f"{entity_name}.{key} is required")
+    return fields[key]
+
+
+def _parse_float_text(value: str, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise T5BoxesValidationError(f"{field_name} must be a finite number") from exc
+    return _finite_number(parsed, field_name)
 
 
 def _normalize_object(item: ObjectBoxSpec) -> ObjectBoxSpec:
