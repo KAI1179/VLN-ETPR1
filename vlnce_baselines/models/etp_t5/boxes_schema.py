@@ -68,7 +68,9 @@ def build_t5_boxes_input(
         "start_position": [
             _round_coord(value) for value in _xz_point(start_position, "start_position")
         ],
-        "start_direction": [_round_rotation(value) for value in _point2(start_direction)],
+        "start_direction": [
+            _round_rotation(value) for value in _point2(start_direction)
+        ],
         "instruction": str(instruction),
     }
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
@@ -184,8 +186,12 @@ def parse_t5_boxes_json(text: str) -> T5BoxesSpec:
         raise T5BoxesValidationError("regions must be an array")
 
     return T5BoxesSpec(
-        objects=[_parse_object(item, idx) for idx, item in enumerate(payload["objects"])],
-        regions=[_parse_region(item, idx) for idx, item in enumerate(payload["regions"])],
+        objects=[
+            _parse_object(item, idx) for idx, item in enumerate(payload["objects"])
+        ],
+        regions=[
+            _parse_region(item, idx) for idx, item in enumerate(payload["regions"])
+        ],
     )
 
 
@@ -265,13 +271,9 @@ def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
     category = item["category"]
     _object_category_id(category)
     center = _finite_point(item["center"], f"objects[{idx}].center")
-    half_extents = _finite_point(
-        item["half_extents"], f"objects[{idx}].half_extents"
-    )
+    half_extents = _finite_point(item["half_extents"], f"objects[{idx}].half_extents")
     if half_extents[0] <= 0.0 or half_extents[1] <= 0.0:
-        raise T5BoxesValidationError(
-            f"objects[{idx}].half_extents must be positive"
-        )
+        raise T5BoxesValidationError(f"objects[{idx}].half_extents must be positive")
     rotation = _finite_number(item["rotation"], f"objects[{idx}].rotation")
     return ObjectBoxSpec(
         category=category,
@@ -285,9 +287,7 @@ def _parse_region(item: Any, idx: int) -> RegionBoxSpec:
     if not isinstance(item, dict):
         raise T5BoxesValidationError(f"regions[{idx}] must be an object")
     if set(item.keys()) != {"category", "min", "max"}:
-        raise T5BoxesValidationError(
-            f"regions[{idx}] must contain category, min, max"
-        )
+        raise T5BoxesValidationError(f"regions[{idx}] must contain category, min, max")
 
     category = item["category"]
     _region_category_id(category)
@@ -319,9 +319,7 @@ def _normalize_region(item: RegionBoxSpec) -> RegionBoxSpec:
     min_point = _finite_point(item.min, "region.min")
     max_point = _finite_point(item.max, "region.max")
     if max_point[0] <= min_point[0] or max_point[1] <= min_point[1]:
-        raise T5BoxesValidationError(
-            "region.max must be greater than min on both axes"
-        )
+        raise T5BoxesValidationError("region.max must be greater than min on both axes")
     return RegionBoxSpec(
         category=item.category,
         min=tuple(_round_coord(value) for value in min_point),

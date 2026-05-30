@@ -11,7 +11,7 @@ import prior.bbox as bbox
 
 from .boxes_schema import T5BoxesSpec
 
-MetricDict = Dict[str, float]
+MetricDict = Dict[str, float]  # TODO: Use typed alt instead (dataclass, TypedDict etc.)
 EntityKey = Tuple[str, str]
 
 

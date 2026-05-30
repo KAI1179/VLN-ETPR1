@@ -7,7 +7,7 @@ import argparse
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Literal
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
@@ -45,7 +45,7 @@ class T5BoxesExample:
 
 
 def load_t5_boxes_examples(
-    dataset: str,
+    dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
     limit: Optional[int] = None,
 ) -> List[T5BoxesExample]:
@@ -352,7 +352,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_MODEL_NAME_OR_PATH,
         help="Pretrained or checkpoint path for the seq2seq model.",
     )
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir", default=Path("./data/logs/t5/"))
     parser.add_argument("--dataset", default="R2R", choices=["R2R", "RxR"])
     parser.add_argument("--splits", type=_split_csv, default=list(DEFAULT_SPLITS))
     parser.add_argument("--max-input-length", type=int, default=512)
@@ -471,7 +471,7 @@ def _entity_is_valid(payload: Dict[str, Any]) -> bool:
     return True
 
 
-def _aggregate_metric_key(key: str) -> str:
+def _aggregate_metric_key(key: str) -> str:  # What does it do???
     if key == "category_aware_raster_support":
         return "category_aware_raster_support_mean"
     return key
