@@ -162,7 +162,7 @@ def collate_t5_boxes_batch(
     )
     try:
         target_encoded = tokenizer(
-            None,
+            [],
             max_length=max_output_length,
             padding=True,
             truncation=True,

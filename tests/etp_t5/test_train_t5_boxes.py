@@ -246,7 +246,7 @@ class _ModernTokenizer:
     def __call__(self, texts=None, **kwargs):
         self.calls.append((texts, kwargs))
         if "text_target" in kwargs:
-            assert texts is None
+            assert texts is None or texts == []
             assert kwargs["text_target"] == ["target"]
             assert kwargs["max_length"] == 7
             return _BatchEncoding({"input_ids": [[3, 0]], "attention_mask": [[1, 0]]})
@@ -275,6 +275,13 @@ class _OldTokenizer:
         return _BatchEncoding({"input_ids": [[3, 0]], "attention_mask": [[1, 0]]})
 
 
+class _RejectsNoneTextTargetTokenizer(_ModernTokenizer):
+    def __call__(self, texts=None, **kwargs):
+        if texts is None:
+            raise ValueError("text input must of type `str`")
+        return super().__call__(texts, **kwargs)
+
+
 class _BrokenTargetTokenizer(_OldTokenizer):
     def __call__(self, texts=None, **kwargs):
         if "text_target" in kwargs:
@@ -294,10 +301,23 @@ def test_collate_tokenizes_with_text_target_when_supported():
 
     assert tokenizer.calls == [
         (["input"], {"max_length": 11, "padding": True, "truncation": True, "return_tensors": "pt"}),
-        (None, {"max_length": 7, "padding": True, "truncation": True, "return_tensors": "pt", "text_target": ["target"]}),
+        ([], {"max_length": 7, "padding": True, "truncation": True, "return_tensors": "pt", "text_target": ["target"]}),
     ]
     assert collated["labels"] == [[3, -100]]
     assert collated["example_ids"] == ["ex"]
+
+
+def test_collate_text_target_does_not_pass_none_as_text_input():
+    tokenizer = _RejectsNoneTextTargetTokenizer()
+
+    collated = train_t5_boxes.collate_t5_boxes_batch(
+        [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
+        tokenizer,
+        max_input_length=11,
+        max_output_length=7,
+    )
+
+    assert collated["labels"] == [[3, -100]]
 
 
 def test_collate_falls_back_for_tokenizers_without_text_target():
