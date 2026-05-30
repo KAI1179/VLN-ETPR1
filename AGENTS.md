@@ -13,3 +13,7 @@ Not configured. Triage labels are intentionally omitted because issue tracking i
 ### Domain docs
 
 Single-context repo. Read `CONTEXT.md` and relevant ADRs if they exist. See `docs/agents/domain.md`.
+
+## Sub-agent policy
+
+Sub-agents are allowed explicitly for the main agent.
