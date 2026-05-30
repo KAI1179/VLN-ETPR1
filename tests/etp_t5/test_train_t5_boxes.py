@@ -142,6 +142,47 @@ def test_load_t5_boxes_examples_caches_scene_boxes(monkeypatch):
     assert _SceneBoxes.calls == ["scene-a"]
 
 
+def test_load_t5_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch):
+    progress_calls = []
+
+    def fake_progress(iterable, **kwargs):
+        progress_calls.append(kwargs)
+        return iterable
+
+    _SceneBoxes.calls = []
+    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+
+    train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=1)
+
+    assert progress_calls == [
+        {
+            "desc": "load T5-Boxes examples",
+            "disable": False,
+            "dynamic_ncols": True,
+            "total": 1,
+        }
+    ]
+
+
+def test_load_t5_boxes_examples_disables_progress_when_quiet(monkeypatch):
+    progress_calls = []
+
+    def fake_progress(iterable, **kwargs):
+        progress_calls.append(kwargs)
+        return iterable
+
+    _SceneBoxes.calls = []
+    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+
+    train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=1, quiet=True)
+
+    assert progress_calls[0]["disable"] is True
+
+
 def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
     example = train_t5_boxes.T5BoxesExample(
         example_id="RxR_val_seen_9",
@@ -377,6 +418,40 @@ class _EvalModel:
         return [[10], [11]]
 
 
+def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
+    progress_calls = []
+
+    def fake_progress(iterable, **kwargs):
+        progress_calls.append(kwargs)
+        return iterable
+
+    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+    args = argparse.Namespace(
+        output_dir=str(tmp_path),
+        max_input_length=32,
+        max_output_length=64,
+        batch_size=2,
+        device="cpu",
+        quiet=False,
+    )
+
+    train_t5_boxes.evaluate_model(
+        _EvalModel(),
+        _EvalTokenizer(),
+        _EvalDataset(),
+        args,
+    )
+
+    assert progress_calls == [
+        {
+            "desc": "eval T5-Boxes",
+            "disable": False,
+            "dynamic_ncols": True,
+            "total": None,
+        }
+    ]
+
+
 def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, monkeypatch):
     def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
         return {
@@ -391,6 +466,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
         max_output_length=64,
         batch_size=2,
         device="cpu",
+        quiet=True,
     )
 
     metrics = train_t5_boxes.evaluate_model(
@@ -446,6 +522,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
         max_output_length=64,
         batch_size=2,
         device="cpu",
+        quiet=True,
     )
 
     metrics = train_t5_boxes.evaluate_model(
@@ -479,6 +556,7 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         learning_rate=1e-4,
         limit=None,
         device="cpu",
+        quiet=True,
     )
 
     with pytest.raises(ValueError, match="No T5-Boxes training examples"):
@@ -511,6 +589,7 @@ def test_cli_parser_supports_train_and_eval_modes():
             "5",
             "--device",
             "cpu",
+            "--quiet",
         ]
     )
     eval_args = train_t5_boxes.parse_args(["eval", "--output-dir", "eval-out"])
@@ -527,8 +606,10 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.learning_rate == 0.001
     assert train_args.limit == 5
     assert train_args.device == "cpu"
+    assert train_args.quiet is True
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == "data/models/t5-large"
+    assert eval_args.quiet is False
 
 
 def test_cli_device_defaults_to_cuda_when_available_else_cpu(monkeypatch):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sized
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict
@@ -12,6 +13,7 @@ import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
 from torch.utils.data import Dataset
+from tqdm.auto import tqdm
 
 from .boxes_metrics import evaluate_t5_boxes_prediction
 from .boxes_schema import (
@@ -68,6 +70,7 @@ def load_t5_boxes_examples(
     dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
     limit: Optional[int] = None,
+    quiet: bool = False,
 ) -> List[T5BoxesExample]:
     """Load VLN-CE episodes and attach target relevant semantic boxes."""
     if limit == 0:
@@ -75,7 +78,13 @@ def load_t5_boxes_examples(
 
     examples: List[T5BoxesExample] = []
     scene_cache: Dict[str, SceneSemanticBoxes] = {}
-    for episode in VLNCEEpisodeEntry.iter_from(dataset, splits=splits):
+    episodes = _progress(
+        VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
+        desc="load T5-Boxes examples",
+        quiet=quiet,
+        total=limit,
+    )
+    for episode in episodes:
         scene_boxes = scene_cache.get(episode.scene_id)
         if scene_boxes is None:
             scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
@@ -181,7 +190,13 @@ def collate_t5_boxes_batch(
 
 def train_model(args: argparse.Namespace) -> Dict[str, float]:
     """Fine-tune a seq2seq model end-to-end on T5-Boxes examples."""
-    examples = load_t5_boxes_examples(args.dataset, args.splits, limit=args.limit)
+    quiet = bool(getattr(args, "quiet", False))
+    examples = load_t5_boxes_examples(
+        args.dataset,
+        args.splits,
+        limit=args.limit,
+        quiet=quiet,
+    )
     if not examples:
         raise ValueError("No T5-Boxes training examples were loaded")
 
@@ -208,8 +223,14 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
     steps = 0
-    for _epoch in range(args.epochs):
-        for batch in loader:
+    for epoch in range(args.epochs):
+        progress_loader = _progress(
+            loader,
+            desc=f"train epoch {epoch + 1}/{args.epochs}",
+            quiet=quiet,
+            total=len(loader),
+        )
+        for batch in progress_loader:
             model_inputs = _model_batch(batch, device)
             outputs = model(**model_inputs)
             loss = outputs.loss
@@ -218,6 +239,9 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             optimizer.zero_grad()
             total_loss += float(loss.detach().cpu())
             steps += 1
+            set_postfix = getattr(progress_loader, "set_postfix", None)
+            if callable(set_postfix):
+                set_postfix(loss=float(loss.detach().cpu()))
 
     save_t5_boxes_checkpoint(model, tokenizer, args.output_dir)
     return {"train_loss": total_loss / steps if steps else 0.0, "steps": float(steps)}
@@ -247,6 +271,12 @@ def evaluate_model(
             args.max_output_length,
         ),
     )
+    progress_loader = _progress(
+        loader,
+        desc="eval T5-Boxes",
+        quiet=bool(getattr(args, "quiet", False)),
+        total=_batch_count(dataset, args.batch_size),
+    )
 
     metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
     example_count = 0
@@ -256,7 +286,7 @@ def evaluate_model(
     entity_valid_support_sum = 0.0
 
     with torch.no_grad():
-        for batch in loader:
+        for batch in progress_loader:
             model_inputs = _model_batch(batch, args.device, include_labels=False)
             generated = model.generate(
                 **model_inputs,
@@ -359,7 +389,12 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
-    examples = load_t5_boxes_examples(args.dataset, args.splits, limit=args.limit)
+    examples = load_t5_boxes_examples(
+        args.dataset,
+        args.splits,
+        limit=args.limit,
+        quiet=args.quiet,
+    )
     metrics = evaluate_model(model, tokenizer, T5BoxesDataset(examples), args)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     (Path(args.output_dir) / "metrics.json").write_text(
@@ -385,6 +420,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
+    parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
 
 
 def _split_csv(value: str) -> List[str]:
@@ -455,6 +491,28 @@ def _iter_collated_batches(
             batch = []
     if batch:
         yield collate_fn(batch)
+
+
+def _progress(
+    iterable: Iterable[Any],
+    desc: str,
+    quiet: bool,
+    total: Optional[int] = None,
+) -> Iterable[Any]:
+    return tqdm(
+        iterable,
+        desc=desc,
+        disable=quiet,
+        dynamic_ncols=True,
+        total=total,
+    )
+
+
+def _batch_count(dataset: Iterable[Any], batch_size: int) -> Optional[int]:
+    if not isinstance(dataset, Sized):
+        return None
+    item_count = len(dataset)
+    return (item_count + batch_size - 1) // batch_size
 
 
 def _parse_json_value(text: str) -> Tuple[bool, Any]:
