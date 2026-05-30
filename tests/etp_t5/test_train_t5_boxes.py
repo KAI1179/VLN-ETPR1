@@ -1,6 +1,5 @@
 import argparse
 import json
-from pathlib import Path
 
 import pytest
 
@@ -161,7 +160,7 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
     assert item["example_id"] == "RxR_val_seen_9"
     assert json.loads(item["input_text"]) == {
         "dataset": "RxR",
-        "start_position": [3.0, 4.0],
+        "start_position": [0.0, 0.0],
         "start_direction": [1.0, 0.0],
         "instruction": "Walk into the living room.",
     }
@@ -169,6 +168,26 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
     assert "scene" not in item["input_text"].lower()
+
+
+def test_t5_boxes_dataset_item_uses_level_local_start_position():
+    target_relevant = _relevant_with_chair("Walk into the living room.")
+    target_relevant.reference_path = [(1.24, 2.96), (2.0, 4.0)]
+    example = train_t5_boxes.T5BoxesExample(
+        example_id="R2R_train_offset",
+        dataset_tag="R2R",
+        split="train",
+        episode_id=10,
+        instruction="Walk into the living room.",
+        start_position=[101.24, 0.0, 202.96],
+        start_direction=(1.0, 0.0),
+        reference_path=[[101.24, 0.0, 202.96], [102.0, 0.0, 204.0]],
+        target_relevant=target_relevant,
+    )
+
+    item = train_t5_boxes.T5BoxesDataset([example])[0]
+
+    assert json.loads(item["input_text"])["start_position"] == [1.2, 3.0]
 
 
 class _BatchEncoding(dict):
@@ -407,6 +426,43 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     assert "top-level JSON must be an object" in array_artifact["error"]
     assert string_artifact["raw_text"] == '"text"'
     assert "top-level JSON must be an object" in string_artifact["error"]
+
+
+def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
+    tmp_path, monkeypatch
+):
+    def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
+        raise AssertionError("invalid predictions must not be scored")
+
+    class InvalidTokenizer(_EvalTokenizer):
+        def __init__(self):
+            self._decoded = ["not-json"] * 5
+            self._decode_offset = 0
+
+    monkeypatch.setattr(train_t5_boxes, "evaluate_t5_boxes_prediction", fake_metrics)
+    args = argparse.Namespace(
+        output_dir=str(tmp_path),
+        max_input_length=32,
+        max_output_length=64,
+        batch_size=2,
+        device="cpu",
+    )
+
+    metrics = train_t5_boxes.evaluate_model(
+        _EvalModel(),
+        InvalidTokenizer(),
+        _EvalDataset(),
+        args,
+    )
+
+    assert metrics["examples"] == 5
+    assert metrics["schema_valid_rate"] == 0.0
+    assert metrics["category_precision"] == 0.0
+    assert metrics["category_recall"] == 0.0
+    assert metrics["category_f1"] == 0.0
+    assert metrics["category_aware_raster_iou"] == 0.0
+    assert metrics["category_aware_raster_recall"] == 0.0
+    assert metrics["category_aware_raster_support_mean"] == 0.0
 
 
 def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp_path):

@@ -44,8 +44,8 @@ class RegionBoxSpec:
 
 @dataclass(frozen=True)
 class T5BoxesSpec:
-    objects: Tuple[ObjectBoxSpec, ...]
-    regions: Tuple[RegionBoxSpec, ...]
+    objects: Sequence[ObjectBoxSpec]
+    regions: Sequence[RegionBoxSpec]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "objects", tuple(self.objects))
@@ -87,10 +87,8 @@ def relevant_semantic_boxes_to_spec(
             objects.append(
                 ObjectBoxSpec(
                     category=category,
-                    center=tuple(_round_coord(value) for value in box.center),
-                    half_extents=tuple(
-                        _round_coord(value) for value in box.half_extents
-                    ),
+                    center=_round_point(box.center),
+                    half_extents=_round_positive_point(box.half_extents),
                     rotation=_round_rotation(box.rotation),
                 )
             )
@@ -102,14 +100,14 @@ def relevant_semantic_boxes_to_spec(
             regions.append(
                 RegionBoxSpec(
                     category=category,
-                    min=tuple(_round_coord(value) for value in box.min),
-                    max=tuple(_round_coord(value) for value in box.max),
+                    min=_round_point(box.min),
+                    max=_round_point(box.max),
                 )
             )
 
     return T5BoxesSpec(
-        objects=sorted(objects, key=_object_sort_key),
-        regions=sorted(regions, key=_region_sort_key),
+        objects=tuple(sorted(objects, key=_object_sort_key)),
+        regions=tuple(sorted(regions, key=_region_sort_key)),
     )
 
 
@@ -186,26 +184,26 @@ def parse_t5_boxes_json(text: str) -> T5BoxesSpec:
         raise T5BoxesValidationError("regions must be an array")
 
     return T5BoxesSpec(
-        objects=[
+        objects=tuple(
             _parse_object(item, idx) for idx, item in enumerate(payload["objects"])
-        ],
-        regions=[
+        ),
+        regions=tuple(
             _parse_region(item, idx) for idx, item in enumerate(payload["regions"])
-        ],
+        ),
     )
 
 
 def spec_to_json(spec: T5BoxesSpec) -> str:
     """Serialize a spec as normalized JSON with deterministic ordering."""
     normalized = T5BoxesSpec(
-        objects=sorted(
+        objects=tuple(sorted(
             [_normalize_object(item) for item in spec.objects],
             key=_object_sort_key,
-        ),
-        regions=sorted(
+        )),
+        regions=tuple(sorted(
             [_normalize_region(item) for item in spec.regions],
             key=_region_sort_key,
-        ),
+        )),
     )
     payload = {
         "objects": [
@@ -308,8 +306,8 @@ def _normalize_object(item: ObjectBoxSpec) -> ObjectBoxSpec:
         raise T5BoxesValidationError("object.half_extents must be positive")
     return ObjectBoxSpec(
         category=item.category,
-        center=tuple(_round_coord(value) for value in center),
-        half_extents=tuple(_round_coord(value) for value in half_extents),
+        center=_round_point(center),
+        half_extents=_round_positive_point(half_extents),
         rotation=_round_rotation(_finite_number(item.rotation, "object.rotation")),
     )
 
@@ -322,8 +320,8 @@ def _normalize_region(item: RegionBoxSpec) -> RegionBoxSpec:
         raise T5BoxesValidationError("region.max must be greater than min on both axes")
     return RegionBoxSpec(
         category=item.category,
-        min=tuple(_round_coord(value) for value in min_point),
-        max=tuple(_round_coord(value) for value in max_point),
+        min=_round_point(min_point),
+        max=_round_point(max_point),
     )
 
 
@@ -396,6 +394,21 @@ def _path_point(value: Sequence[float]) -> Point2D:
 
 def _round_coord(value: float) -> float:
     return round(float(value), 1)
+
+
+def _round_point(point: Point2D) -> Point2D:
+    return (_round_coord(point[0]), _round_coord(point[1]))
+
+
+def _round_positive_coord(value: float) -> float:
+    rounded = _round_coord(value)
+    if rounded <= 0.0 and value > 0.0:
+        return 0.1
+    return rounded
+
+
+def _round_positive_point(point: Point2D) -> Point2D:
+    return (_round_positive_coord(point[0]), _round_positive_coord(point[1]))
 
 
 def _round_rotation(value: float) -> float:

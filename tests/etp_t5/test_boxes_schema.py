@@ -1,5 +1,6 @@
 import json
 import math
+from typing import Any, cast
 
 import pytest
 
@@ -98,6 +99,29 @@ def test_relevant_semantic_boxes_to_spec_sorts_and_rounds_without_runtime_fields
     }
     assert "mentioned" not in json.dumps(payload)
     assert "confidence" not in json.dumps(payload)
+
+
+def test_relevant_semantic_boxes_to_spec_keeps_tiny_positive_extents_parseable():
+    level = _empty_level()
+    level.objects[1] = [
+        bbox.OBB2D(
+            center=(1.0, 2.0),
+            half_extents=(0.04, 0.06),
+            rotation=0.0,
+        )
+    ]
+    relevant = bbox.RelevantSemanticBoxes(
+        level_idx=0,
+        level=level,
+        instruction="go to the chair",
+        reference_path=[(0.0, 0.0)],
+        start_direction_vector=(0.0, 1.0),
+    )
+
+    text = spec_to_json(relevant_semantic_boxes_to_spec(relevant))
+
+    assert json.loads(text)["objects"][0]["half_extents"] == [0.1, 0.1]
+    assert parse_t5_boxes_json(text).objects[0].half_extents == (0.1, 0.1)
 
 
 def test_build_t5_boxes_input_includes_metadata_but_not_scene_id():
@@ -261,13 +285,14 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
 
 def test_spec_to_relevant_semantic_boxes_rejects_scalar_reference_points():
     spec = T5BoxesSpec(objects=[], regions=[])
+    invalid_reference_path = cast(Any, [1.0])
 
     with pytest.raises(T5BoxesValidationError):
         spec_to_relevant_semantic_boxes(
             spec,
             instruction="Go ahead.",
             level_idx=0,
-            reference_path=[1.0],
+            reference_path=invalid_reference_path,
             start_direction_vector=(0.0, 1.0),
         )
 

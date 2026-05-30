@@ -1,17 +1,17 @@
 """Dataset, training, and evaluation CLI for the T5-Boxes milestone."""
 
 from __future__ import annotations
-from torch.utils.data import Dataset
 
 import argparse
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Literal
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
 from prior.vlnce import DEFAULT_SPLITS, VLNCEEpisodeEntry
+from torch.utils.data import Dataset
 
 from .boxes_metrics import evaluate_t5_boxes_prediction
 from .boxes_schema import (
@@ -25,6 +25,26 @@ from .boxes_schema import (
 )
 
 DEFAULT_MODEL_NAME_OR_PATH = "data/models/t5-large"
+AGGREGATE_METRIC_KEYS: Dict[str, str] = {
+    "category_precision": "category_precision",
+    "category_recall": "category_recall",
+    "category_f1": "category_f1",
+    "category_aware_raster_iou": "category_aware_raster_iou",
+    "category_aware_raster_recall": "category_aware_raster_recall",
+    "category_aware_raster_support": "category_aware_raster_support_mean",
+}
+
+
+class T5BoxesItem(TypedDict, total=False):
+    input_text: str
+    target_text: str
+    example_id: str
+    target_spec: T5BoxesSpec
+    target_relevant: bbox.RelevantSemanticBoxes
+    instruction: str
+    level_idx: int
+    reference_path: Sequence[Sequence[float]]
+    start_direction: Sequence[float]
 
 
 @dataclass
@@ -91,13 +111,13 @@ class T5BoxesDataset(Dataset):
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, index: int) -> Dict[str, Any]:
+    def __getitem__(self, index: int) -> T5BoxesItem:
         example = self.examples[index]
         return {
             "input_text": build_t5_boxes_input(
                 example.dataset_tag,
                 example.instruction,
-                example.start_position,
+                _level_local_start_position(example),
                 example.start_direction,
             ),
             "target_text": spec_to_json(example.target_spec),
@@ -106,13 +126,17 @@ class T5BoxesDataset(Dataset):
             "target_relevant": example.target_relevant,
             "instruction": example.instruction,
             "level_idx": example.target_relevant.level_idx,
-            "reference_path": example.reference_path,
+            "reference_path": example.target_relevant.reference_path,
             "start_direction": example.start_direction,
         }
 
+    def __iter__(self) -> Iterator[T5BoxesItem]:
+        for index in range(len(self)):
+            yield self[index]
+
 
 def collate_t5_boxes_batch(
-    batch: Sequence[Dict[str, Any]],
+    batch: Sequence[T5BoxesItem],
     tokenizer: Any,
     max_input_length: int,
     max_output_length: int,
@@ -202,7 +226,7 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
 def evaluate_model(
     model: Any,
     tokenizer: Any,
-    dataset: Iterable[Dict[str, Any]],
+    dataset: Iterable[T5BoxesItem],
     args: argparse.Namespace,
 ) -> Dict[str, float]:
     """Generate, validate, artifact, and score T5-Boxes predictions."""
@@ -224,7 +248,7 @@ def evaluate_model(
         ),
     )
 
-    metric_sums: Dict[str, float] = {}
+    metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
     example_count = 0
     json_parse_count = 0
     schema_valid_count = 0
@@ -284,10 +308,9 @@ def evaluate_model(
                 )
                 for key, value in metrics.items():
                     if isinstance(value, (int, float)):
-                        metric_key = _aggregate_metric_key(key)
-                        metric_sums[metric_key] = metric_sums.get(
-                            metric_key, 0.0
-                        ) + float(value)
+                        metric_key = AGGREGATE_METRIC_KEYS.get(key)
+                        if metric_key is not None:
+                            metric_sums[metric_key] += float(value)
 
     metrics = (
         {key: value / example_count for key, value in metric_sums.items()}
@@ -391,9 +414,15 @@ def _is_unsupported_text_target_error(exc: TypeError) -> bool:
     )
 
 
+def _level_local_start_position(example: T5BoxesExample) -> Sequence[float]:
+    if example.target_relevant.reference_path:
+        return example.target_relevant.reference_path[0]
+    return example.start_position
+
+
 def _model_batch(
     batch: Dict[str, Any],
-    device: str,
+    device: Any,
     include_labels: bool = True,
 ) -> Dict[str, Any]:
     keys = ["input_ids", "attention_mask"]
@@ -407,16 +436,18 @@ def _model_batch(
     return model_inputs
 
 
-def _target_text(item: Dict[str, Any]) -> str:
+def _target_text(item: T5BoxesItem) -> str:
     if "target_text" in item:
         return item["target_text"]
     return spec_to_json(item["target_spec"])
 
 
 def _iter_collated_batches(
-    dataset: Iterable[Dict[str, Any]], batch_size: int, collate_fn
-):
-    batch: List[Dict[str, Any]] = []
+    dataset: Iterable[T5BoxesItem],
+    batch_size: int,
+    collate_fn,
+) -> Iterator[Dict[str, Any]]:
+    batch: List[T5BoxesItem] = []
     for item in dataset:
         batch.append(item)
         if len(batch) >= batch_size:
@@ -469,12 +500,6 @@ def _entity_is_valid(payload: Dict[str, Any]) -> bool:
     except Exception:
         return False
     return True
-
-
-def _aggregate_metric_key(key: str) -> str:  # What does it do???
-    if key == "category_aware_raster_support":
-        return "category_aware_raster_support_mean"
-    return key
 
 
 def _default_device() -> str:

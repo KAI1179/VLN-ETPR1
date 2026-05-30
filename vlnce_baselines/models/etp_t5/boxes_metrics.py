@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Dict, Tuple
+from typing import Counter as CounterType, Tuple, TypedDict
 
 import numpy as np
 
@@ -11,11 +11,26 @@ import prior.bbox as bbox
 
 from .boxes_schema import T5BoxesSpec
 
-MetricDict = Dict[str, float]  # TODO: Use typed alt instead (dataclass, TypedDict etc.)
 EntityKey = Tuple[str, str]
 
 
-def category_f1(pred: T5BoxesSpec, target: T5BoxesSpec) -> MetricDict:
+class CategoryF1Metrics(TypedDict):
+    category_precision: float
+    category_recall: float
+    category_f1: float
+
+
+class CategoryAwareRasterMetrics(TypedDict):
+    category_aware_raster_iou: float
+    category_aware_raster_recall: float
+    category_aware_raster_support: float
+
+
+class T5BoxesPredictionMetrics(CategoryF1Metrics, CategoryAwareRasterMetrics):
+    pass
+
+
+def category_f1(pred: T5BoxesSpec, target: T5BoxesSpec) -> CategoryF1Metrics:
     """Compute precision, recall, and F1 over semantic entity category counts."""
     pred_counts = _entity_counts(pred)
     target_counts = _entity_counts(target)
@@ -41,7 +56,7 @@ def category_aware_raster_metrics(
     pred: bbox.RelevantSemanticBoxes,
     target: bbox.RelevantSemanticBoxes,
     threshold: float = 0.0,
-) -> MetricDict:
+) -> CategoryAwareRasterMetrics:
     """Compute category-aware raster metrics over GT-present channels only.
 
     IoU and recall are macro-averaged over channels where the target has at
@@ -58,7 +73,7 @@ def category_aware_raster_metrics(
         return {
             "category_aware_raster_iou": 0.0,
             "category_aware_raster_recall": 0.0,
-            "category_aware_raster_support": 0,
+            "category_aware_raster_support": 0.0,
         }
 
     ious = []
@@ -76,7 +91,7 @@ def category_aware_raster_metrics(
     return {
         "category_aware_raster_iou": float(np.mean(ious)),
         "category_aware_raster_recall": float(np.mean(recalls)),
-        "category_aware_raster_support": int(gt_present_channels.size),
+        "category_aware_raster_support": float(gt_present_channels.size),
     }
 
 
@@ -85,7 +100,7 @@ def evaluate_t5_boxes_prediction(
     target_spec: T5BoxesSpec,
     pred_relevant: bbox.RelevantSemanticBoxes,
     target_relevant: bbox.RelevantSemanticBoxes,
-) -> MetricDict:
+) -> T5BoxesPredictionMetrics:
     """Evaluate one T5-Boxes prediction with category and raster metrics.
 
     Raster IoU and recall macro-average over GT-present channels only;
@@ -97,8 +112,8 @@ def evaluate_t5_boxes_prediction(
     }
 
 
-def _entity_counts(spec: T5BoxesSpec) -> Counter[EntityKey]:
-    counts: Counter[EntityKey] = Counter()
+def _entity_counts(spec: T5BoxesSpec) -> CounterType[EntityKey]:
+    counts: CounterType[EntityKey] = Counter()
     counts.update(("object", item.category) for item in spec.objects)
     counts.update(("region", item.category) for item in spec.regions)
     return counts
