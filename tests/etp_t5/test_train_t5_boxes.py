@@ -1,11 +1,13 @@
 import argparse
 import json
+from typing import List
 
 import pytest
 
 import prior.bbox as bbox
 from vlnce_baselines.models.etp_t5.boxes_schema import (
     ObjectBoxSpec,
+    RegionBoxSpec,
     T5BoxesSpec,
     parse_t5_boxes_text,
 )
@@ -29,7 +31,12 @@ def _empty_relevant(instruction="Go to the chair."):
 def _relevant_with_chair(instruction="Go to the chair."):
     relevant = _empty_relevant(instruction)
     relevant.level.objects[1] = [
-        bbox.OBB2D(center=(1.24, 2.96), half_extents=(0.5, 0.6), rotation=0.25)
+        bbox.OBB2D(
+            center=(1.24, 2.96),
+            half_extents=(0.5, 0.6),
+            rotation=0.25,
+            mentioned=True,
+        )
     ]
     return relevant
 
@@ -107,6 +114,38 @@ def test_load_t5_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
             half_extents=(0.5, 0.6),
             rotation=0.25,
         ),
+    )
+
+
+def test_t5_boxes_example_targets_only_mentioned_entities():
+    relevant = _relevant_with_chair("Go to the chair.")
+    relevant.level.objects[3] = [
+        bbox.OBB2D(
+            center=(4.0, 5.0),
+            half_extents=(0.6, 0.7),
+            rotation=0.0,
+            mentioned=False,
+        )
+    ]
+    relevant.level.regions[1] = [
+        bbox.AABB2D(min=(0.0, 0.0), max=(3.0, 4.0), mentioned=True)
+    ]
+
+    example = train_t5_boxes.T5BoxesExample(
+        example_id="R2R_train_mentioned",
+        dataset_tag="R2R",
+        split="train",
+        episode_id=99,
+        instruction="Go to the chair.",
+        start_position=[0.0, 0.0],
+        start_direction=(0.0, 1.0),
+        reference_path=[[0.0, 0.0]],
+        target_relevant=relevant,
+    )
+
+    assert example.target_spec == T5BoxesSpec(
+        objects=(ObjectBoxSpec("chair", (1.2, 3.0), (0.5, 0.6), 0.25),),
+        regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (3.0, 4.0)),),
     )
 
 
@@ -204,6 +243,7 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
         "direction x = 1.0 | direction z = 0.0 | "
         "instruction Walk into the living room."
     )
+    assert item["target_text"] == "obj chair 1.2 3.0 0.5 0.6 0.25"
     assert parse_t5_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
@@ -260,6 +300,9 @@ class _ModernTokenizer:
             }
         )
 
+    def encode(self, text, add_special_tokens=False):
+        return text.split()
+
 
 class _OldTokenizer:
     pad_token_id = 0
@@ -274,6 +317,9 @@ class _OldTokenizer:
         if list(texts) == ["input"]:
             return _BatchEncoding({"input_ids": [[1, 2]], "attention_mask": [[1, 1]]})
         return _BatchEncoding({"input_ids": [[3, 0]], "attention_mask": [[1, 0]]})
+
+    def encode(self, text, add_special_tokens=False):
+        return text.split()
 
 
 class _RejectsNoneTextTargetTokenizer(_ModernTokenizer):
@@ -412,16 +458,19 @@ class _EvalTokenizer:
 
     def __init__(self):
         self._decoded = [
-            "[ object chair | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ]",
-            "[ object chair | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ] [ object alien | center x = 1 | center z = 2 | half x = 0.5 | half z = 0.5 | rotation = 0 ]",
+            "obj chair 1 2 0.5 0.5 0",
+            "obj chair 1 2 0.5 0.5 0 ; obj alien 1 2 0.5 0.5 0",
             "not parseable",
             "none",
-            "[ region circulation | min x = 0 | min z = 0 | max x = 0 | max z = 1 ]",
+            "reg circulation 0 0 0 1",
         ]
         self._decode_offset = 0
 
     def __call__(self, texts, **kwargs):
         return _BatchEncoding({"input_ids": [[1]], "attention_mask": [[1]]})
+
+    def encode(self, text, add_special_tokens=False):
+        return text.split()
 
     def batch_decode(self, sequences, skip_special_tokens=True):
         assert skip_special_tokens is True
@@ -500,6 +549,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     assert metrics["examples"] == 5
     assert metrics["format_parse_rate"] == pytest.approx(2 / 5)
     assert metrics["schema_valid_rate"] == pytest.approx(2 / 5)
+    assert metrics["partial_schema_valid_rate"] == pytest.approx(2 / 5)
     assert metrics["entity_valid_rate"] == pytest.approx(0.5)
     assert metrics["entity_valid_support_mean"] == pytest.approx(0.8)
     assert metrics["category_f1"] == pytest.approx(1 / 5)
@@ -516,15 +566,15 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     array_artifact = (artifact_dir / "json_array_example.txt").read_text()
     string_artifact = (artifact_dir / "json_string_example.txt").read_text()
     assert not (tmp_path / "valid_example.txt").exists()
-    assert valid_artifact.startswith("[ object chair")
+    assert valid_artifact.startswith("obj chair")
     assert valid_artifact.endswith("\n")
-    assert invalid_schema_artifact.startswith("[ object chair")
+    assert invalid_schema_artifact.startswith("obj chair")
     assert "# error: unknown object category" in invalid_schema_artifact
     assert malformed_artifact == (
-        "not parseable\n\n# error: unparsed text outside entities\n"
+        "not parseable\n\n# error: entity[0] must start with obj or reg\n"
     )
     assert array_artifact == "none\n"
-    assert string_artifact.startswith("[ region circulation")
+    assert string_artifact.startswith("reg circulation")
     assert "# error: region.max must be greater than min" in string_artifact
 
 
@@ -559,6 +609,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
     assert metrics["examples"] == 5
     assert metrics["schema_valid_rate"] == 0.0
     assert metrics["format_parse_rate"] == 0.0
+    assert metrics["partial_schema_valid_rate"] == 0.0
     assert metrics["category_precision"] == 0.0
     assert metrics["category_recall"] == 0.0
     assert metrics["category_f1"] == 0.0
@@ -602,6 +653,59 @@ def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
         tmp_path / "checkpoints" / "final"
     )
 
+
+def test_truncate_t5_boxes_text_preserves_complete_entities():
+    text = (
+        "obj chair 1 2 0.5 0.5 0 ; "
+        "obj table 3 4 0.5 0.5 0 ; "
+        "reg circulation 0 0 5 6"
+    )
+
+    truncated = train_t5_boxes.truncate_t5_boxes_text_at_entity_boundary(
+        text,
+        _ModernTokenizer(),
+        max_tokens=13,
+    )
+
+    assert truncated == "obj chair 1 2 0.5 0.5 0"
+    assert parse_t5_boxes_text(truncated) == T5BoxesSpec(
+        objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
+        regions=(),
+    )
+
+
+def test_t5_text_stats_report_lengths_and_truncation():
+    items: List[train_t5_boxes.T5BoxesItem] = [
+        {"input_text": "input one", "target_text": "obj chair 1 2 0.5 0.5 0"},
+        {
+            "input_text": "input two three",
+            "target_text": "obj chair 1 2 0.5 0.5 0 ; obj table 3 4 0.5 0.5 0",
+        },
+    ]
+
+    stats = train_t5_boxes.compute_t5_text_stats(
+        items,
+        _ModernTokenizer(),
+        max_input_length=2,
+        max_output_length=10,
+    )
+
+    assert stats == {
+        "input_token_p50": 2.5,
+        "input_token_p90": 3.0,
+        "input_token_p95": 3.0,
+        "input_token_max": 3.0,
+        "target_token_p50": 11.0,
+        "target_token_p90": 15.0,
+        "target_token_p95": 15.0,
+        "target_token_max": 15.0,
+        "target_entity_p50": 1.5,
+        "target_entity_p90": 2.0,
+        "target_entity_p95": 2.0,
+        "target_entity_max": 2.0,
+        "input_truncation_rate": 0.5,
+        "target_truncation_rate": 0.5,
+    }
 
 def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):
     calls = []

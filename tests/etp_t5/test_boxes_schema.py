@@ -10,6 +10,8 @@ from vlnce_baselines.models.etp_t5.boxes_schema import (
     T5BoxesValidationError,
     build_t5_boxes_input,
     parse_t5_boxes_text,
+    parse_t5_boxes_text_partial,
+    relevant_semantic_boxes_to_mentioned_spec,
     spec_to_t5_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
@@ -88,12 +90,9 @@ def test_spec_to_t5_boxes_text_round_trips_objects_and_regions():
     text = spec_to_t5_boxes_text(spec)
 
     assert text == (
-        "[ object chair | center x = 1.0 | center z = 2.0 | "
-        "half x = 0.5 | half z = 0.5 | rotation = 0.0 ] "
-        "[ object table | center x = 3.0 | center z = 4.1 | "
-        "half x = 0.5 | half z = 0.7 | rotation = 0.25 ] "
-        "[ region living/social space | min x = 0.0 | min z = 0.0 | "
-        "max x = 5.0 | max z = 6.0 ]"
+        "obj chair 1.0 2.0 0.5 0.5 0.0 ; "
+        "obj table 3.0 4.1 0.5 0.7 0.25 ; "
+        "reg living/social space 0.0 0.0 5.0 6.0"
     )
     assert parse_t5_boxes_text(text) == T5BoxesSpec(
         objects=(
@@ -111,23 +110,95 @@ def test_spec_to_t5_boxes_text_serializes_empty_spec_as_none():
     assert parse_t5_boxes_text(text) == T5BoxesSpec(objects=(), regions=())
 
 
+def test_parse_t5_boxes_text_ignores_trailing_incomplete_output_when_requested():
+    text = (
+        "obj chair 1 2 0.5 0.5 0 ; "
+        "reg circulation 0 0 5 6 ; "
+        "obj table 3 4 0.5"
+    )
+
+    parsed = parse_t5_boxes_text(text, allow_trailing_incomplete=True)
+
+    assert parsed == T5BoxesSpec(
+        objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
+        regions=(RegionBoxSpec("circulation", (0.0, 0.0), (5.0, 6.0)),),
+    )
+    with pytest.raises(T5BoxesValidationError, match="trailing incomplete entity"):
+        parse_t5_boxes_text(text)
+
+
+def test_parse_t5_boxes_text_partial_reports_dropped_suffix():
+    result = parse_t5_boxes_text_partial(
+        "obj chair 1 2 0.5 0.5 0 ; obj table 3 4"
+    )
+
+    assert result.spec == T5BoxesSpec(
+        objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
+        regions=(),
+    )
+    assert result.dropped_text == "obj table 3 4"
+    assert result.dropped_entity_count == 1
+
+
 @pytest.mark.parametrize(
     "text",
     [
         "not parseable",
-        "[ object alien | center x = 1 | center z = 2 | half x = 1 | half z = 1 | rotation = 0 ]",
-        "[ object chair | center x = 1 | center z = 2 | half x = 0 | half z = 1 | rotation = 0 ]",
-        "[ object chair | center x = nope | center z = 2 | half x = 1 | half z = 1 | rotation = 0 ]",
-        "[ object chair | center x = 1 | center z = 2 | half x = 1 | half z = 1 ]",
-        "[ object chair | center x = 1 | center z = 2 | half x = 1 | half z = 1 | rotation = 0 | confidence = 1 ]",
-        "[ region circulation | min x = 0 | min z = 0 | max x = 0 | max z = 1 ]",
-        "[ region unknown | min x = 0 | min z = 0 | max x = 1 | max z = 1 ]",
-        "[ region circulation | min x = 0 | min z = 0 | max x = 1 | max z = 1 | score = 1 ]",
+        "obj alien 1 2 1 1 0",
+        "obj chair 1 2 0 1 0",
+        "obj chair nope 2 1 1 0",
+        "obj chair 1 2 1 1",
+        "obj chair 1 2 1 1 0 1",
+        "reg circulation 0 0 0 1",
+        "reg unknown 0 0 1 1",
+        "reg circulation 0 0 1 1 1",
     ],
 )
 def test_parse_t5_boxes_text_rejects_invalid_predictions(text):
     with pytest.raises(T5BoxesValidationError):
         parse_t5_boxes_text(text)
+
+
+def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities():
+    level = _empty_level()
+    level.objects[1] = [
+        bbox.OBB2D(
+            center=(1.0, 2.0),
+            half_extents=(0.5, 0.5),
+            rotation=0.0,
+            mentioned=True,
+        )
+    ]
+    level.objects[3] = [
+        bbox.OBB2D(
+            center=(3.0, 4.0),
+            half_extents=(0.5, 0.5),
+            rotation=0.0,
+            mentioned=False,
+        )
+    ]
+    level.regions[1] = [
+        bbox.AABB2D(min=(0.0, 0.0), max=(5.0, 6.0), mentioned=True)
+    ]
+    level.regions[2] = [
+        bbox.AABB2D(min=(7.0, 8.0), max=(9.0, 10.0), mentioned=False)
+    ]
+    relevant = bbox.RelevantSemanticBoxes(
+        level_idx=0,
+        level=level,
+        instruction="Go to the chair in the living room.",
+        reference_path=[(0.0, 0.0)],
+        start_direction_vector=(0.0, 1.0),
+    )
+
+    spec = relevant_semantic_boxes_to_mentioned_spec(relevant)
+
+    assert spec.objects == (
+        ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
+    )
+    assert spec.regions == (
+        RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),
+    )
 
 
 def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions():
@@ -228,7 +299,7 @@ def test_write_prediction_artifact_writes_t5_text_files(tmp_path):
     write_prediction_artifact(
         tmp_path,
         "invalid-example",
-        invalid_text="[ object alien ]",
+        invalid_text="obj alien",
         error=T5BoxesValidationError("unknown object category: 'alien'"),
     )
 
@@ -236,11 +307,10 @@ def test_write_prediction_artifact_writes_t5_text_files(tmp_path):
     invalid_text = (tmp_path / "invalid-example.txt").read_text()
 
     assert valid_text == (
-        "[ object chair | center x = 1.0 | center z = 2.0 | "
-        "half x = 0.5 | half z = 0.5 | rotation = 0.0 ]\n"
+        "obj chair 1.0 2.0 0.5 0.5 0.0\n"
     )
     assert invalid_text == (
-        "[ object alien ]\n"
+        "obj alien\n"
         "\n"
         "# error: unknown object category: 'alien'\n"
     )

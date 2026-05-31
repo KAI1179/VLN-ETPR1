@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import math
 from collections.abc import Sized
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +32,8 @@ from .boxes_schema import (
     T5BoxesSpec,
     build_t5_boxes_input,
     parse_t5_boxes_text,
-    relevant_semantic_boxes_to_spec,
+    parse_t5_boxes_text_partial,
+    relevant_semantic_boxes_to_mentioned_spec,
     spec_to_t5_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
@@ -77,7 +78,9 @@ class T5BoxesExample:
     target_spec: T5BoxesSpec = field(init=False)
 
     def __post_init__(self) -> None:
-        self.target_spec = relevant_semantic_boxes_to_spec(self.target_relevant)
+        self.target_spec = relevant_semantic_boxes_to_mentioned_spec(
+            self.target_relevant
+        )
 
 
 def load_t5_boxes_examples(
@@ -165,7 +168,12 @@ def collate_t5_boxes_batch(
     max_output_length: int,
 ) -> Dict[str, Any]:
     input_texts = [item["input_text"] for item in batch]
-    target_texts = [_target_text(item) for item in batch]
+    target_texts = [
+        truncate_t5_boxes_text_at_entity_boundary(
+            _target_text(item), tokenizer, max_output_length
+        )
+        for item in batch
+    ]
 
     encoded = tokenizer(
         input_texts,
@@ -222,6 +230,12 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
     model.to(device)
 
     dataset = T5BoxesDataset(examples)
+    text_stats = compute_t5_text_stats(
+        dataset,
+        tokenizer,
+        max_input_length=args.max_input_length,
+        max_output_length=args.max_output_length,
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -261,7 +275,11 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
         )
 
     save_t5_boxes_checkpoint(model, tokenizer, _checkpoint_dir(args.output_dir, "final"))
-    return {"train_loss": total_loss / steps if steps else 0.0, "steps": float(steps)}
+    return {
+        "train_loss": total_loss / steps if steps else 0.0,
+        "steps": float(steps),
+        **text_stats,
+    }
 
 
 def evaluate_model(
@@ -288,6 +306,12 @@ def evaluate_model(
             args.max_output_length,
         ),
     )
+    text_stats = compute_t5_text_stats(
+        dataset,
+        tokenizer,
+        max_input_length=args.max_input_length,
+        max_output_length=args.max_output_length,
+    )
     progress_loader = _progress(
         loader,
         desc="eval T5-Boxes",
@@ -298,6 +322,7 @@ def evaluate_model(
     metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
     example_count = 0
     schema_valid_count = 0
+    partial_schema_valid_count = 0
     entity_valid_rate_sum = 0.0
     entity_valid_support_sum = 0.0
 
@@ -319,7 +344,10 @@ def evaluate_model(
                 entity_valid_support_sum += entity_valid_support
 
                 try:
-                    pred_spec = parse_t5_boxes_text(generated_text)
+                    pred_spec = parse_t5_boxes_text(
+                        generated_text,
+                        allow_trailing_incomplete=True,
+                    )
                 except Exception as exc:
                     write_prediction_artifact(
                         _artifact_dir(args.output_dir),
@@ -329,7 +357,14 @@ def evaluate_model(
                     )
                     continue
 
-                schema_valid_count += 1
+                partial_schema_valid_count += 1
+                try:
+                    parse_t5_boxes_text(generated_text)
+                except Exception:
+                    pass
+                else:
+                    schema_valid_count += 1
+
                 write_prediction_artifact(
                     _artifact_dir(args.output_dir),
                     item["example_id"],
@@ -365,12 +400,18 @@ def evaluate_model(
         float(schema_valid_count) / float(example_count) if example_count else 0.0
     )
     metrics["format_parse_rate"] = metrics["schema_valid_rate"]
+    metrics["partial_schema_valid_rate"] = (
+        float(partial_schema_valid_count) / float(example_count)
+        if example_count
+        else 0.0
+    )
     metrics["entity_valid_rate"] = (
         entity_valid_rate_sum / float(example_count) if example_count else 0.0
     )
     metrics["entity_valid_support_mean"] = (
         entity_valid_support_sum / float(example_count) if example_count else 0.0
     )
+    metrics.update(text_stats)
     return metrics
 
 
@@ -497,6 +538,77 @@ def _target_text(item: T5BoxesItem) -> str:
     return spec_to_t5_boxes_text(item["target_spec"])
 
 
+def truncate_t5_boxes_text_at_entity_boundary(
+    text: str,
+    tokenizer: Any,
+    max_tokens: int,
+) -> str:
+    """Truncate compact T5-Boxes text without keeping a partial entity."""
+    if _token_count(tokenizer, text) <= max_tokens:
+        return text
+    if text.strip() == "none":
+        return text
+
+    kept_entities: List[str] = []
+    for entity in [item.strip() for item in text.split(";") if item.strip()]:
+        candidate = " ; ".join([*kept_entities, entity])
+        if _token_count(tokenizer, candidate) > max_tokens:
+            break
+        kept_entities.append(entity)
+    return " ; ".join(kept_entities) if kept_entities else "none"
+
+
+def compute_t5_text_stats(
+    dataset: Iterable[T5BoxesItem],
+    tokenizer: Any,
+    max_input_length: int,
+    max_output_length: int,
+) -> Dict[str, float]:
+    input_lengths: List[int] = []
+    target_lengths: List[int] = []
+    target_entity_counts: List[int] = []
+    input_truncated = 0
+    target_truncated = 0
+    examples = 0
+
+    for item in dataset:
+        examples += 1
+        input_text = item["input_text"]
+        target_text = _target_text(item)
+        input_length = _token_count(tokenizer, input_text)
+        target_length = _token_count(tokenizer, target_text)
+        input_lengths.append(input_length)
+        target_lengths.append(target_length)
+        target_entity_counts.append(_compact_entity_count(target_text))
+        if input_length > max_input_length:
+            input_truncated += 1
+        if target_length > max_output_length:
+            target_truncated += 1
+
+    return {
+        "input_token_p50": _percentile(input_lengths, 0.50),
+        "input_token_p90": _percentile(input_lengths, 0.90),
+        "input_token_p95": _percentile(input_lengths, 0.95),
+        "input_token_max": float(max(input_lengths)) if input_lengths else 0.0,
+        "target_token_p50": _percentile(target_lengths, 0.50),
+        "target_token_p90": _percentile(target_lengths, 0.90),
+        "target_token_p95": _percentile(target_lengths, 0.95),
+        "target_token_max": float(max(target_lengths)) if target_lengths else 0.0,
+        "target_entity_p50": _percentile(target_entity_counts, 0.50),
+        "target_entity_p90": _percentile(target_entity_counts, 0.90),
+        "target_entity_p95": _percentile(target_entity_counts, 0.95),
+        "target_entity_max": (
+            float(max(target_entity_counts)) if target_entity_counts else 0.0
+        ),
+        "input_truncation_rate": (
+            float(input_truncated) / float(examples) if examples else 0.0
+        ),
+        "target_truncation_rate": (
+            float(target_truncated) / float(examples) if examples else 0.0
+        ),
+    }
+
+
 def _iter_collated_batches(
     dataset: Iterable[T5BoxesItem],
     batch_size: int,
@@ -543,15 +655,28 @@ def _entity_valid_stats(text: str) -> Tuple[float, int]:
             return 0.0, 0
         return 1.0, 0
 
-    raw_entities = re.findall(r"\[[^\[\]]+\]", stripped)
-    total_entities = len(raw_entities)
+    try:
+        result = parse_t5_boxes_text_partial(stripped)
+    except Exception:
+        entities = [entity.strip() for entity in stripped.split(";") if entity.strip()]
+        entities = [
+            entity
+            for entity in entities
+            if entity.split() and entity.split()[0] in {"obj", "reg"}
+        ]
+        if not entities:
+            return 0.0, 0
+        valid_entities = sum(1 for entity in entities if _entity_is_valid(entity))
+        return float(valid_entities) / float(len(entities)), len(entities)
+
+    total_entities = (
+        len(result.spec.objects)
+        + len(result.spec.regions)
+        + result.dropped_entity_count
+    )
     if total_entities == 0:
         return 0.0, 0
-
-    valid_entities = 0
-    for raw_entity in raw_entities:
-        if _entity_is_valid(raw_entity):
-            valid_entities += 1
+    valid_entities = len(result.spec.objects) + len(result.spec.regions)
     return float(valid_entities) / float(total_entities), total_entities
 
 
@@ -561,6 +686,33 @@ def _entity_is_valid(text: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def _token_count(tokenizer: Any, text: str) -> int:
+    if hasattr(tokenizer, "encode"):
+        return len(tokenizer.encode(text, add_special_tokens=False))
+    return len(text.split())
+
+
+def _compact_entity_count(text: str) -> int:
+    if text.strip() == "none" or text.strip() == "":
+        return 0
+    return len([entity for entity in text.split(";") if entity.strip()])
+
+
+def _percentile(values: Sequence[int], quantile: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    if quantile == 0.50:
+        middle = len(sorted_values) // 2
+        if len(sorted_values) % 2:
+            return float(sorted_values[middle])
+        return float((sorted_values[middle - 1] + sorted_values[middle]) / 2.0)
+    index = math.ceil(quantile * len(sorted_values)) - 1
+    return float(sorted_values[max(0, min(index, len(sorted_values) - 1))])
 
 
 def _default_device() -> str:

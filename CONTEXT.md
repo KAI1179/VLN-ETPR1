@@ -52,6 +52,10 @@ _Avoid_: Tell2Design model
 The predictor-only milestone for evaluating whether T5 can generate useful object and region boxes.
 _Avoid_: T5 candidate when navigation integration is not included
 
+**Mentioned-only T5-Boxes target**:
+The T5-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.
+_Avoid_: full relevant boxes when unmentioned context entities are excluded
+
 **Dataset tag**:
 A prompt-side label identifying the instruction source, such as R2R, RxR, or Gemini-augmented Prevalent data.
 _Avoid_: task type when referring to generated text prompts
@@ -138,6 +142,10 @@ Developer: "Should T5-Boxes predict all boxes on the level?"
 
 Domain expert: "No. T5-Boxes should target relevant semantic boxes, not full-level semantic boxes."
 
+Developer: "Should T5-Boxes train on unmentioned relevant context entities?"
+
+Domain expert: "No. The current T5-Boxes target is mentioned-only so the generated text stays focused on categories named by the instruction."
+
 Developer: "Should T5-Boxes include the instruction source?"
 
 Domain expert: "Yes. T5-Boxes should include a dataset tag in the prompt, mirroring the existing task-type encoding side channel."
@@ -178,6 +186,6 @@ Developer: "Should generated entities be ordered along the path?"
 
 Domain expert: "No. T5-Boxes should use deterministic category and geometry ordering rather than path-order serialization."
 
-Developer: "Should T5-Boxes save both raw text and normalized JSON?"
+Developer: "Should T5-Boxes save JSON prediction artifacts?"
 
-Domain expert: "No. Save normalized JSON for valid outputs and raw generated text only for invalid outputs."
+Domain expert: "No. Save plain T5-Boxes text artifacts so artifacts mirror the model-facing compact text format."

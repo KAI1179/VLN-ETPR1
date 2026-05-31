@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
 
 import prior.bbox as bbox
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
@@ -49,6 +49,17 @@ class T5BoxesSpec:
     def __post_init__(self) -> None:
         object.__setattr__(self, "objects", tuple(self.objects))
         object.__setattr__(self, "regions", tuple(self.regions))
+
+
+@dataclass(frozen=True)
+class T5BoxesPartialParse:
+    spec: T5BoxesSpec
+    dropped_text: str
+    dropped_entity_count: int
+
+
+class _T5BoxesIncompleteEntity(T5BoxesValidationError):
+    pass
 
 
 def build_t5_boxes_input(
@@ -95,6 +106,45 @@ def relevant_semantic_boxes_to_spec(
     for category_id, boxes in enumerate(relevant.level.regions):
         category = MAPPED_REGION_NAMES[category_id]
         for box in boxes:
+            regions.append(
+                RegionBoxSpec(
+                    category=category,
+                    min=_round_point(box.min),
+                    max=_round_point(box.max),
+                )
+            )
+
+    return T5BoxesSpec(
+        objects=tuple(sorted(objects, key=_object_sort_key)),
+        regions=tuple(sorted(regions, key=_region_sort_key)),
+    )
+
+
+def relevant_semantic_boxes_to_mentioned_spec(
+    relevant: bbox.RelevantSemanticBoxes,
+) -> T5BoxesSpec:
+    """Convert relevant semantic boxes to only instruction-mentioned entities."""
+    objects: List[ObjectBoxSpec] = []
+    for category_id, boxes in enumerate(relevant.level.objects):
+        category = MAPPED_OBJECT_NAMES[category_id]
+        for box in boxes:
+            if not bool(getattr(box, "mentioned", False)):
+                continue
+            objects.append(
+                ObjectBoxSpec(
+                    category=category,
+                    center=_round_point(box.center),
+                    half_extents=_round_positive_point(box.half_extents),
+                    rotation=_round_rotation(box.rotation),
+                )
+            )
+
+    regions: List[RegionBoxSpec] = []
+    for category_id, boxes in enumerate(relevant.level.regions):
+        category = MAPPED_REGION_NAMES[category_id]
+        for box in boxes:
+            if not bool(getattr(box, "mentioned", False)):
+                continue
             regions.append(
                 RegionBoxSpec(
                     category=category,
@@ -164,52 +214,63 @@ def spec_to_relevant_semantic_boxes(
 
 
 def spec_to_t5_boxes_text(spec: T5BoxesSpec) -> str:
-    """Serialize a spec in the T5-friendly linear grammar."""
+    """Serialize a spec in the compact T5-friendly linear grammar."""
     normalized = _normalize_spec(spec)
     parts: List[str] = []
     for item in normalized.objects:
         parts.append(
-            "[ "
-            f"object {item.category} | "
-            f"center x = {item.center[0]} | "
-            f"center z = {item.center[1]} | "
-            f"half x = {item.half_extents[0]} | "
-            f"half z = {item.half_extents[1]} | "
-            f"rotation = {item.rotation}"
-            " ]"
+            f"obj {item.category} {item.center[0]} {item.center[1]} "
+            f"{item.half_extents[0]} {item.half_extents[1]} {item.rotation}"
         )
     for item in normalized.regions:
         parts.append(
-            "[ "
-            f"region {item.category} | "
-            f"min x = {item.min[0]} | "
-            f"min z = {item.min[1]} | "
-            f"max x = {item.max[0]} | "
-            f"max z = {item.max[1]}"
-            " ]"
+            f"reg {item.category} {item.min[0]} {item.min[1]} "
+            f"{item.max[0]} {item.max[1]}"
         )
-    return " ".join(parts) if parts else "none"
+    return " ; ".join(parts) if parts else "none"
 
 
-def parse_t5_boxes_text(text: str) -> T5BoxesSpec:
-    """Parse and validate the T5-friendly linear grammar."""
+def parse_t5_boxes_text(
+    text: str, allow_trailing_incomplete: bool = False
+) -> T5BoxesSpec:
+    """Parse and validate the compact T5-friendly linear grammar."""
+    result = parse_t5_boxes_text_partial(text)
+    if result.dropped_text and not allow_trailing_incomplete:
+        raise T5BoxesValidationError("trailing incomplete entity")
+    return result.spec
+
+
+def parse_t5_boxes_text_partial(text: str) -> T5BoxesPartialParse:
+    """Parse complete entities and drop one trailing incomplete entity."""
     stripped = text.strip()
     if stripped == "none" or stripped == "":
-        return T5BoxesSpec(objects=(), regions=())
-
-    groups = list(re.finditer(r"\[([^\[\]]+)\]", stripped))
-    if not groups:
-        raise T5BoxesValidationError("unparsed text outside entities")
-
-    outside = re.sub(r"\[([^\[\]]+)\]", "", stripped).strip()
-    if outside:
-        raise T5BoxesValidationError("unparsed text outside entities")
+        return T5BoxesPartialParse(
+            spec=T5BoxesSpec(objects=(), regions=()),
+            dropped_text="",
+            dropped_entity_count=0,
+        )
 
     objects: List[ObjectBoxSpec] = []
     regions: List[RegionBoxSpec] = []
-    for idx, group in enumerate(groups):
-        _parse_t5_boxes_entity(group.group(1), idx, objects, regions)
-    return T5BoxesSpec(objects=tuple(objects), regions=tuple(regions))
+    entities = [entity.strip() for entity in stripped.split(";")]
+    for idx, entity in enumerate(entities):
+        if not entity:
+            continue
+        try:
+            _parse_t5_boxes_entity(entity, idx, objects, regions)
+        except _T5BoxesIncompleteEntity:
+            if idx == len(entities) - 1:
+                return T5BoxesPartialParse(
+                    spec=T5BoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+                    dropped_text=entity,
+                    dropped_entity_count=1,
+                )
+            raise T5BoxesValidationError("incomplete entity before end of output")
+    return T5BoxesPartialParse(
+        spec=T5BoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+        dropped_text="",
+        dropped_entity_count=0,
+    )
 
 
 def _normalize_spec(spec: T5BoxesSpec) -> T5BoxesSpec:
@@ -304,92 +365,60 @@ def _parse_t5_boxes_entity(
     objects: List[ObjectBoxSpec],
     regions: List[RegionBoxSpec],
 ) -> None:
-    parts = [part.strip() for part in raw_entity.split("|")]
-    if not parts or not parts[0]:
+    parts = raw_entity.split()
+    if not parts:
         raise T5BoxesValidationError(f"entity[{idx}] must not be empty")
 
-    header = parts[0]
-    fields = _parse_linear_fields(parts[1:], f"entity[{idx}]")
-    if header.startswith("object "):
-        _reject_unexpected_fields(
-            fields,
-            {"center x", "center z", "half x", "half z", "rotation"},
-            f"entity[{idx}]",
+    entity_type = parts[0]
+    if entity_type == "obj":
+        if len(parts) < 7:
+            raise _T5BoxesIncompleteEntity(f"entity[{idx}] object is incomplete")
+        category = " ".join(parts[1:-5])
+        if not category:
+            raise _T5BoxesIncompleteEntity(f"entity[{idx}] object category is missing")
+        center_x, center_z, half_x, half_z, rotation = _parse_trailing_numbers(
+            parts[-5:], f"entity[{idx}]"
         )
-        category = header[len("object ") :].strip()
         item = ObjectBoxSpec(
             category=category,
-            center=(
-                _required_field(fields, "center x", f"entity[{idx}]"),
-                _required_field(fields, "center z", f"entity[{idx}]"),
-            ),
-            half_extents=(
-                _required_field(fields, "half x", f"entity[{idx}]"),
-                _required_field(fields, "half z", f"entity[{idx}]"),
-            ),
-            rotation=_required_field(fields, "rotation", f"entity[{idx}]"),
+            center=(center_x, center_z),
+            half_extents=(half_x, half_z),
+            rotation=rotation,
         )
         objects.append(_normalize_object(item))
         return
 
-    if header.startswith("region "):
-        _reject_unexpected_fields(
-            fields,
-            {"min x", "min z", "max x", "max z"},
-            f"entity[{idx}]",
+    if entity_type == "reg":
+        if len(parts) < 6:
+            raise _T5BoxesIncompleteEntity(f"entity[{idx}] region is incomplete")
+        category = " ".join(parts[1:-4])
+        if not category:
+            raise _T5BoxesIncompleteEntity(f"entity[{idx}] region category is missing")
+        min_x, min_z, max_x, max_z = _parse_trailing_numbers(
+            parts[-4:], f"entity[{idx}]"
         )
-        category = header[len("region ") :].strip()
         item = RegionBoxSpec(
             category=category,
-            min=(
-                _required_field(fields, "min x", f"entity[{idx}]"),
-                _required_field(fields, "min z", f"entity[{idx}]"),
-            ),
-            max=(
-                _required_field(fields, "max x", f"entity[{idx}]"),
-                _required_field(fields, "max z", f"entity[{idx}]"),
-            ),
+            min=(min_x, min_z),
+            max=(max_x, max_z),
         )
         regions.append(_normalize_region(item))
         return
 
-    raise T5BoxesValidationError(f"entity[{idx}] must start with object or region")
+    raise T5BoxesValidationError(f"entity[{idx}] must start with obj or reg")
 
 
-def _parse_linear_fields(parts: Sequence[str], entity_name: str) -> Dict[str, float]:
-    fields: Dict[str, float] = {}
-    for part in parts:
-        if "=" not in part:
-            raise T5BoxesValidationError(f"{entity_name} fields must use key = value")
-        raw_key, raw_value = part.split("=", 1)
-        key = raw_key.strip()
-        if key in fields:
-            raise T5BoxesValidationError(f"{entity_name}.{key} is duplicated")
-        fields[key] = _parse_float_text(raw_value.strip(), f"{entity_name}.{key}")
-    return fields
-
-
-def _reject_unexpected_fields(
-    fields: Dict[str, float], allowed_fields: Set[str], entity_name: str
-) -> None:
-    unexpected_fields = set(fields) - allowed_fields
-    if unexpected_fields:
-        unexpected = sorted(unexpected_fields)[0]
-        raise T5BoxesValidationError(f"{entity_name}.{unexpected} is not supported")
-
-
-def _required_field(fields: Dict[str, float], key: str, entity_name: str) -> float:
-    if key not in fields:
-        raise T5BoxesValidationError(f"{entity_name}.{key} is required")
-    return fields[key]
-
-
-def _parse_float_text(value: str, field_name: str) -> float:
-    try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise T5BoxesValidationError(f"{field_name} must be a finite number") from exc
-    return _finite_number(parsed, field_name)
+def _parse_trailing_numbers(tokens: Sequence[str], field_name: str) -> Tuple[float, ...]:
+    values: List[float] = []
+    for idx, token in enumerate(tokens):
+        try:
+            value = float(token)
+        except ValueError as exc:
+            raise _T5BoxesIncompleteEntity(
+                f"{field_name}[{idx}] must be a finite number"
+            ) from exc
+        values.append(_finite_number(value, f"{field_name}[{idx}]"))
+    return tuple(values)
 
 
 def _normalize_object(item: ObjectBoxSpec) -> ObjectBoxSpec:
