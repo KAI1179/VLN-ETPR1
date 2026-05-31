@@ -16,6 +16,10 @@ from .boxes_schema import (
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
+from .navigation import (
+    T5ReferencePathNotImplementedError,
+    raise_t5_reference_path_not_implemented,
+)
 
 __all__ = [
     "OBJECT_CATEGORY_TO_ID",
@@ -32,4 +36,6 @@ __all__ = [
     "spec_to_t5_boxes_text",
     "spec_to_relevant_semantic_boxes",
     "write_prediction_artifact",
+    "T5ReferencePathNotImplementedError",
+    "raise_t5_reference_path_not_implemented",
 ]

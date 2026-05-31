@@ -4,9 +4,12 @@ from vlnce_baselines import ss_trainer_ETP_PriorGT
 from vlnce_baselines import GRPO_trainer_ETP_PriorGT
 from vlnce_baselines import ss_trainer_ETP_Imagined
 from vlnce_baselines import GRPO_trainer_ETP_Imagined
+from vlnce_baselines import ss_trainer_ETP_T5
+from vlnce_baselines import GRPO_trainer_ETP_T5
 from vlnce_baselines.common import environments
 from vlnce_baselines.models import (
     R1Policy
 )
 from vlnce_baselines.models.etp_prior_gt import policy as etp_prior_gt_policy
 from vlnce_baselines.models.etp_imagined import policy as etp_imagined_policy
+from vlnce_baselines.models.etp_t5 import policy as etp_t5_policy

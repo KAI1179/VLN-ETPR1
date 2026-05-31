@@ -14,7 +14,7 @@ from .vilmodel import (
     gelu,
     BertOutAttention,
 )
-from .ops import pad_tensors_wgrad, gen_seq_masks, extend_neg_masks
+from .ops import gen_seq_masks, extend_neg_masks
 
 
 class RegionClassification(nn.Module):
@@ -95,6 +95,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.bert = GlocalTextPathCMT(config)
         self.use_imagined = getattr(config, "use_imagined", False)
         self.use_prior_gt = getattr(config, "use_prior_gt", False)
+        self.use_t5 = getattr(config, "use_t5", False)
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
         self.reference_path_loss_weight = getattr(
             config, "reference_path_loss_weight", 0.001
@@ -112,7 +113,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
 
         try:
-            import sys, os
+            import os
+            import sys
 
             if "vlnce_baselines" not in sys.modules:
                 sys.path.insert(
@@ -275,6 +277,13 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         ):
             return None, None, None
 
+        if self.use_t5:
+            from vlnce_baselines.models.etp_t5.navigation import (
+                raise_t5_reference_path_not_implemented,
+            )
+
+            raise_t5_reference_path_not_implemented("T5 pretraining")
+
         if self.use_imagined:
             txt_token_type_ids = torch.zeros_like(batch["txt_ids"])
             txt_embeds = self.bert.embeddings(
@@ -419,7 +428,6 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         map_tokens=None,
         map_token_masks=None,
     ):
-        batch_size = txt_ids.size(0)
         txt_embeds, gmap_embeds = self.bert(
             txt_ids,
             txt_lens,

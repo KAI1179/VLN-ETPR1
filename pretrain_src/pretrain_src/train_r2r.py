@@ -98,6 +98,7 @@ def main(opts):
     model_config.pretrain_tasks = set(model_config.pretrain_tasks)
     model_config.use_prior_gt = getattr(opts, 'use_prior_gt', False)
     model_config.use_imagined = getattr(opts, 'use_imagined', False)
+    model_config.use_t5 = getattr(opts, 'use_t5', False)
     model_config.map_loss_weight = getattr(opts, 'map_loss_weight', 0.1)
     model_config.reference_path_loss_weight = getattr(opts, 'reference_path_loss_weight', 0.001)
     model_config.map_predictor_checkpoint = getattr(opts, 'map_predictor_checkpoint', '')
@@ -182,6 +183,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=None,
         use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
+        use_t5=getattr(opts, 'use_t5', False),
         random_rotation_augmentation=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
     )
     val_r2r_nav_db = R2RTextPathData(
@@ -194,6 +196,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=opts.val_sample_num,
         use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
+        use_t5=getattr(opts, 'use_t5', False),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files, data_cfg.img_ft_file, data_cfg.dep_ft_file,
@@ -205,6 +208,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len, in_memory=True,
         val_sample_num=opts.val_sample_num,
         use_prior_gt=getattr(opts, 'use_prior_gt', False) or getattr(opts, 'use_imagined', False),
+        use_t5=getattr(opts, 'use_t5', False),
     )
 
     train_dataloaders = create_dataloaders(

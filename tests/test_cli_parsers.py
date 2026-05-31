@@ -243,6 +243,60 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     }
 
 
+def test_pretrain_t5_map_raises_for_unimplemented_reference_path():
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    from vlnce_baselines.models.etp_t5.navigation import (
+        T5ReferencePathNotImplementedError,
+    )
+
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+
+    with pytest.raises(
+        T5ReferencePathNotImplementedError,
+        match="T5-Navigation reference_path is not implemented",
+    ):
+        nav_db._load_t5_cognitive_map({"instr_id": "42_0", "scan": "scene"})
+
+
+def test_pretrain_parser_accepts_t5_mode_and_rejects_mixed_map_modes(monkeypatch):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_parser = importlib.import_module("parser")
+    parser = pretrain_parser.load_parser()
+    base_args = [
+        "prog",
+        "--vlnbert",
+        "cmt",
+        "--model_config",
+        "model.json",
+        "--output_dir",
+        "out",
+        "--config",
+        "cfg.json",
+    ]
+    monkeypatch.setattr(pretrain_parser.json, "load", lambda _: {})
+    monkeypatch.setattr(
+        pretrain_parser, "open", lambda *_args, **_kwargs: None, raising=False
+    )
+
+    monkeypatch.setattr(sys, "argv", [*base_args, "--use_t5"])
+    args = pretrain_parser.parse_with_config(parser)
+    assert args.use_t5 is True
+
+    parser = pretrain_parser.load_parser()
+    monkeypatch.setattr(sys, "argv", [*base_args, "--use_t5", "--use_imagined"])
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        pretrain_parser.parse_with_config(parser)
+
+
 def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
