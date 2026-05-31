@@ -28,6 +28,12 @@ def load_parser():
     parser.add_argument("--use_imagined", action="store_true", help="Enable instruction-imagined cognitive map predictor")
     parser.add_argument("--map_loss_weight", default=0.1, type=float, help="Auxiliary imagined-map loss weight")
     parser.add_argument(
+        "--reference_path_loss_weight",
+        default=0.001,
+        type=float,
+        help="Huber loss weight for imagined reference-path supervision",
+    )
+    parser.add_argument(
         "--map_predictor_checkpoint",
         default="",
         type=str,

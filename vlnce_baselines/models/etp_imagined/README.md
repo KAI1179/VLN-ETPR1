@@ -29,7 +29,7 @@ start_direction_vector + start_position
 -> latent-to-CNN projection
 -> progressive upsample decoder
 -> 37-channel 100x100 map logits
--> pooled latent reference-path head -> first 5 route waypoints
+-> pooled latent reference-path head -> bounded first 5 route waypoints
 ```
 
 The grid output is still logits, not probabilities. Callers use
@@ -46,7 +46,8 @@ Use:
 - `MODEL.policy_name ImaginedPolicy`
 
 During SS training, ground-truth cognitive maps are loaded only as supervision
-targets for grid BCE and reference-path MSE. They are not passed to navigation.
+targets for grid BCE and reference-path Huber loss. They are not passed to
+navigation.
 During eval or inference, no cognitive-map file is required; the trainer derives
 start metadata from the current episode.
 
@@ -63,6 +64,15 @@ MODEL.MAP_ENCODER.map_loss_weight
 
 Default: `0.1`.
 
+The reference-path auxiliary loss uses SmoothL1/Huber on bounded grid
+coordinates and is deliberately down-weighted:
+
+```text
+MODEL.MAP_ENCODER.reference_path_loss_weight
+```
+
+Default: `0.001`.
+
 ### Predictor-Only Training
 
 Predictor-only training should not use the VLN rollout trainer. The predictor
@@ -71,7 +81,7 @@ only needs paired instructions and ground-truth cognitive maps:
 ```text
 instruction text -> frozen VLN language encoder -> txt_embeds/txt_masks
 txt_embeds/txt_masks -> InstructionCognitiveMapPredictor -> map logits
-map logits + predicted directions + GT cognitive map metadata -> weighted BCE/focal loss + direction MSE
+map logits + predicted reference paths + GT targets -> weighted BCE/focal loss + reference-path Huber loss
 ```
 
 That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger

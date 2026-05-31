@@ -305,7 +305,11 @@ def compute_loss(
         map_loss = ((1.0 - pt).pow(focal_gamma) * bce).mean()
     else:
         raise ValueError(f"loss_type must be bce or focal, got {loss_type}")
-    reference_path_loss = F.mse_loss(pred_reference_paths, target_reference_paths)
+    reference_path_loss = F.smooth_l1_loss(
+        pred_reference_paths,
+        target_reference_paths,
+        beta=5.0,
+    )
     return map_loss + reference_path_loss_weight * reference_path_loss
 
 
@@ -524,7 +528,7 @@ class TrainMapPredictorArgs(Tap):
     loss: Literal["bce", "focal"] = "bce"
     max_pos_weight: float = 20.0
     focal_gamma: float = 2.0
-    reference_path_loss_weight: float = 0.1
+    reference_path_loss_weight: float = 0.001
     init_positive_prob: float = 0.002
     thresholds: str = "0.001,0.002,0.005,0.01,0.02,0.05"
     max_text_len: Optional[int] = None

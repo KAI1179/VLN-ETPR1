@@ -96,6 +96,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.use_imagined = getattr(config, "use_imagined", False)
         self.use_prior_gt = getattr(config, "use_prior_gt", False)
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
+        self.reference_path_loss_weight = getattr(
+            config, "reference_path_loss_weight", 0.001
+        )
 
         if "mlm" in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
@@ -300,11 +303,14 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                     batch["cognitive_maps"],
                     reduction="mean",
                 )
-                direction_loss = F.mse_loss(
+                reference_path_loss = F.smooth_l1_loss(
                     pred_reference_path,
                     batch["reference_paths"],
+                    beta=5.0,
                 )
-                map_loss = self.map_loss_weight * (map_loss + 0.1 * direction_loss)
+                map_loss = self.map_loss_weight * (
+                    map_loss + self.reference_path_loss_weight * reference_path_loss
+                )
             return map_tokens, map_token_masks, map_loss
 
         if self.use_prior_gt:

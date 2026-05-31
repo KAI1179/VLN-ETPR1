@@ -221,6 +221,7 @@ class InstructionCognitiveMapPredictor(nn.Module):
             REFERENCE_PATH_LENGTH,
             2,
         )
+        reference_paths = torch.sigmoid(reference_paths) * float(SIZE - 1)
         latent = self.latent_projection(queries)
         latent = latent.transpose(1, 2).reshape(
             batch_size,

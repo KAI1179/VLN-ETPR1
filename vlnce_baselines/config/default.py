@@ -198,6 +198,7 @@ _C.MODEL.MAP_ENCODER = CN()
 _C.MODEL.MAP_ENCODER.enabled = False                         # toggle on/off
 _C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze base VLN params (map modules remain trainable)
 _C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE auxiliary loss weight
+_C.MODEL.MAP_ENCODER.reference_path_loss_weight = 0.001      # Huber weight for imagined reference-path target
 _C.MODEL.MAP_ENCODER.predictor_checkpoint = ""               # optional predictor-only checkpoint for ImaginedPolicy
 
 

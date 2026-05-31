@@ -83,7 +83,16 @@ class RLTrainer(PriorGTRLTrainer):
             target_grid,
             reduction="mean",
         )
-        reference_path_loss = F.mse_loss(pred_reference_paths, target_reference_paths)
+        reference_path_loss_weight = getattr(
+            map_cfg, "reference_path_loss_weight", 0.001
+        )
+        reference_path_loss = F.smooth_l1_loss(
+            pred_reference_paths,
+            target_reference_paths,
+            beta=5.0,
+        )
         self.logs["map_loss"].append(map_loss.item())
         self.logs["map_reference_path_loss"].append(reference_path_loss.item())
-        return map_loss_weight * (map_loss + 0.1 * reference_path_loss)
+        return map_loss_weight * (
+            map_loss + reference_path_loss_weight * reference_path_loss
+        )

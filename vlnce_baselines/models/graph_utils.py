@@ -20,6 +20,10 @@ def calc_position_distance(a, b):
 
 def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0, to_clock=False):
     # a, b: (x, y, z)
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        return 0.0, 0.0, 0.0
     dx = b[0] - a[0]
     dy = b[1] - a[1]
     dz = b[2] - a[2]
@@ -29,7 +33,7 @@ def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0, to_clock=Fa
 
     # the simulator's api is weired (x-y axis is transposed)
     # heading = np.arcsin(dx/xy_dist) # [-pi/2, pi/2]
-    heading = np.arcsin(-dx / xz_dist)  # [-pi/2, pi/2]
+    heading = np.arcsin(np.clip(-dx / xz_dist, -1.0, 1.0))  # [-pi/2, pi/2]
     # if b[1] < a[1]:
     #     heading = np.pi - heading
     if b[2] > a[2]:
@@ -38,7 +42,7 @@ def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0, to_clock=Fa
     if to_clock:
         heading = 2 * np.pi - heading
 
-    elevation = np.arcsin(dz / xyz_dist)  # [-pi/2, pi/2]
+    elevation = np.arcsin(np.clip(dy / xyz_dist, -1.0, 1.0))  # [-pi/2, pi/2]
     elevation -= base_elevation
 
     return heading, elevation, xyz_dist

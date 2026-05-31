@@ -128,7 +128,7 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.batch_size == 8
     assert args.max_pos_weight == 20.0
     assert args.focal_gamma == 2.0
-    assert args.reference_path_loss_weight == 0.1
+    assert args.reference_path_loss_weight == 0.001
     assert args.init_positive_prob == 0.002
     assert args.max_text_len is None
     assert args.num_workers == 2
