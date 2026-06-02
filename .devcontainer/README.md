@@ -97,9 +97,18 @@ rm -rf extra_files extra_files.zip
 
 ## Model Download
 
-```shell
-cd ETP-R1/data/models/ && hfd.sh t5-large
-```
+### Llama
+
+1. Request access on [Llama website](https://www.llama.com/llama-downloads/).
+2. Request access on [HuggingFace (again)](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct), with the same email and info.
+3. After you've got access, download the HuggingFace model with the tool of your choice.
+     - Save under `data/models/`.
+     - Remember to configure username and token.
+     - Personally I use [`hfd.sh`](https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f):
+
+          ```shell
+          hfd.sh meta-llama/Llama-3.1-8B-Instruct -x 8 --hf_username $HF_USERNAME --hf_token $HF_TOKEN
+          ```
 
 ## Working With uv
 
