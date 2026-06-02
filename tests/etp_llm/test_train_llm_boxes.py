@@ -5,13 +5,13 @@ from typing import List
 import pytest
 
 import prior.bbox as bbox
-from vlnce_baselines.models.etp_t5.boxes_schema import (
+from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
     RegionBoxSpec,
-    T5BoxesSpec,
-    parse_t5_boxes_text,
+    LLMBoxesSpec,
+    parse_llm_boxes_text,
 )
-from vlnce_baselines.models.etp_t5 import train_t5_boxes
+from vlnce_baselines.models.etp_llm import train_llm_boxes
 
 
 def _empty_relevant(instruction="Go to the chair."):
@@ -88,13 +88,13 @@ class _SceneBoxes:
         return _relevant_with_chair(instruction)
 
 
-def test_load_t5_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
+def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     _EpisodeSource.calls = []
     _SceneBoxes.calls = []
-    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
 
-    examples = train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=1)
+    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert _EpisodeSource.calls == [("R2R", ("train",))]
     assert len(examples) == 1
@@ -117,7 +117,7 @@ def test_load_t5_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     )
 
 
-def test_t5_boxes_example_targets_only_mentioned_entities():
+def test_llm_boxes_example_targets_only_mentioned_entities():
     relevant = _relevant_with_chair("Go to the chair.")
     relevant.level.objects[3] = [
         bbox.OBB2D(
@@ -131,7 +131,7 @@ def test_t5_boxes_example_targets_only_mentioned_entities():
         bbox.AABB2D(min=(0.0, 0.0), max=(3.0, 4.0), mentioned=True)
     ]
 
-    example = train_t5_boxes.T5BoxesExample(
+    example = train_llm_boxes.LLMBoxesExample(
         example_id="R2R_train_mentioned",
         dataset_tag="R2R",
         split="train",
@@ -143,25 +143,25 @@ def test_t5_boxes_example_targets_only_mentioned_entities():
         target_relevant=relevant,
     )
 
-    assert example.target_spec == T5BoxesSpec(
+    assert example.target_spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.2, 3.0), (0.5, 0.6), 0.25),),
         regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (3.0, 4.0)),),
     )
 
 
-def test_load_t5_boxes_examples_respects_zero_limit(monkeypatch):
+def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
     _EpisodeSource.calls = []
     _SceneBoxes.calls = []
-    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
 
-    examples = train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=0)
+    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=0)
 
     assert examples == []
     assert _SceneBoxes.calls == []
 
 
-def test_load_t5_boxes_examples_caches_scene_boxes(monkeypatch):
+def test_load_llm_boxes_examples_caches_scene_boxes(monkeypatch):
     class TwoEpisodeSource:
         @staticmethod
         def iter_from(dataset, splits):
@@ -169,10 +169,10 @@ def test_load_t5_boxes_examples_caches_scene_boxes(monkeypatch):
             yield _EpisodeSameSceneB()
 
     _SceneBoxes.calls = []
-    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", TwoEpisodeSource)
-    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", TwoEpisodeSource)
+    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
 
-    examples = train_t5_boxes.load_t5_boxes_examples("R2R", ["train"])
+    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"])
 
     assert [example.example_id for example in examples] == [
         "R2R_train_43",
@@ -181,7 +181,7 @@ def test_load_t5_boxes_examples_caches_scene_boxes(monkeypatch):
     assert _SceneBoxes.calls == ["scene-a"]
 
 
-def test_load_t5_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch):
+def test_load_llm_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch):
     progress_calls = []
 
     def fake_progress(iterable, **kwargs):
@@ -189,15 +189,15 @@ def test_load_t5_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch
         return iterable
 
     _SceneBoxes.calls = []
-    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
-    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
 
-    train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=1)
+    train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert progress_calls == [
         {
-            "desc": "load T5-Boxes examples",
+            "desc": "load LLM-Boxes examples",
             "disable": False,
             "dynamic_ncols": True,
             "total": 1,
@@ -205,7 +205,7 @@ def test_load_t5_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch
     ]
 
 
-def test_load_t5_boxes_examples_disables_progress_when_quiet(monkeypatch):
+def test_load_llm_boxes_examples_disables_progress_when_quiet(monkeypatch):
     progress_calls = []
 
     def fake_progress(iterable, **kwargs):
@@ -213,17 +213,17 @@ def test_load_t5_boxes_examples_disables_progress_when_quiet(monkeypatch):
         return iterable
 
     _SceneBoxes.calls = []
-    monkeypatch.setattr(train_t5_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_t5_boxes, "SceneSemanticBoxes", _SceneBoxes)
-    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
 
-    train_t5_boxes.load_t5_boxes_examples("R2R", ["train"], limit=1, quiet=True)
+    train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1, quiet=True)
 
     assert progress_calls[0]["disable"] is True
 
 
-def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
-    example = train_t5_boxes.T5BoxesExample(
+def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
+    example = train_llm_boxes.LLMBoxesExample(
         example_id="RxR_val_seen_9",
         dataset_tag="RxR",
         split="val_seen",
@@ -235,7 +235,7 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
         target_relevant=_relevant_with_chair("Walk into the living room."),
     )
 
-    item = train_t5_boxes.T5BoxesDataset([example])[0]
+    item = train_llm_boxes.LLMBoxesDataset([example])[0]
 
     assert item["example_id"] == "RxR_val_seen_9"
     assert item["input_text"] == (
@@ -244,7 +244,7 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
         "instruction Walk into the living room."
     )
     assert item["target_text"] == "obj chair 1.2 3.0 0.5 0.6 0.25"
-    assert parse_t5_boxes_text(item["target_text"]) == example.target_spec
+    assert parse_llm_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
     assert "scene" not in item["input_text"].lower()
@@ -252,10 +252,10 @@ def test_t5_boxes_dataset_item_returns_text_ids_and_targets():
     assert "{" not in item["target_text"]
 
 
-def test_t5_boxes_dataset_item_uses_level_local_start_position():
+def test_llm_boxes_dataset_item_uses_level_local_start_position():
     target_relevant = _relevant_with_chair("Walk into the living room.")
     target_relevant.reference_path = [(1.24, 2.96), (2.0, 4.0)]
-    example = train_t5_boxes.T5BoxesExample(
+    example = train_llm_boxes.LLMBoxesExample(
         example_id="R2R_train_offset",
         dataset_tag="R2R",
         split="train",
@@ -267,7 +267,7 @@ def test_t5_boxes_dataset_item_uses_level_local_start_position():
         target_relevant=target_relevant,
     )
 
-    item = train_t5_boxes.T5BoxesDataset([example])[0]
+    item = train_llm_boxes.LLMBoxesDataset([example])[0]
 
     assert "start x = 1.2 | start z = 3.0" in item["input_text"]
 
@@ -278,129 +278,129 @@ class _BatchEncoding(dict):
         return self
 
 
-class _ModernTokenizer:
+class _ChatTokenizer:
     pad_token_id = 0
+    eos_token_id = 9
+    eos_token = "<eos>"
+    pad_token = "<pad>"
 
     def __init__(self):
         self.calls = []
 
-    def __call__(self, texts=None, **kwargs):
-        self.calls.append((texts, kwargs))
-        if "text_target" in kwargs:
-            assert texts is None or texts == []
-            assert kwargs["text_target"] == ["target"]
-            assert kwargs["max_length"] == 7
-            return _BatchEncoding({"input_ids": [[3, 0]], "attention_mask": [[1, 0]]})
-        assert texts == ["input"]
-        assert kwargs["max_length"] == 11
-        return _BatchEncoding(
-            {
-                "input_ids": [[1, 2]],
-                "attention_mask": [[1, 1]],
-            }
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    ):
+        assert tokenize is False
+        self.calls.append((messages, add_generation_prompt))
+        rendered = "".join(
+            f"<{message['role']}>{message['content']}</{message['role']}>"
+            for message in messages
         )
-
-    def encode(self, text, add_special_tokens=False):
-        return text.split()
-
-
-class _OldTokenizer:
-    pad_token_id = 0
-
-    def __init__(self):
-        self.calls = []
+        if add_generation_prompt:
+            rendered += "<assistant>"
+        return rendered
 
     def __call__(self, texts, **kwargs):
-        if "text_target" in kwargs:
-            raise TypeError("unexpected text_target")
         self.calls.append((list(texts), kwargs))
-        if list(texts) == ["input"]:
-            return _BatchEncoding({"input_ids": [[1, 2]], "attention_mask": [[1, 1]]})
-        return _BatchEncoding({"input_ids": [[3, 0]], "attention_mask": [[1, 0]]})
+        rows = []
+        for text in texts:
+            rows.append([ord(char) for char in text])
+        max_len = max(len(row) for row in rows)
+        padded = [row + [self.pad_token_id] * (max_len - len(row)) for row in rows]
+        masks = [
+            [1] * len(row) + [0] * (max_len - len(row))
+            for row in rows
+        ]
+        return _BatchEncoding({"input_ids": padded, "attention_mask": masks})
 
     def encode(self, text, add_special_tokens=False):
         return text.split()
 
-
-class _RejectsNoneTextTargetTokenizer(_ModernTokenizer):
-    def __call__(self, texts=None, **kwargs):
-        if texts is None:
-            raise ValueError("text input must of type `str`")
-        return super().__call__(texts, **kwargs)
+    def batch_decode(self, sequences, skip_special_tokens=True):
+        assert skip_special_tokens is True
+        return ["".join(chr(token) for token in sequence if token != self.pad_token_id) for sequence in sequences]
 
 
-class _BrokenTargetTokenizer(_OldTokenizer):
-    def __call__(self, texts=None, **kwargs):
-        if "text_target" in kwargs:
-            raise TypeError("target tensor conversion failed")
-        return super().__call__(texts, **kwargs)
+def test_load_system_prompt_reads_package_prompt():
+    prompt = train_llm_boxes.load_system_prompt()
+
+    assert "compact LLM-Boxes text" in prompt
+    assert prompt.strip() == prompt
 
 
-def test_collate_tokenizes_with_text_target_when_supported():
-    tokenizer = _ModernTokenizer()
+def test_collate_builds_chat_completion_and_masks_prompt_tokens():
+    tokenizer = _ChatTokenizer()
 
-    collated = train_t5_boxes.collate_t5_boxes_batch(
+    collated = train_llm_boxes.collate_llm_boxes_batch(
         [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
         tokenizer,
+        system_prompt="system prompt",
         max_input_length=11,
-        max_output_length=7,
+        max_new_tokens=7,
     )
 
-    assert tokenizer.calls == [
-        (["input"], {"max_length": 11, "padding": True, "truncation": True, "return_tensors": "pt"}),
-        ([], {"max_length": 7, "padding": True, "truncation": True, "return_tensors": "pt", "text_target": ["target"]}),
-    ]
-    assert collated["labels"] == [[3, -100]]
+    assert tokenizer.calls[0] == (
+        [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "input"},
+        ],
+        True,
+    )
+    assert tokenizer.calls[1] == (
+        [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "input"},
+            {"role": "assistant", "content": "target"},
+        ],
+        False,
+    )
+    assert collated["labels"][0][: collated["prompt_lengths"][0]] == [
+        -100
+    ] * collated["prompt_lengths"][0]
+    assert collated["labels"][0][collated["prompt_lengths"][0] :] == collated[
+        "input_ids"
+    ][0][collated["prompt_lengths"][0] :]
     assert collated["example_ids"] == ["ex"]
 
 
-def test_collate_text_target_does_not_pass_none_as_text_input():
-    tokenizer = _RejectsNoneTextTargetTokenizer()
-
-    collated = train_t5_boxes.collate_t5_boxes_batch(
-        [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
+def test_decode_generated_completion_strips_prompt_tokens():
+    tokenizer = _ChatTokenizer()
+    text = train_llm_boxes.decode_generated_completion(
         tokenizer,
-        max_input_length=11,
-        max_output_length=7,
+        generated_ids=[1, 2, 3, ord("o"), ord("b"), ord("j")],
+        prompt_length=3,
     )
 
-    assert collated["labels"] == [[3, -100]]
+    assert text == "obj"
 
 
-def test_collate_falls_back_for_tokenizers_without_text_target():
-    tokenizer = _OldTokenizer()
-
-    collated = train_t5_boxes.collate_t5_boxes_batch(
-        [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
-        tokenizer,
-        max_input_length=11,
-        max_output_length=7,
+def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
+    args = argparse.Namespace(
+        model_name_or_path="unused",
+        output_dir=str(tmp_path),
+        dataset="R2R",
+        max_input_length=32,
+        max_new_tokens=64,
+        batch_size=2,
+        epochs=1,
+        learning_rate=1e-4,
+        limit=None,
+        device="cpu",
+        quiet=True,
+        finetune_method="full",
     )
 
-    assert tokenizer.calls == [
-        (["input"], {"max_length": 11, "padding": True, "truncation": True, "return_tensors": "pt"}),
-        (["target"], {"max_length": 7, "padding": True, "truncation": True, "return_tensors": "pt"}),
-    ]
-    assert collated["labels"] == [[3, -100]]
-    assert collated["example_ids"] == ["ex"]
-
-
-def test_collate_reraises_type_error_unrelated_to_text_target_support():
-    tokenizer = _BrokenTargetTokenizer()
-
-    with pytest.raises(TypeError, match="target tensor conversion failed"):
-        train_t5_boxes.collate_t5_boxes_batch(
-            [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
-            tokenizer,
-            max_input_length=11,
-            max_output_length=7,
-        )
+    with pytest.raises(NotImplementedError, match="full fine-tuning"):
+        train_llm_boxes.train_model(args)
 
 
 class _EvalDataset:
     def __iter__(self):
         target = _empty_relevant()
-        target_spec = T5BoxesSpec(objects=(), regions=())
+        target_spec = LLMBoxesSpec(objects=(), regions=())
         yield {
             "example_id": "valid/example",
             "input_text": "valid prompt",
@@ -453,10 +453,9 @@ class _EvalDataset:
         }
 
 
-class _EvalTokenizer:
-    pad_token_id = 0
-
+class _EvalTokenizer(_ChatTokenizer):
     def __init__(self):
+        super().__init__()
         self._decoded = [
             "obj chair 1 2 0.5 0.5 0",
             "obj chair 1 2 0.5 0.5 0 ; obj alien 1 2 0.5 0.5 0",
@@ -465,12 +464,6 @@ class _EvalTokenizer:
             "reg circulation 0 0 0 1",
         ]
         self._decode_offset = 0
-
-    def __call__(self, texts, **kwargs):
-        return _BatchEncoding({"input_ids": [[1]], "attention_mask": [[1]]})
-
-    def encode(self, text, add_special_tokens=False):
-        return text.split()
 
     def batch_decode(self, sequences, skip_special_tokens=True):
         assert skip_special_tokens is True
@@ -484,7 +477,8 @@ class _EvalModel:
         self.was_eval = True
 
     def generate(self, **kwargs):
-        assert kwargs["max_length"] == 64
+        assert kwargs["max_new_tokens"] == 64
+        assert kwargs["do_sample"] is False
         return [[10], [11]]
 
 
@@ -495,17 +489,18 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         progress_calls.append(kwargs)
         return iterable
 
-    monkeypatch.setattr(train_t5_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
-        max_output_length=64,
+        max_new_tokens=64,
         batch_size=2,
         device="cpu",
         quiet=False,
+        system_prompt="system prompt",
     )
 
-    train_t5_boxes.evaluate_model(
+    train_llm_boxes.evaluate_model(
         _EvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -514,7 +509,7 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
 
     assert progress_calls == [
         {
-            "desc": "eval T5-Boxes",
+            "desc": "eval LLM-Boxes",
             "disable": False,
             "dynamic_ncols": True,
             "total": None,
@@ -529,17 +524,18 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
             "category_aware_raster_support": 2 if pred_spec.objects else 0,
         }
 
-    monkeypatch.setattr(train_t5_boxes, "evaluate_t5_boxes_prediction", fake_metrics)
+    monkeypatch.setattr(train_llm_boxes, "evaluate_llm_boxes_prediction", fake_metrics)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
-        max_output_length=64,
+        max_new_tokens=64,
         batch_size=2,
         device="cpu",
         quiet=True,
+        system_prompt="system prompt",
     )
 
-    metrics = train_t5_boxes.evaluate_model(
+    metrics = train_llm_boxes.evaluate_model(
         _EvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -586,20 +582,22 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
 
     class InvalidTokenizer(_EvalTokenizer):
         def __init__(self):
+            super().__init__()
             self._decoded = ["not parseable"] * 5
             self._decode_offset = 0
 
-    monkeypatch.setattr(train_t5_boxes, "evaluate_t5_boxes_prediction", fake_metrics)
+    monkeypatch.setattr(train_llm_boxes, "evaluate_llm_boxes_prediction", fake_metrics)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
-        max_output_length=64,
+        max_new_tokens=64,
         batch_size=2,
         device="cpu",
         quiet=True,
+        system_prompt="system prompt",
     )
 
-    metrics = train_t5_boxes.evaluate_model(
+    metrics = train_llm_boxes.evaluate_model(
         _EvalModel(),
         InvalidTokenizer(),
         _EvalDataset(),
@@ -625,57 +623,58 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         calls.append((args, kwargs))
         return []
 
-    monkeypatch.setattr(train_t5_boxes, "load_t5_boxes_examples", fake_load)
+    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
     args = argparse.Namespace(
         model_name_or_path="unused",
         output_dir=str(tmp_path),
         dataset="R2R",
         max_input_length=32,
-        max_output_length=64,
+        max_new_tokens=64,
         batch_size=2,
         epochs=1,
         learning_rate=1e-4,
         limit=None,
         device="cpu",
         quiet=True,
+        finetune_method="lora",
     )
 
-    with pytest.raises(ValueError, match="No T5-Boxes training examples"):
-        train_t5_boxes.train_model(args)
+    with pytest.raises(ValueError, match="No LLM-Boxes training examples"):
+        train_llm_boxes.train_model(args)
     assert list(calls[0][0][1]) == ["train"]
 
 
 def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
-    assert train_t5_boxes._checkpoint_dir(tmp_path, "epoch-1") == (
+    assert train_llm_boxes._checkpoint_dir(tmp_path, "epoch-1") == (
         tmp_path / "checkpoints" / "epoch-1"
     )
-    assert train_t5_boxes._checkpoint_dir(tmp_path, "final") == (
+    assert train_llm_boxes._checkpoint_dir(tmp_path, "final") == (
         tmp_path / "checkpoints" / "final"
     )
 
 
-def test_truncate_t5_boxes_text_preserves_complete_entities():
+def test_truncate_llm_boxes_text_preserves_complete_entities():
     text = (
         "obj chair 1 2 0.5 0.5 0 ; "
         "obj table 3 4 0.5 0.5 0 ; "
         "reg circulation 0 0 5 6"
     )
 
-    truncated = train_t5_boxes.truncate_t5_boxes_text_at_entity_boundary(
+    truncated = train_llm_boxes.truncate_llm_boxes_text_at_entity_boundary(
         text,
-        _ModernTokenizer(),
+        _ChatTokenizer(),
         max_tokens=13,
     )
 
     assert truncated == "obj chair 1 2 0.5 0.5 0"
-    assert parse_t5_boxes_text(truncated) == T5BoxesSpec(
+    assert parse_llm_boxes_text(truncated) == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(),
     )
 
 
-def test_t5_text_stats_report_lengths_and_truncation():
-    items: List[train_t5_boxes.T5BoxesItem] = [
+def test_llm_text_stats_report_lengths_and_truncation():
+    items: List[train_llm_boxes.LLMBoxesItem] = [
         {"input_text": "input one", "target_text": "obj chair 1 2 0.5 0.5 0"},
         {
             "input_text": "input two three",
@@ -683,11 +682,11 @@ def test_t5_text_stats_report_lengths_and_truncation():
         },
     ]
 
-    stats = train_t5_boxes.compute_t5_text_stats(
+    stats = train_llm_boxes.compute_llm_text_stats(
         items,
-        _ModernTokenizer(),
+        _ChatTokenizer(),
         max_input_length=2,
-        max_output_length=10,
+        max_new_tokens=10,
     )
 
     assert stats == {
@@ -719,15 +718,15 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         return {"examples": 1.0}
 
     monkeypatch.setattr(
-        train_t5_boxes,
-        "_load_seq2seq_model_and_tokenizer",
+        train_llm_boxes,
+        "_load_causal_lm_model_and_tokenizer",
         lambda path: ("model", "tokenizer"),
     )
-    monkeypatch.setattr(train_t5_boxes, "load_t5_boxes_examples", fake_load)
-    monkeypatch.setattr(train_t5_boxes, "evaluate_model", fake_evaluate)
-    monkeypatch.setattr(train_t5_boxes, "T5BoxesDataset", lambda examples: examples)
+    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
+    monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: examples)
 
-    metrics = train_t5_boxes.main(
+    metrics = train_llm_boxes.main(
         ["eval", "--output-dir", str(tmp_path), "--limit", "1", "--quiet"]
     )
 
@@ -740,19 +739,21 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
 
 
 def test_cli_parser_supports_train_and_eval_modes():
-    train_args = train_t5_boxes.parse_args(
+    train_args = train_llm_boxes.parse_args(
         [
             "train",
             "--model-name-or-path",
-            "tiny-t5",
+            "tiny-llm",
             "--output-dir",
             "out",
             "--dataset",
             "RxR",
             "--max-input-length",
             "128",
-            "--max-output-length",
+            "--max-new-tokens",
             "256",
+            "--finetune-method",
+            "lora",
             "--batch-size",
             "4",
             "--epochs",
@@ -766,15 +767,16 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--quiet",
         ]
     )
-    eval_args = train_t5_boxes.parse_args(["eval", "--output-dir", "eval-out"])
+    eval_args = train_llm_boxes.parse_args(["eval", "--output-dir", "eval-out"])
 
     assert train_args.mode == "train"
-    assert train_args.model_name_or_path == "tiny-t5"
+    assert train_args.model_name_or_path == "tiny-llm"
     assert train_args.output_dir == "out"
     assert train_args.dataset == "RxR"
     assert not hasattr(train_args, "splits")
     assert train_args.max_input_length == 128
-    assert train_args.max_output_length == 256
+    assert train_args.max_new_tokens == 256
+    assert train_args.finetune_method == "lora"
     assert train_args.batch_size == 4
     assert train_args.epochs == 2
     assert train_args.learning_rate == 0.001
@@ -782,18 +784,20 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.device == "cpu"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
-    assert eval_args.model_name_or_path == "data/models/t5-large"
+    assert eval_args.model_name_or_path == "data/models/Llama-3.1-8B-Instruct"
+    assert eval_args.output_dir == "eval-out"
+    assert eval_args.max_new_tokens == 1024
     assert eval_args.quiet is False
 
 
 def test_cli_parser_rejects_splits_arg():
     with pytest.raises(SystemExit):
-        train_t5_boxes.parse_args(["train", "--splits", "train,val_seen"])
+        train_llm_boxes.parse_args(["train", "--splits", "train,val_seen"])
 
 
 def test_cli_device_defaults_to_cuda_when_available_else_cpu(monkeypatch):
-    monkeypatch.setattr(train_t5_boxes, "_default_device", lambda: "cpu")
+    monkeypatch.setattr(train_llm_boxes, "_default_device", lambda: "cpu")
 
-    args = train_t5_boxes.parse_args(["eval", "--output-dir", "eval-out"])
+    args = train_llm_boxes.parse_args(["eval", "--output-dir", "eval-out"])
 
     assert args.device == "cpu"

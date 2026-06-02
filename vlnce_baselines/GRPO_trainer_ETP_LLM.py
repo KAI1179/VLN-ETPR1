@@ -1,4 +1,4 @@
-"""GRPO scaffold for T5-Navigation."""
+"""GRPO scaffold for LLM-Navigation."""
 
 from habitat_baselines.common.baseline_registry import baseline_registry
 
@@ -7,9 +7,9 @@ from vlnce_baselines.GRPO_trainer_ETP_PriorGT import (
 )
 
 
-@baseline_registry.register_trainer(name="GRPO-ETP-T5")
+@baseline_registry.register_trainer(name="GRPO-ETP-LLM")
 class RLTrainer(PriorGTGRPOTrainer):
-    """GRPO trainer scaffold for T5-derived cognitive maps."""
+    """GRPO trainer scaffold for LLM-derived cognitive maps."""
 
     def _should_build_cognitive_maps(self, map_cfg):
         return False
@@ -26,7 +26,7 @@ class RLTrainer(PriorGTGRPOTrainer):
             return None, None
         assert self.policy is not None
         self.policy.net(
-            mode="t5_map_encoding",
+            mode="llm_map_encoding",
             txt_embeds=txt_embeds,
             txt_masks=txt_masks,
         )

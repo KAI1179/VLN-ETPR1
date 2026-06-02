@@ -40,9 +40,9 @@ IMAGINED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000
 IMAGINED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth"
 IMAGINED_GRPO_CKPT="data/logs/checkpoints/release_r2r_imagined_grpo/store/ckpt.iter270.pth"
 
-T5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/t5/ckpts/model_step_100000.pt"
-T5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_t5_dagger/store/ckpt.iter30000.pth"
-T5_GRPO_CKPT="data/logs/checkpoints/release_r2r_t5_grpo/store/ckpt.iter270.pth"
+LLM_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm/ckpts/model_step_100000.pt"
+LLM_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_dagger/store/ckpt.iter30000.pth"
+LLM_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grpo/store/ckpt.iter270.pth"
 
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
@@ -112,15 +112,15 @@ IMAGINED_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-Imagined
       ${IMAGINED_PREDICTOR_ARG}
       MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
-T5_MODEL_ARGS="TRAINER_NAME SS-ETP-T5
-      MODEL.policy_name T5Policy
+LLM_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.pretrained_path ${T5_PRETRAINED_CKPT}"
+      MODEL.pretrained_path ${LLM_PRETRAINED_CKPT}"
 
-T5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-T5
-      MODEL.policy_name T5Policy
+LLM_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
+      MODEL.policy_name LLMPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.pretrained_path ${T5_PRETRAINED_CKPT}"
+      MODEL.pretrained_path ${LLM_PRETRAINED_CKPT}"
 
 launch() {
       python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $1
@@ -189,27 +189,27 @@ case $mode in
       echo "###### imagined eval mode (GRPO ckpt) ######"
       launch "--exp_name release_r2r_imagined_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_GRPO_CKPT} IL.back_algo control"
       ;;
-      t5_dagger)
-      echo "###### t5 dagger train mode ######"
-      launch "--exp_name release_r2r_t5_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${T5_MODEL_ARGS} ${DAGGER_ARGS}"
+      llm_dagger)
+      echo "###### llm dagger train mode ######"
+      launch "--exp_name release_r2r_llm_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
-      t5_eval_ss)
-      echo "###### t5 eval mode (SS ckpt) ######"
-      launch "--exp_name release_r2r_t5_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${T5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${T5_DAGGER_CKPT} IL.back_algo control"
+      llm_eval_ss)
+      echo "###### llm eval mode (SS ckpt) ######"
+      launch "--exp_name release_r2r_llm_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_DAGGER_CKPT} IL.back_algo control"
       ;;
-      t5_grpo)
-      echo "###### t5 grpo train mode ######"
-      launch "--exp_name release_r2r_t5_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${T5_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${T5_DAGGER_CKPT}"
+      llm_grpo)
+      echo "###### llm grpo train mode ######"
+      launch "--exp_name release_r2r_llm_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${LLM_DAGGER_CKPT}"
       ;;
-      t5_eval_grpo)
-      echo "###### t5 eval mode (GRPO ckpt) ######"
-      launch "--exp_name release_r2r_t5_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${T5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${T5_GRPO_CKPT} IL.back_algo control"
+      llm_eval_grpo)
+      echo "###### llm eval mode (GRPO ckpt) ######"
+      launch "--exp_name release_r2r_llm_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRPO_CKPT} IL.back_algo control"
       ;;
       imagined_infer)
       warn_unimplemented "inference path for imagined cognitive maps"
       ;;
       *)
-      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer|t5_dagger|t5_eval_ss|t5_grpo|t5_eval_grpo} [master_port]" >&2
+      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer|llm_dagger|llm_eval_ss|llm_grpo|llm_eval_grpo} [master_port]" >&2
       exit 1
       ;;
 esac
@@ -229,7 +229,7 @@ esac
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo 2333
 # CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash t5_dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash t5_eval_ss 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash t5_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash t5_eval_grpo 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_eval_ss 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo 2333
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_eval_grpo 2333

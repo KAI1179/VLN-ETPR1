@@ -15,8 +15,8 @@ for arg in "$@"; do
             outdir=pretrained/r2r_rxr_ce/imagined
             args+=("$arg")
             ;;
-        --use_t5)
-            outdir=pretrained/r2r_rxr_ce/t5
+        --use_llm)
+            outdir=pretrained/r2r_rxr_ce/llm
             args+=("$arg")
             ;;
         *)

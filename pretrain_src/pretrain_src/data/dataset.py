@@ -48,11 +48,11 @@ class ReverieTextPathData(object):
         act_visited_node=False,
         val_sample_num=None,
         use_prior_gt=False,
-        use_t5=False,
+        use_llm=False,
         random_rotation_augmentation=False,
     ):
         self.use_prior_gt = use_prior_gt
-        self.use_t5 = use_t5
+        self.use_llm = use_llm
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -123,12 +123,12 @@ class ReverieTextPathData(object):
             "start_positions": tensors["start_position"],
         }
 
-    def _load_t5_cognitive_map(self, item: Dict[str, Any]):
-        from vlnce_baselines.models.etp_t5.navigation import (
-            raise_t5_reference_path_not_implemented,
+    def _load_llm_cognitive_map(self, item: Dict[str, Any]):
+        from vlnce_baselines.models.etp_llm.navigation import (
+            raise_llm_reference_path_not_implemented,
         )
 
-        raise_t5_reference_path_not_implemented(
+        raise_llm_reference_path_not_implemented(
             f"pretraining item {item.get('instr_id', '<unknown>')}"
         )
 
@@ -530,7 +530,7 @@ class R2RTextPathData(ReverieTextPathData):
         val_sample_num=None,
         start_vp_file=None,
         use_prior_gt=False,
-        use_t5=False,
+        use_llm=False,
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -552,7 +552,7 @@ class R2RTextPathData(ReverieTextPathData):
             act_visited_node=act_visited_node,
             val_sample_num=val_sample_num,
             use_prior_gt=use_prior_gt,
-            use_t5=use_t5,
+            use_llm=use_llm,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 
@@ -685,8 +685,8 @@ class R2RTextPathData(ReverieTextPathData):
 
         if self.use_prior_gt:
             outs.update(self._load_pretrain_cognitive_map(item))
-        if self.use_t5:
-            outs.update(self._load_t5_cognitive_map(item))
+        if self.use_llm:
+            outs.update(self._load_llm_cognitive_map(item))
 
         return outs
 

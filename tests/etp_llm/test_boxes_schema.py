@@ -3,16 +3,16 @@ from typing import Any, cast
 import pytest
 
 import prior.bbox as bbox
-from vlnce_baselines.models.etp_t5.boxes_schema import (
+from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
     RegionBoxSpec,
-    T5BoxesSpec,
-    T5BoxesValidationError,
-    build_t5_boxes_input,
-    parse_t5_boxes_text,
-    parse_t5_boxes_text_partial,
+    LLMBoxesSpec,
+    LLMBoxesValidationError,
+    build_llm_boxes_input,
+    parse_llm_boxes_text,
+    parse_llm_boxes_text_partial,
     relevant_semantic_boxes_to_mentioned_spec,
-    spec_to_t5_boxes_text,
+    spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
@@ -26,8 +26,8 @@ def _empty_level():
     )
 
 
-def test_build_t5_boxes_input_includes_metadata_but_not_scene_id():
-    prompt = build_t5_boxes_input(
+def test_build_llm_boxes_input_includes_metadata_but_not_scene_id():
+    prompt = build_llm_boxes_input(
         "R2R",
         "Turn left at the chair.",
         start_position=(1.24, 2.96),
@@ -44,14 +44,14 @@ def test_build_t5_boxes_input_includes_metadata_but_not_scene_id():
     assert "}" not in prompt
 
 
-def test_build_t5_boxes_input_accepts_3d_start_position_as_xz_projection():
-    prompt_from_2d = build_t5_boxes_input(
+def test_build_llm_boxes_input_accepts_3d_start_position_as_xz_projection():
+    prompt_from_2d = build_llm_boxes_input(
         "RxR",
         "Go ahead.",
         start_position=(1.24, 2.96),
         start_direction=(0.0, 1.0),
     )
-    prompt_from_3d = build_t5_boxes_input(
+    prompt_from_3d = build_llm_boxes_input(
         "RxR",
         "Go ahead.",
         start_position=(1.24, 99.0, 2.96),
@@ -62,8 +62,8 @@ def test_build_t5_boxes_input_accepts_3d_start_position_as_xz_projection():
     assert "start x = 1.2 | start z = 3.0" in prompt_from_3d
 
 
-def test_spec_to_t5_boxes_text_round_trips_objects_and_regions():
-    spec = T5BoxesSpec(
+def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
+    spec = LLMBoxesSpec(
         objects=[
             ObjectBoxSpec(
                 category="table",
@@ -87,14 +87,14 @@ def test_spec_to_t5_boxes_text_round_trips_objects_and_regions():
         ],
     )
 
-    text = spec_to_t5_boxes_text(spec)
+    text = spec_to_llm_boxes_text(spec)
 
     assert text == (
         "obj chair 1.0 2.0 0.5 0.5 0.0 ; "
         "obj table 3.0 4.1 0.5 0.7 0.25 ; "
         "reg living/social space 0.0 0.0 5.0 6.0"
     )
-    assert parse_t5_boxes_text(text) == T5BoxesSpec(
+    assert parse_llm_boxes_text(text) == LLMBoxesSpec(
         objects=(
             ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
             ObjectBoxSpec("table", (3.0, 4.1), (0.5, 0.7), 0.25),
@@ -103,36 +103,36 @@ def test_spec_to_t5_boxes_text_round_trips_objects_and_regions():
     )
 
 
-def test_spec_to_t5_boxes_text_serializes_empty_spec_as_none():
-    text = spec_to_t5_boxes_text(T5BoxesSpec(objects=[], regions=[]))
+def test_spec_to_llm_boxes_text_serializes_empty_spec_as_none():
+    text = spec_to_llm_boxes_text(LLMBoxesSpec(objects=[], regions=[]))
 
     assert text == "none"
-    assert parse_t5_boxes_text(text) == T5BoxesSpec(objects=(), regions=())
+    assert parse_llm_boxes_text(text) == LLMBoxesSpec(objects=(), regions=())
 
 
-def test_parse_t5_boxes_text_ignores_trailing_incomplete_output_when_requested():
+def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested():
     text = (
         "obj chair 1 2 0.5 0.5 0 ; "
         "reg circulation 0 0 5 6 ; "
         "obj table 3 4 0.5"
     )
 
-    parsed = parse_t5_boxes_text(text, allow_trailing_incomplete=True)
+    parsed = parse_llm_boxes_text(text, allow_trailing_incomplete=True)
 
-    assert parsed == T5BoxesSpec(
+    assert parsed == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(RegionBoxSpec("circulation", (0.0, 0.0), (5.0, 6.0)),),
     )
-    with pytest.raises(T5BoxesValidationError, match="trailing incomplete entity"):
-        parse_t5_boxes_text(text)
+    with pytest.raises(LLMBoxesValidationError, match="trailing incomplete entity"):
+        parse_llm_boxes_text(text)
 
 
-def test_parse_t5_boxes_text_partial_reports_dropped_suffix():
-    result = parse_t5_boxes_text_partial(
+def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
+    result = parse_llm_boxes_text_partial(
         "obj chair 1 2 0.5 0.5 0 ; obj table 3 4"
     )
 
-    assert result.spec == T5BoxesSpec(
+    assert result.spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(),
     )
@@ -154,9 +154,9 @@ def test_parse_t5_boxes_text_partial_reports_dropped_suffix():
         "reg circulation 0 0 1 1 1",
     ],
 )
-def test_parse_t5_boxes_text_rejects_invalid_predictions(text):
-    with pytest.raises(T5BoxesValidationError):
-        parse_t5_boxes_text(text)
+def test_parse_llm_boxes_text_rejects_invalid_predictions(text):
+    with pytest.raises(LLMBoxesValidationError):
+        parse_llm_boxes_text(text)
 
 
 def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities():
@@ -202,7 +202,7 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
 
 
 def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions():
-    spec = T5BoxesSpec(
+    spec = LLMBoxesSpec(
         objects=[
             ObjectBoxSpec(
                 category="chair",
@@ -254,10 +254,10 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
 
 
 def test_spec_to_relevant_semantic_boxes_rejects_scalar_reference_points():
-    spec = T5BoxesSpec(objects=[], regions=[])
+    spec = LLMBoxesSpec(objects=[], regions=[])
     invalid_reference_path = cast(Any, [1.0])
 
-    with pytest.raises(T5BoxesValidationError):
+    with pytest.raises(LLMBoxesValidationError):
         spec_to_relevant_semantic_boxes(
             spec,
             instruction="Go ahead.",
@@ -268,7 +268,7 @@ def test_spec_to_relevant_semantic_boxes_rejects_scalar_reference_points():
 
 
 def test_write_prediction_artifact_rejects_ambiguous_arguments(tmp_path):
-    spec = T5BoxesSpec(objects=[], regions=[])
+    spec = LLMBoxesSpec(objects=[], regions=[])
 
     with pytest.raises(ValueError):
         write_prediction_artifact(
@@ -282,8 +282,8 @@ def test_write_prediction_artifact_rejects_ambiguous_arguments(tmp_path):
         write_prediction_artifact(tmp_path, "missing")
 
 
-def test_write_prediction_artifact_writes_t5_text_files(tmp_path):
-    spec = T5BoxesSpec(
+def test_write_prediction_artifact_writes_llm_text_files(tmp_path):
+    spec = LLMBoxesSpec(
         objects=[
             ObjectBoxSpec(
                 category="chair",
@@ -300,7 +300,7 @@ def test_write_prediction_artifact_writes_t5_text_files(tmp_path):
         tmp_path,
         "invalid-example",
         invalid_text="obj alien",
-        error=T5BoxesValidationError("unknown object category: 'alien'"),
+        error=LLMBoxesValidationError("unknown object category: 'alien'"),
     )
 
     valid_text = (tmp_path / "valid-example.txt").read_text()
@@ -323,7 +323,7 @@ def test_write_prediction_artifact_sanitizes_example_id_path_components(tmp_path
         tmp_path,
         "../nested/../../escape",
         invalid_text="{bad",
-        error=T5BoxesValidationError("unparsed text outside entities"),
+        error=LLMBoxesValidationError("unparsed text outside entities"),
     )
 
     files = list(tmp_path.glob("*.txt"))

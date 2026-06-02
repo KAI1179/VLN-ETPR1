@@ -1,20 +1,20 @@
 import pytest
 
-from vlnce_baselines.models.etp_t5.boxes_metrics import (
+from vlnce_baselines.models.etp_llm.boxes_metrics import (
     category_aware_raster_metrics,
     category_f1,
-    evaluate_t5_boxes_prediction,
+    evaluate_llm_boxes_prediction,
 )
-from vlnce_baselines.models.etp_t5.boxes_schema import (
+from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
     RegionBoxSpec,
-    T5BoxesSpec,
+    LLMBoxesSpec,
     spec_to_relevant_semantic_boxes,
 )
 
 
 def _spec(objects=None, regions=None):
-    return T5BoxesSpec(objects=objects or [], regions=regions or [])
+    return LLMBoxesSpec(objects=objects or [], regions=regions or [])
 
 
 def _object(category, center=(10.0, 10.0), half_extents=(1.0, 1.0)):
@@ -131,11 +131,11 @@ def test_category_aware_raster_metrics_documents_both_empty_convention():
     }
 
 
-def test_evaluate_t5_boxes_prediction_combines_category_and_raster_metrics():
+def test_evaluate_llm_boxes_prediction_combines_category_and_raster_metrics():
     pred_spec = _spec(objects=[_object("chair")])
     target_spec = _spec(objects=[_object("chair")])
 
-    metrics = evaluate_t5_boxes_prediction(
+    metrics = evaluate_llm_boxes_prediction(
         pred_spec,
         target_spec,
         _relevant(pred_spec),

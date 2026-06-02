@@ -1,4 +1,4 @@
-"""Structured T5-Boxes schema and semantic-box conversion helpers."""
+"""Structured LLM-Boxes schema and semantic-box conversion helpers."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ REGION_CATEGORY_TO_ID = {
 }
 
 
-class T5BoxesValidationError(ValueError):
-    """Raised when generated T5-Boxes text fails deterministic validation."""
+class LLMBoxesValidationError(ValueError):
+    """Raised when generated LLM-Boxes text fails deterministic validation."""
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class RegionBoxSpec:
 
 
 @dataclass(frozen=True)
-class T5BoxesSpec:
+class LLMBoxesSpec:
     objects: Sequence[ObjectBoxSpec]
     regions: Sequence[RegionBoxSpec]
 
@@ -52,23 +52,23 @@ class T5BoxesSpec:
 
 
 @dataclass(frozen=True)
-class T5BoxesPartialParse:
-    spec: T5BoxesSpec
+class LLMBoxesPartialParse:
+    spec: LLMBoxesSpec
     dropped_text: str
     dropped_entity_count: int
 
 
-class _T5BoxesIncompleteEntity(T5BoxesValidationError):
+class _LLMBoxesIncompleteEntity(LLMBoxesValidationError):
     pass
 
 
-def build_t5_boxes_input(
+def build_llm_boxes_input(
     dataset_tag: str,
     instruction: str,
     start_position: Sequence[float],
     start_direction: Sequence[float],
 ) -> str:
-    """Build the scene-anonymous T5-Boxes input text.
+    """Build the scene-anonymous LLM-Boxes input text.
 
     ``start_position`` may be level-local ``(x, z)`` or scene-style
     ``(x, y, z)``; the text always stores level-local/projected ``(x, z)``.
@@ -87,7 +87,7 @@ def build_t5_boxes_input(
 
 def relevant_semantic_boxes_to_spec(
     relevant: bbox.RelevantSemanticBoxes,
-) -> T5BoxesSpec:
+) -> LLMBoxesSpec:
     """Convert indexed relevant semantic boxes to a category-name spec."""
     objects: List[ObjectBoxSpec] = []
     for category_id, boxes in enumerate(relevant.level.objects):
@@ -114,7 +114,7 @@ def relevant_semantic_boxes_to_spec(
                 )
             )
 
-    return T5BoxesSpec(
+    return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
     )
@@ -122,7 +122,7 @@ def relevant_semantic_boxes_to_spec(
 
 def relevant_semantic_boxes_to_mentioned_spec(
     relevant: bbox.RelevantSemanticBoxes,
-) -> T5BoxesSpec:
+) -> LLMBoxesSpec:
     """Convert relevant semantic boxes to only instruction-mentioned entities."""
     objects: List[ObjectBoxSpec] = []
     for category_id, boxes in enumerate(relevant.level.objects):
@@ -153,14 +153,14 @@ def relevant_semantic_boxes_to_mentioned_spec(
                 )
             )
 
-    return T5BoxesSpec(
+    return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
     )
 
 
 def spec_to_relevant_semantic_boxes(
-    spec: T5BoxesSpec,
+    spec: LLMBoxesSpec,
     instruction: str,
     level_idx: int,
     reference_path: Sequence[Sequence[float]],
@@ -213,8 +213,8 @@ def spec_to_relevant_semantic_boxes(
     )
 
 
-def spec_to_t5_boxes_text(spec: T5BoxesSpec) -> str:
-    """Serialize a spec in the compact T5-friendly linear grammar."""
+def spec_to_llm_boxes_text(spec: LLMBoxesSpec) -> str:
+    """Serialize a spec in the compact LLM-friendly linear grammar."""
     normalized = _normalize_spec(spec)
     parts: List[str] = []
     for item in normalized.objects:
@@ -230,22 +230,22 @@ def spec_to_t5_boxes_text(spec: T5BoxesSpec) -> str:
     return " ; ".join(parts) if parts else "none"
 
 
-def parse_t5_boxes_text(
+def parse_llm_boxes_text(
     text: str, allow_trailing_incomplete: bool = False
-) -> T5BoxesSpec:
-    """Parse and validate the compact T5-friendly linear grammar."""
-    result = parse_t5_boxes_text_partial(text)
+) -> LLMBoxesSpec:
+    """Parse and validate the compact LLM-friendly linear grammar."""
+    result = parse_llm_boxes_text_partial(text)
     if result.dropped_text and not allow_trailing_incomplete:
-        raise T5BoxesValidationError("trailing incomplete entity")
+        raise LLMBoxesValidationError("trailing incomplete entity")
     return result.spec
 
 
-def parse_t5_boxes_text_partial(text: str) -> T5BoxesPartialParse:
+def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
     """Parse complete entities and drop one trailing incomplete entity."""
     stripped = text.strip()
     if stripped == "none" or stripped == "":
-        return T5BoxesPartialParse(
-            spec=T5BoxesSpec(objects=(), regions=()),
+        return LLMBoxesPartialParse(
+            spec=LLMBoxesSpec(objects=(), regions=()),
             dropped_text="",
             dropped_entity_count=0,
         )
@@ -257,24 +257,24 @@ def parse_t5_boxes_text_partial(text: str) -> T5BoxesPartialParse:
         if not entity:
             continue
         try:
-            _parse_t5_boxes_entity(entity, idx, objects, regions)
-        except _T5BoxesIncompleteEntity:
+            _parse_llm_boxes_entity(entity, idx, objects, regions)
+        except _LLMBoxesIncompleteEntity:
             if idx == len(entities) - 1:
-                return T5BoxesPartialParse(
-                    spec=T5BoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+                return LLMBoxesPartialParse(
+                    spec=LLMBoxesSpec(objects=tuple(objects), regions=tuple(regions)),
                     dropped_text=entity,
                     dropped_entity_count=1,
                 )
-            raise T5BoxesValidationError("incomplete entity before end of output")
-    return T5BoxesPartialParse(
-        spec=T5BoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+            raise LLMBoxesValidationError("incomplete entity before end of output")
+    return LLMBoxesPartialParse(
+        spec=LLMBoxesSpec(objects=tuple(objects), regions=tuple(regions)),
         dropped_text="",
         dropped_entity_count=0,
     )
 
 
-def _normalize_spec(spec: T5BoxesSpec) -> T5BoxesSpec:
-    return T5BoxesSpec(
+def _normalize_spec(spec: LLMBoxesSpec) -> LLMBoxesSpec:
+    return LLMBoxesSpec(
         objects=tuple(
             sorted(
                 [_normalize_object(item) for item in spec.objects],
@@ -293,11 +293,11 @@ def _normalize_spec(spec: T5BoxesSpec) -> T5BoxesSpec:
 def write_prediction_artifact(
     output_dir: str | Path,
     example_id: str,
-    valid_spec: Optional[T5BoxesSpec] = None,
+    valid_spec: Optional[LLMBoxesSpec] = None,
     invalid_text: Optional[str] = None,
     error: Optional[BaseException] = None,
 ) -> None:
-    """Write either normalized valid T5 text or invalid raw text plus error."""
+    """Write either normalized valid LLM text or invalid raw text plus error."""
     valid_mode = valid_spec is not None
     invalid_mode = invalid_text is not None or error is not None
     if valid_mode == invalid_mode:
@@ -309,7 +309,7 @@ def write_prediction_artifact(
 
     if valid_spec is not None:
         artifact_path.write_text(
-            f"{spec_to_t5_boxes_text(valid_spec)}\n",
+            f"{spec_to_llm_boxes_text(valid_spec)}\n",
             encoding="utf-8",
         )
         return
@@ -321,9 +321,9 @@ def write_prediction_artifact(
 
 def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
     if not isinstance(item, dict):
-        raise T5BoxesValidationError(f"objects[{idx}] must be an object")
+        raise LLMBoxesValidationError(f"objects[{idx}] must be an object")
     if set(item.keys()) != {"category", "center", "half_extents", "rotation"}:
-        raise T5BoxesValidationError(
+        raise LLMBoxesValidationError(
             f"objects[{idx}] must contain category, center, half_extents, rotation"
         )
 
@@ -332,7 +332,7 @@ def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
     center = _finite_point(item["center"], f"objects[{idx}].center")
     half_extents = _finite_point(item["half_extents"], f"objects[{idx}].half_extents")
     if half_extents[0] <= 0.0 or half_extents[1] <= 0.0:
-        raise T5BoxesValidationError(f"objects[{idx}].half_extents must be positive")
+        raise LLMBoxesValidationError(f"objects[{idx}].half_extents must be positive")
     rotation = _finite_number(item["rotation"], f"objects[{idx}].rotation")
     return ObjectBoxSpec(
         category=category,
@@ -344,22 +344,22 @@ def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
 
 def _parse_region(item: Any, idx: int) -> RegionBoxSpec:
     if not isinstance(item, dict):
-        raise T5BoxesValidationError(f"regions[{idx}] must be an object")
+        raise LLMBoxesValidationError(f"regions[{idx}] must be an object")
     if set(item.keys()) != {"category", "min", "max"}:
-        raise T5BoxesValidationError(f"regions[{idx}] must contain category, min, max")
+        raise LLMBoxesValidationError(f"regions[{idx}] must contain category, min, max")
 
     category = item["category"]
     _region_category_id(category)
     min_point = _finite_point(item["min"], f"regions[{idx}].min")
     max_point = _finite_point(item["max"], f"regions[{idx}].max")
     if max_point[0] <= min_point[0] or max_point[1] <= min_point[1]:
-        raise T5BoxesValidationError(
+        raise LLMBoxesValidationError(
             f"regions[{idx}].max must be greater than min on both axes"
         )
     return RegionBoxSpec(category=category, min=min_point, max=max_point)
 
 
-def _parse_t5_boxes_entity(
+def _parse_llm_boxes_entity(
     raw_entity: str,
     idx: int,
     objects: List[ObjectBoxSpec],
@@ -367,15 +367,15 @@ def _parse_t5_boxes_entity(
 ) -> None:
     parts = raw_entity.split()
     if not parts:
-        raise T5BoxesValidationError(f"entity[{idx}] must not be empty")
+        raise LLMBoxesValidationError(f"entity[{idx}] must not be empty")
 
     entity_type = parts[0]
     if entity_type == "obj":
         if len(parts) < 7:
-            raise _T5BoxesIncompleteEntity(f"entity[{idx}] object is incomplete")
+            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] object is incomplete")
         category = " ".join(parts[1:-5])
         if not category:
-            raise _T5BoxesIncompleteEntity(f"entity[{idx}] object category is missing")
+            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] object category is missing")
         center_x, center_z, half_x, half_z, rotation = _parse_trailing_numbers(
             parts[-5:], f"entity[{idx}]"
         )
@@ -390,10 +390,10 @@ def _parse_t5_boxes_entity(
 
     if entity_type == "reg":
         if len(parts) < 6:
-            raise _T5BoxesIncompleteEntity(f"entity[{idx}] region is incomplete")
+            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] region is incomplete")
         category = " ".join(parts[1:-4])
         if not category:
-            raise _T5BoxesIncompleteEntity(f"entity[{idx}] region category is missing")
+            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] region category is missing")
         min_x, min_z, max_x, max_z = _parse_trailing_numbers(
             parts[-4:], f"entity[{idx}]"
         )
@@ -405,7 +405,7 @@ def _parse_t5_boxes_entity(
         regions.append(_normalize_region(item))
         return
 
-    raise T5BoxesValidationError(f"entity[{idx}] must start with obj or reg")
+    raise LLMBoxesValidationError(f"entity[{idx}] must start with obj or reg")
 
 
 def _parse_trailing_numbers(tokens: Sequence[str], field_name: str) -> Tuple[float, ...]:
@@ -414,7 +414,7 @@ def _parse_trailing_numbers(tokens: Sequence[str], field_name: str) -> Tuple[flo
         try:
             value = float(token)
         except ValueError as exc:
-            raise _T5BoxesIncompleteEntity(
+            raise _LLMBoxesIncompleteEntity(
                 f"{field_name}[{idx}] must be a finite number"
             ) from exc
         values.append(_finite_number(value, f"{field_name}[{idx}]"))
@@ -426,7 +426,7 @@ def _normalize_object(item: ObjectBoxSpec) -> ObjectBoxSpec:
     center = _finite_point(item.center, "object.center")
     half_extents = _finite_point(item.half_extents, "object.half_extents")
     if half_extents[0] <= 0.0 or half_extents[1] <= 0.0:
-        raise T5BoxesValidationError("object.half_extents must be positive")
+        raise LLMBoxesValidationError("object.half_extents must be positive")
     return ObjectBoxSpec(
         category=item.category,
         center=_round_point(center),
@@ -440,7 +440,7 @@ def _normalize_region(item: RegionBoxSpec) -> RegionBoxSpec:
     min_point = _finite_point(item.min, "region.min")
     max_point = _finite_point(item.max, "region.max")
     if max_point[0] <= min_point[0] or max_point[1] <= min_point[1]:
-        raise T5BoxesValidationError("region.max must be greater than min on both axes")
+        raise LLMBoxesValidationError("region.max must be greater than min on both axes")
     return RegionBoxSpec(
         category=item.category,
         min=_round_point(min_point),
@@ -450,19 +450,19 @@ def _normalize_region(item: RegionBoxSpec) -> RegionBoxSpec:
 
 def _object_category_id(category: Any) -> int:
     if category not in OBJECT_CATEGORY_TO_ID:
-        raise T5BoxesValidationError(f"unknown object category: {category!r}")
+        raise LLMBoxesValidationError(f"unknown object category: {category!r}")
     return OBJECT_CATEGORY_TO_ID[category]
 
 
 def _region_category_id(category: Any) -> int:
     if category not in REGION_CATEGORY_TO_ID:
-        raise T5BoxesValidationError(f"unknown region category: {category!r}")
+        raise LLMBoxesValidationError(f"unknown region category: {category!r}")
     return REGION_CATEGORY_TO_ID[category]
 
 
 def _finite_point(value: Any, field_name: str) -> Point2D:
     if not isinstance(value, (list, tuple)) or len(value) != 2:
-        raise T5BoxesValidationError(f"{field_name} must contain two numbers")
+        raise LLMBoxesValidationError(f"{field_name} must contain two numbers")
     return (
         _finite_number(value[0], f"{field_name}[0]"),
         _finite_number(value[1], f"{field_name}[1]"),
@@ -471,10 +471,10 @@ def _finite_point(value: Any, field_name: str) -> Point2D:
 
 def _finite_number(value: Any, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise T5BoxesValidationError(f"{field_name} must be a finite number")
+        raise LLMBoxesValidationError(f"{field_name} must be a finite number")
     value = float(value)
     if not math.isfinite(value):
-        raise T5BoxesValidationError(f"{field_name} must be a finite number")
+        raise LLMBoxesValidationError(f"{field_name} must be a finite number")
     return value
 
 
@@ -484,7 +484,7 @@ def _point2(value: Sequence[float]) -> Point2D:
 
 def _xz_point(value: Sequence[float], field_name: str) -> Point2D:
     if not isinstance(value, (list, tuple)):
-        raise T5BoxesValidationError(f"{field_name} must contain two or three numbers")
+        raise LLMBoxesValidationError(f"{field_name} must contain two or three numbers")
     if len(value) == 2:
         return (
             _finite_number(value[0], f"{field_name}[0]"),
@@ -495,12 +495,12 @@ def _xz_point(value: Sequence[float], field_name: str) -> Point2D:
             _finite_number(value[0], f"{field_name}[0]"),
             _finite_number(value[2], f"{field_name}[2]"),
         )
-    raise T5BoxesValidationError(f"{field_name} must contain two or three numbers")
+    raise LLMBoxesValidationError(f"{field_name} must contain two or three numbers")
 
 
 def _path_point(value: Sequence[float]) -> Point2D:
     if not isinstance(value, (list, tuple)):
-        raise T5BoxesValidationError(
+        raise LLMBoxesValidationError(
             "reference_path points must contain two or three numbers"
         )
     if len(value) == 2:
@@ -510,7 +510,7 @@ def _path_point(value: Sequence[float]) -> Point2D:
             _finite_number(value[0], "path[0]"),
             _finite_number(value[2], "path[2]"),
         )
-    raise T5BoxesValidationError(
+    raise LLMBoxesValidationError(
         "reference_path points must contain two or three numbers"
     )
 

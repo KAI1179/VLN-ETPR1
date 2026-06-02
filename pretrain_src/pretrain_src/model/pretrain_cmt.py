@@ -95,7 +95,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.bert = GlocalTextPathCMT(config)
         self.use_imagined = getattr(config, "use_imagined", False)
         self.use_prior_gt = getattr(config, "use_prior_gt", False)
-        self.use_t5 = getattr(config, "use_t5", False)
+        self.use_llm = getattr(config, "use_llm", False)
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
         self.reference_path_loss_weight = getattr(
             config, "reference_path_loss_weight", 0.001
@@ -277,12 +277,12 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         ):
             return None, None, None
 
-        if self.use_t5:
-            from vlnce_baselines.models.etp_t5.navigation import (
-                raise_t5_reference_path_not_implemented,
+        if self.use_llm:
+            from vlnce_baselines.models.etp_llm.navigation import (
+                raise_llm_reference_path_not_implemented,
             )
 
-            raise_t5_reference_path_not_implemented("T5 pretraining")
+            raise_llm_reference_path_not_implemented("LLM pretraining")
 
         if self.use_imagined:
             txt_token_type_ids = torch.zeros_like(batch["txt_ids"])

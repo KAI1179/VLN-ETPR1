@@ -1,4 +1,4 @@
-"""T5Policy scaffold for the T5-Navigation milestone."""
+"""LLMPolicy scaffold for the LLM-Navigation milestone."""
 
 from typing import Any
 
@@ -9,11 +9,11 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 from vlnce_baselines.models.etp_prior_gt.policy import ETP_PriorGT
 from vlnce_baselines.models.policy import ILPolicy
 
-from .navigation import raise_t5_reference_path_not_implemented
+from .navigation import raise_llm_reference_path_not_implemented
 
 
 @baseline_registry.register_policy
-class T5Policy(ILPolicy):
+class LLMPolicy(ILPolicy):
     def __init__(
         self,
         observation_space: Space,
@@ -22,7 +22,7 @@ class T5Policy(ILPolicy):
         dropout_rate=0.1,
     ):
         super().__init__(
-            ETP_T5Navigation(
+            ETP_LLMNavigation(
                 observation_space=observation_space,
                 model_config=model_config,
                 num_actions=action_space.n,
@@ -51,8 +51,8 @@ class T5Policy(ILPolicy):
         )
 
 
-class ETP_T5Navigation(ETP_PriorGT):
-    """Navigation scaffold for T5-derived cognitive maps."""
+class ETP_LLMNavigation(ETP_PriorGT):
+    """Navigation scaffold for LLM-derived cognitive maps."""
 
     def forward(
         self,
@@ -84,8 +84,8 @@ class ETP_T5Navigation(ETP_PriorGT):
         map_tokens=None,
         map_token_masks=None,
     ):
-        if mode == "t5_map_encoding":
-            return self.forward_t5_map_encoding()
+        if mode == "llm_map_encoding":
+            return self.forward_llm_map_encoding()
         return super().forward(
             mode=mode,
             txt_ids=txt_ids,
@@ -116,5 +116,5 @@ class ETP_T5Navigation(ETP_PriorGT):
             map_token_masks=map_token_masks,
         )
 
-    def forward_t5_map_encoding(self):
-        raise_t5_reference_path_not_implemented("T5Policy.forward_t5_map_encoding")
+    def forward_llm_map_encoding(self):
+        raise_llm_reference_path_not_implemented("LLMPolicy.forward_llm_map_encoding")

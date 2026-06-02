@@ -1,4 +1,4 @@
-"""Category-aware metrics for T5-Boxes predictions."""
+"""Category-aware metrics for LLM-Boxes predictions."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 
 import prior.bbox as bbox
 
-from .boxes_schema import T5BoxesSpec
+from .boxes_schema import LLMBoxesSpec
 
 EntityKey = Tuple[str, str]
 
@@ -26,11 +26,11 @@ class CategoryAwareRasterMetrics(TypedDict):
     category_aware_raster_support: float
 
 
-class T5BoxesPredictionMetrics(CategoryF1Metrics, CategoryAwareRasterMetrics):
+class LLMBoxesPredictionMetrics(CategoryF1Metrics, CategoryAwareRasterMetrics):
     pass
 
 
-def category_f1(pred: T5BoxesSpec, target: T5BoxesSpec) -> CategoryF1Metrics:
+def category_f1(pred: LLMBoxesSpec, target: LLMBoxesSpec) -> CategoryF1Metrics:
     """Compute precision, recall, and F1 over semantic entity category counts."""
     pred_counts = _entity_counts(pred)
     target_counts = _entity_counts(target)
@@ -95,13 +95,13 @@ def category_aware_raster_metrics(
     }
 
 
-def evaluate_t5_boxes_prediction(
-    pred_spec: T5BoxesSpec,
-    target_spec: T5BoxesSpec,
+def evaluate_llm_boxes_prediction(
+    pred_spec: LLMBoxesSpec,
+    target_spec: LLMBoxesSpec,
     pred_relevant: bbox.RelevantSemanticBoxes,
     target_relevant: bbox.RelevantSemanticBoxes,
-) -> T5BoxesPredictionMetrics:
-    """Evaluate one T5-Boxes prediction with category and raster metrics.
+) -> LLMBoxesPredictionMetrics:
+    """Evaluate one LLM-Boxes prediction with category and raster metrics.
 
     Raster IoU and recall macro-average over GT-present channels only;
     predicted-only channels are ignored there and penalized by category F1.
@@ -112,7 +112,7 @@ def evaluate_t5_boxes_prediction(
     }
 
 
-def _entity_counts(spec: T5BoxesSpec) -> CounterType[EntityKey]:
+def _entity_counts(spec: LLMBoxesSpec) -> CounterType[EntityKey]:
     counts: CounterType[EntityKey] = Counter()
     counts.update(("object", item.category) for item in spec.objects)
     counts.update(("region", item.category) for item in spec.regions)

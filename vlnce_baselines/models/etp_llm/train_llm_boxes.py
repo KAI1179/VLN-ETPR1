@@ -1,4 +1,4 @@
-"""Dataset, training, and evaluation CLI for the T5-Boxes milestone."""
+"""Dataset, training, and evaluation CLI for the LLM-Boxes milestone."""
 
 from __future__ import annotations
 
@@ -27,19 +27,20 @@ from prior.vlnce import VLNCEEpisodeEntry
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
 
-from .boxes_metrics import evaluate_t5_boxes_prediction
+from .boxes_metrics import evaluate_llm_boxes_prediction
 from .boxes_schema import (
-    T5BoxesSpec,
-    build_t5_boxes_input,
-    parse_t5_boxes_text,
-    parse_t5_boxes_text_partial,
+    LLMBoxesSpec,
+    build_llm_boxes_input,
+    parse_llm_boxes_text,
+    parse_llm_boxes_text_partial,
     relevant_semantic_boxes_to_mentioned_spec,
-    spec_to_t5_boxes_text,
+    spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
 
-DEFAULT_MODEL_NAME_OR_PATH = "data/models/t5-large"
+DEFAULT_MODEL_NAME_OR_PATH = "data/models/Llama-3.1-8B-Instruct"
+DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_boxes_system.md"
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")
 AGGREGATE_METRIC_KEYS: Dict[str, str] = {
@@ -52,11 +53,11 @@ AGGREGATE_METRIC_KEYS: Dict[str, str] = {
 }
 
 
-class T5BoxesItem(TypedDict, total=False):
+class LLMBoxesItem(TypedDict, total=False):
     input_text: str
     target_text: str
     example_id: str
-    target_spec: T5BoxesSpec
+    target_spec: LLMBoxesSpec
     target_relevant: bbox.RelevantSemanticBoxes
     instruction: str
     level_idx: int
@@ -65,7 +66,7 @@ class T5BoxesItem(TypedDict, total=False):
 
 
 @dataclass
-class T5BoxesExample:
+class LLMBoxesExample:
     example_id: str
     dataset_tag: str
     split: str
@@ -75,7 +76,7 @@ class T5BoxesExample:
     start_direction: Sequence[float]
     reference_path: Sequence[Sequence[float]]
     target_relevant: bbox.RelevantSemanticBoxes
-    target_spec: T5BoxesSpec = field(init=False)
+    target_spec: LLMBoxesSpec = field(init=False)
 
     def __post_init__(self) -> None:
         self.target_spec = relevant_semantic_boxes_to_mentioned_spec(
@@ -83,21 +84,21 @@ class T5BoxesExample:
         )
 
 
-def load_t5_boxes_examples(
+def load_llm_boxes_examples(
     dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
     limit: Optional[int] = None,
     quiet: bool = False,
-) -> List[T5BoxesExample]:
+) -> List[LLMBoxesExample]:
     """Load VLN-CE episodes and attach target relevant semantic boxes."""
     if limit == 0:
         return []
 
-    examples: List[T5BoxesExample] = []
+    examples: List[LLMBoxesExample] = []
     scene_cache: Dict[str, SceneSemanticBoxes] = {}
     episodes = _progress(
         VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
-        desc="load T5-Boxes examples",
+        desc="load LLM-Boxes examples",
         quiet=quiet,
         total=limit,
     )
@@ -113,7 +114,7 @@ def load_t5_boxes_examples(
             episode.start_direction_vector,
         )
         examples.append(
-            T5BoxesExample(
+            LLMBoxesExample(
                 example_id=episode.unique_id,
                 dataset_tag=episode.dataset,
                 split=episode.split,
@@ -130,23 +131,23 @@ def load_t5_boxes_examples(
     return examples
 
 
-class T5BoxesDataset(Dataset):
-    def __init__(self, examples: Sequence[T5BoxesExample]) -> None:
+class LLMBoxesDataset(Dataset):
+    def __init__(self, examples: Sequence[LLMBoxesExample]) -> None:
         self.examples = list(examples)
 
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, index: int) -> T5BoxesItem:
+    def __getitem__(self, index: int) -> LLMBoxesItem:
         example = self.examples[index]
         return {
-            "input_text": build_t5_boxes_input(
+            "input_text": build_llm_boxes_input(
                 example.dataset_tag,
                 example.instruction,
                 _level_local_start_position(example),
                 example.start_direction,
             ),
-            "target_text": spec_to_t5_boxes_text(example.target_spec),
+            "target_text": spec_to_llm_boxes_text(example.target_spec),
             "example_id": example.example_id,
             "target_spec": example.target_spec,
             "target_relevant": example.target_relevant,
@@ -156,92 +157,99 @@ class T5BoxesDataset(Dataset):
             "start_direction": example.start_direction,
         }
 
-    def __iter__(self) -> Iterator[T5BoxesItem]:
+    def __iter__(self) -> Iterator[LLMBoxesItem]:
         for index in range(len(self)):
             yield self[index]
 
 
-def collate_t5_boxes_batch(
-    batch: Sequence[T5BoxesItem],
+def collate_llm_boxes_batch(
+    batch: Sequence[LLMBoxesItem],
     tokenizer: Any,
+    system_prompt: str,
     max_input_length: int,
-    max_output_length: int,
+    max_new_tokens: int,
 ) -> Dict[str, Any]:
-    input_texts = [item["input_text"] for item in batch]
     target_texts = [
-        truncate_t5_boxes_text_at_entity_boundary(
-            _target_text(item), tokenizer, max_output_length
+        truncate_llm_boxes_text_at_entity_boundary(
+            _target_text(item), tokenizer, max_new_tokens
         )
         for item in batch
     ]
-
+    prompt_texts = [
+        _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        for item in batch
+    ]
+    full_texts = [
+        _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            target_text,
+        )
+        for item, target_text in zip(batch, target_texts)
+    ]
+    prompt_lengths = [_token_count(tokenizer, text) for text in prompt_texts]
+    max_length = max_input_length + max_new_tokens
     encoded = tokenizer(
-        input_texts,
-        max_length=max_input_length,
+        full_texts,
+        max_length=max_length,
         padding=True,
         truncation=True,
         return_tensors="pt",
     )
-    try:
-        target_encoded = tokenizer(
-            [],
-            max_length=max_output_length,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            text_target=target_texts,
-        )
-        encoded["labels"] = target_encoded["input_ids"]
-    except TypeError as exc:
-        if not _is_unsupported_text_target_error(exc):
-            raise
-        target_encoded = tokenizer(
-            target_texts,
-            max_length=max_output_length,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-        )
-        encoded["labels"] = target_encoded["input_ids"]
-
-    encoded["labels"] = _mask_pad_tokens(encoded["labels"], tokenizer.pad_token_id)
+    encoded["labels"] = _causal_lm_labels(
+        encoded["input_ids"],
+        prompt_lengths,
+        tokenizer.pad_token_id,
+    )
+    encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
     return encoded
 
 
 def train_model(args: argparse.Namespace) -> Dict[str, float]:
-    """Fine-tune a seq2seq model end-to-end on T5-Boxes examples."""
+    """Fine-tune a causal language model on LLM-Boxes examples."""
+    if args.finetune_method == "full":
+        raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
+
     quiet = bool(getattr(args, "quiet", False))
-    examples = load_t5_boxes_examples(
+    examples = load_llm_boxes_examples(
         args.dataset,
         TRAIN_SPLITS,
         limit=args.limit,
         quiet=quiet,
     )
     if not examples:
-        raise ValueError("No T5-Boxes training examples were loaded")
+        raise ValueError("No LLM-Boxes training examples were loaded")
 
     import torch
     from torch.utils.data import DataLoader
 
-    model, tokenizer = _load_seq2seq_model_and_tokenizer(args.model_name_or_path)
+    system_prompt = load_system_prompt()
+    _write_run_system_prompt(args.output_dir, system_prompt)
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(args.model_name_or_path)
+    model = _apply_lora(model, args)
     device = torch.device(args.device)
     model.to(device)
 
-    dataset = T5BoxesDataset(examples)
-    text_stats = compute_t5_text_stats(
+    dataset = LLMBoxesDataset(examples)
+    text_stats = compute_llm_text_stats(
         dataset,
         tokenizer,
         max_input_length=args.max_input_length,
-        max_output_length=args.max_output_length,
+        max_new_tokens=args.max_new_tokens,
     )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=lambda batch: collate_t5_boxes_batch(
-            batch, tokenizer, args.max_input_length, args.max_output_length
+        collate_fn=lambda batch: collate_llm_boxes_batch(
+            batch,
+            tokenizer,
+            system_prompt,
+            args.max_input_length,
+            args.max_new_tokens,
         ),
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -268,13 +276,13 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             set_postfix = getattr(progress_loader, "set_postfix", None)
             if callable(set_postfix):
                 set_postfix(loss=float(loss.detach().cpu()))
-        save_t5_boxes_checkpoint(
+        save_llm_boxes_checkpoint(
             model,
             tokenizer,
             _checkpoint_dir(args.output_dir, f"epoch-{epoch + 1}"),
         )
 
-    save_t5_boxes_checkpoint(model, tokenizer, _checkpoint_dir(args.output_dir, "final"))
+    save_llm_boxes_checkpoint(model, tokenizer, _checkpoint_dir(args.output_dir, "final"))
     return {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
@@ -285,10 +293,10 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
 def evaluate_model(
     model: Any,
     tokenizer: Any,
-    dataset: Iterable[T5BoxesItem],
+    dataset: Iterable[LLMBoxesItem],
     args: argparse.Namespace,
 ) -> Dict[str, float]:
-    """Generate, validate, artifact, and score T5-Boxes predictions."""
+    """Generate, validate, artifact, and score LLM-Boxes predictions."""
     import torch
 
     if hasattr(model, "to"):
@@ -296,25 +304,28 @@ def evaluate_model(
     if hasattr(model, "eval"):
         model.eval()
 
+    system_prompt = getattr(args, "system_prompt", None) or load_system_prompt()
+    _write_run_system_prompt(args.output_dir, system_prompt)
     loader = _iter_collated_batches(
         dataset,
         args.batch_size,
-        lambda batch: collate_t5_boxes_batch(
+        lambda batch: collate_llm_boxes_batch(
             batch,
             tokenizer,
+            system_prompt,
             args.max_input_length,
-            args.max_output_length,
+            args.max_new_tokens,
         ),
     )
-    text_stats = compute_t5_text_stats(
+    text_stats = compute_llm_text_stats(
         dataset,
         tokenizer,
         max_input_length=args.max_input_length,
-        max_output_length=args.max_output_length,
+        max_new_tokens=args.max_new_tokens,
     )
     progress_loader = _progress(
         loader,
-        desc="eval T5-Boxes",
+        desc="eval LLM-Boxes",
         quiet=bool(getattr(args, "quiet", False)),
         total=_batch_count(dataset, args.batch_size),
     )
@@ -331,9 +342,13 @@ def evaluate_model(
             model_inputs = _model_batch(batch, args.device, include_labels=False)
             generated = model.generate(
                 **model_inputs,
-                max_length=args.max_output_length,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=False,
             )
-            decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
+            decoded = [
+                decode_generated_completion(tokenizer, sequence, prompt_length)
+                for sequence, prompt_length in zip(generated, batch["prompt_lengths"])
+            ]
 
             for item, generated_text in zip(batch["items"], decoded):
                 example_count += 1
@@ -344,7 +359,7 @@ def evaluate_model(
                 entity_valid_support_sum += entity_valid_support
 
                 try:
-                    pred_spec = parse_t5_boxes_text(
+                    pred_spec = parse_llm_boxes_text(
                         generated_text,
                         allow_trailing_incomplete=True,
                     )
@@ -359,7 +374,7 @@ def evaluate_model(
 
                 partial_schema_valid_count += 1
                 try:
-                    parse_t5_boxes_text(generated_text)
+                    parse_llm_boxes_text(generated_text)
                 except Exception:
                     pass
                 else:
@@ -378,7 +393,7 @@ def evaluate_model(
                     start_direction_vector=item["start_direction"],
                     range_y=item["target_relevant"].level.range_y,
                 )
-                metrics = evaluate_t5_boxes_prediction(
+                metrics = evaluate_llm_boxes_prediction(
                     pred_spec,
                     item["target_spec"],
                     pred_relevant,
@@ -415,7 +430,7 @@ def evaluate_model(
     return metrics
 
 
-def save_t5_boxes_checkpoint(
+def save_llm_boxes_checkpoint(
     model: Any, tokenizer: Any, output_dir: str | Path
 ) -> None:
     output_path = Path(output_dir)
@@ -424,19 +439,21 @@ def save_t5_boxes_checkpoint(
     tokenizer.save_pretrained(output_path)
 
 
-def _load_seq2seq_model_and_tokenizer(model_name_or_path: str) -> Tuple[Any, Any]:
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+def _load_causal_lm_model_and_tokenizer(model_name_or_path: str) -> Tuple[Any, Any]:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path)
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     return model, tokenizer
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
-    _add_common_args(subparsers.add_parser("train", help="Fine-tune T5-Boxes"))
-    _add_common_args(subparsers.add_parser("eval", help="Evaluate T5-Boxes"))
+    _add_common_args(subparsers.add_parser("train", help="Fine-tune LLM-Boxes"))
+    _add_common_args(subparsers.add_parser("eval", help="Evaluate LLM-Boxes"))
     return parser.parse_args(argv)
 
 
@@ -445,14 +462,14 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     if args.mode == "train":
         return train_model(args)
 
-    model, tokenizer = _load_seq2seq_model_and_tokenizer(args.model_name_or_path)
-    examples = load_t5_boxes_examples(
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(args.model_name_or_path)
+    examples = load_llm_boxes_examples(
         args.dataset,
         EVAL_SPLITS,
         limit=args.limit,
         quiet=args.quiet,
     )
-    metrics = evaluate_model(model, tokenizer, T5BoxesDataset(examples), args)
+    metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     (Path(args.output_dir) / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
@@ -465,12 +482,17 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model-name-or-path",
         default=DEFAULT_MODEL_NAME_OR_PATH,
-        help="Pretrained or checkpoint path for the seq2seq model.",
+        help="Pretrained or checkpoint path for the causal language model.",
     )
-    parser.add_argument("--output-dir", default=Path("./data/logs/t5/"))
+    parser.add_argument("--output-dir", default=Path("./data/logs/llm/"))
     parser.add_argument("--dataset", default="R2R", choices=["R2R", "RxR"])
     parser.add_argument("--max-input-length", type=int, default=512)
-    parser.add_argument("--max-output-length", type=int, default=512)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument(
+        "--finetune-method",
+        default="lora",
+        choices=["lora", "full"],
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -479,30 +501,114 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
 
 
-def _mask_pad_tokens(labels: Any, pad_token_id: Optional[int]) -> Any:
-    if pad_token_id is None:
-        return labels
-    try:
-        return labels.masked_fill(labels == pad_token_id, -100)
-    except AttributeError:
-        return [
-            [-100 if token == pad_token_id else token for token in row]
-            for row in labels
-        ]
+def load_system_prompt() -> str:
+    prompt = DEFAULT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    if not prompt:
+        raise ValueError(f"System prompt is empty: {DEFAULT_SYSTEM_PROMPT_PATH}")
+    return prompt
 
 
-def _is_unsupported_text_target_error(exc: TypeError) -> bool:
-    message = str(exc)
-    if "text_target" not in message:
-        return False
-    return (
-        "unexpected" in message
-        or "unsupported" in message
-        or "got an unexpected keyword argument" in message
+def _write_run_system_prompt(output_dir: str | Path, system_prompt: str) -> None:
+    artifact_dir = _artifact_dir(output_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "system_prompt.md").write_text(
+        f"{system_prompt}\n",
+        encoding="utf-8",
     )
 
 
-def _level_local_start_position(example: T5BoxesExample) -> Sequence[float]:
+def _render_chat_prompt(tokenizer: Any, system_prompt: str, user_text: str) -> str:
+    return str(
+        tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    )
+
+
+def _render_chat_completion(
+    tokenizer: Any,
+    system_prompt: str,
+    user_text: str,
+    assistant_text: str,
+) -> str:
+    return str(
+        tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": assistant_text},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    )
+
+
+def _causal_lm_labels(
+    input_ids: Any,
+    prompt_lengths: Sequence[int],
+    pad_token_id: Optional[int],
+) -> Any:
+    if hasattr(input_ids, "clone"):
+        labels = input_ids.clone()
+        for row_idx, prompt_length in enumerate(prompt_lengths):
+            labels[row_idx, :prompt_length] = -100
+        if pad_token_id is not None:
+            labels = labels.masked_fill(input_ids == pad_token_id, -100)
+        return labels
+
+    labels = []
+    for row, prompt_length in zip(input_ids, prompt_lengths):
+        labels.append(
+            [
+                -100 if idx < prompt_length or token == pad_token_id else token
+                for idx, token in enumerate(row)
+            ]
+        )
+    return labels
+
+
+def decode_generated_completion(
+    tokenizer: Any,
+    generated_ids: Sequence[int],
+    prompt_length: int,
+) -> str:
+    completion_ids = list(generated_ids)[prompt_length:]
+    return str(
+        tokenizer.batch_decode([completion_ids], skip_special_tokens=True)[0]
+    ).strip()
+
+
+def _apply_lora(model: Any, args: argparse.Namespace) -> Any:
+    if args.finetune_method != "lora":
+        raise ValueError(f"Unsupported finetune method: {args.finetune_method}")
+    from peft import LoraConfig, get_peft_model
+
+    config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+    )
+    return get_peft_model(model, config)
+
+
+def _level_local_start_position(example: LLMBoxesExample) -> Sequence[float]:
     if example.target_relevant.reference_path:
         return example.target_relevant.reference_path[0]
     return example.start_position
@@ -532,18 +638,18 @@ def _model_batch(
     return model_inputs
 
 
-def _target_text(item: T5BoxesItem) -> str:
+def _target_text(item: LLMBoxesItem) -> str:
     if "target_text" in item:
         return item["target_text"]
-    return spec_to_t5_boxes_text(item["target_spec"])
+    return spec_to_llm_boxes_text(item["target_spec"])
 
 
-def truncate_t5_boxes_text_at_entity_boundary(
+def truncate_llm_boxes_text_at_entity_boundary(
     text: str,
     tokenizer: Any,
     max_tokens: int,
 ) -> str:
-    """Truncate compact T5-Boxes text without keeping a partial entity."""
+    """Truncate compact LLM-Boxes text without keeping a partial entity."""
     if _token_count(tokenizer, text) <= max_tokens:
         return text
     if text.strip() == "none":
@@ -558,11 +664,11 @@ def truncate_t5_boxes_text_at_entity_boundary(
     return " ; ".join(kept_entities) if kept_entities else "none"
 
 
-def compute_t5_text_stats(
-    dataset: Iterable[T5BoxesItem],
+def compute_llm_text_stats(
+    dataset: Iterable[LLMBoxesItem],
     tokenizer: Any,
     max_input_length: int,
-    max_output_length: int,
+    max_new_tokens: int,
 ) -> Dict[str, float]:
     input_lengths: List[int] = []
     target_lengths: List[int] = []
@@ -582,7 +688,7 @@ def compute_t5_text_stats(
         target_entity_counts.append(_compact_entity_count(target_text))
         if input_length > max_input_length:
             input_truncated += 1
-        if target_length > max_output_length:
+        if target_length > max_new_tokens:
             target_truncated += 1
 
     return {
@@ -610,11 +716,11 @@ def compute_t5_text_stats(
 
 
 def _iter_collated_batches(
-    dataset: Iterable[T5BoxesItem],
+    dataset: Iterable[LLMBoxesItem],
     batch_size: int,
     collate_fn,
 ) -> Iterator[Dict[str, Any]]:
-    batch: List[T5BoxesItem] = []
+    batch: List[LLMBoxesItem] = []
     for item in dataset:
         batch.append(item)
         if len(batch) >= batch_size:
@@ -650,13 +756,13 @@ def _entity_valid_stats(text: str) -> Tuple[float, int]:
     stripped = text.strip()
     if stripped == "none" or stripped == "":
         try:
-            parse_t5_boxes_text(stripped)
+            parse_llm_boxes_text(stripped)
         except Exception:
             return 0.0, 0
         return 1.0, 0
 
     try:
-        result = parse_t5_boxes_text_partial(stripped)
+        result = parse_llm_boxes_text_partial(stripped)
     except Exception:
         entities = [entity.strip() for entity in stripped.split(";") if entity.strip()]
         entities = [
@@ -682,7 +788,7 @@ def _entity_valid_stats(text: str) -> Tuple[float, int]:
 
 def _entity_is_valid(text: str) -> bool:
     try:
-        parse_t5_boxes_text(text)
+        parse_llm_boxes_text(text)
     except Exception:
         return False
     return True
