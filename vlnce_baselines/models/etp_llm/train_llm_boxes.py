@@ -252,7 +252,10 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
 
     system_prompt = load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(args.model_name_or_path)
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        args.model_name_or_path,
+        torch_dtype=args.torch_dtype,
+    )
     model = _apply_lora(model, args)
     device = torch.device(args.device)
     model.to(device)
@@ -276,7 +279,10 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             args.max_new_tokens,
         ),
     )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.AdamW(
+        (param for param in model.parameters() if param.requires_grad),
+        lr=args.learning_rate,
+    )
 
     model.train()
     total_loss = 0.0
@@ -306,7 +312,9 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             _checkpoint_dir(args.output_dir, f"epoch-{epoch + 1}"),
         )
 
-    save_llm_boxes_checkpoint(model, tokenizer, _checkpoint_dir(args.output_dir, "final"))
+    save_llm_boxes_checkpoint(
+        model, tokenizer, _checkpoint_dir(args.output_dir, "final")
+    )
     return {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
@@ -462,13 +470,19 @@ def save_llm_boxes_checkpoint(
     tokenizer.save_pretrained(output_path)
 
 
-def _load_causal_lm_model_and_tokenizer(model_name_or_path: str) -> Tuple[Any, Any]:
+def _load_causal_lm_model_and_tokenizer(
+    model_name_or_path: str,
+    torch_dtype: str,
+) -> Tuple[Any, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        torch_dtype=_resolve_torch_dtype(torch_dtype),
+    )
     return model, tokenizer
 
 
@@ -485,7 +499,10 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     if args.mode == "train":
         return train_model(args)
 
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(args.model_name_or_path)
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        args.model_name_or_path,
+        torch_dtype=args.torch_dtype,
+    )
     examples = load_llm_boxes_examples(
         args.dataset,
         EVAL_SPLITS,
@@ -521,6 +538,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
+    parser.add_argument(
+        "--torch-dtype",
+        default="auto",
+        choices=["auto", "float32", "float16", "bfloat16"],
+        help="Model loading dtype. auto uses the dtype declared by the checkpoint.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
 
 
@@ -629,6 +652,21 @@ def _apply_lora(model: Any, args: argparse.Namespace) -> Any:
         ],
     )
     return get_peft_model(model, config)
+
+
+def _resolve_torch_dtype(torch_dtype: str) -> Any:
+    if torch_dtype == "auto":
+        return "auto"
+
+    import torch
+
+    if torch_dtype == "float32":
+        return torch.float32
+    if torch_dtype == "float16":
+        return torch.float16
+    if torch_dtype == "bfloat16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported torch dtype: {torch_dtype}")
 
 
 def _level_local_start_position(example: LLMBoxesExample) -> Sequence[float]:

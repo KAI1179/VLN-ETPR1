@@ -771,7 +771,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
     monkeypatch.setattr(
         train_llm_boxes,
         "_load_causal_lm_model_and_tokenizer",
-        lambda path: ("model", "tokenizer"),
+        lambda path, torch_dtype="auto": ("model", "tokenizer"),
     )
     monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
     monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
@@ -815,6 +815,8 @@ def test_cli_parser_supports_train_and_eval_modes():
             "5",
             "--device",
             "cpu",
+            "--torch-dtype",
+            "float16",
             "--quiet",
         ]
     )
@@ -833,11 +835,13 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.learning_rate == 0.001
     assert train_args.limit == 5
     assert train_args.device == "cpu"
+    assert train_args.torch_dtype == "float16"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == "data/models/Llama-3.1-8B-Instruct"
     assert eval_args.output_dir == "eval-out"
     assert eval_args.max_new_tokens == 1024
+    assert eval_args.torch_dtype == "auto"
     assert eval_args.quiet is False
 
 
