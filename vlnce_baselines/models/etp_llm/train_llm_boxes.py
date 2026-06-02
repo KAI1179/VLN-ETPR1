@@ -208,6 +208,30 @@ def collate_llm_boxes_batch(
     return encoded
 
 
+def collate_llm_boxes_prompt_batch(
+    batch: Sequence[LLMBoxesItem],
+    tokenizer: Any,
+    system_prompt: str,
+    max_input_length: int,
+) -> Dict[str, Any]:
+    prompt_texts = [
+        _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        for item in batch
+    ]
+    encoded = tokenizer(
+        prompt_texts,
+        max_length=max_input_length,
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+    )
+    prompt_width = _encoded_width(encoded["input_ids"])
+    encoded["prompt_lengths"] = [prompt_width] * len(batch)
+    encoded["example_ids"] = [item["example_id"] for item in batch]
+    encoded["items"] = list(batch)
+    return encoded
+
+
 def train_model(args: argparse.Namespace) -> Dict[str, float]:
     """Fine-tune a causal language model on LLM-Boxes examples."""
     if args.finetune_method == "full":
@@ -309,12 +333,11 @@ def evaluate_model(
     loader = _iter_collated_batches(
         dataset,
         args.batch_size,
-        lambda batch: collate_llm_boxes_batch(
+        lambda batch: collate_llm_boxes_prompt_batch(
             batch,
             tokenizer,
             system_prompt,
             args.max_input_length,
-            args.max_new_tokens,
         ),
     )
     text_stats = compute_llm_text_stats(
@@ -636,6 +659,12 @@ def _model_batch(
         if hasattr(value, "to"):
             model_inputs[key] = value.to(device)
     return model_inputs
+
+
+def _encoded_width(input_ids: Any) -> int:
+    if hasattr(input_ids, "shape"):
+        return int(input_ids.shape[-1])
+    return len(input_ids[0]) if input_ids else 0
 
 
 def _target_text(item: LLMBoxesItem) -> str:

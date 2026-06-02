@@ -97,7 +97,7 @@ def relevant_semantic_boxes_to_spec(
                 ObjectBoxSpec(
                     category=category,
                     center=_round_point(box.center),
-                    half_extents=_round_positive_point(box.half_extents),
+                    half_extents=_round_positive_point(point=box.half_extents),
                     rotation=_round_rotation(box.rotation),
                 )
             )
@@ -408,7 +408,9 @@ def _parse_llm_boxes_entity(
     raise LLMBoxesValidationError(f"entity[{idx}] must start with obj or reg")
 
 
-def _parse_trailing_numbers(tokens: Sequence[str], field_name: str) -> Tuple[float, ...]:
+def _parse_trailing_numbers(
+    tokens: Sequence[str], field_name: str
+) -> Tuple[float, ...]:
     values: List[float] = []
     for idx, token in enumerate(tokens):
         try:
@@ -440,7 +442,9 @@ def _normalize_region(item: RegionBoxSpec) -> RegionBoxSpec:
     min_point = _finite_point(item.min, "region.min")
     max_point = _finite_point(item.max, "region.max")
     if max_point[0] <= min_point[0] or max_point[1] <= min_point[1]:
-        raise LLMBoxesValidationError("region.max must be greater than min on both axes")
+        raise LLMBoxesValidationError(
+            "region.max must be greater than min on both axes"
+        )
     return RegionBoxSpec(
         category=item.category,
         min=_round_point(min_point),

@@ -686,7 +686,7 @@ requires-dist = [
     { name = "torch", specifier = "==1.13.1+cu117" },
     { name = "torchaudio", specifier = "==0.13.1+cu117" },
     { name = "torchvision", specifier = "==0.14.1+cu117" },
-    { name = "transformers", specifier = "==4.42.3" },
+    { name = "transformers", specifier = "==4.43.4" },
     { name = "typed-argument-parser", specifier = "==1.10.1" },
     { name = "typer", specifier = "==0.4.0" },
     { name = "urllib3", specifier = "==1.26.8" },
@@ -2663,7 +2663,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "4.42.3"
+version = "4.43.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -2677,9 +2677,9 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/8e/3122b5dc3b8ddb3e66354c8626c2855721ffa50add38aceb32d7fa372ef6/transformers-4.42.3.tar.gz", hash = "sha256:7539873ff45809145265cbc94ea4619d2713c41ceaa277b692d8b0be3430f7eb", size = 8053234, upload-time = "2024-06-28T15:35:38.466Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/57/9934679377d3c105621dc7659048a216569ff3ef6632422c120e7ad40dc9/transformers-4.43.4.tar.gz", hash = "sha256:b62288990a65ed9bfb79191e04dbb76c9376834ae6e0dd911320a2ced63324fe", size = 8059671, upload-time = "2024-08-05T10:56:02.162Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/20/5c/244db59e074e80248fdfa60495eeee257e4d97c3df3487df68be30cd60c8/transformers-4.42.3-py3-none-any.whl", hash = "sha256:a61a0df9609b7d69229d941b2fd857c841ba3043d6da503d0da1a4b133f65b92", size = 9337428, upload-time = "2024-06-28T15:35:32.96Z" },
+    { url = "https://files.pythonhosted.org/packages/34/71/af30c8afcdbee5d4ee4b89e366bd7c20ab8b07e7b5acb30e025b81e0ba65/transformers-4.43.4-py3-none-any.whl", hash = "sha256:d2202ed201e0c44f80de8d753a19f6164187754630bc1f915661b9511d61c773", size = 9412465, upload-time = "2024-08-05T10:55:56.757Z" },
 ]
 
 [[package]]

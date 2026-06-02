@@ -482,6 +482,57 @@ class _EvalModel:
         return [[10], [11]]
 
 
+class _PromptInspectingEvalModel:
+    def __init__(self):
+        self.input_texts = []
+
+    def eval(self):
+        pass
+
+    def generate(self, **kwargs):
+        self.input_texts.extend(
+            "".join(chr(token) for token in row if token != 0)
+            for row in kwargs["input_ids"]
+        )
+        return [
+            [*row, ord("o"), ord("b"), ord("j")]
+            for row in kwargs["input_ids"]
+        ]
+
+
+def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
+    target = _empty_relevant()
+    dataset: List[train_llm_boxes.LLMBoxesItem] = [
+        {
+            "example_id": "target_leak/example",
+            "input_text": "find the target chair",
+            "target_text": "obj chair 1 2 0.5 0.5 0",
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Go.",
+            "level_idx": 0,
+            "reference_path": [(0.0, 0.0)],
+            "start_direction": (0.0, 1.0),
+        }
+    ]
+    args = argparse.Namespace(
+        output_dir=str(tmp_path),
+        max_input_length=32,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+    model = _PromptInspectingEvalModel()
+
+    train_llm_boxes.evaluate_model(model, _ChatTokenizer(), dataset, args)
+
+    assert len(model.input_texts) == 1
+    assert "find the target chair" in model.input_texts[0]
+    assert "obj chair 1 2 0.5 0.5 0" not in model.input_texts[0]
+
+
 def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
     progress_calls = []
 
