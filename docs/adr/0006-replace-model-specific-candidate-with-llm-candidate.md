@@ -1,0 +1,3 @@
+# Replace model-specific candidate with LLM candidate
+
+The model-specific language-model candidate will be replaced by an LLM candidate with LLM-Boxes and LLM-Navigation milestones, using Llama 3.1 8B Instruct as the first default backend. The transition is a clean break: old model-family source symbols, trainer names, launcher modes, and pretraining flags will be renamed instead of kept as compatibility aliases, while the compact box text format and existing deterministic validation remain unchanged. LLM-Boxes will use chat-template prompt/completion formatting, a tracked package-local system prompt, and LoRA fine-tuning by default; `--finetune-method full` may exist but should fail loudly until full fine-tuning is intentionally implemented.

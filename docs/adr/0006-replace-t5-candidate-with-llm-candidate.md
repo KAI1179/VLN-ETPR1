@@ -1,3 +1,0 @@
-# Replace T5 candidate with LLM candidate
-
-The T5-specific candidate will be replaced by an LLM candidate with LLM-Boxes and LLM-Navigation milestones, using Llama 3.1 8B Instruct as the first default backend. The transition is a clean break: T5-named source symbols, trainer names, launcher modes, and pretraining flags will be renamed instead of kept as compatibility aliases, while the compact box text format and existing deterministic validation remain unchanged. LLM-Boxes will use chat-template prompt/completion formatting, a tracked package-local system prompt, and LoRA fine-tuning by default; `--finetune-method full` may exist but should fail loudly until full fine-tuning is intentionally implemented.
