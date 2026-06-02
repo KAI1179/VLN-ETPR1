@@ -111,11 +111,7 @@ def test_spec_to_llm_boxes_text_serializes_empty_spec_as_none():
 
 
 def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested():
-    text = (
-        "obj chair 1 2 0.5 0.5 0 ; "
-        "reg circulation 0 0 5 6 ; "
-        "obj table 3 4 0.5"
-    )
+    text = "obj chair 1 2 0.5 0.5 0 ; reg circulation 0 0 5 6 ; obj table 3 4 0.5"
 
     parsed = parse_llm_boxes_text(text, allow_trailing_incomplete=True)
 
@@ -128,9 +124,7 @@ def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested(
 
 
 def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
-    result = parse_llm_boxes_text_partial(
-        "obj chair 1 2 0.5 0.5 0 ; obj table 3 4"
-    )
+    result = parse_llm_boxes_text_partial("obj chair 1 2 0.5 0.5 0 ; obj table 3 4")
 
     assert result.spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
@@ -177,12 +171,8 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
             mentioned=False,
         )
     ]
-    level.regions[1] = [
-        bbox.AABB2D(min=(0.0, 0.0), max=(5.0, 6.0), mentioned=True)
-    ]
-    level.regions[2] = [
-        bbox.AABB2D(min=(7.0, 8.0), max=(9.0, 10.0), mentioned=False)
-    ]
+    level.regions[1] = [bbox.AABB2D(min=(0.0, 0.0), max=(5.0, 6.0), mentioned=True)]
+    level.regions[2] = [bbox.AABB2D(min=(7.0, 8.0), max=(9.0, 10.0), mentioned=False)]
     relevant = bbox.RelevantSemanticBoxes(
         level_idx=0,
         level=level,
@@ -193,9 +183,7 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
 
     spec = relevant_semantic_boxes_to_mentioned_spec(relevant)
 
-    assert spec.objects == (
-        ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
-    )
+    assert spec.objects == (ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),)
     assert spec.regions == (
         RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),
     )
@@ -306,14 +294,8 @@ def test_write_prediction_artifact_writes_llm_text_files(tmp_path):
     valid_text = (tmp_path / "valid-example.txt").read_text()
     invalid_text = (tmp_path / "invalid-example.txt").read_text()
 
-    assert valid_text == (
-        "obj chair 1.0 2.0 0.5 0.5 0.0\n"
-    )
-    assert invalid_text == (
-        "obj alien\n"
-        "\n"
-        "# error: unknown object category: 'alien'\n"
-    )
+    assert valid_text == ("obj chair 1.0 2.0 0.5 0.5 0.0\n")
+    assert invalid_text == ("obj alien\n\n# error: unknown object category: 'alien'\n")
     assert not (tmp_path / "valid-example.json").exists()
     assert not (tmp_path / "invalid-example.json").exists()
 
@@ -331,3 +313,33 @@ def test_write_prediction_artifact_sanitizes_example_id_path_components(tmp_path
     assert files[0].parent == tmp_path
     assert files[0].name != "escape.txt"
     assert not (tmp_path.parent / "escape.txt").exists()
+
+
+def test_llm_boxes_direction_and_rotation_follow_xz_convention():
+    prompt = build_llm_boxes_input(
+        dataset_tag="R2R",
+        instruction="Face east.",
+        start_position=(10.0, 20.0),
+        start_direction=(1.0, 0.0),
+    )
+
+    assert "direction x = 1.0 | direction z = 0.0" in prompt
+
+    spec = LLMBoxesSpec(
+        objects=(
+            ObjectBoxSpec(
+                category="chair",
+                center=(10.0, 20.0),
+                half_extents=(1.0, 2.0),
+                rotation=1.57,
+            ),
+        ),
+        regions=(),
+    )
+
+    text = spec_to_llm_boxes_text(spec)
+    parsed = parse_llm_boxes_text(text)
+
+    assert text == "obj chair 10.0 20.0 1.0 2.0 1.57"
+    assert parsed.objects[0].rotation == 1.57
+    assert parsed.objects[0].half_extents == (1.0, 2.0)

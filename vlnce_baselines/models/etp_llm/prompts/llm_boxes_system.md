@@ -9,6 +9,16 @@ Use this grammar:
 
 Use canonical category names exactly as provided by the task vocabulary. Do not include explanations, markdown, JSON, code fences, or any text outside the compact LLM-Boxes output.
 
+# Coordinate Conventions
+
+- All coordinates are level-local projected `(x, z)` meters.
+- The input `direction x` and `direction z` are the start heading vector components in the same `(x, z)` plane.
+- Object `center_x` and `center_z` are the box center in meters.
+- Object `half_extent_x` and `half_extent_z` are positive half-sizes in meters before rotation.
+- Object `rotation` is in radians in the `(x, z)` plane; `0.0` aligns the object box axes with the world `x` and `z` axes.
+- Region boxes are axis-aligned: `min_x < max_x` and `min_z < max_z`.
+- Use one decimal place for coordinates and extents, and two decimal places for rotations.
+
 # Categories
 
 ## Object Categories
