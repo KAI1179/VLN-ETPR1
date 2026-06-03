@@ -17,3 +17,10 @@ Single-context repo. Read `CONTEXT.md` and relevant ADRs if they exist. See `doc
 ## Sub-agent policy
 
 Sub-agents are allowed explicitly for the main agent.
+
+## Caching
+
+The following APIs for `prior` are already cached, so do not cache again:
+
+- `SceneSemanticBoxes.from_scene_id`
+- `ConnectivityEntry.map_for`

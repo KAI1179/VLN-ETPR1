@@ -255,7 +255,6 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
     _write_run_system_prompt(args.output_dir, system_prompt)
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
-        torch_dtype=args.torch_dtype,
         device_map=_normalize_device_map(args.device_map),
     )
     model = _apply_lora(model, args)
@@ -512,7 +511,6 @@ def save_llm_boxes_checkpoint(
 
 def _load_causal_lm_model_and_tokenizer(
     model_name_or_path: str,
-    torch_dtype: str,
     device_map: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -521,7 +519,7 @@ def _load_causal_lm_model_and_tokenizer(
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
     model_kwargs: Dict[str, Any] = {
-        "torch_dtype": _resolve_torch_dtype(torch_dtype),
+        "torch_dtype": "auto",
     }
     if device_map is not None:
         model_kwargs["device_map"] = device_map
@@ -544,7 +542,6 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
 
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
-        torch_dtype=args.torch_dtype,
         device_map=_normalize_device_map(args.device_map),
     )
     examples = load_llm_boxes_examples(
@@ -596,12 +593,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
             "Optional Transformers/Accelerate model-parallel device map. "
             "Use none for ordinary single-device loading."
         ),
-    )
-    parser.add_argument(
-        "--torch-dtype",
-        default="auto",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        help="Model loading dtype. auto uses the dtype declared by the checkpoint.",
     )
     parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
 
@@ -785,21 +776,6 @@ def _supervised_token_counts(labels: Any) -> List[int]:
     if hasattr(labels, "ne"):
         return [int(row.ne(-100).sum().item()) for row in labels]
     return [sum(1 for token in row if token != -100) for row in labels]
-
-
-def _resolve_torch_dtype(torch_dtype: str) -> Any:
-    if torch_dtype == "auto":
-        return "auto"
-
-    import torch
-
-    if torch_dtype == "float32":
-        return torch.float32
-    if torch_dtype == "float16":
-        return torch.float16
-    if torch_dtype == "bfloat16":
-        return torch.bfloat16
-    raise ValueError(f"Unsupported torch dtype: {torch_dtype}")
 
 
 def _level_local_start_position(example: LLMBoxesExample) -> Sequence[float]:
