@@ -483,6 +483,13 @@ class _EvalModel:
         return [[10], [11]]
 
 
+class _DeviceMappedEvalModel(_EvalModel):
+    hf_device_map = {"model.layers.0": 0, "model.layers.1": 1}
+
+    def to(self, device):
+        raise AssertionError("device-mapped models must keep their dispatch map")
+
+
 class _PromptInspectingEvalModel:
     def __init__(self):
         self.input_texts = []
@@ -567,6 +574,25 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
             "total": None,
         }
     ]
+
+
+def test_evaluate_model_does_not_move_device_mapped_model(tmp_path):
+    args = argparse.Namespace(
+        output_dir=str(tmp_path),
+        max_input_length=32,
+        max_new_tokens=64,
+        batch_size=2,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+
+    train_llm_boxes.evaluate_model(
+        _DeviceMappedEvalModel(),
+        _EvalTokenizer(),
+        _EvalDataset(),
+        args,
+    )
 
 
 def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, monkeypatch):
@@ -769,10 +795,14 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         calls.append(("eval", args.output_dir, list(dataset)))
         return {"examples": 1.0}
 
+    def fake_load_model(path, torch_dtype="auto", device_map=None):
+        calls.append(("load_model", path, torch_dtype, device_map))
+        return "model", "tokenizer"
+
     monkeypatch.setattr(
         train_llm_boxes,
         "_load_causal_lm_model_and_tokenizer",
-        lambda path, torch_dtype="auto": ("model", "tokenizer"),
+        fake_load_model,
     )
     monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
     monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
@@ -784,6 +814,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
 
     assert metrics == {"examples": 1.0}
     assert calls == [
+        ("load_model", "data/models/Llama-3.1-8B-Instruct", "auto", "auto"),
         ("load", "R2R", ["val_seen", "val_unseen"], 1, True),
         ("eval", str(tmp_path), ["example"]),
     ]
@@ -816,12 +847,16 @@ def test_cli_parser_supports_train_and_eval_modes():
             "5",
             "--device",
             "cpu",
+            "--device-map",
+            "auto",
             "--torch-dtype",
             "float16",
             "--quiet",
         ]
     )
-    eval_args = train_llm_boxes.parse_args(["eval", "--output-dir", "eval-out"])
+    eval_args = train_llm_boxes.parse_args(
+        ["eval", "--output-dir", "eval-out", "--device-map", "none"]
+    )
 
     assert train_args.mode == "train"
     assert train_args.model_name_or_path == "tiny-llm"
@@ -836,14 +871,38 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.learning_rate == 0.001
     assert train_args.limit == 5
     assert train_args.device == "cpu"
+    assert train_args.device_map == "auto"
     assert train_args.torch_dtype == "float16"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == "data/models/Llama-3.1-8B-Instruct"
     assert eval_args.output_dir == "eval-out"
     assert eval_args.max_new_tokens == 1024
+    assert eval_args.device_map == "none"
     assert eval_args.torch_dtype == "auto"
     assert eval_args.quiet is False
+
+
+def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_load_model(path, torch_dtype="auto", device_map=None):
+        calls.append((path, torch_dtype, device_map))
+        return "model", "tokenizer"
+
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "_load_causal_lm_model_and_tokenizer",
+        fake_load_model,
+    )
+    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: [])
+    monkeypatch.setattr(train_llm_boxes, "evaluate_model", lambda *args, **kwargs: {})
+
+    train_llm_boxes.main(
+        ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]
+    )
+
+    assert calls == [("data/models/Llama-3.1-8B-Instruct", "auto", None)]
 
 
 def test_cli_parser_rejects_splits_arg():

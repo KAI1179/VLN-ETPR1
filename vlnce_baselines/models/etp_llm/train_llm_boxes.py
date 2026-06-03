@@ -255,10 +255,12 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
+        device_map=_normalize_device_map(args.device_map),
     )
     model = _apply_lora(model, args)
     device = torch.device(args.device)
-    model.to(device)
+    if not _model_uses_device_map(model):
+        model.to(device)
 
     dataset = LLMBoxesDataset(examples)
     text_stats = compute_llm_text_stats(
@@ -331,7 +333,7 @@ def evaluate_model(
     """Generate, validate, artifact, and score LLM-Boxes predictions."""
     import torch
 
-    if hasattr(model, "to"):
+    if hasattr(model, "to") and not _model_uses_device_map(model):
         model.to(args.device)
     if hasattr(model, "eval"):
         model.eval()
@@ -473,16 +475,19 @@ def save_llm_boxes_checkpoint(
 def _load_causal_lm_model_and_tokenizer(
     model_name_or_path: str,
     torch_dtype: str,
+    device_map: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        torch_dtype=_resolve_torch_dtype(torch_dtype),
-    )
+    model_kwargs: Dict[str, Any] = {
+        "torch_dtype": _resolve_torch_dtype(torch_dtype),
+    }
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
     return model, tokenizer
 
 
@@ -502,6 +507,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
+        device_map=_normalize_device_map(args.device_map),
     )
     examples = load_llm_boxes_examples(
         args.dataset,
@@ -538,6 +544,15 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
+    parser.add_argument(
+        "--device-map",
+        default="auto",
+        choices=["auto", "balanced", "balanced_low_0", "sequential", "none"],
+        help=(
+            "Optional Transformers/Accelerate model-parallel device map. "
+            "Use none for ordinary single-device loading."
+        ),
+    )
     parser.add_argument(
         "--torch-dtype",
         default="auto",
@@ -697,6 +712,16 @@ def _model_batch(
         if hasattr(value, "to"):
             model_inputs[key] = value.to(device)
     return model_inputs
+
+
+def _model_uses_device_map(model: Any) -> bool:
+    return bool(getattr(model, "hf_device_map", None))
+
+
+def _normalize_device_map(device_map: Optional[str]) -> Optional[str]:
+    if device_map == "none":
+        return None
+    return device_map
 
 
 def _encoded_width(input_ids: Any) -> int:
