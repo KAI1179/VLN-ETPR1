@@ -325,6 +325,18 @@ class _ChatTokenizer:
         return ["".join(chr(token) for token in sequence if token != self.pad_token_id) for sequence in sequences]
 
 
+class _TruncatingChatTokenizer(_ChatTokenizer):
+    def __call__(self, texts, **kwargs):
+        encoded = super().__call__(texts, **kwargs)
+        max_length = kwargs["max_length"]
+        if kwargs["truncation"] is True:
+            encoded["input_ids"] = [row[:max_length] for row in encoded["input_ids"]]
+            encoded["attention_mask"] = [
+                row[:max_length] for row in encoded["attention_mask"]
+            ]
+        return encoded
+
+
 def test_load_system_prompt_reads_package_prompt():
     prompt = train_llm_boxes.load_system_prompt()
 
@@ -365,6 +377,19 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
         "input_ids"
     ][0][collated["prompt_lengths"][0] :]
     assert collated["example_ids"] == ["ex"]
+
+
+def test_collate_rejects_batches_with_no_supervised_target_tokens():
+    tokenizer = _TruncatingChatTokenizer()
+
+    with pytest.raises(ValueError, match="No supervised target tokens remain"):
+        train_llm_boxes.collate_llm_boxes_batch(
+            [{"input_text": "input words", "target_text": "target", "example_id": "ex"}],
+            tokenizer,
+            system_prompt="many prompt tokens before the target",
+            max_input_length=1,
+            max_new_tokens=1,
+        )
 
 
 def test_decode_generated_completion_strips_prompt_tokens():

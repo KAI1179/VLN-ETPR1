@@ -202,6 +202,11 @@ def collate_llm_boxes_batch(
         prompt_lengths,
         tokenizer.pad_token_id,
     )
+    _validate_supervised_labels(
+        encoded["labels"],
+        [item["example_id"] for item in batch],
+        prompt_lengths,
+    )
     encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
@@ -532,7 +537,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--output-dir", default=Path("./data/logs/llm/"))
     parser.add_argument("--dataset", default="R2R", choices=["R2R", "RxR"])
-    parser.add_argument("--max-input-length", type=int, default=512)
+    parser.add_argument("--max-input-length", type=int, default=1024)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument(
         "--finetune-method",
@@ -632,6 +637,38 @@ def _causal_lm_labels(
             ]
         )
     return labels
+
+
+def _validate_supervised_labels(
+    labels: Any,
+    example_ids: Sequence[str],
+    prompt_lengths: Sequence[int],
+) -> None:
+    bad_examples: List[str] = []
+    for row_idx, example_id in enumerate(example_ids):
+        row = labels[row_idx]
+        if hasattr(row, "ne"):
+            supervised_tokens = int(row.ne(-100).sum().item())
+            sequence_tokens = int(row.shape[-1])
+        else:
+            supervised_tokens = sum(1 for token in row if token != -100)
+            sequence_tokens = len(row)
+        if supervised_tokens == 0:
+            bad_examples.append(
+                (
+                    f"{example_id} "
+                    f"(prompt_tokens={prompt_lengths[row_idx]}, "
+                    f"sequence_tokens={sequence_tokens})"
+                )
+            )
+
+    if bad_examples:
+        joined_examples = ", ".join(bad_examples)
+        raise ValueError(
+            "No supervised target tokens remain after tokenization/truncation "
+            f"for: {joined_examples}. Increase --max-input-length or "
+            "--max-new-tokens, or shorten the system prompt."
+        )
 
 
 def decode_generated_completion(
