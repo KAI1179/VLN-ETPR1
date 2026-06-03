@@ -683,9 +683,9 @@ requires-dist = [
     { name = "timm", specifier = "==0.5.4" },
     { name = "tokenizers", specifier = "==0.19.1" },
     { name = "toml", specifier = "==0.10.2" },
-    { name = "torch", specifier = "==1.13.1+cu117" },
-    { name = "torchaudio", specifier = "==0.13.1+cu117" },
-    { name = "torchvision", specifier = "==0.14.1+cu117" },
+    { name = "torch", specifier = "==2.1.2+cu118" },
+    { name = "torchaudio", specifier = "==2.1.2+cu118" },
+    { name = "torchvision", specifier = "==0.16.2+cu118" },
     { name = "transformers", specifier = "==4.43.4" },
     { name = "typed-argument-parser", specifier = "==1.10.1" },
     { name = "typer", specifier = "==0.4.0" },
@@ -1396,6 +1396,14 @@ dependencies = [
     { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/18/54/01a8c4e35c75ca9724d19a7e4de9dc23f0ceb8769102c7de056113af61c3/moviepy-1.0.3.tar.gz", hash = "sha256:2884e35d1788077db3ff89e763c5ba7bfddbd7ae9108c9bc809e7ba58fa433f5", size = 388311, upload-time = "2020-05-07T16:27:46.856Z" }
+
+[[package]]
+name = "mpmath"
+version = "1.3.0"
+source = { registry = "https://download.pytorch.org/whl/torch_stable.html" }
+wheels = [
+    { url = "https://download.pytorch.org/whl/mpmath-1.3.0-py3-none-any.whl" },
+]
 
 [[package]]
 name = "msgpack"
@@ -2343,6 +2351,18 @@ wheels = [
 ]
 
 [[package]]
+name = "sympy"
+version = "1.13.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mpmath" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/11/8a/5a7fd6284fa8caac23a26c9ddf9c30485a48169344b4bd3b0f02fef1890f/sympy-1.13.3.tar.gz", hash = "sha256:b27fd2c6530e0ab39e275fc9b683895367e51d5da91baa8d3d64db2565fec4d9", size = 7533196, upload-time = "2024-09-18T21:54:25.591Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/ff/c87e0622b1dadea79d2fb0b25ade9ed98954c9033722eb707053d310d4f3/sympy-1.13.3-py3-none-any.whl", hash = "sha256:54612cf55a62755ee71824ce692986f23c88ffa77207b30c1368eda4a7060f73", size = 6189483, upload-time = "2024-09-18T21:54:23.097Z" },
+]
+
+[[package]]
 name = "tb-nightly"
 version = "2.12.0a20230126"
 source = { registry = "https://pypi.org/simple" }
@@ -2602,42 +2622,47 @@ wheels = [
 
 [[package]]
 name = "torch"
-version = "1.13.1+cu117"
+version = "2.1.2+cu118"
 source = { registry = "https://download.pytorch.org/whl/torch_stable.html" }
 dependencies = [
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
+    { name = "sympy" },
+    { name = "triton", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu117/torch-1.13.1%2Bcu117-cp38-cp38-linux_x86_64.whl" },
-    { url = "https://download.pytorch.org/whl/cu117/torch-1.13.1%2Bcu117-cp38-cp38-win_amd64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.1.2%2Bcu118-cp38-cp38-linux_x86_64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.1.2%2Bcu118-cp38-cp38-win_amd64.whl" },
 ]
 
 [[package]]
 name = "torchaudio"
-version = "0.13.1+cu117"
+version = "2.1.2+cu118"
 source = { registry = "https://download.pytorch.org/whl/torch_stable.html" }
 dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu117/torchaudio-0.13.1%2Bcu117-cp38-cp38-linux_x86_64.whl" },
-    { url = "https://download.pytorch.org/whl/cu117/torchaudio-0.13.1%2Bcu117-cp38-cp38-win_amd64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.1.2%2Bcu118-cp38-cp38-linux_x86_64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.1.2%2Bcu118-cp38-cp38-win_amd64.whl" },
 ]
 
 [[package]]
 name = "torchvision"
-version = "0.14.1+cu117"
+version = "0.16.2+cu118"
 source = { registry = "https://download.pytorch.org/whl/torch_stable.html" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
     { name = "requests" },
     { name = "torch" },
-    { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu117/torchvision-0.14.1%2Bcu117-cp38-cp38-linux_x86_64.whl" },
-    { url = "https://download.pytorch.org/whl/cu117/torchvision-0.14.1%2Bcu117-cp38-cp38-win_amd64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.16.2%2Bcu118-cp38-cp38-linux_x86_64.whl" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.16.2%2Bcu118-cp38-cp38-win_amd64.whl" },
 ]
 
 [[package]]
@@ -2680,6 +2705,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/09/57/9934679377d3c105621dc7659048a216569ff3ef6632422c120e7ad40dc9/transformers-4.43.4.tar.gz", hash = "sha256:b62288990a65ed9bfb79191e04dbb76c9376834ae6e0dd911320a2ced63324fe", size = 8059671, upload-time = "2024-08-05T10:56:02.162Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/34/71/af30c8afcdbee5d4ee4b89e366bd7c20ab8b07e7b5acb30e025b81e0ba65/transformers-4.43.4-py3-none-any.whl", hash = "sha256:d2202ed201e0c44f80de8d753a19f6164187754630bc1f915661b9511d61c773", size = 9412465, upload-time = "2024-08-05T10:55:56.757Z" },
+]
+
+[[package]]
+name = "triton"
+version = "2.1.0"
+source = { registry = "https://download.pytorch.org/whl/torch_stable.html" }
+dependencies = [
+    { name = "filelock", marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+]
+wheels = [
+    { url = "https://download.pytorch.org/whl/triton-2.1.0-0-cp38-cp38-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
 ]
 
 [[package]]
