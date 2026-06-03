@@ -263,6 +263,7 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
         device_map=_normalize_device_map(args.device_map),
     )
     model = _apply_lora(model, args)
+    _cast_trainable_parameters_to_float32(model)
     device = torch.device(args.device)
     if not _model_uses_device_map(model):
         model.to(device)
@@ -286,10 +287,8 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             args.max_new_tokens,
         ),
     )
-    optimizer = torch.optim.AdamW(
-        (param for param in model.parameters() if param.requires_grad),
-        lr=args.learning_rate,
-    )
+    trainable_parameters = [param for param in model.parameters() if param.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate)
 
     model.train()
     total_loss = 0.0
@@ -305,9 +304,45 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             model_inputs = _model_batch(batch, device)
             outputs = model(**model_inputs)
             loss = outputs.loss
+            if not torch.isfinite(loss.detach()):
+                raise FloatingPointError(
+                    _non_finite_step_message("loss", epoch + 1, steps + 1, batch)
+                )
             loss.backward()
+            max_grad_norm = float(getattr(args, "max_grad_norm", 1.0))
+            grad_norm = None
+            if max_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trainable_parameters,
+                    max_grad_norm,
+                    error_if_nonfinite=False,
+                )
+                if not torch.isfinite(grad_norm.detach()):
+                    raise FloatingPointError(
+                        _non_finite_step_message(
+                            "gradient norm",
+                            epoch + 1,
+                            steps + 1,
+                            batch,
+                            value=float(grad_norm.detach().cpu()),
+                        )
+                    )
             optimizer.step()
             optimizer.zero_grad()
+            _validate_trainable_parameters_finite(
+                model,
+                context=_non_finite_step_message(
+                    "trainable parameter",
+                    epoch + 1,
+                    steps + 1,
+                    batch,
+                    value=(
+                        float(grad_norm.detach().cpu())
+                        if grad_norm is not None
+                        else None
+                    ),
+                ),
+            )
             total_loss += float(loss.detach().cpu())
             steps += 1
             set_postfix = getattr(progress_loader, "set_postfix", None)
@@ -547,6 +582,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=1.0,
+        help="Clip trainable parameter gradients to this norm; use 0 to disable.",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
     parser.add_argument(
@@ -704,6 +745,48 @@ def _apply_lora(model: Any, args: argparse.Namespace) -> Any:
         ],
     )
     return get_peft_model(model, config)
+
+
+def _cast_trainable_parameters_to_float32(model: Any) -> None:
+    for param in model.parameters():
+        if getattr(param, "requires_grad", False) and hasattr(param, "data"):
+            param.data = param.data.float()
+
+
+def _validate_trainable_parameters_finite(model: Any, context: str) -> None:
+    for name, param in model.named_parameters():
+        if not getattr(param, "requires_grad", False):
+            continue
+        data = getattr(param, "data", None)
+        if data is None or not hasattr(data, "isfinite"):
+            continue
+        if not data.isfinite().all().item():
+            raise FloatingPointError(f"{context}; non-finite parameter={name}")
+
+
+def _non_finite_step_message(
+    kind: str,
+    epoch: int,
+    step: int,
+    batch: Dict[str, Any],
+    value: Optional[float] = None,
+) -> str:
+    parts = [f"Non-finite training {kind}", f"epoch={epoch}", f"step={step}"]
+    if value is not None:
+        parts.append(f"value={value}")
+    example_ids = batch.get("example_ids")
+    if example_ids:
+        parts.append(f"examples={list(example_ids)}")
+    labels = batch.get("labels")
+    if labels is not None:
+        parts.append(f"supervised_tokens={_supervised_token_counts(labels)}")
+    return "; ".join(parts)
+
+
+def _supervised_token_counts(labels: Any) -> List[int]:
+    if hasattr(labels, "ne"):
+        return [int(row.ne(-100).sum().item()) for row in labels]
+    return [sum(1 for token in row if token != -100) for row in labels]
 
 
 def _resolve_torch_dtype(torch_dtype: str) -> Any:

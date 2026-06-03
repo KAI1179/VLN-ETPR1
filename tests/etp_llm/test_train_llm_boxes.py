@@ -3,6 +3,7 @@ import json
 from typing import List
 
 import pytest
+import torch
 
 import prior.bbox as bbox
 from vlnce_baselines.models.etp_llm.boxes_schema import (
@@ -421,6 +422,33 @@ def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
         train_llm_boxes.train_model(args)
+
+
+def test_cast_trainable_parameters_to_float32_only_changes_trainable_params():
+    frozen = torch.nn.Parameter(torch.ones(1, dtype=torch.float16), requires_grad=False)
+    trainable = torch.nn.Parameter(torch.ones(1, dtype=torch.float16))
+    model = torch.nn.Module()
+    model.register_parameter("frozen", frozen)
+    model.register_parameter("trainable", trainable)
+
+    train_llm_boxes._cast_trainable_parameters_to_float32(model)
+
+    assert frozen.dtype == torch.float16
+    assert trainable.dtype == torch.float32
+
+
+def test_validate_trainable_parameters_finite_reports_bad_parameter():
+    model = torch.nn.Module()
+    model.register_parameter(
+        "adapter",
+        torch.nn.Parameter(torch.tensor([float("nan")], dtype=torch.float32)),
+    )
+
+    with pytest.raises(FloatingPointError, match="non-finite parameter=adapter"):
+        train_llm_boxes._validate_trainable_parameters_finite(
+            model,
+            context="Non-finite training trainable parameter",
+        )
 
 
 class _EvalDataset:
@@ -868,6 +896,8 @@ def test_cli_parser_supports_train_and_eval_modes():
             "2",
             "--learning-rate",
             "0.001",
+            "--max-grad-norm",
+            "0.5",
             "--limit",
             "5",
             "--device",
@@ -894,6 +924,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.batch_size == 4
     assert train_args.epochs == 2
     assert train_args.learning_rate == 0.001
+    assert train_args.max_grad_norm == 0.5
     assert train_args.limit == 5
     assert train_args.device == "cpu"
     assert train_args.device_map == "auto"
@@ -903,6 +934,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.model_name_or_path == "data/models/Llama-3.1-8B-Instruct"
     assert eval_args.output_dir == "eval-out"
     assert eval_args.max_new_tokens == 1024
+    assert eval_args.max_grad_norm == 1.0
     assert eval_args.device_map == "none"
     assert eval_args.torch_dtype == "auto"
     assert eval_args.quiet is False
