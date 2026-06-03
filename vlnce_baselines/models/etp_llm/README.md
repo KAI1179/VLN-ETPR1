@@ -37,7 +37,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger 2333
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo 2333
 ```
 
-These paths intentionally fail with `LLMReferencePathNotImplementedError` when
-LLM-derived map construction needs `reference_path`. That prevents accidentally
-training LLM-Navigation with ground-truth path metadata before reference-path
-prediction or an explicit ablation is implemented.
+These paths intentionally fail with `LLMReferencePathNotImplementedError` until
+LLM-Navigation consumes the `path` entity predicted by LLM-Boxes. That prevents
+accidentally training LLM-Navigation with ground-truth path metadata.

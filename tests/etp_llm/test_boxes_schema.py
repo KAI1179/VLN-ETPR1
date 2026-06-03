@@ -85,11 +85,13 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
                 max=(5.0, 6.0),
             )
         ],
+        reference_path=[(0.04, 0.06), (1.24, 2.96)],
     )
 
     text = spec_to_llm_boxes_text(spec)
 
     assert text == (
+        "path 0.0 0.1 1.2 3.0 ; "
         "obj chair 1.0 2.0 0.5 0.5 0.0 ; "
         "obj table 3.0 4.1 0.5 0.7 0.25 ; "
         "reg living/social space 0.0 0.0 5.0 6.0"
@@ -100,6 +102,7 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
             ObjectBoxSpec("table", (3.0, 4.1), (0.5, 0.7), 0.25),
         ),
         regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),),
+        reference_path=((0.0, 0.1), (1.2, 3.0)),
     )
 
 
@@ -108,6 +111,19 @@ def test_spec_to_llm_boxes_text_serializes_empty_spec_as_none():
 
     assert text == "none"
     assert parse_llm_boxes_text(text) == LLMBoxesSpec(objects=(), regions=())
+
+
+def test_spec_to_llm_boxes_text_serializes_reference_path_without_boxes():
+    text = spec_to_llm_boxes_text(
+        LLMBoxesSpec(objects=[], regions=[], reference_path=[(0.0, 0.0), (1.2, 3.0)])
+    )
+
+    assert text == "path 0.0 0.0 1.2 3.0"
+    assert parse_llm_boxes_text(text) == LLMBoxesSpec(
+        objects=(),
+        regions=(),
+        reference_path=((0.0, 0.0), (1.2, 3.0)),
+    )
 
 
 def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested():
@@ -146,6 +162,9 @@ def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
         "reg circulation 0 0 0 1",
         "reg unknown 0 0 1 1",
         "reg circulation 0 0 1 1 1",
+        "path 0",
+        "path 0 0 1",
+        "path 0 0 ; path 1 1",
     ],
 )
 def test_parse_llm_boxes_text_rejects_invalid_predictions(text):
@@ -187,6 +206,7 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
     assert spec.regions == (
         RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),
     )
+    assert spec.reference_path == ((0.0, 0.0),)
 
 
 def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions():
@@ -212,6 +232,7 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
                 max=(5.0, 6.0),
             )
         ],
+        reference_path=[(1.0, 1.0), (2.0, 3.0)],
     )
 
     relevant = spec_to_relevant_semantic_boxes(
@@ -226,7 +247,7 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
 
     assert relevant.level_idx == 4
     assert relevant.instruction == "Walk to the chair."
-    assert relevant.reference_path == [(9.0, 8.0)]
+    assert relevant.reference_path == [(1.0, 1.0), (2.0, 3.0)]
     assert relevant.start_direction_vector == (1.0, 0.0)
     assert relevant.level.range_y == [0.0, 2.0]
     assert relevant.level.objects[1] == [

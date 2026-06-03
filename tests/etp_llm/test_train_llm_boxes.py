@@ -146,6 +146,7 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
     assert example.target_spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.2, 3.0), (0.5, 0.6), 0.25),),
         regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (3.0, 4.0)),),
+        reference_path=((0.0, 0.0),),
     )
 
 
@@ -243,7 +244,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         "direction x = 1.0 | direction z = 0.0 | "
         "instruction Walk into the living room."
     )
-    assert item["target_text"] == "obj chair 1.2 3.0 0.5 0.6 0.25"
+    assert item["target_text"] == "path 0.0 0.0 ; obj chair 1.2 3.0 0.5 0.6 0.25"
     assert parse_llm_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
@@ -618,7 +619,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     assert invalid_schema_artifact.startswith("obj chair")
     assert "# error: unknown object category" in invalid_schema_artifact
     assert malformed_artifact == (
-        "not parseable\n\n# error: entity[0] must start with obj or reg\n"
+        "not parseable\n\n# error: entity[0] must start with path, obj, or reg\n"
     )
     assert array_artifact == "none\n"
     assert string_artifact.startswith("reg circulation")

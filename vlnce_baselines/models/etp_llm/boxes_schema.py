@@ -45,10 +45,16 @@ class RegionBoxSpec:
 class LLMBoxesSpec:
     objects: Sequence[ObjectBoxSpec]
     regions: Sequence[RegionBoxSpec]
+    reference_path: Sequence[Point2D] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "objects", tuple(self.objects))
         object.__setattr__(self, "regions", tuple(self.regions))
+        object.__setattr__(
+            self,
+            "reference_path",
+            tuple(_round_point(_point2(point)) for point in self.reference_path),
+        )
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,7 @@ def relevant_semantic_boxes_to_spec(
     return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
+        reference_path=tuple(_round_point(_path_point(point)) for point in relevant.reference_path),
     )
 
 
@@ -156,6 +163,7 @@ def relevant_semantic_boxes_to_mentioned_spec(
     return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
+        reference_path=tuple(_round_point(_path_point(point)) for point in relevant.reference_path),
     )
 
 
@@ -208,7 +216,10 @@ def spec_to_relevant_semantic_boxes(
         level_idx=int(level_idx),
         level=level,
         instruction=str(instruction),
-        reference_path=[_path_point(point) for point in reference_path],
+        reference_path=[
+            _path_point(point)
+            for point in (spec.reference_path if spec.reference_path else reference_path)
+        ],
         start_direction_vector=_point2(start_direction_vector),
     )
 
@@ -217,6 +228,13 @@ def spec_to_llm_boxes_text(spec: LLMBoxesSpec) -> str:
     """Serialize a spec in the compact LLM-friendly linear grammar."""
     normalized = _normalize_spec(spec)
     parts: List[str] = []
+    if normalized.reference_path:
+        path_numbers = [
+            str(coord)
+            for point in normalized.reference_path
+            for coord in (point[0], point[1])
+        ]
+        parts.append(f"path {' '.join(path_numbers)}")
     for item in normalized.objects:
         parts.append(
             f"obj {item.category} {item.center[0]} {item.center[1]} "
@@ -252,22 +270,31 @@ def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
 
     objects: List[ObjectBoxSpec] = []
     regions: List[RegionBoxSpec] = []
+    reference_path: List[Point2D] = []
     entities = [entity.strip() for entity in stripped.split(";")]
     for idx, entity in enumerate(entities):
         if not entity:
             continue
         try:
-            _parse_llm_boxes_entity(entity, idx, objects, regions)
+            _parse_llm_boxes_entity(entity, idx, objects, regions, reference_path)
         except _LLMBoxesIncompleteEntity:
             if idx == len(entities) - 1:
                 return LLMBoxesPartialParse(
-                    spec=LLMBoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+                    spec=LLMBoxesSpec(
+                        objects=tuple(objects),
+                        regions=tuple(regions),
+                        reference_path=tuple(reference_path),
+                    ),
                     dropped_text=entity,
                     dropped_entity_count=1,
                 )
             raise LLMBoxesValidationError("incomplete entity before end of output")
     return LLMBoxesPartialParse(
-        spec=LLMBoxesSpec(objects=tuple(objects), regions=tuple(regions)),
+        spec=LLMBoxesSpec(
+            objects=tuple(objects),
+            regions=tuple(regions),
+            reference_path=tuple(reference_path),
+        ),
         dropped_text="",
         dropped_entity_count=0,
     )
@@ -287,6 +314,7 @@ def _normalize_spec(spec: LLMBoxesSpec) -> LLMBoxesSpec:
                 key=_region_sort_key,
             )
         ),
+        reference_path=tuple(_round_point(_point2(point)) for point in spec.reference_path),
     )
 
 
@@ -364,12 +392,25 @@ def _parse_llm_boxes_entity(
     idx: int,
     objects: List[ObjectBoxSpec],
     regions: List[RegionBoxSpec],
+    reference_path: List[Point2D],
 ) -> None:
     parts = raw_entity.split()
     if not parts:
         raise LLMBoxesValidationError(f"entity[{idx}] must not be empty")
 
     entity_type = parts[0]
+    if entity_type == "path":
+        if reference_path:
+            raise LLMBoxesValidationError("reference path must be emitted once")
+        if len(parts) < 3 or len(parts[1:]) % 2 != 0:
+            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] path is incomplete")
+        values = _parse_trailing_numbers(parts[1:], f"entity[{idx}]")
+        reference_path.extend(
+            _round_point((values[pos], values[pos + 1]))
+            for pos in range(0, len(values), 2)
+        )
+        return
+
     if entity_type == "obj":
         if len(parts) < 7:
             raise _LLMBoxesIncompleteEntity(f"entity[{idx}] object is incomplete")
@@ -405,7 +446,7 @@ def _parse_llm_boxes_entity(
         regions.append(_normalize_region(item))
         return
 
-    raise LLMBoxesValidationError(f"entity[{idx}] must start with obj or reg")
+    raise LLMBoxesValidationError(f"entity[{idx}] must start with path, obj, or reg")
 
 
 def _parse_trailing_numbers(

@@ -136,7 +136,7 @@ Domain expert: "No. Confidence should be assigned during conversion or rasteriza
 
 Developer: "Should LLM-Boxes generate the reference path?"
 
-Domain expert: "No. LLM-Boxes should focus on object and region boxes. Reference-path handling belongs to the LLM-Navigation milestone."
+Domain expert: "Yes, after the Llama transition. LLM-Boxes should emit an ordered compact `path` entity before objects and regions, while full navigation consumption of predicted paths remains part of the LLM-Navigation milestone."
 
 Developer: "Should LLM-Boxes predict all boxes on the level?"
 
