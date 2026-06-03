@@ -216,7 +216,7 @@ class SceneSemanticBoxes:
 
     @staticmethod
     def from_scene_id(scene_id: str) -> "SceneSemanticBoxes":
-        """Load scene semantic boxes from cache or build/cache them from MP3D."""
+        """Load scene semantic boxes from cache or build/cache them from MP3D. Cached."""
         from copy import deepcopy
 
         from ._construct import _scene_semantic_boxes_from_scene_id

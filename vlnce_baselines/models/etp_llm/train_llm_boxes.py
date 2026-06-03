@@ -95,7 +95,6 @@ def load_llm_boxes_examples(
         return []
 
     examples: List[LLMBoxesExample] = []
-    scene_cache: Dict[str, SceneSemanticBoxes] = {}
     episodes = _progress(
         VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
         desc="load LLM-Boxes examples",
@@ -103,10 +102,7 @@ def load_llm_boxes_examples(
         total=limit,
     )
     for episode in episodes:
-        scene_boxes = scene_cache.get(episode.scene_id)
-        if scene_boxes is None:
-            scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
-            scene_cache[episode.scene_id] = scene_boxes
+        scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
 
         target_relevant = scene_boxes.relevant_to(
             episode.instruction,
@@ -287,7 +283,9 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
             args.max_new_tokens,
         ),
     )
-    trainable_parameters = [param for param in model.parameters() if param.requires_grad]
+    trainable_parameters = [
+        param for param in model.parameters() if param.requires_grad
+    ]
     optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate)
 
     model.train()
