@@ -329,11 +329,6 @@ class _ChatTokenizer:
         return ["".join(chr(token) for token in sequence if token != self.pad_token_id) for sequence in sequences]
 
 
-class _CharChatTokenizer(_ChatTokenizer):
-    def encode(self, text, add_special_tokens=False):
-        return list(text)
-
-
 class _TruncatingChatTokenizer(_ChatTokenizer):
     def __call__(self, texts, **kwargs):
         encoded = super().__call__(texts, **kwargs)
@@ -569,18 +564,6 @@ class _PromptInspectingEvalModel:
         ]
 
 
-class _CacheGenerationModel:
-    def __init__(self, text):
-        self.text = text
-
-    def eval(self):
-        pass
-
-    def generate(self, **kwargs):
-        suffix = [ord(char) for char in self.text]
-        return [[*row, *suffix] for row in kwargs["input_ids"]]
-
-
 def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
     target = _empty_relevant()
     dataset: List[train_llm_boxes.LLMBoxesItem] = [
@@ -767,67 +750,6 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
     assert metrics["category_aware_raster_support_mean"] == 0.0
 
 
-def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_path):
-    target = _empty_relevant()
-    dataset: List[train_llm_boxes.LLMBoxesItem] = [
-        {
-            "example_id": "R2R_train_42",
-            "scene_id": "scene-a",
-            "input_text": "find the chair",
-            "target_text": "obj chair 1 2 0.5 0.5 0",
-            "target_spec": LLMBoxesSpec(objects=(), regions=()),
-            "target_relevant": target,
-            "instruction": "Find the chair.",
-            "level_idx": 0,
-            "reference_path": [(99.0, 99.0)],
-            "start_direction": (0.0, 1.0),
-            "start_position": (0.0, 0.0),
-        }
-    ]
-    args = argparse.Namespace(
-        model_name_or_path="tiny",
-        dataset="R2R",
-        split="train",
-        cache_dir=str(tmp_path),
-        cache_model_key="test-model",
-        max_input_length=256,
-        max_new_tokens=64,
-        batch_size=1,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-    model = _CacheGenerationModel(
-        "path 0 0 1 1 ; obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0"
-    )
-
-    with pytest.warns(RuntimeWarning):
-        metrics = train_llm_boxes.generate_navigation_cache(
-            model,
-            _CharChatTokenizer(),
-            dataset,
-            args,
-        )
-
-    split_dir = tmp_path / "test-model" / "r2r" / "train"
-    prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
-    map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
-    assert metrics["examples"] == 1.0
-    assert metrics["strict_parse_failure_rate"] == 1.0
-    assert metrics["salvage_rate"] == 1.0
-    assert prediction_path.read_text() == (
-        "path 0.0 0.0 1.0 1.0 ; obj chair 1.0 2.0 0.5 0.5 0.0\n"
-    )
-    assert map_path.exists()
-    assert (split_dir / "failures.jsonl").read_text()
-    assert json.loads((split_dir / "metrics.json").read_text())[
-        "strict_parse_failure_rate"
-    ] == 1.0
-    assert json.loads((split_dir / "manifest.json").read_text())[
-        "model_name_or_path"
-    ] == "tiny"
-
-
 def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp_path):
     calls = []
 
@@ -991,19 +913,6 @@ def test_cli_parser_supports_train_and_eval_modes():
     eval_args = train_llm_boxes.parse_args(
         ["eval", "--output-dir", "eval-out", "--device-map", "none"]
     )
-    cache_args = train_llm_boxes.parse_args(
-        [
-            "cache",
-            "--dataset",
-            "R2R",
-            "--split",
-            "train",
-            "--cache-dir",
-            "data/cache",
-            "--cache-model-key",
-            "llama-test",
-        ]
-    )
 
     assert train_args.mode == "train"
     assert train_args.model_name_or_path == "tiny-llm"
@@ -1028,11 +937,11 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.max_grad_norm == 1.0
     assert eval_args.device_map == "none"
     assert eval_args.quiet is False
-    assert cache_args.mode == "cache"
-    assert cache_args.dataset == "R2R"
-    assert cache_args.split == "train"
-    assert cache_args.cache_dir == "data/cache"
-    assert cache_args.cache_model_key == "llama-test"
+
+
+def test_train_parser_rejects_cache_mode():
+    with pytest.raises(SystemExit):
+        train_llm_boxes.parse_args(["cache"])
 
 
 def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_path):

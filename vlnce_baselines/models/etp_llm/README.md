@@ -82,32 +82,16 @@ Cache generation should warn and continue on malformed LLM output. Valid compact
 entities from the output are still parsed and rasterized; invalid entities are recorded
 in `failures.jsonl`, and aggregate failure rates are written to `metrics.json`.
 
-### Generate VLN-CE Navigation Cache
+### Generate Navigation Cache
 
-Generate one split at a time with the `cache` mode:
+Generate all LLM-Navigation caches with one command:
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.train_llm_boxes cache \
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
-  --dataset R2R \
-  --split train \
   --cache-model-key llama-3.1-8b-instruct \
   --batch-size 1 \
   --quiet
-```
-
-Repeat for the navigation splits you need:
-
-```shell
-for split in train val_seen val_unseen; do
-  CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.train_llm_boxes cache \
-    --model-name-or-path ./data/logs/llm/checkpoints/final/ \
-    --dataset R2R \
-    --split "$split" \
-    --cache-model-key llama-3.1-8b-instruct \
-    --batch-size 1 \
-    --quiet
-done
 ```
 
 The command writes:
@@ -118,10 +102,19 @@ data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/cognitive_maps/<scene>/<ca
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/failures.jsonl
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/manifest.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/metrics.json
+data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/predictions/<scene>/<cache_id>.txt
+data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/cognitive_maps/<scene>/<cache_id>.npz
+data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
+data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
 ```
 
-`cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used by
-`SS-ETP-LLM` and `GRPO-ETP-LLM`.
+It generates `train`, `val_seen`, and `val_unseen` for both R2R and RxR, plus the
+mixed pretraining cache. The cache generator intentionally has no `--dataset`,
+`--split`, or `--annotation-file` selector; a complete cache should be generated as
+one reproducible artifact set.
+
+VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used by
+`SS-ETP-LLM` and `GRPO-ETP-LLM`. Pretraining cache ids are `instr_id`.
 
 Malformed output does not abort the cache run. The generator first tries strict
 parsing, then salvage parsing. Salvage parsing keeps valid `path`, `obj`, and
@@ -134,13 +127,12 @@ single-point fallback path. It does not fall back to the ground-truth reference 
 
 ### Pretraining Cache
 
-Pretraining does not use VLN-CE episodes. The checked-in pretraining JSONL files are
-annotation records keyed by `scan` and `instr_id`, and they contain tokenized
-`instr_encoding` rather than raw instruction text. Because of that, pretraining cache
-generation must be run from the raw pretraining annotation source before text is
-discarded, or from an annotation file that has the original instruction text restored.
+Pretraining does not use VLN-CE episodes. Cache generation reads ETP-R1 pretraining
+annotations through `prior.etp_r1.AnnotationEntry`, which decodes `instr_encoding`,
+resolves viewpoint paths through connectivity, and exposes `scan`, `instr_id`,
+instruction text, positions, and start direction.
 
-Pretraining consumers expect this namespace:
+Pretraining consumers use this namespace:
 
 ```text
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
