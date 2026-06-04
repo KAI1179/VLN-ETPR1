@@ -37,6 +37,47 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger 2333
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo 2333
 ```
 
-These paths intentionally fail with `LLMReferencePathNotImplementedError` until
-LLM-Navigation consumes the `path` entity predicted by LLM-Boxes. That prevents
-accidentally training LLM-Navigation with ground-truth path metadata.
+These paths consume precomputed LLM-derived cognitive-map caches. They should not
+run the LLM online during rollout.
+
+## LLM-Navigation Cache
+
+LLM-Navigation consumes precomputed LLM-derived cognitive maps. The cache layout is:
+
+```text
+data/llm_navigation/
+  llama-3.1-8b-instruct/
+    r2r/
+      train/
+        predictions/<scene>/<cache_id>.txt
+        cognitive_maps/<scene>/<cache_id>.npz
+        failures.jsonl
+        manifest.json
+        metrics.json
+      val_seen/
+      val_unseen/
+    rxr/
+      train/
+      val_seen/
+      val_unseen/
+    pretrain/
+      mixed/
+        predictions/<scene>/<instr_id>.txt
+        cognitive_maps/<scene>/<instr_id>.npz
+        failures.jsonl
+        manifest.json
+        metrics.json
+```
+
+VLN-CE navigation cache ids use the existing PriorGT convention:
+
+```text
+<DATASET>_<split>_<episode_id>
+```
+
+Pretraining cache ids use the pretraining annotation `instr_id` and are stored under
+`pretrain/mixed` by default because pretraining annotations are not VLN-CE episodes.
+
+Cache generation should warn and continue on malformed LLM output. Valid compact
+entities from the output are still parsed and rasterized; invalid entities are recorded
+in `failures.jsonl`, and aggregate failure rates are written to `metrics.json`.

@@ -136,6 +136,15 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.log_every == 1
 
 
+def test_default_config_exposes_llm_navigation_cache_settings():
+    from vlnce_baselines.config.default import get_config
+
+    config = get_config()
+
+    assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
+    assert config.MODEL.MAP_ENCODER.llm_cache_model_key == "llama-3.1-8b-instruct"
+
+
 def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
     from prior.bbox import __main__ as bbox_main
 
@@ -243,25 +252,65 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     }
 
 
-def test_pretrain_llm_map_raises_for_unimplemented_reference_path():
+def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
 
     pretrain_dataset = importlib.import_module("data.dataset")
-    from vlnce_baselines.models.etp_llm.navigation import (
-        LLMReferencePathNotImplementedError,
+    captured = {}
+
+    def fake_llm_cached_cognitive_map_to_tensors(
+        scene_id,
+        cache_id,
+        dataset,
+        split,
+        cache_dir=None,
+        model_key="llama-3.1-8b-instruct",
+        random_rotation_augmentation=False,
+    ):
+        captured["scene_id"] = scene_id
+        captured["cache_id"] = cache_id
+        captured["dataset"] = dataset
+        captured["split"] = split
+        captured["cache_dir"] = cache_dir
+        captured["model_key"] = model_key
+        captured["random_rotation_augmentation"] = random_rotation_augmentation
+        return {
+            "grid": "llm-grid",
+            "reference_paths": "llm-reference-paths",
+            "start_direction_vector": "llm-direction",
+            "start_position": "llm-start",
+        }
+
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "llm_cached_cognitive_map_to_tensors",
+        fake_llm_cached_cognitive_map_to_tensors,
     )
 
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
+    nav_db.random_rotation_augmentation = True
 
-    with pytest.raises(
-        LLMReferencePathNotImplementedError,
-        match="LLM-Navigation reference_path is not implemented",
-    ):
-        nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
+    outputs = nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
+
+    assert captured == {
+        "scene_id": "scene",
+        "cache_id": "42_0",
+        "dataset": "pretrain",
+        "split": "mixed",
+        "cache_dir": None,
+        "model_key": "llama-3.1-8b-instruct",
+        "random_rotation_augmentation": True,
+    }
+    assert outputs == {
+        "cognitive_maps": "llm-grid",
+        "reference_paths": "llm-reference-paths",
+        "start_direction_vectors": "llm-direction",
+        "start_positions": "llm-start",
+    }
 
 
 def test_pretrain_parser_accepts_llm_mode_and_rejects_mixed_map_modes(monkeypatch):

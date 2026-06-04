@@ -200,6 +200,8 @@ _C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze base VLN p
 _C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE auxiliary loss weight
 _C.MODEL.MAP_ENCODER.reference_path_loss_weight = 0.001      # Huber weight for imagined reference-path target
 _C.MODEL.MAP_ENCODER.predictor_checkpoint = ""               # optional predictor-only checkpoint for ImaginedPolicy
+_C.MODEL.MAP_ENCODER.llm_cache_dir = ""                      # optional LLM-Navigation cache root override
+_C.MODEL.MAP_ENCODER.llm_cache_model_key = "llama-3.1-8b-instruct"
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

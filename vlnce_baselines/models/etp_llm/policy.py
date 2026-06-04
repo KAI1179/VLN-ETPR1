@@ -9,8 +9,6 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 from vlnce_baselines.models.etp_prior_gt.policy import ETP_PriorGT
 from vlnce_baselines.models.policy import ILPolicy
 
-from .navigation import raise_llm_reference_path_not_implemented
-
 
 @baseline_registry.register_policy
 class LLMPolicy(ILPolicy):
@@ -84,8 +82,6 @@ class ETP_LLMNavigation(ETP_PriorGT):
         map_tokens=None,
         map_token_masks=None,
     ):
-        if mode == "llm_map_encoding":
-            return self.forward_llm_map_encoding()
         return super().forward(
             mode=mode,
             txt_ids=txt_ids,
@@ -115,6 +111,3 @@ class ETP_LLMNavigation(ETP_PriorGT):
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
         )
-
-    def forward_llm_map_encoding(self):
-        raise_llm_reference_path_not_implemented("LLMPolicy.forward_llm_map_encoding")

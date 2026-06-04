@@ -20,6 +20,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
 )
+from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
@@ -124,13 +125,23 @@ class ReverieTextPathData(object):
         }
 
     def _load_llm_cognitive_map(self, item: Dict[str, Any]):
-        from vlnce_baselines.models.etp_llm.navigation import (
-            raise_llm_reference_path_not_implemented,
+        tensors = llm_cached_cognitive_map_to_tensors(
+            item["scan"],
+            item["instr_id"],
+            getattr(self, "llm_cache_dataset", "pretrain"),
+            getattr(self, "llm_cache_split", "mixed"),
+            cache_dir=getattr(self, "llm_cache_dir", None),
+            model_key=getattr(self, "llm_cache_model_key", "llama-3.1-8b-instruct"),
+            random_rotation_augmentation=getattr(
+                self, "random_rotation_augmentation", False
+            ),
         )
-
-        raise_llm_reference_path_not_implemented(
-            f"pretraining item {item.get('instr_id', '<unknown>')}"
-        )
+        return {
+            "cognitive_maps": tensors["grid"],
+            "reference_paths": tensors["reference_paths"],
+            "start_direction_vectors": tensors["start_direction_vector"],
+            "start_positions": tensors["start_position"],
+        }
 
     def get_scanvp_feature(self, scan, viewpoint):
         key = "%s_%s" % (scan, viewpoint)

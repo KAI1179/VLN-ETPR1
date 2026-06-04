@@ -277,13 +277,6 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         ):
             return None, None, None
 
-        if self.use_llm:
-            from vlnce_baselines.models.etp_llm.navigation import (
-                raise_llm_reference_path_not_implemented,
-            )
-
-            raise_llm_reference_path_not_implemented("LLM pretraining")
-
         if self.use_imagined:
             txt_token_type_ids = torch.zeros_like(batch["txt_ids"])
             txt_embeds = self.bert.embeddings(
@@ -322,7 +315,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 )
             return map_tokens, map_token_masks, map_loss
 
-        if self.use_prior_gt:
+        if self.use_prior_gt or self.use_llm:
             map_tokens, map_token_masks = self.map_encoder(
                 batch["cognitive_maps"],
                 batch["reference_paths"],

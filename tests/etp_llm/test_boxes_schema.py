@@ -11,6 +11,7 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
     build_llm_boxes_input,
     parse_llm_boxes_text,
     parse_llm_boxes_text_partial,
+    parse_llm_boxes_text_salvage,
     relevant_semantic_boxes_to_mentioned_spec,
     spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
@@ -148,6 +149,33 @@ def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
     )
     assert result.dropped_text == "obj table 3 4"
     assert result.dropped_entity_count == 1
+
+
+def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines():
+    result = parse_llm_boxes_text_salvage(
+        "\n".join(
+            [
+                "path 0 0 1 1",
+                "obj alien 1 2 0.5 0.5 0",
+                "obj chair 1 2 0.5 0.5 0",
+                "not parseable",
+                "reg circulation 0 0 2 3",
+            ]
+        )
+    )
+
+    assert result.spec.reference_path == ((0.0, 0.0), (1.0, 1.0))
+    assert result.spec.objects == (
+        ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
+    )
+    assert result.spec.regions == (
+        RegionBoxSpec("circulation", (0.0, 0.0), (2.0, 3.0)),
+    )
+    assert result.dropped_entities == (
+        "obj alien 1 2 0.5 0.5 0",
+        "not parseable",
+    )
+    assert result.dropped_entity_count == 2
 
 
 @pytest.mark.parametrize(

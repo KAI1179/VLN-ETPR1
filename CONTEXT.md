@@ -68,6 +68,10 @@ _Avoid_: LLM-Boxes when policy integration is included, T5-Navigation
 The separate navigation policy variant that consumes LLM-derived cognitive maps.
 _Avoid_: Imagined policy when the map path uses text generation and JSON parsing
 
+**Precomputed LLM-derived cognitive map**:
+A cognitive map generated from LLM-Boxes output before navigation rollout and consumed as a fixed map input by LLM-Navigation.
+_Avoid_: online LLM map when generation is not part of rollout
+
 **Structured cognitive-map specification**:
 A text-generated representation of predicted objects, regions, and spatial metadata that can be converted into relevant semantic boxes before rasterization.
 _Avoid_: raw JSON when discussing model semantics
@@ -181,6 +185,10 @@ Domain expert: "Use category-aware IoU, especially category-aware raster IoU, wi
 Developer: "Should LLM-Navigation be folded into Imagined?"
 
 Domain expert: "No. LLM-Navigation should use separate policy and trainer names while reusing shared map helpers."
+
+Developer: "Should LLM-Navigation run the LLM online during rollout?"
+
+Domain expert: "No. LLM-Navigation should consume precomputed LLM-derived cognitive maps so rollout uses deterministic map tensors and generation failures can be measured before navigation."
 
 Developer: "Should generated entities be ordered along the path?"
 

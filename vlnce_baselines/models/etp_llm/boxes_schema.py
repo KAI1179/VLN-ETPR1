@@ -64,6 +64,17 @@ class LLMBoxesPartialParse:
     dropped_entity_count: int
 
 
+@dataclass(frozen=True)
+class LLMBoxesSalvageParse:
+    spec: LLMBoxesSpec
+    dropped_entities: Sequence[str]
+    errors: Sequence[str]
+
+    @property
+    def dropped_entity_count(self) -> int:
+        return len(self.dropped_entities)
+
+
 class _LLMBoxesIncompleteEntity(LLMBoxesValidationError):
     pass
 
@@ -297,6 +308,51 @@ def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
         ),
         dropped_text="",
         dropped_entity_count=0,
+    )
+
+
+def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
+    """Parse all valid compact entities while dropping invalid entities.
+
+    Generation-cache creation should warn and continue when one output line is
+    malformed. This parser treats semicolons and line breaks as entity
+    boundaries, keeps valid ``path``, ``obj``, and ``reg`` entities, and records
+    every dropped entity for failure-rate accounting.
+    """
+    stripped = text.strip()
+    if stripped == "none" or stripped == "":
+        return LLMBoxesSalvageParse(
+            spec=LLMBoxesSpec(objects=(), regions=()),
+            dropped_entities=(),
+            errors=(),
+        )
+
+    objects: List[ObjectBoxSpec] = []
+    regions: List[RegionBoxSpec] = []
+    reference_path: List[Point2D] = []
+    dropped_entities: List[str] = []
+    errors: List[str] = []
+    raw_entities = [
+        line.strip()
+        for chunk in stripped.split(";")
+        for line in chunk.splitlines()
+        if line.strip()
+    ]
+    for idx, entity in enumerate(raw_entities):
+        try:
+            _parse_llm_boxes_entity(entity, idx, objects, regions, reference_path)
+        except LLMBoxesValidationError as exc:
+            dropped_entities.append(entity)
+            errors.append(str(exc))
+
+    return LLMBoxesSalvageParse(
+        spec=LLMBoxesSpec(
+            objects=tuple(objects),
+            regions=tuple(regions),
+            reference_path=tuple(reference_path),
+        ),
+        dropped_entities=tuple(dropped_entities),
+        errors=tuple(errors),
     )
 
 
