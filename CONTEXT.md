@@ -85,8 +85,16 @@ The exact object or region category string used by the mapped category vocabular
 _Avoid_: category index when discussing LLM-Boxes output
 
 **Relevant semantic boxes**:
-The instruction- and path-relevant object and region boxes selected for one scene level, carrying the reference path and start direction needed to build a cognitive map.
+The instruction- and path-relevant object and region boxes selected for one scene level, carrying the ground-truth trajectory, trajectory keypoints, and start direction needed to build a cognitive map.
 _Avoid_: semantic boxes when relevance filtering or predicted relevance matters
+
+**Ground-truth trajectory**:
+The dense episode trajectory from VLN-CE ground-truth files, used to select path-relevant semantic boxes for the bbox-based cognitive-map pipeline.
+_Avoid_: reference path, sparse path, GT path
+
+**Trajectory keypoints**:
+A compact ordered set of selected-level path waypoints derived from the ground-truth trajectory by keeping the start and abrupt-turn waypoints, used as `(5, 2)` map-encoder metadata and as the path target for LLM-Boxes.
+_Avoid_: direction vectors, reference path when discussing model metadata
 
 **Full-level semantic boxes**:
 All object and region boxes available on a selected MP3D semantic level, before relevance filtering.
@@ -140,7 +148,7 @@ Domain expert: "No. Confidence should be assigned during conversion or rasteriza
 
 Developer: "Should LLM-Boxes generate the reference path?"
 
-Domain expert: "Yes, after the Llama transition. LLM-Boxes should emit an ordered compact `path` entity before objects and regions, while full navigation consumption of predicted paths remains part of the LLM-Navigation milestone."
+Domain expert: "No. LLM-Boxes should generate trajectory keypoints using a `keypoints` entity, not a reference path."
 
 Developer: "Should LLM-Boxes predict all boxes on the level?"
 
