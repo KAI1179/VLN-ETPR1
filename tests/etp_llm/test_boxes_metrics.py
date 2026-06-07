@@ -14,7 +14,17 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
 
 
 def _spec(objects=None, regions=None):
-    return LLMBoxesSpec(objects=objects or [], regions=regions or [])
+    return LLMBoxesSpec(
+        objects=objects or [],
+        regions=regions or [],
+        trajectory_keypoints=[
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
+    )
 
 
 def _object(category, center=(10.0, 10.0), half_extents=(1.0, 1.0)):
@@ -35,7 +45,6 @@ def _relevant(spec):
         spec,
         instruction="Go to the target.",
         level_idx=0,
-        reference_path=[(0.0, 0.0)],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: (set(), set()),
     )

@@ -117,13 +117,13 @@ VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used 
 `SS-ETP-LLM` and `GRPO-ETP-LLM`. Pretraining cache ids are `instr_id`.
 
 Malformed output does not abort the cache run. The generator first tries strict
-parsing, then salvage parsing. Salvage parsing keeps valid `path`, `obj`, and
+parsing, then salvage parsing. Salvage parsing keeps valid `keypoints`, `obj`, and
 `reg` entities even when other semicolon- or newline-separated entities are invalid.
 Warnings are emitted per affected item, dropped entities are written to
 `failures.jsonl`, and rates are summarized in `metrics.json`.
 
-If the output omits `path`, the cache generator uses the prompt start position as a
-single-point fallback path. It does not fall back to the ground-truth reference path.
+If the output omits `keypoints`, the generator warns, records the failure, and
+refuses to create a cognitive-map cache for that entry. Other entries continue.
 
 ### Pretraining Cache
 

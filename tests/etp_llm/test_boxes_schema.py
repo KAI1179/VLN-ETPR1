@@ -26,6 +26,8 @@ def _empty_level():
         range_y=[None, None],
     )
 
+KEYPOINTS = ((0.0, 0.0), (1.2, 3.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+
 
 def test_build_llm_boxes_input_includes_metadata_but_not_scene_id():
     prompt = build_llm_boxes_input(
@@ -86,13 +88,13 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
                 max=(5.0, 6.0),
             )
         ],
-        reference_path=[(0.04, 0.06), (1.24, 2.96)],
+        trajectory_keypoints=KEYPOINTS,
     )
 
     text = spec_to_llm_boxes_text(spec)
 
     assert text == (
-        "path 0.0 0.1 1.2 3.0 ; "
+        "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
         "obj chair 1.0 2.0 0.5 0.5 0.0 ; "
         "obj table 3.0 4.1 0.5 0.7 0.25 ; "
         "reg living/social space 0.0 0.0 5.0 6.0"
@@ -103,7 +105,7 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
             ObjectBoxSpec("table", (3.0, 4.1), (0.5, 0.7), 0.25),
         ),
         regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),),
-        reference_path=((0.0, 0.1), (1.2, 3.0)),
+        trajectory_keypoints=KEYPOINTS,
     )
 
 
@@ -111,30 +113,44 @@ def test_spec_to_llm_boxes_text_serializes_empty_spec_as_none():
     text = spec_to_llm_boxes_text(LLMBoxesSpec(objects=[], regions=[]))
 
     assert text == "none"
-    assert parse_llm_boxes_text(text) == LLMBoxesSpec(objects=(), regions=())
+    with pytest.raises(
+        LLMBoxesValidationError, match="trajectory keypoints are required"
+    ):
+        parse_llm_boxes_text(text)
 
 
-def test_spec_to_llm_boxes_text_serializes_reference_path_without_boxes():
+def test_spec_to_llm_boxes_text_serializes_trajectory_keypoints_without_boxes():
     text = spec_to_llm_boxes_text(
-        LLMBoxesSpec(objects=[], regions=[], reference_path=[(0.0, 0.0), (1.2, 3.0)])
+        LLMBoxesSpec(objects=[], regions=[], trajectory_keypoints=KEYPOINTS)
     )
 
-    assert text == "path 0.0 0.0 1.2 3.0"
+    assert text == "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0"
     assert parse_llm_boxes_text(text) == LLMBoxesSpec(
         objects=(),
         regions=(),
-        reference_path=((0.0, 0.0), (1.2, 3.0)),
+        trajectory_keypoints=KEYPOINTS,
     )
 
 
 def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested():
-    text = "obj chair 1 2 0.5 0.5 0 ; reg circulation 0 0 5 6 ; obj table 3 4 0.5"
+    text = (
+        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
+        "obj chair 1 2 0.5 0.5 0 ; "
+        "reg circulation 0 0 5 6 ; obj table 3 4 0.5"
+    )
 
     parsed = parse_llm_boxes_text(text, allow_trailing_incomplete=True)
 
     assert parsed == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(RegionBoxSpec("circulation", (0.0, 0.0), (5.0, 6.0)),),
+        trajectory_keypoints=[
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
     )
     with pytest.raises(LLMBoxesValidationError, match="trailing incomplete entity"):
         parse_llm_boxes_text(text)
@@ -155,7 +171,7 @@ def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines()
     result = parse_llm_boxes_text_salvage(
         "\n".join(
             [
-                "path 0 0 1 1",
+                "keypoints 0 0 1 1 0 0 0 0 0 0",
                 "obj alien 1 2 0.5 0.5 0",
                 "obj chair 1 2 0.5 0.5 0",
                 "not parseable",
@@ -164,7 +180,13 @@ def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines()
         )
     )
 
-    assert result.spec.reference_path == ((0.0, 0.0), (1.0, 1.0))
+    assert result.spec.trajectory_keypoints == (
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    )
     assert result.spec.objects == (
         ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
     )
@@ -190,9 +212,10 @@ def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines()
         "reg circulation 0 0 0 1",
         "reg unknown 0 0 1 1",
         "reg circulation 0 0 1 1 1",
-        "path 0",
-        "path 0 0 1",
-        "path 0 0 ; path 1 1",
+        "path 0 0 1 1 0 0 0 0 0 0",
+        "keypoints 0",
+        "keypoints 0 0 1",
+        "keypoints 0 0 1 1 0 0 0 0 0 0 ; keypoints 1 1 0 0 0 0 0 0 0 0",
     ],
 )
 def test_parse_llm_boxes_text_rejects_invalid_predictions(text):
@@ -224,7 +247,8 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
         level_idx=0,
         level=level,
         instruction="Go to the chair in the living room.",
-        reference_path=[(0.0, 0.0)],
+        ground_truth_trajectory=[(0.0, 0.0)],
+        trajectory_keypoints=KEYPOINTS,
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -234,7 +258,7 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
     assert spec.regions == (
         RegionBoxSpec("living/social space", (0.0, 0.0), (5.0, 6.0)),
     )
-    assert spec.reference_path == ((0.0, 0.0),)
+    assert spec.trajectory_keypoints == KEYPOINTS
 
 
 def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions():
@@ -260,14 +284,19 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
                 max=(5.0, 6.0),
             )
         ],
-        reference_path=[(1.0, 1.0), (2.0, 3.0)],
+        trajectory_keypoints=[
+            (1.0, 1.0),
+            (2.0, 3.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
     )
 
     relevant = spec_to_relevant_semantic_boxes(
         spec,
         instruction="Walk to the chair.",
         level_idx=4,
-        reference_path=[(9.0, 8.0)],
         start_direction_vector=(1.0, 0.0),
         range_y=[0.0, 2.0],
         category_extractor=lambda instruction: ({1}, set()),
@@ -275,7 +304,13 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
 
     assert relevant.level_idx == 4
     assert relevant.instruction == "Walk to the chair."
-    assert relevant.reference_path == [(1.0, 1.0), (2.0, 3.0)]
+    assert relevant.trajectory_keypoints == [
+        (1.0, 1.0),
+        (2.0, 3.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
     assert relevant.start_direction_vector == (1.0, 0.0)
     assert relevant.level.range_y == [0.0, 2.0]
     assert relevant.level.objects[1] == [
@@ -290,17 +325,14 @@ def test_spec_to_relevant_semantic_boxes_indexes_categories_and_derives_mentions
     assert relevant.level.regions[1][0].mentioned is False
 
 
-def test_spec_to_relevant_semantic_boxes_rejects_scalar_reference_points():
-    spec = LLMBoxesSpec(objects=[], regions=[])
-    invalid_reference_path = cast(Any, [1.0])
+def test_llm_boxes_spec_rejects_scalar_trajectory_keypoints():
+    invalid_trajectory_keypoints = cast(Any, [1.0])
 
     with pytest.raises(LLMBoxesValidationError):
-        spec_to_relevant_semantic_boxes(
-            spec,
-            instruction="Go ahead.",
-            level_idx=0,
-            reference_path=invalid_reference_path,
-            start_direction_vector=(0.0, 1.0),
+        LLMBoxesSpec(
+            objects=[],
+            regions=[],
+            trajectory_keypoints=invalid_trajectory_keypoints,
         )
 
 
@@ -384,11 +416,15 @@ def test_llm_boxes_direction_and_rotation_follow_xz_convention():
             ),
         ),
         regions=(),
+        trajectory_keypoints=KEYPOINTS,
     )
 
     text = spec_to_llm_boxes_text(spec)
     parsed = parse_llm_boxes_text(text)
 
-    assert text == "obj chair 10.0 20.0 1.0 2.0 1.57"
+    assert text == (
+        "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
+        "obj chair 10.0 20.0 1.0 2.0 1.57"
+    )
     assert parsed.objects[0].rotation == 1.57
     assert parsed.objects[0].half_extents == (1.0, 2.0)

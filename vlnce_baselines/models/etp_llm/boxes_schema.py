@@ -45,15 +45,22 @@ class RegionBoxSpec:
 class LLMBoxesSpec:
     objects: Sequence[ObjectBoxSpec]
     regions: Sequence[RegionBoxSpec]
-    reference_path: Sequence[Point2D] = ()
+    trajectory_keypoints: Sequence[Point2D] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "objects", tuple(self.objects))
         object.__setattr__(self, "regions", tuple(self.regions))
+        keypoints = tuple(
+            _round_point(_point2(point)) for point in self.trajectory_keypoints
+        )
+        if keypoints and len(keypoints) != 5:
+            raise LLMBoxesValidationError(
+                "trajectory_keypoints must contain exactly five points"
+            )
         object.__setattr__(
             self,
-            "reference_path",
-            tuple(_round_point(_point2(point)) for point in self.reference_path),
+            "trajectory_keypoints",
+            keypoints,
         )
 
 
@@ -134,7 +141,10 @@ def relevant_semantic_boxes_to_spec(
     return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
-        reference_path=tuple(_round_point(_path_point(point)) for point in relevant.reference_path),
+        trajectory_keypoints=tuple(
+            _round_point(_trajectory_keypoint(point))
+            for point in relevant.trajectory_keypoints
+        ),
     )
 
 
@@ -174,7 +184,10 @@ def relevant_semantic_boxes_to_mentioned_spec(
     return LLMBoxesSpec(
         objects=tuple(sorted(objects, key=_object_sort_key)),
         regions=tuple(sorted(regions, key=_region_sort_key)),
-        reference_path=tuple(_round_point(_path_point(point)) for point in relevant.reference_path),
+        trajectory_keypoints=tuple(
+            _round_point(_trajectory_keypoint(point))
+            for point in relevant.trajectory_keypoints
+        ),
     )
 
 
@@ -182,7 +195,6 @@ def spec_to_relevant_semantic_boxes(
     spec: LLMBoxesSpec,
     instruction: str,
     level_idx: int,
-    reference_path: Sequence[Sequence[float]],
     start_direction_vector: Sequence[float],
     range_y: Optional[List[Optional[float]]] = None,
     category_extractor: Optional[CategoryExtractor] = None,
@@ -227,9 +239,9 @@ def spec_to_relevant_semantic_boxes(
         level_idx=int(level_idx),
         level=level,
         instruction=str(instruction),
-        reference_path=[
-            _path_point(point)
-            for point in (spec.reference_path if spec.reference_path else reference_path)
+        ground_truth_trajectory=[],
+        trajectory_keypoints=[
+            _trajectory_keypoint(point) for point in spec.trajectory_keypoints
         ],
         start_direction_vector=_point2(start_direction_vector),
     )
@@ -239,13 +251,13 @@ def spec_to_llm_boxes_text(spec: LLMBoxesSpec) -> str:
     """Serialize a spec in the compact LLM-friendly linear grammar."""
     normalized = _normalize_spec(spec)
     parts: List[str] = []
-    if normalized.reference_path:
-        path_numbers = [
+    if normalized.trajectory_keypoints:
+        keypoint_numbers = [
             str(coord)
-            for point in normalized.reference_path
+            for point in normalized.trajectory_keypoints
             for coord in (point[0], point[1])
         ]
-        parts.append(f"path {' '.join(path_numbers)}")
+        parts.append(f"keypoints {' '.join(keypoint_numbers)}")
     for item in normalized.objects:
         parts.append(
             f"obj {item.category} {item.center[0]} {item.center[1]} "
@@ -266,6 +278,8 @@ def parse_llm_boxes_text(
     result = parse_llm_boxes_text_partial(text)
     if result.dropped_text and not allow_trailing_incomplete:
         raise LLMBoxesValidationError("trailing incomplete entity")
+    if not result.spec.trajectory_keypoints:
+        raise LLMBoxesValidationError("trajectory keypoints are required")
     return result.spec
 
 
@@ -281,20 +295,20 @@ def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
 
     objects: List[ObjectBoxSpec] = []
     regions: List[RegionBoxSpec] = []
-    reference_path: List[Point2D] = []
+    trajectory_keypoints: List[Point2D] = []
     entities = [entity.strip() for entity in stripped.split(";")]
     for idx, entity in enumerate(entities):
         if not entity:
             continue
         try:
-            _parse_llm_boxes_entity(entity, idx, objects, regions, reference_path)
+            _parse_llm_boxes_entity(entity, idx, objects, regions, trajectory_keypoints)
         except _LLMBoxesIncompleteEntity:
             if idx == len(entities) - 1:
                 return LLMBoxesPartialParse(
                     spec=LLMBoxesSpec(
                         objects=tuple(objects),
                         regions=tuple(regions),
-                        reference_path=tuple(reference_path),
+                        trajectory_keypoints=tuple(trajectory_keypoints),
                     ),
                     dropped_text=entity,
                     dropped_entity_count=1,
@@ -304,7 +318,7 @@ def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
         spec=LLMBoxesSpec(
             objects=tuple(objects),
             regions=tuple(regions),
-            reference_path=tuple(reference_path),
+            trajectory_keypoints=tuple(trajectory_keypoints),
         ),
         dropped_text="",
         dropped_entity_count=0,
@@ -316,7 +330,7 @@ def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
 
     Generation-cache creation should warn and continue when one output line is
     malformed. This parser treats semicolons and line breaks as entity
-    boundaries, keeps valid ``path``, ``obj``, and ``reg`` entities, and records
+    boundaries, keeps valid ``keypoints``, ``obj``, and ``reg`` entities, and records
     every dropped entity for failure-rate accounting.
     """
     stripped = text.strip()
@@ -329,7 +343,7 @@ def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
 
     objects: List[ObjectBoxSpec] = []
     regions: List[RegionBoxSpec] = []
-    reference_path: List[Point2D] = []
+    trajectory_keypoints: List[Point2D] = []
     dropped_entities: List[str] = []
     errors: List[str] = []
     raw_entities = [
@@ -340,7 +354,7 @@ def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
     ]
     for idx, entity in enumerate(raw_entities):
         try:
-            _parse_llm_boxes_entity(entity, idx, objects, regions, reference_path)
+            _parse_llm_boxes_entity(entity, idx, objects, regions, trajectory_keypoints)
         except LLMBoxesValidationError as exc:
             dropped_entities.append(entity)
             errors.append(str(exc))
@@ -349,7 +363,7 @@ def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
         spec=LLMBoxesSpec(
             objects=tuple(objects),
             regions=tuple(regions),
-            reference_path=tuple(reference_path),
+            trajectory_keypoints=tuple(trajectory_keypoints),
         ),
         dropped_entities=tuple(dropped_entities),
         errors=tuple(errors),
@@ -370,7 +384,7 @@ def _normalize_spec(spec: LLMBoxesSpec) -> LLMBoxesSpec:
                 key=_region_sort_key,
             )
         ),
-        reference_path=tuple(_round_point(_point2(point)) for point in spec.reference_path),
+        trajectory_keypoints=tuple(_round_point(_point2(point)) for point in spec.trajectory_keypoints),
     )
 
 
@@ -448,20 +462,22 @@ def _parse_llm_boxes_entity(
     idx: int,
     objects: List[ObjectBoxSpec],
     regions: List[RegionBoxSpec],
-    reference_path: List[Point2D],
+    trajectory_keypoints: List[Point2D],
 ) -> None:
     parts = raw_entity.split()
     if not parts:
         raise LLMBoxesValidationError(f"entity[{idx}] must not be empty")
 
     entity_type = parts[0]
-    if entity_type == "path":
-        if reference_path:
-            raise LLMBoxesValidationError("reference path must be emitted once")
-        if len(parts) < 3 or len(parts[1:]) % 2 != 0:
-            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] path is incomplete")
+    if entity_type == "keypoints":
+        if trajectory_keypoints:
+            raise LLMBoxesValidationError("trajectory keypoints must be emitted once")
+        if len(parts[1:]) != 10:
+            raise _LLMBoxesIncompleteEntity(
+                f"entity[{idx}] keypoints must contain five x-z pairs"
+            )
         values = _parse_trailing_numbers(parts[1:], f"entity[{idx}]")
-        reference_path.extend(
+        trajectory_keypoints.extend(
             _round_point((values[pos], values[pos + 1]))
             for pos in range(0, len(values), 2)
         )
@@ -502,7 +518,9 @@ def _parse_llm_boxes_entity(
         regions.append(_normalize_region(item))
         return
 
-    raise LLMBoxesValidationError(f"entity[{idx}] must start with path, obj, or reg")
+    raise LLMBoxesValidationError(
+        f"entity[{idx}] must start with keypoints, obj, or reg"
+    )
 
 
 def _parse_trailing_numbers(
@@ -599,20 +617,20 @@ def _xz_point(value: Sequence[float], field_name: str) -> Point2D:
     raise LLMBoxesValidationError(f"{field_name} must contain two or three numbers")
 
 
-def _path_point(value: Sequence[float]) -> Point2D:
+def _trajectory_keypoint(value: Sequence[float]) -> Point2D:
     if not isinstance(value, (list, tuple)):
         raise LLMBoxesValidationError(
-            "reference_path points must contain two or three numbers"
+            "trajectory_keypoints points must contain two or three numbers"
         )
     if len(value) == 2:
         return _point2(value)
     if len(value) == 3:
         return (
-            _finite_number(value[0], "path[0]"),
-            _finite_number(value[2], "path[2]"),
+            _finite_number(value[0], "trajectory_keypoint[0]"),
+            _finite_number(value[2], "trajectory_keypoint[2]"),
         )
     raise LLMBoxesValidationError(
-        "reference_path points must contain two or three numbers"
+        "trajectory_keypoints points must contain two or three numbers"
     )
 
 

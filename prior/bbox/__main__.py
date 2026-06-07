@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 
@@ -9,6 +10,7 @@ from tap import Tap
 
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
 from prior.vlnce import VLNCEEpisodeEntry
+from prior.trajectory import InsufficientTrajectoryPointsError
 
 from . import (
     AABB2D,
@@ -17,6 +19,8 @@ from . import (
     RelevantSemanticBoxes,
     SceneSemanticBoxes,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class BoundingBoxArgs(Tap):
@@ -128,7 +132,7 @@ def _relevant_episode_boxes(
     scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
     relevant = scene_boxes.relevant_to(
         episode.instruction,
-        episode.reference_path,
+        episode.ground_truth_trajectory,
         episode.start_direction_vector,
     )
     return episode, relevant
@@ -152,11 +156,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.dataset is not None:
         if args.output is not None:
-            entry, relevant = _relevant_episode_boxes(args)
+            try:
+                entry, relevant = _relevant_episode_boxes(args)
+            except InsufficientTrajectoryPointsError as error:
+                LOGGER.warning(
+                    "skipping %s episode %s: %s",
+                    args.dataset,
+                    args.episode_id,
+                    error,
+                )
+                print("generated=0 skipped=1")
+                return
             print(
                 f"Level {relevant.level_idx} ({relevant.level.range_y}, scene {entry.scene_id})"
             )
             _export_relevant_json(relevant, args.output)
+            print("generated=1 skipped=0")
         else:
             _print_relevant_episode_boxes(args)
         return

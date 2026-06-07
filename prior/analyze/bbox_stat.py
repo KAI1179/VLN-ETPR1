@@ -73,7 +73,7 @@ def get_stats(dataset: Iterator[VLNCEEpisodeEntry], radius: int) -> DatasetStats
         scene_boxes = SceneSemanticBoxes.from_scene_id(entry.scene_id)
         relevant_boxes = scene_boxes.relevant_to(
             entry.instruction,
-            entry.reference_path,
+            entry.ground_truth_trajectory,
             entry.start_direction_vector,
             radius * CELL_SIZE,
         )

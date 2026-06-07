@@ -25,7 +25,8 @@ Each npz file contains:
 
 - `grid`: Grid data of dimension (OBJECT_CATEGORIES + REGION_CATEGORIES) x ROWS x COLS.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. Not useful for our job.
-- `reference_path`: Level-local waypoints along the selected level, as `[x, z]`.
+- `trajectory_keypoints`: Five level-local trajectory keypoints as `[x, z]`,
+  zero-padded when needed.
 - `start_direction_vector`: Direction vector of the start position.
 
 Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 3 cells around each waypoint.
@@ -54,10 +55,11 @@ Angles follow standard mathematical convention in visualization space, increasin
 
 Each json file contains:
 
-- `level_idx`: First reference-path level selected for the episode.
+- `level_idx`: First ground-truth-trajectory level selected for the episode.
 - `level`: Relevant boxes on that selected level.
 - `instruction`: Episode instruction text.
-- `reference_path`: Selected-level episode waypoints, in the format of `[x, z]`.
+- `ground_truth_trajectory`: Dense selected-level positions as `[x, z]`.
+- `trajectory_keypoints`: Five selected-level keypoints as `[x, z]`, zero-padded.
 - `start_direction_vector`: Direction vector of the start position, in the format of (cos, sin).
 
 The nested `level` object contains:

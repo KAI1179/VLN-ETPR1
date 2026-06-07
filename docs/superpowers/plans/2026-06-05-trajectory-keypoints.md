@@ -1,6 +1,6 @@
 # Trajectory Keypoints Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Rebuild the bbox-based cognitive-map pipeline around dense ground-truth trajectories for relevance and compact trajectory keypoints for all `(5, 2)` model metadata.
 
@@ -29,7 +29,7 @@
 - Modify: `prior/vlnce.py`
 - Test: `tests/test_vlnce.py`
 
-- [ ] **Step 1: Write failing VLN-CE loader tests**
+- [x] **Step 1: Write failing VLN-CE loader tests**
 
 Replace `test_vlnce_episode_entry_iter_from_uses_episode_reference_path_without_gt` with:
 
@@ -92,13 +92,13 @@ def test_vlnce_episode_entry_iter_from_fails_when_gt_missing(tmp_path, monkeypat
         list(vlnce.VLNCEEpisodeEntry.iter_from("R2R", splits=["train"]))
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `pytest tests/test_vlnce.py -q`
 
 Expected: tests fail because `ground_truth_trajectory` and GT file loading do not exist.
 
-- [ ] **Step 3: Implement VLN-CE loader contract**
+- [x] **Step 3: Implement VLN-CE loader contract**
 
 In `prior/vlnce.py`:
 
@@ -108,7 +108,7 @@ In `prior/vlnce.py`:
 - For each episode, require `gt_data[str(episode_id)]["locations"]`; missing key raises `ValueError(f"Missing ground-truth trajectory for {dataset} {split} episode {episode_id}")`.
 - Keep `unique_id` unchanged.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `pytest tests/test_vlnce.py -q`
 
@@ -120,7 +120,7 @@ Expected: pass.
 - Create: `prior/trajectory.py`
 - Test: `tests/test_trajectory.py`
 
-- [ ] **Step 1: Write failing trajectory helper tests**
+- [x] **Step 1: Write failing trajectory helper tests**
 
 Create `tests/test_trajectory.py`:
 
@@ -170,13 +170,13 @@ def test_keypoint_count_is_five():
     assert TRAJECTORY_KEYPOINT_COUNT == 5
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `pytest tests/test_trajectory.py -q`
 
 Expected: import failure for `prior.trajectory`.
 
-- [ ] **Step 3: Implement helper**
+- [x] **Step 3: Implement helper**
 
 Create `prior/trajectory.py` with:
 
@@ -235,7 +235,7 @@ def select_trajectory_keypoints(points: Sequence[Point2D]) -> list[Point2D]:
     return keypoints + [(0.0, 0.0)] * (TRAJECTORY_KEYPOINT_COUNT - len(keypoints))
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `pytest tests/test_trajectory.py -q`
 
@@ -248,7 +248,7 @@ Expected: pass.
 - Modify: `prior/bbox/_types.py`
 - Test: `tests/test_box_construct.py`
 
-- [ ] **Step 1: Write failing bbox contract tests**
+- [x] **Step 1: Write failing bbox contract tests**
 
 Update `test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level` expected fields:
 
@@ -292,13 +292,13 @@ def test_relevant_semantic_boxes_uses_dense_trajectory_for_relevance_and_keypoin
     assert relevant.trajectory_keypoints[:3] == [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0)]
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `pytest tests/test_box_construct.py -q`
 
 Expected: failures for keyword/name changes.
 
-- [ ] **Step 3: Implement bbox contract**
+- [x] **Step 3: Implement bbox contract**
 
 In `RelevantSemanticBoxes`, replace:
 
@@ -320,7 +320,7 @@ In `_relevance.py`:
 
 In `rotate_by_right_angle`, rotate both `ground_truth_trajectory` and `trajectory_keypoints`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -338,7 +338,7 @@ Expected: pass.
 - Test: `tests/test_grid_map_cache.py`
 - Test: `tests/test_vis_rotate.py`
 
-- [ ] **Step 1: Write failing cache tests**
+- [x] **Step 1: Write failing cache tests**
 
 In `tests/test_grid_map_cache.py`, rename fixtures/assertions:
 
@@ -372,7 +372,7 @@ assert torch.equal(tensors["trajectory_keypoints"][0], torch.tensor([2.0, 4.0]))
 assert "reference_paths" not in tensors
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run:
 
@@ -382,7 +382,7 @@ pytest tests/test_grid_map_cache.py tests/test_vis_rotate.py -q
 
 Expected: failures for missing `trajectory_keypoints`.
 
-- [ ] **Step 3: Implement cache/tensor rename**
+- [x] **Step 3: Implement cache/tensor rename**
 
 In `CognitiveGridMap`:
 
@@ -398,7 +398,7 @@ In `map_utils.py`:
 - Rename rotation code to rotate `trajectory_keypoints`.
 - `start_position` comes from first `trajectory_keypoints` point.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -416,7 +416,7 @@ Expected: pass.
 - Modify: `prior/etp_r1/__main__.py`
 - Test: `tests/test_bbox_cli.py`
 
-- [ ] **Step 1: Write failing generation behavior tests**
+- [x] **Step 1: Write failing generation behavior tests**
 
 Add a focused test around `prior.bbox.__main__._relevant_episode_boxes` using a monkeypatched entry with `ground_truth_trajectory=[[0.0, 0.0, 0.0]]`; assert `ValueError` message contains `at least 2 selected-level points`.
 
@@ -428,7 +428,7 @@ WARNING: skipping
 
 when helper raises that error.
 
-- [ ] **Step 2: Implement generation behavior**
+- [x] **Step 2: Implement generation behavior**
 
 In generation scripts:
 
@@ -438,7 +438,7 @@ In generation scripts:
 - At end, print summary counts `generated=N skipped=M`.
 - Keep training/cache loaders strict: no missing-cache fallback.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -463,7 +463,7 @@ Expected: pass.
 - Test: `tests/etp_imagined/test_*`
 - Test: `tests/test_cli_parsers.py`
 
-- [ ] **Step 1: Global search**
+- [x] **Step 1: Global search**
 
 Run:
 
@@ -473,7 +473,7 @@ rg -n "reference_paths|reference_path_loss|pred_reference_paths|target_reference
 
 Expected: list of names to replace where they refer to `(B,5,2)` metadata.
 
-- [ ] **Step 2: Rename map encoder API**
+- [x] **Step 2: Rename map encoder API**
 
 In `map_encoder.py`, rename:
 
@@ -483,7 +483,7 @@ In `map_encoder.py`, rename:
 
 Keep shape `(B, 5, 2)`.
 
-- [ ] **Step 3: Rename tensor keys and model loss names**
+- [x] **Step 3: Rename tensor keys and model loss names**
 
 Every batch/cache/model dict key that means `(B,5,2)` becomes `trajectory_keypoints`.
 
@@ -493,7 +493,7 @@ Rename CLI/config only if semantically tied to target:
 
 No alias CLI flag unless explicit user request.
 
-- [ ] **Step 4: Verify no metadata misuse remains**
+- [x] **Step 4: Verify no metadata misuse remains**
 
 Run:
 
@@ -503,7 +503,7 @@ rg -n "reference_paths|reference_path_loss|pred_reference_paths|target_reference
 
 Expected: no hits, except LLM text/history docs explicitly about old term removal.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -525,7 +525,7 @@ Expected: pass.
 - Test: `tests/etp_llm/test_train_llm_boxes.py`
 - Test: `tests/etp_llm/test_generate_navigation_cache.py`
 
-- [ ] **Step 1: Write failing LLM schema tests**
+- [x] **Step 1: Write failing LLM schema tests**
 
 Update tests to require:
 
@@ -534,7 +534,7 @@ Update tests to require:
 - parser rejects old `path` entity with validation error
 - `spec_to_relevant_semantic_boxes` accepts `trajectory_keypoints`
 
-- [ ] **Step 2: Implement LLM rename**
+- [x] **Step 2: Implement LLM rename**
 
 In LLM code:
 
@@ -543,7 +543,7 @@ In LLM code:
 - Prompt says: `Emit one keypoints entity first when trajectory keypoints are predicted.`
 - Artifacts use `trajectory_keypoints` field.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -563,7 +563,7 @@ Expected: pass.
 - Already modified: `CONTEXT.md`
 - Already added: `docs/adr/0008-use-trajectory-keypoints-for-map-metadata.md`
 
-- [ ] **Step 1: Update docs**
+- [x] **Step 1: Update docs**
 
 Replace old wording:
 
@@ -572,7 +572,7 @@ Replace old wording:
 - LLM `path` entity -> `keypoints`
 - Note: cache format changed; regenerate bbox-based cognitive-map caches.
 
-- [ ] **Step 2: Run global stale-name search**
+- [x] **Step 2: Run global stale-name search**
 
 Run:
 
@@ -582,7 +582,7 @@ rg -n "reference_path|reference_paths|path entity|direction_vectors" prior vlnce
 
 Expected: remaining hits only where `reference_path` truly means non-keypoint external path, or in historical ADR/commit notes. Remove all bbox/model-metadata misuse.
 
-- [ ] **Step 3: Run relevant tests**
+- [x] **Step 3: Run relevant tests**
 
 Run:
 
@@ -592,7 +592,7 @@ pytest tests/test_vlnce.py tests/test_trajectory.py tests/test_box_construct.py 
 
 Expected: pass.
 
-- [ ] **Step 4: Run formatting/lint if repo has configured commands**
+- [x] **Step 4: Run formatting/lint if repo has configured commands**
 
 Inspect `pyproject.toml`, `setup.cfg`, `ruff.toml`, and Makefile. Run configured formatter/linter/type checker. If none exists, state that no configured lint/type command exists.
 

@@ -7,6 +7,7 @@ import pytest
 
 from prior import bbox
 from prior.bbox import __main__ as bbox_main
+from prior.trajectory import InsufficientTrajectoryPointsError
 
 
 @dataclass
@@ -16,12 +17,15 @@ class FakeEpisode:
     scene_id: str = "17DRP5sb8fy"
     episode_id: int = 123
     instruction: str = "Walk to the table."
-    reference_path: Optional[list[list[float]]] = None
+    ground_truth_trajectory: Optional[list[list[float]]] = None
     start_direction_vector: tuple[float, float] = (0.0, 1.0)
 
     def __post_init__(self):
-        if self.reference_path is None:
-            self.reference_path = [[0.0, 5.0, 0.0]]
+        if self.ground_truth_trajectory is None:
+            self.ground_truth_trajectory = [
+                [0.0, 5.0, 0.0],
+                [1.0, 5.0, 0.0],
+            ]
 
 
 def test_find_episode_requires_split_for_duplicate_episode_ids(monkeypatch):
@@ -106,12 +110,19 @@ def test_relevant_episode_mode_prints_only_relevant_boxes(monkeypatch, capsys):
     monkeypatch.setattr(
         bbox.SceneSemanticBoxes,
         "relevant_to",
-        lambda self, instruction, reference_path, start_direction_vector: (
+        lambda self, instruction, ground_truth_trajectory, start_direction_vector: (
             bbox.RelevantSemanticBoxes(
                 level_idx=1,
                 level=relevant_boxes[1],
                 instruction=instruction,
-                reference_path=[(p[0], p[2]) for p in reference_path],
+                ground_truth_trajectory=[(p[0], p[2]) for p in ground_truth_trajectory],
+                trajectory_keypoints=[
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ],
                 start_direction_vector=start_direction_vector,
             )
         ),
@@ -171,12 +182,19 @@ def test_episode_mode_exports_relevant_boxes_as_single_json_file(
     monkeypatch.setattr(
         bbox.SceneSemanticBoxes,
         "relevant_to",
-        lambda self, instruction, reference_path, start_direction_vector: (
+        lambda self, instruction, ground_truth_trajectory, start_direction_vector: (
             bbox.RelevantSemanticBoxes(
                 level_idx=1,
                 level=relevant_levels[1],
                 instruction=instruction,
-                reference_path=[(p[0], p[2]) for p in reference_path],
+                ground_truth_trajectory=[(p[0], p[2]) for p in ground_truth_trajectory],
+                trajectory_keypoints=[
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ],
                 start_direction_vector=start_direction_vector,
             )
         ),
@@ -192,9 +210,64 @@ def test_episode_mode_exports_relevant_boxes_as_single_json_file(
         level_idx=1,
         level=relevant_levels[1],
         instruction="Walk to the table.",
-        reference_path=[(0.0, 0.0)],
+        ground_truth_trajectory=[(0.0, 0.0), (1.0, 0.0)],
+        trajectory_keypoints=[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
         start_direction_vector=(0.0, 1.0),
     )
     output = capsys.readouterr().out
     assert "Level 1" in output
     assert "Wrote relevant boxes JSON file" in output
+
+
+def test_relevant_episode_boxes_rejects_too_short_selected_level_trajectory(
+    monkeypatch,
+):
+    level = bbox.LevelSemanticBoxes(
+        objects=[[] for _ in range(bbox.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+    episode = FakeEpisode(ground_truth_trajectory=[[0.0, 0.0, 0.0]])
+    monkeypatch.setattr(
+        bbox_main,
+        "_find_episode",
+        lambda dataset, episode_id, split=None: episode,
+    )
+    monkeypatch.setattr(
+        bbox_main.SceneSemanticBoxes,
+        "from_scene_id",
+        staticmethod(lambda scene_id: bbox.SceneSemanticBoxes([level])),
+    )
+
+    args = bbox_main.parse_args(["--dataset", "r2r", "--episode-id", "123"])
+
+    with pytest.raises(ValueError, match="at least 2 selected-level points"):
+        bbox_main._relevant_episode_boxes(args)
+
+
+def test_episode_export_warns_and_skips_too_short_trajectory(
+    monkeypatch, tmp_path, caplog, capsys
+):
+    def reject(args):
+        raise InsufficientTrajectoryPointsError(
+            "ground_truth_trajectory must contain at least 2 "
+            "selected-level points for trajectory_keypoints"
+        )
+
+    monkeypatch.setattr(bbox_main, "_relevant_episode_boxes", reject)
+    output_path = tmp_path / "episode-boxes.json"
+
+    bbox_main.main(
+        ["--dataset", "r2r", "--episode-id", "123", "--output", str(output_path)]
+    )
+
+    assert not output_path.exists()
+    assert "WARNING" in caplog.text
+    assert "123" in caplog.text
+    assert "generated=0 skipped=1" in capsys.readouterr().out

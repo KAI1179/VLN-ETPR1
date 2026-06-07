@@ -296,7 +296,7 @@ class CognitiveGridMap(BaseGridMap):
     ) -> None:
         """Visualize the cognitive grid map using matplotlib.
         Creates separate visualizations for object and region categories, showing
-        the dominant category at each grid cell, along with the reference path.
+        the dominant category at each grid cell, along with trajectory keypoints.
 
         Args:
             save_path: Path to save the figure.

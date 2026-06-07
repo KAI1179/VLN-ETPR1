@@ -20,7 +20,7 @@
 
 - [x] Fix: cognitive grid map save, distinguish split (id in diff splits may collide). If prev todo handled, can be skipped.
 - [x] Reuse magnum where possible, instead of impl algos ourselves.
-- [x] Remove direction vectors. Replace with reference paths.
+- [x] Replace five direction vectors with trajectory keypoints.
 - [x] Reorganize module layout.
 - [x] SemanticBoxes final API
     - Remove `SceneSemanticBoxes.first_encountered_level`.
@@ -28,7 +28,8 @@
     - Remove id from bounding boxes.
     - Add class `RelevantSemanticBoxes`.
         - Returned by `SceneSemanticBoxes.relevant_to`.
-        - Basically just `LevelSemanticBoxes`, but has additional attr `reference_path`, `instruction` & `start_direction_vector`.
+        - Basically `LevelSemanticBoxes`, plus `ground_truth_trajectory`,
+          `trajectory_keypoints`, `instruction`, and `start_direction_vector`.
     - Overview
         - `SceneSemanticBoxes.from_scene_id` -> `SceneSemanticBoxes` (collection of `LevelSemanticBoxes`)
         - `SceneSemanticBoxes` -`relevant_to`-> `RelevantSemanticBoxes`

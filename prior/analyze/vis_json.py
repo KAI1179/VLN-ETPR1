@@ -1,7 +1,8 @@
 """Visualizes given JSON file. Supported formats:
 
 - Exported JSON (`RelevantSemanticBoxes.save_json`)
-- Flattened / imagined JSON (with fields `reference_path`, `objects` and `regions` only, fills in fabricated values for the rest)
+- Flattened / imagined JSON (with `trajectory_keypoints`, `objects`, and
+  `regions`; fills in fabricated values for the rest)
 """
 
 from pydantic import ValidationError
@@ -26,7 +27,8 @@ def reconstruct(data: dict) -> RelevantSemanticBoxes:
             "range_y": data.get("range_y") or [None, None],
         },
         "instruction": "Move down the stairs and then turn left. Move forward and then immediately turn left into the living room. Continue forward and stop in front of the piano. ",
-        "reference_path": data["reference_path"],
+        "ground_truth_trajectory": data.get("ground_truth_trajectory") or [],
+        "trajectory_keypoints": data["trajectory_keypoints"],
         "start_direction_vector": data.get("start_direction_vector") or [1, 0],
     }
     return RelevantSemanticBoxes.model_validate(fixed)

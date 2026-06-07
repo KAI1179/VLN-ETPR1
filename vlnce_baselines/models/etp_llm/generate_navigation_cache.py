@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from prior.bbox import SceneSemanticBoxes
+from prior.trajectory import InsufficientTrajectoryPointsError
 from prior.etp_r1 import (
     ANNOTATION_FILES as PRETRAIN_ANNOTATION_FILES,
     AnnotationEntry as PretrainAnnotationEntry,
@@ -101,21 +102,24 @@ def generate_navigation_cache(
     examples = 0
     strict_valid = 0
     salvaged = 0
-    missing_path = 0
-    fallback_empty = 0
+    missing_keypoints = 0
+    generated = 0
+    skipped = 0
     failure_records: List[Dict[str, Any]] = []
 
     with torch.no_grad():
         for batch in progress_loader:
             model_inputs = _model_batch(batch, args.device, include_labels=False)
-            generated = model.generate(
+            generated_sequences = model.generate(
                 **model_inputs,
                 max_new_tokens=args.max_new_tokens,
                 do_sample=False,
             )
             decoded = [
                 decode_generated_completion(tokenizer, sequence, prompt_length)
-                for sequence, prompt_length in zip(generated, batch["prompt_lengths"])
+                for sequence, prompt_length in zip(
+                    generated_sequences, batch["prompt_lengths"]
+                )
             ]
 
             for item, generated_text in zip(batch["items"], decoded):
@@ -164,34 +168,27 @@ def generate_navigation_cache(
                     )
                     _warn_navigation_cache_failure(item, "salvage_parse", error_text)
 
-                if not spec.reference_path:
-                    missing_path += 1
-                    spec = LLMBoxesSpec(
-                        objects=spec.objects,
-                        regions=spec.regions,
-                        reference_path=(tuple(item["start_position"]),),
-                    )
+                if not spec.trajectory_keypoints:
+                    missing_keypoints += 1
+                    skipped += 1
                     failure_records.append(
                         _navigation_cache_failure_record(
                             item,
-                            stage="missing_reference_path",
-                            error="using start-position fallback path",
+                            stage="missing_trajectory_keypoints",
+                            error="refusing to generate cache without trajectory keypoints",
                             prediction_path=prediction_path,
                         )
                     )
                     _warn_navigation_cache_failure(
                         item,
-                        "missing_reference_path",
-                        "using start-position fallback path",
+                        "missing_trajectory_keypoints",
+                        "refusing to generate cache without trajectory keypoints",
                     )
-
-                if (
-                    strict_spec is None
-                    and not spec.objects
-                    and not spec.regions
-                    and len(spec.reference_path) <= 1
-                ):
-                    fallback_empty += 1
+                    prediction_path.write_text(
+                        f"{generated_text.strip()}\n",
+                        encoding="utf-8",
+                    )
+                    continue
 
                 prediction_path.write_text(
                     f"{spec_to_llm_boxes_text(spec)}\n",
@@ -201,7 +198,6 @@ def generate_navigation_cache(
                     spec,
                     instruction=item["instruction"],
                     level_idx=item["level_idx"],
-                    reference_path=(item["start_position"],),
                     start_direction_vector=item["start_direction"],
                     range_y=item["target_relevant"].level.range_y,
                 )
@@ -215,23 +211,22 @@ def generate_navigation_cache(
                 )
                 cognitive_map_path.parent.mkdir(parents=True, exist_ok=True)
                 relevant.to_cognitive_map().save(cognitive_map_path)
+                generated += 1
 
     _write_jsonl(split_dir / "failures.jsonl", failure_records)
     metrics = {
         "examples": float(examples),
         "strict_valid": float(strict_valid),
         "salvaged": float(salvaged),
-        "missing_reference_path": float(missing_path),
-        "fallback_empty": float(fallback_empty),
+        "missing_trajectory_keypoints": float(missing_keypoints),
+        "generated": float(generated),
+        "skipped": float(skipped),
         "strict_parse_failure_rate": (
             float(examples - strict_valid) / float(examples) if examples else 0.0
         ),
         "salvage_rate": float(salvaged) / float(examples) if examples else 0.0,
-        "missing_reference_path_rate": (
-            float(missing_path) / float(examples) if examples else 0.0
-        ),
-        "fallback_empty_rate": (
-            float(fallback_empty) / float(examples) if examples else 0.0
+        "missing_trajectory_keypoints_rate": (
+            float(missing_keypoints) / float(examples) if examples else 0.0
         ),
     }
     (split_dir / "metrics.json").write_text(
@@ -261,13 +256,23 @@ def load_pretrain_cache_items(
         dataset_tag = _pretrain_dataset_tag(annotation_file)
         for entry in entries:
             positions = entry.positions()
-            target_relevant = SceneSemanticBoxes.from_scene_id(entry.scan).relevant_to(
-                entry.instruction,
-                positions,
-                entry.start_direction_vector,
-            )
+            try:
+                target_relevant = SceneSemanticBoxes.from_scene_id(
+                    entry.scan
+                ).relevant_to(
+                    entry.instruction,
+                    positions,
+                    entry.start_direction_vector,
+                )
+            except InsufficientTrajectoryPointsError as error:
+                warnings.warn(
+                    f"skipping {entry.instr_id}: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
             start_position = _level_local_start_position(
-                target_relevant.reference_path,
+                target_relevant.trajectory_keypoints,
                 positions[0],
             )
             target_spec = LLMBoxesSpec(objects=(), regions=())
@@ -286,7 +291,7 @@ def load_pretrain_cache_items(
                     "scene_id": entry.scan,
                     "instruction": entry.instruction,
                     "level_idx": target_relevant.level_idx,
-                    "reference_path": target_relevant.reference_path,
+                    "trajectory_keypoints": target_relevant.trajectory_keypoints,
                     "start_direction": entry.start_direction_vector,
                     "start_position": start_position,
                 }
@@ -310,6 +315,7 @@ def generate_all_navigation_caches(
                 (split,),
                 limit=args.limit,
                 quiet=args.quiet,
+                skip_invalid_trajectory=True,
             )
             metrics[f"{dataset_key.lower()}/{split}"] = generate_navigation_cache(
                 model,
@@ -388,11 +394,11 @@ def _pretrain_dataset_tag(annotation_file: str) -> str:
 
 
 def _level_local_start_position(
-    reference_path: Sequence[Sequence[float]],
+    trajectory_keypoints: Sequence[Sequence[float]],
     start_position: Sequence[float],
 ) -> Tuple[float, float]:
-    if reference_path:
-        return float(reference_path[0][0]), float(reference_path[0][1])
+    if trajectory_keypoints:
+        return float(trajectory_keypoints[0][0]), float(trajectory_keypoints[0][1])
     if len(start_position) >= 3:
         return float(start_position[0]), float(start_position[2])
     return float(start_position[0]), float(start_position[1])

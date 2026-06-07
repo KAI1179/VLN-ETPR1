@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import warnings
 from collections.abc import Sized
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import (
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
+from prior.trajectory import InsufficientTrajectoryPointsError
 from prior.vlnce import VLNCEEpisodeEntry
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
@@ -61,7 +63,7 @@ class LLMBoxesItem(TypedDict, total=False):
     target_relevant: bbox.RelevantSemanticBoxes
     instruction: str
     level_idx: int
-    reference_path: Sequence[Sequence[float]]
+    trajectory_keypoints: Sequence[Sequence[float]]
     start_direction: Sequence[float]
     start_position: Sequence[float]
     scene_id: str
@@ -77,7 +79,7 @@ class LLMBoxesExample:
     instruction: str
     start_position: Sequence[float]
     start_direction: Sequence[float]
-    reference_path: Sequence[Sequence[float]]
+    ground_truth_trajectory: Sequence[Sequence[float]]
     target_relevant: bbox.RelevantSemanticBoxes
     target_spec: LLMBoxesSpec = field(init=False)
 
@@ -92,6 +94,7 @@ def load_llm_boxes_examples(
     splits: Iterable[str],
     limit: Optional[int] = None,
     quiet: bool = False,
+    skip_invalid_trajectory: bool = False,
 ) -> List[LLMBoxesExample]:
     """Load VLN-CE episodes and attach target relevant semantic boxes."""
     if limit == 0:
@@ -107,11 +110,21 @@ def load_llm_boxes_examples(
     for episode in episodes:
         scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
 
-        target_relevant = scene_boxes.relevant_to(
-            episode.instruction,
-            episode.reference_path,
-            episode.start_direction_vector,
-        )
+        try:
+            target_relevant = scene_boxes.relevant_to(
+                episode.instruction,
+                episode.ground_truth_trajectory,
+                episode.start_direction_vector,
+            )
+        except InsufficientTrajectoryPointsError as error:
+            if not skip_invalid_trajectory:
+                raise
+            warnings.warn(
+                f"skipping {episode.unique_id}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
         examples.append(
             LLMBoxesExample(
                 example_id=episode.unique_id,
@@ -122,7 +135,7 @@ def load_llm_boxes_examples(
                 instruction=episode.instruction,
                 start_position=episode.start_position,
                 start_direction=episode.start_direction_vector,
-                reference_path=episode.reference_path,
+                ground_truth_trajectory=episode.ground_truth_trajectory,
                 target_relevant=target_relevant,
             )
         )
@@ -153,7 +166,7 @@ class LLMBoxesDataset(Dataset):
             "target_relevant": example.target_relevant,
             "instruction": example.instruction,
             "level_idx": example.target_relevant.level_idx,
-            "reference_path": example.target_relevant.reference_path,
+            "trajectory_keypoints": example.target_relevant.trajectory_keypoints,
             "start_direction": example.start_direction,
             "start_position": _level_local_start_position(example),
             "scene_id": example.scene_id,
@@ -448,6 +461,15 @@ def evaluate_model(
                     )
                     continue
 
+                if not pred_spec.trajectory_keypoints:
+                    write_prediction_artifact(
+                        _artifact_dir(args.output_dir),
+                        item["example_id"],
+                        invalid_text=generated_text,
+                        error=ValueError("trajectory keypoints are required"),
+                    )
+                    continue
+
                 partial_schema_valid_count += 1
                 try:
                     parse_llm_boxes_text(generated_text)
@@ -456,18 +478,17 @@ def evaluate_model(
                 else:
                     schema_valid_count += 1
 
-                write_prediction_artifact(
-                    _artifact_dir(args.output_dir),
-                    item["example_id"],
-                    valid_spec=pred_spec,
-                )
                 pred_relevant = spec_to_relevant_semantic_boxes(
                     pred_spec,
                     instruction=item["instruction"],
                     level_idx=item["level_idx"],
-                    reference_path=item["reference_path"],
                     start_direction_vector=item["start_direction"],
                     range_y=item["target_relevant"].level.range_y,
+                )
+                write_prediction_artifact(
+                    _artifact_dir(args.output_dir),
+                    item["example_id"],
+                    valid_spec=pred_spec,
                 )
                 metrics = evaluate_llm_boxes_prediction(
                     pred_spec,
@@ -785,8 +806,8 @@ def _supervised_token_counts(labels: Any) -> List[int]:
 
 
 def _level_local_start_position(example: LLMBoxesExample) -> Sequence[float]:
-    if example.target_relevant.reference_path:
-        return example.target_relevant.reference_path[0]
+    if example.target_relevant.trajectory_keypoints:
+        return example.target_relevant.trajectory_keypoints[0]
     return example.start_position
 
 
@@ -980,10 +1001,13 @@ def _entity_valid_stats(text: str) -> Tuple[float, int]:
 
 def _entity_is_valid(text: str) -> bool:
     try:
-        parse_llm_boxes_text(text)
+        result = parse_llm_boxes_text_partial(text)
     except Exception:
         return False
-    return True
+    return (
+        not result.dropped_text
+        and len(result.spec.objects) + len(result.spec.regions) == 1
+    )
 
 
 def _token_count(tokenizer: Any, text: str) -> int:

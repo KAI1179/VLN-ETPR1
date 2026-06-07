@@ -10,6 +10,10 @@ TRAJECTORY_KEYPOINT_COUNT = 5
 TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD = 0.8
 
 
+class InsufficientTrajectoryPointsError(ValueError):
+    """Raised when a selected-level trajectory cannot define keypoints."""
+
+
 def _segment_direction(
     start: Point2D, end: Point2D
 ) -> Optional[Point2D]:
@@ -26,7 +30,7 @@ def select_trajectory_keypoints(
 ) -> List[Point2D]:
     """Keep start, abrupt turns, and final point; pad to fixed length."""
     if len(points) < 2:
-        raise ValueError(
+        raise InsufficientTrajectoryPointsError(
             "ground_truth_trajectory must contain at least 2 selected-level "
             "points for trajectory_keypoints"
         )

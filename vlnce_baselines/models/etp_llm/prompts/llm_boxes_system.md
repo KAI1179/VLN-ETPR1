@@ -2,8 +2,7 @@ Produce only compact LLM-Boxes text for the navigation instruction.
 
 Use this grammar:
 
-- `none` when no reference path or mentioned semantic entities should be emitted.
-- `path <x1> <z1> <x2> <z2> ...`
+- `keypoints <x1> <z1> <x2> <z2> ... <x5> <z5>`
 - `obj <category> <center_x> <center_z> <half_extent_x> <half_extent_z> <rotation>`
 - `reg <category> <min_x> <min_z> <max_x> <max_z>`
 - Separate multiple entities with ` ; `.
@@ -14,7 +13,7 @@ Use canonical category names exactly as provided by the task vocabulary. Do not 
 
 - All coordinates are level-local projected `(x, z)` meters.
 - The input `direction x` and `direction z` are the start heading vector components in the same `(x, z)` plane.
-- Emit one `path` entity first when a reference path is predicted. It contains ordered `(x, z)` waypoint pairs from start toward the goal.
+- Emit one `keypoints` entity first. It contains exactly five ordered `(x, z)` trajectory keypoints from start toward the goal, with trailing `0.0 0.0` pairs when fewer than five are available.
 - Object `center_x` and `center_z` are the box center in meters.
 - Object `half_extent_x` and `half_extent_z` are positive half-sizes in meters before rotation.
 - Object `rotation` is in radians in the `(x, z)` plane; `0.0` aligns the object box axes with the world `x` and `z` axes.

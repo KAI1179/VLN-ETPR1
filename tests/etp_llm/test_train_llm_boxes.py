@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import prior.bbox as bbox
+from prior.trajectory import InsufficientTrajectoryPointsError
 from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
     RegionBoxSpec,
@@ -13,6 +14,8 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
     parse_llm_boxes_text,
 )
 from vlnce_baselines.models.etp_llm import train_llm_boxes
+
+KEYPOINTS = [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
 
 
 def _empty_relevant(instruction="Go to the chair."):
@@ -24,7 +27,8 @@ def _empty_relevant(instruction="Go to the chair."):
             range_y=[None, None],
         ),
         instruction=instruction,
-        reference_path=[(0.0, 0.0)],
+        ground_truth_trajectory=[(0.0, 0.0), (1.0, 1.0)],
+        trajectory_keypoints=KEYPOINTS,
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -51,7 +55,7 @@ class _Episode:
     instruction = "Go to the chair."
     start_position = [1.24, 0.0, 2.96]
     start_direction_vector = (0.0, 1.0)
-    reference_path = [[0.0, 0.0], [1.0, 1.0]]
+    ground_truth_trajectory = [[0.0, 0.0], [1.0, 1.0]]
 
 
 class _EpisodeSameSceneA(_Episode):
@@ -82,9 +86,9 @@ class _SceneBoxes:
         assert scene_id == "scene-a"
         return _SceneBoxes()
 
-    def relevant_to(self, instruction, reference_path, start_direction_vector):
+    def relevant_to(self, instruction, ground_truth_trajectory, start_direction_vector):
         assert instruction == "Go to the chair."
-        assert reference_path == [[0.0, 0.0], [1.0, 1.0]]
+        assert ground_truth_trajectory == [[0.0, 0.0], [1.0, 1.0]]
         assert start_direction_vector == (0.0, 1.0)
         return _relevant_with_chair(instruction)
 
@@ -106,7 +110,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     assert example.instruction == "Go to the chair."
     assert example.start_position == [1.24, 0.0, 2.96]
     assert example.start_direction == (0.0, 1.0)
-    assert example.reference_path == [[0.0, 0.0], [1.0, 1.0]]
+    assert example.ground_truth_trajectory == [[0.0, 0.0], [1.0, 1.0]]
     assert example.target_relevant.level.objects[1][0].center == (1.24, 2.96)
     assert example.target_spec.objects == (
         ObjectBoxSpec(
@@ -141,14 +145,14 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
         instruction="Go to the chair.",
         start_position=[0.0, 0.0],
         start_direction=(0.0, 1.0),
-        reference_path=[[0.0, 0.0]],
+        ground_truth_trajectory=[[0.0, 0.0], [1.0, 1.0]],
         target_relevant=relevant,
     )
 
     assert example.target_spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.2, 3.0), (0.5, 0.6), 0.25),),
         regions=(RegionBoxSpec("living/social space", (0.0, 0.0), (3.0, 4.0)),),
-        reference_path=((0.0, 0.0),),
+        trajectory_keypoints=KEYPOINTS,
     )
 
 
@@ -162,6 +166,32 @@ def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
 
     assert examples == []
     assert _SceneBoxes.calls == []
+
+
+def test_load_llm_boxes_examples_warns_and_skips_invalid_generation_entry(
+    monkeypatch,
+):
+    class RejectingSceneBoxes:
+        @staticmethod
+        def from_scene_id(scene_id):
+            return RejectingSceneBoxes()
+
+        def relevant_to(self, instruction, trajectory, start_direction):
+            raise InsufficientTrajectoryPointsError("too short")
+
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(
+        train_llm_boxes, "SceneSemanticBoxes", RejectingSceneBoxes
+    )
+
+    with pytest.warns(RuntimeWarning, match="R2R_train_42"):
+        examples = train_llm_boxes.load_llm_boxes_examples(
+            "R2R",
+            ["train"],
+            skip_invalid_trajectory=True,
+        )
+
+    assert examples == []
 
 
 def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
@@ -235,7 +265,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         instruction="Walk into the living room.",
         start_position=[3.0, 4.0],
         start_direction=(1.0, 0.0),
-        reference_path=[[0.0, 0.0]],
+        ground_truth_trajectory=[[0.0, 0.0], [1.0, 1.0]],
         target_relevant=_relevant_with_chair("Walk into the living room."),
     )
 
@@ -247,7 +277,10 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         "direction x = 1.0 | direction z = 0.0 | "
         "instruction Walk into the living room."
     )
-    assert item["target_text"] == "path 0.0 0.0 ; obj chair 1.2 3.0 0.5 0.6 0.25"
+    assert item["target_text"] == (
+        "keypoints 0.0 0.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
+        "obj chair 1.2 3.0 0.5 0.6 0.25"
+    )
     assert parse_llm_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
@@ -258,7 +291,13 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
 
 def test_llm_boxes_dataset_item_uses_level_local_start_position():
     target_relevant = _relevant_with_chair("Walk into the living room.")
-    target_relevant.reference_path = [(1.24, 2.96), (2.0, 4.0)]
+    target_relevant.trajectory_keypoints = [
+        (1.24, 2.96),
+        (2.0, 4.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
     example = train_llm_boxes.LLMBoxesExample(
         example_id="R2R_train_offset",
         dataset_tag="R2R",
@@ -268,7 +307,10 @@ def test_llm_boxes_dataset_item_uses_level_local_start_position():
         instruction="Walk into the living room.",
         start_position=[101.24, 0.0, 202.96],
         start_direction=(1.0, 0.0),
-        reference_path=[[101.24, 0.0, 202.96], [102.0, 0.0, 204.0]],
+        ground_truth_trajectory=[
+            [101.24, 0.0, 202.96],
+            [102.0, 0.0, 204.0],
+        ],
         target_relevant=target_relevant,
     )
 
@@ -465,7 +507,7 @@ class _EvalDataset:
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
         yield {
@@ -475,7 +517,7 @@ class _EvalDataset:
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
         yield {
@@ -485,7 +527,7 @@ class _EvalDataset:
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
         yield {
@@ -495,7 +537,7 @@ class _EvalDataset:
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
         yield {
@@ -505,7 +547,7 @@ class _EvalDataset:
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
 
@@ -514,7 +556,8 @@ class _EvalTokenizer(_ChatTokenizer):
     def __init__(self):
         super().__init__()
         self._decoded = [
-            "obj chair 1 2 0.5 0.5 0",
+            "keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0",
+            "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
             "obj chair 1 2 0.5 0.5 0 ; obj alien 1 2 0.5 0.5 0",
             "not parseable",
             "none",
@@ -575,7 +618,7 @@ def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
             "target_relevant": target,
             "instruction": "Go.",
             "level_idx": 0,
-            "reference_path": [(0.0, 0.0)],
+            "trajectory_keypoints": [(0.0, 0.0)],
             "start_direction": (0.0, 1.0),
         }
     ]
@@ -677,10 +720,10 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     )
 
     assert metrics["examples"] == 5
-    assert metrics["format_parse_rate"] == pytest.approx(2 / 5)
-    assert metrics["schema_valid_rate"] == pytest.approx(2 / 5)
-    assert metrics["partial_schema_valid_rate"] == pytest.approx(2 / 5)
-    assert metrics["entity_valid_rate"] == pytest.approx(0.5)
+    assert metrics["format_parse_rate"] == pytest.approx(1 / 5)
+    assert metrics["schema_valid_rate"] == pytest.approx(1 / 5)
+    assert metrics["partial_schema_valid_rate"] == pytest.approx(1 / 5)
+    assert metrics["entity_valid_rate"] == pytest.approx(0.3)
     assert metrics["entity_valid_support_mean"] == pytest.approx(0.8)
     assert metrics["category_f1"] == pytest.approx(1 / 5)
     assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
@@ -696,14 +739,17 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     array_artifact = (artifact_dir / "json_array_example.txt").read_text()
     string_artifact = (artifact_dir / "json_string_example.txt").read_text()
     assert not (tmp_path / "valid_example.txt").exists()
-    assert valid_artifact.startswith("obj chair")
+    assert valid_artifact.startswith("keypoints ")
     assert valid_artifact.endswith("\n")
-    assert invalid_schema_artifact.startswith("obj chair")
+    assert invalid_schema_artifact.startswith("keypoints ")
     assert "# error: unknown object category" in invalid_schema_artifact
     assert malformed_artifact == (
-        "not parseable\n\n# error: entity[0] must start with path, obj, or reg\n"
+        "not parseable\n\n"
+        "# error: entity[0] must start with keypoints, obj, or reg\n"
     )
-    assert array_artifact == "none\n"
+    assert array_artifact == (
+        "none\n\n# error: trajectory keypoints are required\n"
+    )
     assert string_artifact.startswith("reg circulation")
     assert "# error: region.max must be greater than min" in string_artifact
 
@@ -789,6 +835,7 @@ def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
 
 def test_truncate_llm_boxes_text_preserves_complete_entities():
     text = (
+        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
         "obj chair 1 2 0.5 0.5 0 ; "
         "obj table 3 4 0.5 0.5 0 ; "
         "reg circulation 0 0 5 6"
@@ -797,13 +844,16 @@ def test_truncate_llm_boxes_text_preserves_complete_entities():
     truncated = train_llm_boxes.truncate_llm_boxes_text_at_entity_boundary(
         text,
         _ChatTokenizer(),
-        max_tokens=13,
+        max_tokens=19,
     )
 
-    assert truncated == "obj chair 1 2 0.5 0.5 0"
+    assert truncated == (
+        "keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0"
+    )
     assert parse_llm_boxes_text(truncated) == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(),
+        trajectory_keypoints=KEYPOINTS,
     )
 
 

@@ -9,6 +9,8 @@ from vlnce_baselines.models.etp_llm import generate_navigation_cache
 from vlnce_baselines.models.etp_llm.boxes_schema import LLMBoxesSpec
 from vlnce_baselines.models.etp_llm.train_llm_boxes import LLMBoxesItem
 
+KEYPOINTS = [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
+
 
 def _empty_relevant(instruction="Go to the chair."):
     return bbox.RelevantSemanticBoxes(
@@ -19,7 +21,8 @@ def _empty_relevant(instruction="Go to the chair."):
             range_y=[None, None],
         ),
         instruction=instruction,
-        reference_path=[(0.0, 0.0)],
+        ground_truth_trajectory=[(0.0, 0.0), (1.0, 1.0)],
+        trajectory_keypoints=KEYPOINTS,
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -108,12 +111,18 @@ class _SceneBoxes:
         _SceneBoxes.calls.append(scene_id)
         return _SceneBoxes()
 
-    def relevant_to(self, instruction, reference_path, start_direction_vector):
+    def relevant_to(self, instruction, ground_truth_trajectory, start_direction_vector):
         assert instruction == "Find the chair."
-        assert reference_path == [[1.24, 0.0, 2.96], [2.0, 0.0, 4.0]]
+        assert ground_truth_trajectory == [[1.24, 0.0, 2.96], [2.0, 0.0, 4.0]]
         assert start_direction_vector == (0.0, 1.0)
         relevant = _empty_relevant(instruction)
-        relevant.reference_path = [(1.2, 3.0), (2.0, 4.0)]
+        relevant.trajectory_keypoints = [
+            (1.2, 3.0),
+            (2.0, 4.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ]
         return relevant
 
 
@@ -129,7 +138,7 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
             "target_relevant": target,
             "instruction": "Find the chair.",
             "level_idx": 0,
-            "reference_path": [(99.0, 99.0)],
+            "trajectory_keypoints": KEYPOINTS,
             "start_direction": (0.0, 1.0),
             "start_position": (0.0, 0.0),
         }
@@ -146,7 +155,8 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
         system_prompt="system prompt",
     )
     model = _CacheGenerationModel(
-        "path 0 0 1 1 ; obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0"
+        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
+        "obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0"
     )
 
     with pytest.warns(RuntimeWarning):
@@ -166,7 +176,8 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     assert metrics["strict_parse_failure_rate"] == 1.0
     assert metrics["salvage_rate"] == 1.0
     assert prediction_path.read_text() == (
-        "path 0.0 0.0 1.0 1.0 ; obj chair 1.0 2.0 0.5 0.5 0.0\n"
+        "keypoints 0.0 0.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
+        "obj chair 1.0 2.0 0.5 0.5 0.0\n"
     )
     assert map_path.exists()
     assert (split_dir / "failures.jsonl").read_text()
