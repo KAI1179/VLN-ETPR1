@@ -338,6 +338,10 @@ def generate_all_navigation_caches(
     return metrics
 
 
+def _skipped_cache_count(metrics: Dict[str, Dict[str, float]]) -> int:
+    return int(sum(split_metrics.get("skipped", 0.0) for split_metrics in metrics.values()))
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -379,7 +383,12 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, Dict[str, float]]:
         args.model_name_or_path,
         device_map=_normalize_device_map(args.device_map),
     )
-    return generate_all_navigation_caches(model, tokenizer, args)
+    metrics = generate_all_navigation_caches(model, tokenizer, args)
+    skipped = _skipped_cache_count(metrics)
+    print(f"skipped={skipped}")
+    if skipped:
+        raise SystemExit(1)
+    return metrics
 
 
 def _pretrain_dataset_tag(annotation_file: str) -> str:

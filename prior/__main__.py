@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Tuple
 
 from prior import DATA_DIR
 from prior.bbox import SceneSemanticBoxes
@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 def generate_cognitive_maps(
     entries: Iterable[VLNCEEpisodeEntry],
     output_dir: Path = OUTPUT_DIR,
-) -> None:
+) -> Tuple[int, int]:
     data = list(entries)
     output_dir.mkdir(parents=True, exist_ok=True)
     generated = 0
@@ -64,15 +64,18 @@ def generate_cognitive_maps(
         )
 
     print(f"generated={generated} skipped={skipped}")
+    return generated, skipped
 
 
 def main() -> None:
-    generate_cognitive_maps(
+    generated, skipped = generate_cognitive_maps(
         [
             *VLNCEEpisodeEntry.iter_from("R2R", splits=DEFAULT_SPLITS),
             *VLNCEEpisodeEntry.iter_from("RxR", splits=DEFAULT_SPLITS),
         ]
     )
+    if skipped:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

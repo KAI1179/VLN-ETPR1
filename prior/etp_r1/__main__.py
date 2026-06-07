@@ -96,6 +96,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         skipped += file_skipped
 
     print(f"generated={generated} skipped={skipped}")
+    if skipped:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

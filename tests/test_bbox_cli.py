@@ -263,10 +263,12 @@ def test_episode_export_warns_and_skips_too_short_trajectory(
     monkeypatch.setattr(bbox_main, "_relevant_episode_boxes", reject)
     output_path = tmp_path / "episode-boxes.json"
 
-    bbox_main.main(
-        ["--dataset", "r2r", "--episode-id", "123", "--output", str(output_path)]
-    )
+    with pytest.raises(SystemExit) as exc_info:
+        bbox_main.main(
+            ["--dataset", "r2r", "--episode-id", "123", "--output", str(output_path)]
+        )
 
+    assert exc_info.value.code == 1
     assert not output_path.exists()
     assert "WARNING" in caplog.text
     assert "123" in caplog.text

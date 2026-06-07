@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, List
 
+import pytest
+
 from prior import __main__ as prior_main
 from prior.etp_r1 import __main__ as etp_r1_main
 from prior.trajectory import InsufficientTrajectoryPointsError
@@ -71,12 +73,13 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     FakeCognitiveMap.saved_paths.clear()
     monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
 
-    prior_main.generate_cognitive_maps(entries, tmp_path)
+    generated, skipped = prior_main.generate_cognitive_maps(entries, tmp_path)
 
     assert received_trajectories == [
         [[0.0, 0.0, 0.0]],
         [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
     ]
+    assert (generated, skipped) == (1, 1)
     assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "R2R_train_2.npz"]
     assert "WARNING" in caplog.text
     assert "R2R_train_1" in caplog.text
@@ -135,12 +138,14 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
     monkeypatch.setattr(etp_r1_main, "SceneSemanticBoxes", FakeSceneBoxes)
     monkeypatch.setattr(etp_r1_main, "OUTPUT_DIR", tmp_path)
 
-    etp_r1_main.main([])
+    with pytest.raises(SystemExit) as exc_info:
+        etp_r1_main.main([])
 
     assert received_trajectories == [
         [[0.0, 0.0, 0.0]],
         [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
     ]
+    assert exc_info.value.code == 1
     assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "good.npz"]
     assert "WARNING" in caplog.text
     assert "bad" in caplog.text

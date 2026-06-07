@@ -166,7 +166,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     error,
                 )
                 print("generated=0 skipped=1")
-                return
+                raise SystemExit(1)
             print(
                 f"Level {relevant.level_idx} ({relevant.level.range_y}, scene {entry.scene_id})"
             )

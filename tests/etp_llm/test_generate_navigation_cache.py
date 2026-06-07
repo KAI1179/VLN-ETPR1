@@ -247,3 +247,13 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
         generate_navigation_cache.parse_args(
             ["--annotation-file", "R2R_Prevalent_enc_xlmr.jsonl"]
         )
+
+
+def test_skipped_cache_count_sums_split_metrics():
+    assert generate_navigation_cache._skipped_cache_count(
+        {
+            "r2r/train": {"skipped": 1.0},
+            "rxr/train": {"skipped": 2.0},
+            "pretrain/mixed": {"generated": 3.0},
+        }
+    ) == 3
