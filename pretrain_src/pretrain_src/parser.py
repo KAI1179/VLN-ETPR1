@@ -8,7 +8,7 @@ def load_parser():
 
     # Required parameters
     # NOTE: train tasks and val tasks cannot take command line arguments
-    parser.add_argument('--vlnbert', choices=['cmt'])
+    parser.add_argument("--vlnbert", choices=["cmt"])
     parser.add_argument(
         "--model_config", type=str, help="path to model structure config json"
     )
@@ -24,10 +24,25 @@ def load_parser():
     )
 
     # Cognitive map arguments
-    parser.add_argument("--use_prior_gt", action="store_true", help="Enable cognitive map encoder")
-    parser.add_argument("--use_imagined", action="store_true", help="Enable instruction-imagined cognitive map predictor")
-    parser.add_argument("--use_llm", action="store_true", help="Enable LLM-derived cognitive map scaffold")
-    parser.add_argument("--map_loss_weight", default=0.1, type=float, help="Auxiliary imagined-map loss weight")
+    parser.add_argument(
+        "--use_prior_gt", action="store_true", help="Enable cognitive map encoder"
+    )
+    parser.add_argument(
+        "--use_imagined",
+        action="store_true",
+        help="Enable instruction-imagined cognitive map predictor",
+    )
+    parser.add_argument(
+        "--use_llm",
+        action="store_true",
+        help="Enable LLM-derived cognitive map scaffold",
+    )
+    parser.add_argument(
+        "--map_loss_weight",
+        default=0.1,
+        type=float,
+        help="Auxiliary imagined-map loss weight",
+    )
     parser.add_argument(
         "--trajectory_keypoint_loss_weight",
         default=0.001,
@@ -104,7 +119,7 @@ def load_parser():
         "--warmup_steps",
         default=10000,
         type=int,
-        help="Number of training steps to perform linear " "learning rate warmup for.",
+        help="Number of training steps to perform linear learning rate warmup for.",
     )
 
     # device parameters
@@ -123,6 +138,7 @@ def load_parser():
 
     # distributed computing
     parser.add_argument(
+        "--local-rank",
         "--local_rank",
         type=int,
         default=-1,
@@ -166,6 +182,8 @@ def parse_with_config(parser):
         if getattr(args, name, False)
     ]
     if len(map_modes) > 1:
-        raise ValueError("--use_prior_gt, --use_imagined, and --use_llm are mutually exclusive")
+        raise ValueError(
+            "--use_prior_gt, --use_imagined, and --use_llm are mutually exclusive"
+        )
     print("args:\n", args)
     return args
