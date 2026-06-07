@@ -198,6 +198,48 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     assert relevant.level.regions[7][0].mentioned is False
 
 
+def test_scene_semantic_boxes_skips_one_point_level_for_keypoints():
+    first_level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[0.0, 1.0],
+    )
+    first_level.objects[3] = [
+        box.OBB2D(center=(0.0, 0.0), half_extents=(1.0, 1.0))
+    ]
+    second_level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[1.0, 2.0],
+    )
+    second_level.objects[3] = [
+        box.OBB2D(center=(2.0, 0.0), half_extents=(1.0, 1.0))
+    ]
+
+    relevant = box.SceneSemanticBoxes([first_level, second_level]).relevant_to(
+        "walk to the table",
+        ground_truth_trajectory=[
+            [0.0, 0.5, 0.0],
+            [2.0, 1.5, 0.0],
+            [3.0, 1.5, 0.0],
+        ],
+        start_direction_vector=(0.0, 1.0),
+        max_distance=1.5,
+        category_extractor=lambda instruction: ({3}, set()),
+    )
+
+    assert relevant.level_idx == 1
+    assert relevant.ground_truth_trajectory == [(2.0, 0.0), (3.0, 0.0)]
+    assert relevant.trajectory_keypoints == [
+        (2.0, 0.0),
+        (3.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
+    assert [obb.center for obb in relevant.level.objects[3]] == [(2.0, 0.0)]
+
+
 def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     tmp_path, monkeypatch
 ):
