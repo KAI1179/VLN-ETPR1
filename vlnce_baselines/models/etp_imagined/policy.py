@@ -17,6 +17,7 @@ from vlnce_baselines.models.etp_prior_gt.policy import ETP_PriorGT
 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
 )
+from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 from vlnce_baselines.models.policy import ILPolicy
 
 
@@ -55,11 +56,13 @@ def _load_optional_module_checkpoint(module, module_name, checkpoint_path):
         )
     if not module_state_dict:
         return False
-    incompatible = module.load_state_dict(module_state_dict, strict=False)
-    print(
-        f"  Loaded {module_name} weights from {checkpoint_path} "
-        f"(missing={len(incompatible.missing_keys)}, unexpected={len(incompatible.unexpected_keys)})"
+    load_complete_state_dict(
+        module,
+        module_state_dict,
+        checkpoint_path,
+        module_name,
     )
+    print(f"  Loaded {module_name} weights from {checkpoint_path}")
     return True
 
 
@@ -120,7 +123,7 @@ class ETP_Imagined(ETP_PriorGT):
         self._load_map_module_weights(model_config)
         print(
             f"  Imagined map predictor enabled: text + start pose -> "
-            f"({NUM_MAP_CATEGORIES}, {SIZE}, {SIZE}) + reference path"
+            f"({NUM_MAP_CATEGORIES}, {SIZE}, {SIZE}) + trajectory keypoints"
         )
 
     def _load_map_module_weights(self, model_config):
@@ -189,7 +192,7 @@ class ETP_Imagined(ETP_PriorGT):
         start_direction_vectors=None,
         start_positions=None,
     ):
-        map_logits, reference_paths = self.forward_predict_cognitive_map(
+        map_logits, trajectory_keypoints = self.forward_predict_cognitive_map(
             txt_embeds,
             txt_masks,
             start_direction_vectors=start_direction_vectors,
@@ -204,8 +207,8 @@ class ETP_Imagined(ETP_PriorGT):
         map_tokens, map_token_masks = self.forward(
             mode="map_encoding",
             cognitive_crops=map_probs,
-            reference_paths=reference_paths,
+            trajectory_keypoints=trajectory_keypoints,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
-        return map_logits, reference_paths, map_tokens, map_token_masks
+        return map_logits, trajectory_keypoints, map_tokens, map_token_masks

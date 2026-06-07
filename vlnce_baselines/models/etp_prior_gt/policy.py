@@ -178,7 +178,7 @@ class ETP_PriorGT(Net):
         gmap_pair_dists=None,
         gmap_task_embeddings=None,
         cognitive_crops=None,
-        reference_paths=None,
+        trajectory_keypoints=None,
         start_direction_vectors=None,
         start_positions=None,
         map_tokens=None,
@@ -364,7 +364,7 @@ class ETP_PriorGT(Net):
             )
             return self.map_encoder(
                 cognitive_crops,
-                reference_paths,
+                trajectory_keypoints,
                 start_direction_vectors,
                 start_positions,
             )

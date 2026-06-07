@@ -78,11 +78,13 @@ def test_map_encoder_returns_101_tokens_and_mask(monkeypatch):
     grid = torch.randn(
         batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE
     )
-    reference_paths = torch.randn(batch_size, map_utils.REFERENCE_PATH_LENGTH, 2)
+    trajectory_keypoints = torch.randn(
+        batch_size, map_utils.TRAJECTORY_KEYPOINT_COUNT, 2
+    )
     start_directions = torch.randn(batch_size, 2)
     starts = torch.randn(batch_size, 2)
 
-    result = encoder(grid, reference_paths, start_directions, starts)
+    result = encoder(grid, trajectory_keypoints, start_directions, starts)
 
     assert isinstance(result, tuple)
     assert len(result) == 2
@@ -100,12 +102,14 @@ def test_map_encoder_emits_finite_tokens_for_empty_map_metadata(monkeypatch):
     grid = torch.zeros(
         batch_size, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE
     )
-    reference_paths = torch.zeros(batch_size, map_utils.REFERENCE_PATH_LENGTH, 2)
+    trajectory_keypoints = torch.zeros(
+        batch_size, map_utils.TRAJECTORY_KEYPOINT_COUNT, 2
+    )
     start_directions = torch.zeros(batch_size, 2)
     starts = torch.zeros(batch_size, 2)
 
     map_tokens, map_token_masks = encoder(
-        grid, reference_paths, start_directions, starts
+        grid, trajectory_keypoints, start_directions, starts
     )
 
     assert map_tokens.shape == (batch_size, 101, 768)
@@ -121,12 +125,12 @@ def test_map_encoder_rejects_bad_grid_shape(monkeypatch):
     bad_grid = torch.randn(
         2, map_utils.NUM_MAP_CATEGORIES - 1, map_utils.SIZE, map_utils.SIZE
     )
-    reference_paths = torch.randn(2, map_utils.REFERENCE_PATH_LENGTH, 2)
+    trajectory_keypoints = torch.randn(2, map_utils.TRAJECTORY_KEYPOINT_COUNT, 2)
     start_directions = torch.randn(2, 2)
     starts = torch.randn(2, 2)
 
     try:
-        encoder(bad_grid, reference_paths, start_directions, starts)
+        encoder(bad_grid, trajectory_keypoints, start_directions, starts)
     except ValueError as exc:
         assert "cognitive_crop" in str(exc)
     else:
@@ -137,12 +141,12 @@ def test_map_encoder_rejects_bad_start_direction_shape(monkeypatch):
     map_utils, map_encoder = _load_priorgt_modules(monkeypatch)
     encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
     grid = torch.randn(2, map_utils.NUM_MAP_CATEGORIES, map_utils.SIZE, map_utils.SIZE)
-    reference_paths = torch.randn(2, map_utils.REFERENCE_PATH_LENGTH, 2)
+    trajectory_keypoints = torch.randn(2, map_utils.TRAJECTORY_KEYPOINT_COUNT, 2)
     bad_start_directions = torch.randn(2, 3)
     starts = torch.randn(2, 2)
 
     try:
-        encoder(grid, reference_paths, bad_start_directions, starts)
+        encoder(grid, trajectory_keypoints, bad_start_directions, starts)
     except ValueError as exc:
         assert "start_direction_vectors" in str(exc)
     else:

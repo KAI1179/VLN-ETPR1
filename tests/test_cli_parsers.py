@@ -65,7 +65,7 @@ def test_train_map_predictor_parser_returns_typed_args():
             "7.5",
             "--focal-gamma",
             "1.5",
-            "--reference-path-loss-weight",
+            "--trajectory-keypoint-loss-weight",
             "0.25",
             "--init-positive-prob",
             "0.01",
@@ -103,7 +103,7 @@ def test_train_map_predictor_parser_returns_typed_args():
     assert args.loss == "focal"
     assert args.max_pos_weight == 7.5
     assert args.focal_gamma == 1.5
-    assert args.reference_path_loss_weight == 0.25
+    assert args.trajectory_keypoint_loss_weight == 0.25
     assert args.init_positive_prob == 0.01
     assert args.thresholds == "0.1,0.2"
     assert args.max_text_len == 16
@@ -128,7 +128,7 @@ def test_train_map_predictor_parser_preserves_defaults():
     assert args.batch_size == 8
     assert args.max_pos_weight == 20.0
     assert args.focal_gamma == 2.0
-    assert args.reference_path_loss_weight == 0.001
+    assert args.trajectory_keypoint_loss_weight == 0.001
     assert args.init_positive_prob == 0.002
     assert args.max_text_len is None
     assert args.num_workers == 2
@@ -216,7 +216,7 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         captured["random_rotation_augmentation"] = random_rotation_augmentation
         return {
             "grid": "loaded-grid",
-            "reference_paths": "reference_paths",
+            "trajectory_keypoints": "trajectory_keypoints",
             "start_direction_vector": "direction",
             "start_position": "position",
         }
@@ -246,7 +246,7 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     }
     assert outputs == {
         "cognitive_maps": "loaded-grid",
-        "reference_paths": "reference_paths",
+        "trajectory_keypoints": "trajectory_keypoints",
         "start_direction_vectors": "direction",
         "start_positions": "position",
     }
@@ -278,7 +278,7 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         captured["random_rotation_augmentation"] = random_rotation_augmentation
         return {
             "grid": "llm-grid",
-            "reference_paths": "llm-reference-paths",
+            "trajectory_keypoints": "llm-trajectory-keypoints",
             "start_direction_vector": "llm-direction",
             "start_position": "llm-start",
         }
@@ -307,7 +307,7 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
     }
     assert outputs == {
         "cognitive_maps": "llm-grid",
-        "reference_paths": "llm-reference-paths",
+        "trajectory_keypoints": "llm-trajectory-keypoints",
         "start_direction_vectors": "llm-direction",
         "start_positions": "llm-start",
     }
@@ -366,9 +366,9 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
     ("turns", "expected_paths", "expected_start", "expected_direction"),
     [
         (0, [[10.0, 20.0], [30.0, 40.0]], [10.0, 20.0], [1.0, 2.0]),
-        (1, [[80.0, 10.0], [60.0, 30.0]], [80.0, 10.0], [2.0, -1.0]),
-        (2, [[90.0, 80.0], [70.0, 60.0]], [90.0, 80.0], [-1.0, -2.0]),
-        (3, [[20.0, 90.0], [40.0, 70.0]], [20.0, 90.0], [-2.0, 1.0]),
+        (1, [[79.0, 10.0], [59.0, 30.0]], [79.0, 10.0], [2.0, -1.0]),
+        (2, [[89.0, 79.0], [69.0, 59.0]], [89.0, 79.0], [-1.0, -2.0]),
+        (3, [[20.0, 89.0], [40.0, 69.0]], [20.0, 89.0], [-2.0, 1.0]),
     ],
 )
 def test_pretrain_prior_map_rotates_tensor_bundle(
@@ -381,7 +381,7 @@ def test_pretrain_prior_map_rotates_tensor_bundle(
     grid = torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100)
     tensors = {
         "grid": grid,
-        "reference_paths": torch.tensor(
+        "trajectory_keypoints": torch.tensor(
             [[10.0, 20.0], [30.0, 40.0]], dtype=torch.float32
         ),
         "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
@@ -395,7 +395,7 @@ def test_pretrain_prior_map_rotates_tensor_bundle(
     rotated = rotate_cognitive_map_tensors_by_right_angle(tensors, turns)
 
     assert torch.equal(rotated["grid"], torch.rot90(grid, turns % 4, dims=(-2, -1)))
-    assert torch.allclose(rotated["reference_paths"], torch.tensor(expected_paths))
+    assert torch.allclose(rotated["trajectory_keypoints"], torch.tensor(expected_paths))
     assert torch.allclose(rotated["start_position"], torch.tensor(expected_start))
     assert torch.allclose(
         rotated["start_direction_vector"], torch.tensor(expected_direction)
@@ -422,7 +422,7 @@ def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
         captured["random_rotation_augmentation"] = random_rotation_augmentation
         return {
             "grid": torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100),
-            "reference_paths": torch.tensor([[10.0, 20.0]], dtype=torch.float32),
+            "trajectory_keypoints": torch.tensor([[10.0, 20.0]], dtype=torch.float32),
             "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
             "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
         }
@@ -452,6 +452,6 @@ def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
         "cache_dir": tmp_path,
         "random_rotation_augmentation": True,
     }
-    assert outputs["reference_paths"].tolist() == [[10.0, 20.0]]
+    assert outputs["trajectory_keypoints"].tolist() == [[10.0, 20.0]]
     assert outputs["start_positions"].tolist() == [10.0, 20.0]
     assert outputs["start_direction_vectors"].tolist() == [1.0, 2.0]

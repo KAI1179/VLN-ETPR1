@@ -1,12 +1,11 @@
 import random
-import math
 import numpy as np
 
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
-from .common import pad_tensors, gen_seq_masks
+from .common import pad_tensors
 
 
 ############### Masked Language Modeling ###############
@@ -131,7 +130,7 @@ def mlm_collate(inputs):
 
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
-        batch["reference_paths"] = torch.stack(batch["reference_paths"])
+        batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 
@@ -264,7 +263,7 @@ def sap_collate(inputs):
 
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
-        batch["reference_paths"] = torch.stack(batch["reference_paths"])
+        batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 

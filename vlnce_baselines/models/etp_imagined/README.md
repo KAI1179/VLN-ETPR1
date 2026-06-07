@@ -14,8 +14,8 @@ instruction -> VLN text embeddings
 episode start_rotation/start_position -> start metadata
 text embeddings + start metadata -> InstructionCognitiveMapPredictor
 predicted grid logits -> sigmoid -> soft cognitive grid (B,37,100,100)
-predicted reference paths (B,5,2)
-soft grid + predicted reference paths + real start metadata -> PriorGT map_encoding
+predicted trajectory keypoints (B,5,2)
+soft grid + predicted trajectory keypoints + real start metadata -> PriorGT map_encoding
 map tokens -> GraphMapCrossAttention -> navigation logits
 ```
 
@@ -29,12 +29,12 @@ start_direction_vector + start_position
 -> latent-to-CNN projection
 -> progressive upsample decoder
 -> 37-channel 100x100 map logits
--> pooled latent reference-path head -> bounded first 5 route waypoints
+-> pooled latent trajectory-keypoint head -> bounded first 5 route keypoints
 ```
 
 The grid output is still logits, not probabilities. Callers use
 `sigmoid(logits)` before passing the soft map to `EmbeddingGridMapEncoder`.
-`reference_paths` are predicted by the predictor. `start_direction_vector` and
+`trajectory_keypoints` are predicted by the predictor. `start_direction_vector` and
 `start_position` are real episode-start metadata and do not use the reference
 path.
 
@@ -46,7 +46,7 @@ Use:
 - `MODEL.policy_name ImaginedPolicy`
 
 During SS training, ground-truth cognitive maps are loaded only as supervision
-targets for grid BCE and reference-path Huber loss. They are not passed to
+targets for grid BCE and trajectory-keypoint Huber loss. They are not passed to
 navigation.
 During eval or inference, no cognitive-map file is required; the trainer derives
 start metadata from the current episode.
@@ -64,11 +64,11 @@ MODEL.MAP_ENCODER.map_loss_weight
 
 Default: `0.1`.
 
-The reference-path auxiliary loss uses SmoothL1/Huber on bounded grid
+The trajectory-keypoint auxiliary loss uses SmoothL1/Huber on bounded grid
 coordinates and is deliberately down-weighted:
 
 ```text
-MODEL.MAP_ENCODER.reference_path_loss_weight
+MODEL.MAP_ENCODER.trajectory_keypoint_loss_weight
 ```
 
 Default: `0.001`.
@@ -81,7 +81,7 @@ only needs paired instructions and ground-truth cognitive maps:
 ```text
 instruction text -> frozen VLN language encoder -> txt_embeds/txt_masks
 txt_embeds/txt_masks -> InstructionCognitiveMapPredictor -> map logits
-map logits + predicted reference paths + GT targets -> weighted BCE/focal loss + reference-path Huber loss
+map logits + predicted trajectory keypoints + GT targets -> weighted BCE/focal loss + trajectory-keypoint Huber loss
 ```
 
 That path avoids Habitat envs, waypoint prediction, navigation loss, and DAgger
@@ -89,8 +89,8 @@ rollout. It should save predictor weights that the full imagined policy can load
 before SS/DAgger fine-tuning.
 
 A standalone predictor script is provided for this. In its default `train` mode,
-it reads the VLN dataset episodes and generates cognitive-map targets on the fly
-from `reference_path`, matching PriorGT training.
+it reads VLN dataset episodes and loads cached cognitive-map and trajectory-keypoint
+targets, matching PriorGT training.
 
 For RxR, the predictor uses guide-role episodes by default. Follower-role
 episodes are intentionally excluded because their language is collected from a

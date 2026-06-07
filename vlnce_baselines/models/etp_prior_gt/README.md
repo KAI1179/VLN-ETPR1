@@ -20,7 +20,7 @@ The PriorGT map encoder outputs spatial map tokens, not a single pooled vector:
 - `map_token_masks`: `(B, 101)`, bool, `True` means valid
 
 The 101 tokens are 100 spatial tokens from a fixed `10x10` grid over the `100x100`
-cognitive map plus one metadata token from `reference_paths`, `start_direction_vector`,
+cognitive map plus one metadata token from `trajectory_keypoints`, `start_direction_vector`,
 and `start_position`.
 
 Architecture:
@@ -38,7 +38,7 @@ Architecture:
 
 3. Metadata branch
    - Extra map metadata is encoded alongside the grid:
-     - `reference_paths`: shape `(B, 5, 2)`
+     - `trajectory_keypoints`: shape `(B, 5, 2)`
      - `start_direction_vector`: shape `(B, 2)`
      - `start_position`: shape `(B, 2)`
    - These are flattened to `(B, 14)` and passed through a small MLP to produce
@@ -77,10 +77,10 @@ PriorGT no longer loads precomputed cognitive-map `.npz` files during navigation
 training/evaluation. Instead, it builds maps on the fly:
 
 - `SceneSemanticBoxes.from_scene_id(scene_id)` builds/caches MP3D semantic boxes.
-- The first level encountered by the instruction reference path is selected.
+- The first level encountered by the dense ground-truth trajectory is selected.
 - `SceneSemanticBoxes.to_cognitive_map(...)` creates the instruction cognitive map
   from trajectory-near boxes, scaling unmentioned categories below mentioned ones.
-- The resulting `grid`, `reference_paths`, `start_direction_vector`, and
+- The resulting `grid`, `trajectory_keypoints`, `start_direction_vector`, and
   `start_position` are passed directly to the map encoder.
 
 This path reuses classes, constants, and map construction logic from `prior`.
@@ -225,7 +225,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 When `--use_prior_gt` is enabled:
 
 - The dataset generates cognitive maps on the fly from `prior`.
-- The collate path stacks `grid`, `reference_paths`, `start_direction_vector`, and
+- The collate path stacks `grid`, `trajectory_keypoints`, `start_direction_vector`, and
   `start_position`.
 - `EmbeddingGridMapEncoder` emits `map_tokens` and `map_token_masks`.
 - Pretraining `GlocalTextPathCMT` fuses map tokens into global graph embeddings through

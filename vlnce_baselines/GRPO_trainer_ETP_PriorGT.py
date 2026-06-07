@@ -1204,9 +1204,9 @@ class RLTrainer(BaseVLNCETrainer):
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
-        reference_paths = torch.stack(
+        trajectory_keypoints = torch.stack(
             [
-                cognitive_map["reference_paths"]
+                cognitive_map["trajectory_keypoints"]
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
@@ -1225,7 +1225,7 @@ class RLTrainer(BaseVLNCETrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=cognitive_crops,
-            reference_paths=reference_paths,
+            trajectory_keypoints=trajectory_keypoints,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )

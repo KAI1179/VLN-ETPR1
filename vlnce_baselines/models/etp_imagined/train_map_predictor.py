@@ -27,7 +27,7 @@ from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
     InstructionCognitiveMapPredictor,
 )
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    REFERENCE_PATH_LENGTH,
+    TRAJECTORY_KEYPOINT_COUNT,
     NUM_MAP_CATEGORIES,
     SIZE,
     cached_cognitive_map_to_tensors,
@@ -50,8 +50,6 @@ class PredictorExample:
     scene_id: str
     instruction_text: str
     token_ids: List[int]
-    reference_path: List[List[float]]
-    start_rotation: List[float]
     dataset: str
 
 
@@ -76,8 +74,6 @@ def load_predictor_examples(
                 scene_id=entry.scene_id,
                 instruction_text=entry.instruction,
                 token_ids=entry.instruction_tokens,
-                reference_path=entry.reference_path,
-                start_rotation=entry.start_rotation,
                 dataset=entry.dataset.lower(),
             )
         )
@@ -112,17 +108,17 @@ class CognitiveMapPredictorDataset(Dataset):
             random_rotation_augmentation=True,
         )
         grid = tensors["grid"].float()
-        reference_paths = tensors["reference_paths"].float()
+        trajectory_keypoints = tensors["trajectory_keypoints"].float()
         start_direction_vector = tensors["start_direction_vector"].float()
         start_position = tensors["start_position"].float()
         if grid.shape != (NUM_MAP_CATEGORIES, SIZE, SIZE):
             raise ValueError(
                 f"Bad grid shape for episode {example.episode_id}: {tuple(grid.shape)}"
             )
-        if reference_paths.shape != (REFERENCE_PATH_LENGTH, 2):
+        if trajectory_keypoints.shape != (TRAJECTORY_KEYPOINT_COUNT, 2):
             raise ValueError(
-                f"Bad reference_paths shape for episode {example.episode_id}: "
-                f"{tuple(reference_paths.shape)}"
+                f"Bad trajectory_keypoints shape for episode {example.episode_id}: "
+                f"{tuple(trajectory_keypoints.shape)}"
             )
         if start_direction_vector.shape != (2,):
             raise ValueError(
@@ -140,7 +136,7 @@ class CognitiveMapPredictorDataset(Dataset):
             "dataset": example.dataset,
             "token_ids": example.token_ids,
             "grid": grid,
-            "reference_paths": reference_paths,
+            "trajectory_keypoints": trajectory_keypoints,
             "start_direction_vector": start_direction_vector,
             "start_position": start_position,
         }
@@ -183,7 +179,9 @@ def collate_predictor_batch(
     txt_ids = torch.full((batch_size, max_text_len), pad_id, dtype=torch.long)
     txt_task_encoding = torch.zeros((batch_size, max_text_len), dtype=torch.long)
     grids = torch.stack([item["grid"] for item in batch], dim=0)
-    reference_paths = torch.stack([item["reference_paths"] for item in batch], dim=0)
+    trajectory_keypoints = torch.stack(
+        [item["trajectory_keypoints"] for item in batch], dim=0
+    )
     start_direction_vectors = torch.stack(
         [item["start_direction_vector"] for item in batch], dim=0
     )
@@ -198,7 +196,7 @@ def collate_predictor_batch(
         "txt_task_encoding": txt_task_encoding,
         "txt_masks": txt_ids != pad_id,
         "grids": grids,
-        "reference_paths": reference_paths,
+        "trajectory_keypoints": trajectory_keypoints,
         "start_direction_vectors": start_direction_vectors,
         "start_positions": start_positions,
         "episode_ids": [item["episode_id"] for item in batch],
@@ -212,7 +210,7 @@ def _move_batch(batch: Dict, device: torch.device) -> Dict:
         "txt_task_encoding",
         "txt_masks",
         "grids",
-        "reference_paths",
+        "trajectory_keypoints",
         "start_direction_vectors",
         "start_positions",
     ):
@@ -280,12 +278,12 @@ def compute_metrics(
 def compute_loss(
     logits: torch.Tensor,
     target: torch.Tensor,
-    pred_reference_paths: torch.Tensor,
-    target_reference_paths: torch.Tensor,
+    pred_trajectory_keypoints: torch.Tensor,
+    target_trajectory_keypoints: torch.Tensor,
     loss_type: str,
     max_pos_weight: float,
     focal_gamma: float,
-    reference_path_loss_weight: float,
+    trajectory_keypoint_loss_weight: float,
 ) -> torch.Tensor:
     target_mask = target > 0.5
     pos = target_mask.sum(dim=(0, 2, 3)).float()
@@ -305,30 +303,32 @@ def compute_loss(
         map_loss = ((1.0 - pt).pow(focal_gamma) * bce).mean()
     else:
         raise ValueError(f"loss_type must be bce or focal, got {loss_type}")
-    reference_path_loss = F.smooth_l1_loss(
-        pred_reference_paths,
-        target_reference_paths,
+    trajectory_keypoint_loss = F.smooth_l1_loss(
+        pred_trajectory_keypoints,
+        target_trajectory_keypoints,
         beta=5.0,
     )
-    return map_loss + reference_path_loss_weight * reference_path_loss
+    return map_loss + trajectory_keypoint_loss_weight * trajectory_keypoint_loss
 
 
-def compute_reference_path_metrics(
-    pred_reference_paths: torch.Tensor,
-    target_reference_paths: torch.Tensor,
+def compute_trajectory_keypoint_metrics(
+    pred_trajectory_keypoints: torch.Tensor,
+    target_trajectory_keypoints: torch.Tensor,
 ) -> Dict[str, float]:
-    target_norm = target_reference_paths.norm(dim=-1)
+    target_norm = target_trajectory_keypoints.norm(dim=-1)
     valid = target_norm > 0.5
-    mae = torch.mean(torch.abs(pred_reference_paths - target_reference_paths)).item()
+    mae = torch.mean(
+        torch.abs(pred_trajectory_keypoints - target_trajectory_keypoints)
+    ).item()
     if valid.any():
-        pred_unit = F.normalize(pred_reference_paths[valid], dim=-1)
-        target_unit = F.normalize(target_reference_paths[valid], dim=-1)
+        pred_unit = F.normalize(pred_trajectory_keypoints[valid], dim=-1)
+        target_unit = F.normalize(target_trajectory_keypoints[valid], dim=-1)
         cosine = (pred_unit * target_unit).sum(dim=-1).mean().item()
     else:
         cosine = 0.0
     return {
-        "reference_path_mae": mae,
-        "reference_path_cos": cosine,
+        "trajectory_keypoint_mae": mae,
+        "trajectory_keypoint_cos": cosine,
     }
 
 
@@ -359,7 +359,7 @@ def _iterate_batches(
     loss_type: str = "bce",
     max_pos_weight: float = 100.0,
     focal_gamma: float = 2.0,
-    reference_path_loss_weight: float = 0.1,
+    trajectory_keypoint_loss_weight: float = 0.1,
 ) -> Dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -370,7 +370,7 @@ def _iterate_batches(
         if max_batches is not None and batch_idx >= max_batches:
             break
         batch = _move_batch(batch, device)
-        logits, pred_reference_paths = model(
+        logits, pred_trajectory_keypoints = model(
             batch["txt_ids"],
             batch["txt_task_encoding"],
             batch["txt_masks"],
@@ -380,12 +380,12 @@ def _iterate_batches(
         loss = compute_loss(
             logits,
             batch["grids"],
-            pred_reference_paths,
-            batch["reference_paths"],
+            pred_trajectory_keypoints,
+            batch["trajectory_keypoints"],
             loss_type=loss_type,
             max_pos_weight=max_pos_weight,
             focal_gamma=focal_gamma,
-            reference_path_loss_weight=reference_path_loss_weight,
+            trajectory_keypoint_loss_weight=trajectory_keypoint_loss_weight,
         )
         if is_train:
             optimizer.zero_grad(set_to_none=True)
@@ -395,9 +395,9 @@ def _iterate_batches(
             logits.detach(), batch["grids"], thresholds=thresholds
         )
         metrics.update(
-            compute_reference_path_metrics(
-                pred_reference_paths.detach(),
-                batch["reference_paths"],
+            compute_trajectory_keypoint_metrics(
+                pred_trajectory_keypoints.detach(),
+                batch["trajectory_keypoints"],
             )
         )
         metrics["loss"] = loss.item()
@@ -528,7 +528,7 @@ class TrainMapPredictorArgs(Tap):
     loss: Literal["bce", "focal"] = "bce"
     max_pos_weight: float = 20.0
     focal_gamma: float = 2.0
-    reference_path_loss_weight: float = 0.001
+    trajectory_keypoint_loss_weight: float = 0.001
     init_positive_prob: float = 0.002
     thresholds: str = "0.001,0.002,0.005,0.01,0.02,0.05"
     max_text_len: Optional[int] = None
@@ -581,26 +581,26 @@ def _select_visualize_example(args: TrainMapPredictorArgs) -> PredictorExample:
 
 def _prediction_to_cognitive_grid_map(
     grid: torch.Tensor,
-    reference_paths: torch.Tensor,
+    trajectory_keypoints: torch.Tensor,
     start_direction_vector: torch.Tensor,
     start_position: torch.Tensor,
 ) -> CognitiveGridMap:
     cognitive_map = CognitiveGridMap()
     cognitive_map.grid = grid.detach().cpu().numpy().astype(np.float32)
-    cognitive_map.reference_path = []
-    for row, col in reference_paths.detach().cpu().tolist():
+    cognitive_map.trajectory_keypoints = []
+    for row, col in trajectory_keypoints.detach().cpu().tolist():
         x, z = grid_to_meters(float(row), float(col))
-        cognitive_map.reference_path.append((float(x), float(z)))
+        cognitive_map.trajectory_keypoints.append((float(x), float(z)))
     cognitive_map.start_direction_vector = (
         float(start_direction_vector[0].detach().cpu()),
         float(start_direction_vector[1].detach().cpu()),
     )
-    if not cognitive_map.reference_path:
+    if not cognitive_map.trajectory_keypoints:
         start_x, start_z = grid_to_meters(
             float(start_position[0].detach().cpu()),
             float(start_position[1].detach().cpu()),
         )
-        cognitive_map.reference_path.append((float(start_x), float(start_z)))
+        cognitive_map.trajectory_keypoints.append((float(start_x), float(start_z)))
     return cognitive_map
 
 
@@ -646,7 +646,7 @@ def visualize_prediction(args: TrainMapPredictorArgs) -> None:
     batch = _move_batch(batch, device)
 
     with torch.no_grad():
-        map_logits, reference_paths = model(
+        map_logits, trajectory_keypoints = model(
             batch["txt_ids"],
             batch["txt_task_encoding"],
             batch["txt_masks"],
@@ -660,7 +660,7 @@ def visualize_prediction(args: TrainMapPredictorArgs) -> None:
 
     predicted_map = _prediction_to_cognitive_grid_map(
         predicted_grid,
-        reference_paths[0],
+        trajectory_keypoints[0],
         batch["start_direction_vectors"][0],
         batch["start_positions"][0],
     )
@@ -768,7 +768,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             loss_type=args.loss,
             max_pos_weight=args.max_pos_weight,
             focal_gamma=args.focal_gamma,
-            reference_path_loss_weight=args.reference_path_loss_weight,
+            trajectory_keypoint_loss_weight=args.trajectory_keypoint_loss_weight,
         )
         metrics = {"train_" + key: value for key, value in train_metrics.items()}
         if val_loader is not None:
@@ -780,7 +780,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 loss_type=args.loss,
                 max_pos_weight=args.max_pos_weight,
                 focal_gamma=args.focal_gamma,
-                reference_path_loss_weight=args.reference_path_loss_weight,
+                trajectory_keypoint_loss_weight=args.trajectory_keypoint_loss_weight,
             )
             metrics.update({"val_" + key: value for key, value in val_metrics.items()})
             selection_metric = -_best_iou(val_metrics)

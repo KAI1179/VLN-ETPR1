@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from typing import Tuple, Optional
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    REFERENCE_PATH_LENGTH,
     NUM_MAP_CATEGORIES,
     SIZE,
+    TRAJECTORY_KEYPOINT_COUNT,
 )
 
 
@@ -148,11 +148,11 @@ class InstructionCognitiveMapPredictor(nn.Module):
             nn.GELU(),
             nn.Conv2d(channels, NUM_MAP_CATEGORIES, kernel_size=1),
         )
-        self.reference_path_head = nn.Sequential(
+        self.trajectory_keypoint_head = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, REFERENCE_PATH_LENGTH * 2),
+            nn.Linear(hidden_size, TRAJECTORY_KEYPOINT_COUNT * 2),
         )
         nn.init.normal_(self.map_queries, std=0.02)
         nn.init.normal_(self.map_pos, std=0.02)
@@ -216,12 +216,12 @@ class InstructionCognitiveMapPredictor(nn.Module):
         for layer in self.layers:
             queries = layer(queries, txt_embeds, txt_key_padding_mask)
         queries = self.output_norm(queries)
-        reference_paths = self.reference_path_head(queries.mean(dim=1)).view(
+        trajectory_keypoints = self.trajectory_keypoint_head(queries.mean(dim=1)).view(
             batch_size,
-            REFERENCE_PATH_LENGTH,
+            TRAJECTORY_KEYPOINT_COUNT,
             2,
         )
-        reference_paths = torch.sigmoid(reference_paths) * float(SIZE - 1)
+        trajectory_keypoints = torch.sigmoid(trajectory_keypoints) * float(SIZE - 1)
         latent = self.latent_projection(queries)
         latent = latent.transpose(1, 2).reshape(
             batch_size,
@@ -234,4 +234,4 @@ class InstructionCognitiveMapPredictor(nn.Module):
             logits = F.interpolate(
                 logits, size=(SIZE, SIZE), mode="bilinear", align_corners=False
             )
-        return logits, reference_paths
+        return logits, trajectory_keypoints

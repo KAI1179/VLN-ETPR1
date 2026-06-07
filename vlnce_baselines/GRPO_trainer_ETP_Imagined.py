@@ -36,7 +36,7 @@ class RLTrainer(PriorGTGRPOTrainer):
         if not map_cfg.enabled:
             return None, None
         start_direction_vectors, start_positions = self._start_metadata_inputs()
-        map_logits, reference_paths = self.policy.net(
+        map_logits, trajectory_keypoints = self.policy.net(
             mode="predict_cognitive_map",
             txt_embeds=txt_embeds,
             txt_masks=txt_masks,
@@ -46,7 +46,7 @@ class RLTrainer(PriorGTGRPOTrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=torch.sigmoid(map_logits),
-            reference_paths=reference_paths,
+            trajectory_keypoints=trajectory_keypoints,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )

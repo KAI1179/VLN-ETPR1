@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from .._coords import meters_to_grid
 from ..constants import COLS, OBJECT_CATEGORIES, REGION_CATEGORIES, ROWS
 from prior.directions import DirectionVector
+from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 
 
 GridMapT = TypeVar("GridMapT", bound="BaseGridMap")
@@ -269,10 +270,9 @@ class CognitiveGridMap(BaseGridMap):
     probability distributions over categories.
     """
 
-    reference_path: List[Point2D]
+    trajectory_keypoints: List[Point2D]
     """
-    Level-local reference path for the selected level, as ``[x, z]`` waypoints.
-    Only waypoints that fall inside this cognitive map's level are stored.
+    Five level-local trajectory keypoints as ``[x, z]`` points.
     """
 
     start_direction_vector: DirectionVector
@@ -280,10 +280,10 @@ class CognitiveGridMap(BaseGridMap):
 
     def __init__(self):
         """
-        Initialize a cognitive grid map with zeros and an empty reference path.
+        Initialize a cognitive grid map with zeros and no trajectory keypoints.
         """
         super().__init__()
-        self.reference_path = []
+        self.trajectory_keypoints = []
         self.start_direction_vector = (0.0, 0.0)
 
     def visualize(
@@ -309,6 +309,15 @@ class CognitiveGridMap(BaseGridMap):
         """
         from ._visualize import visualize
 
+        last_nonzero_idx = next(
+            (
+                index
+                for index in range(len(self.trajectory_keypoints) - 1, -1, -1)
+                if self.trajectory_keypoints[index] != (0.0, 0.0)
+            ),
+            -1,
+        )
+        visible_keypoints = self.trajectory_keypoints[: last_nonzero_idx + 1]
         visualize(
             self,
             save_path,
@@ -318,18 +327,27 @@ class CognitiveGridMap(BaseGridMap):
             crop_margin=crop_margin,
             positions=[
                 meters_to_grid(float(position[0]), float(position[1]))
-                for position in self.reference_path
+                for position in visible_keypoints
             ],
             start_direction_vector=self.start_direction_vector,
         )
 
     def save(self, save_path: str | PathLike[str] | np._SupportsWrite[bytes]):
-        """Save the cognitive map data with its reference path."""
+        """Save cognitive map data with trajectory keypoints."""
+        trajectory_keypoints = np.asarray(
+            self.trajectory_keypoints, dtype=np.float32
+        )
+        expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
+        if trajectory_keypoints.shape != expected_shape:
+            raise ValueError(
+                "trajectory_keypoints must have shape "
+                f"{expected_shape}, got {trajectory_keypoints.shape}"
+            )
         np.savez_compressed(
             save_path,
             grid=self.grid,
             range_y=np.asarray(self.range_y, dtype=object),
-            reference_path=np.asarray(self.reference_path, dtype=np.float32),
+            trajectory_keypoints=trajectory_keypoints,
             start_direction_vector=np.asarray(
                 self.start_direction_vector,
                 dtype=np.float32,
@@ -346,9 +364,16 @@ class CognitiveGridMap(BaseGridMap):
         grid_map = cls()
         grid_map.grid = data["grid"]
         grid_map.range_y = list(data["range_y"].tolist())
-        grid_map.reference_path = [
+        trajectory_keypoints = data["trajectory_keypoints"]
+        expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
+        if trajectory_keypoints.shape != expected_shape:
+            raise ValueError(
+                "trajectory_keypoints must have shape "
+                f"{expected_shape}, got {trajectory_keypoints.shape}"
+            )
+        grid_map.trajectory_keypoints = [
             (float(position[0]), float(position[1]))
-            for position in data["reference_path"]
+            for position in trajectory_keypoints
         ]
         grid_map.start_direction_vector = tuple(data["start_direction_vector"])
         return grid_map

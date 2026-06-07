@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers import BertPreTrainedModel
+from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 
 from .vilmodel import (
     BertLayerNorm,
@@ -97,8 +98,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.use_prior_gt = getattr(config, "use_prior_gt", False)
         self.use_llm = getattr(config, "use_llm", False)
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
-        self.reference_path_loss_weight = getattr(
-            config, "reference_path_loss_weight", 0.001
+        self.trajectory_keypoint_loss_weight = getattr(
+            config, "trajectory_keypoint_loss_weight", 0.001
         )
 
         if "mlm" in config.pretrain_tasks:
@@ -187,11 +188,13 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 state_dict[normalized_key] = value
         if not state_dict:
             raise ValueError(f"No map predictor weights found in {checkpoint_path}")
-        incompatible = self.map_predictor.load_state_dict(state_dict, strict=False)
-        print(
-            f"Loaded map predictor checkpoint: {checkpoint_path} "
-            f"(missing={len(incompatible.missing_keys)}, unexpected={len(incompatible.unexpected_keys)})"
+        load_complete_state_dict(
+            self.map_predictor,
+            state_dict,
+            checkpoint_path,
+            "map_predictor",
         )
+        print(f"Loaded map predictor checkpoint: {checkpoint_path}")
 
     def tie_weights(self):
         if "mlm" in self.config.pretrain_tasks:
@@ -286,7 +289,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             txt_masks = gen_seq_masks(batch["txt_lens"])
             txt_embeds = self.bert.lang_encoder(txt_embeds, txt_masks)
-            map_logits, pred_reference_path = self.map_predictor(
+            map_logits, pred_trajectory_keypoints = self.map_predictor(
                 txt_embeds,
                 txt_masks,
                 start_direction_vectors=batch["start_direction_vectors"],
@@ -294,7 +297,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             map_tokens, map_token_masks = self.map_encoder(
                 torch.sigmoid(map_logits),
-                pred_reference_path,
+                pred_trajectory_keypoints,
                 batch["start_direction_vectors"],
                 batch["start_positions"],
             )
@@ -305,20 +308,21 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                     batch["cognitive_maps"],
                     reduction="mean",
                 )
-                reference_path_loss = F.smooth_l1_loss(
-                    pred_reference_path,
-                    batch["reference_paths"],
+                trajectory_keypoint_loss = F.smooth_l1_loss(
+                    pred_trajectory_keypoints,
+                    batch["trajectory_keypoints"],
                     beta=5.0,
                 )
                 map_loss = self.map_loss_weight * (
-                    map_loss + self.reference_path_loss_weight * reference_path_loss
+                    map_loss
+                    + self.trajectory_keypoint_loss_weight * trajectory_keypoint_loss
                 )
             return map_tokens, map_token_masks, map_loss
 
         if self.use_prior_gt or self.use_llm:
             map_tokens, map_token_masks = self.map_encoder(
                 batch["cognitive_maps"],
-                batch["reference_paths"],
+                batch["trajectory_keypoints"],
                 batch["start_direction_vectors"],
                 batch["start_positions"],
             )

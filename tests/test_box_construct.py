@@ -164,7 +164,11 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
 
     relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
-        reference_path=[[0.0, 0.0, 0.0]],
+        ground_truth_trajectory=[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+        ],
         start_direction_vector=(0.0, 1.0),
         max_distance=1.5,
         category_extractor=lambda instruction: ({3}, set()),
@@ -173,7 +177,18 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     assert isinstance(relevant, box.RelevantSemanticBoxes)
     assert relevant.level_idx == 0
     assert relevant.instruction == "walk to the table"
-    assert relevant.reference_path == [(0.0, 0.0)]
+    assert relevant.ground_truth_trajectory == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+    ]
+    assert relevant.trajectory_keypoints == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
     assert relevant.start_direction_vector == (0.0, 1.0)
     assert [obb.center for obb in relevant.level.objects[3]] == [(0.0, 0.0)]
     assert relevant.level.objects[3][0].mentioned is True
@@ -216,11 +231,18 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
     relevant = scene_boxes.relevant_to(
         "",
-        reference_path=[[4.0, 0.0, 6.0]],
+        ground_truth_trajectory=[[4.0, 0.0, 6.0], [5.0, 0.0, 6.0]],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: (set(), set()),
     )
-    assert relevant.reference_path == [(3.0, 4.0)]
+    assert relevant.ground_truth_trajectory == [(3.0, 4.0), (4.0, 4.0)]
+    assert relevant.trajectory_keypoints == [
+        (3.0, 4.0),
+        (4.0, 4.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
 
 
 def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
@@ -247,7 +269,14 @@ def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
         level_idx=1,
         level=level,
         instruction="walk to the table",
-        reference_path=[(0.0, 0.0)],
+        ground_truth_trajectory=[(0.0, 0.0), (1.0, 0.0)],
+        trajectory_keypoints=[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -258,6 +287,27 @@ def test_relevant_semantic_boxes_saves_and_loads_json(tmp_path):
     assert isinstance(relevant, BaseModel)
     assert '"rotation"' in path.read_text(encoding="utf-8")
     assert loaded == relevant
+
+
+def test_relevant_semantic_boxes_requires_exactly_five_trajectory_keypoints():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="trajectory_keypoints must contain exactly 5 points, got 2",
+    ):
+        box.RelevantSemanticBoxes(
+            level_idx=0,
+            level=level,
+            instruction="",
+            ground_truth_trajectory=[(0.0, 0.0), (1.0, 0.0)],
+            trajectory_keypoints=[(0.0, 0.0), (1.0, 0.0)],
+            start_direction_vector=(0.0, 1.0),
+        )
 
 
 def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
@@ -285,7 +335,14 @@ def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
         level_idx=0,
         level=level,
         instruction="walk to the table",
-        reference_path=[(1.0, 1.0), (2.0, 3.0)],
+        ground_truth_trajectory=[(1.0, 1.0), (2.0, 3.0)],
+        trajectory_keypoints=[
+            (1.0, 1.0),
+            (2.0, 3.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
         start_direction_vector=(0.0, 1.0),
     )
 
@@ -302,9 +359,48 @@ def test_relevant_semantic_boxes_rotates_right_angle_with_positive_grid_frame():
         max=(47.5, 4.0),
         mentioned=True,
     )
-    assert rotated.reference_path == [(48.5, 1.0), (46.5, 2.0)]
+    assert rotated.ground_truth_trajectory == [(48.5, 1.0), (46.5, 2.0)]
+    assert rotated.trajectory_keypoints == [
+        (48.5, 1.0),
+        (46.5, 2.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
     assert rotated.start_direction_vector == (1.0, -0.0)
     assert meters_to_grid(48.5, 1.0) == (97.0, 2.0)
+
+
+def test_relevant_semantic_boxes_rotates_leading_origin_but_preserves_zero_suffix():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+    relevant = box.RelevantSemanticBoxes(
+        level_idx=0,
+        level=level,
+        instruction="",
+        ground_truth_trajectory=[(0.0, 0.0), (1.0, 0.0)],
+        trajectory_keypoints=[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
+        start_direction_vector=(0.0, 1.0),
+    )
+
+    rotated = relevant.rotate_by_right_angle(1)
+
+    assert rotated.trajectory_keypoints == [
+        (49.5, 0.0),
+        (49.5, 1.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
 
 
 def test_obb_distance_uses_rotation():
@@ -339,7 +435,7 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
 
     relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
-        reference_path=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ground_truth_trajectory=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: ({3}, set()),
     )
@@ -348,7 +444,29 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
     row, col = (0, 0)
     assert cognitive_map.grid[3, row, col] == 1.0
     assert cognitive_map.grid[1, row, col] == pytest.approx(box.IRRELEVANT_MULTIPLIER)
-    assert cognitive_map.reference_path == [(0.0, 0.0), (1.0, 0.0)]
+    assert cognitive_map.trajectory_keypoints == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
+
+
+def test_relevant_to_rejects_one_selected_level_point():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+
+    with pytest.raises(ValueError, match="at least 2 selected-level points"):
+        box.SceneSemanticBoxes([level]).relevant_to(
+            "",
+            ground_truth_trajectory=[[0.0, 0.0, 0.0]],
+            start_direction_vector=(0.0, 1.0),
+            category_extractor=lambda instruction: (set(), set()),
+        )
 
 
 def test_scene_semantic_boxes_has_no_direct_cognitive_map_shortcut():

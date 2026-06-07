@@ -4,8 +4,8 @@ from .map_utils import (
     MAPPED_OBJECT_NAMES,
     MAPPED_REGION_NAMES,
     NUM_MAP_CATEGORIES,
-    REFERENCE_PATH_LENGTH,
     SIZE,
+    TRAJECTORY_KEYPOINT_COUNT,
 )
 
 import clip
@@ -16,7 +16,7 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIM = 512
-MAP_METADATA_DIM = REFERENCE_PATH_LENGTH * 2 + 2 + 2
+MAP_METADATA_DIM = TRAJECTORY_KEYPOINT_COUNT * 2 + 2 + 2
 MAP_TOKEN_GRID_SIZE = 10
 MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
 MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
@@ -98,7 +98,10 @@ class NormFirstTransformerEncoderLayer(nn.Module):
         src: torch.Tensor,
         src_mask: Optional[torch.Tensor] = None,
         src_key_padding_mask: Optional[torch.Tensor] = None,
+        is_causal: bool = False,
     ) -> torch.Tensor:
+        if is_causal:
+            raise ValueError("Causal map-token attention is unsupported")
         attn_input = self.norm1(src)
         attn_output, _ = self.self_attn(
             attn_input,
@@ -163,7 +166,7 @@ class EmbeddingGridMapEncoder(nn.Module):
     def _validate_inputs(
         self,
         cognitive_crop: torch.Tensor,
-        reference_paths: torch.Tensor,
+        trajectory_keypoints: torch.Tensor,
         start_direction_vectors: torch.Tensor,
         start_positions: torch.Tensor,
     ) -> int:
@@ -177,13 +180,13 @@ class EmbeddingGridMapEncoder(nn.Module):
                 f"(B, {NUM_MAP_CATEGORIES}, {SIZE}, {SIZE}), got {tuple(cognitive_crop.shape)}"
             )
         batch_size = cognitive_crop.shape[0]
-        if reference_paths.dim() != 3 or reference_paths.shape[1:] != (
-            REFERENCE_PATH_LENGTH,
+        if trajectory_keypoints.dim() != 3 or trajectory_keypoints.shape[1:] != (
+            TRAJECTORY_KEYPOINT_COUNT,
             2,
         ):
             raise ValueError(
-                "reference_paths must have shape "
-                f"(B, {REFERENCE_PATH_LENGTH}, 2), got {tuple(reference_paths.shape)}"
+                "trajectory_keypoints must have shape "
+                f"(B, {TRAJECTORY_KEYPOINT_COUNT}, 2), got {tuple(trajectory_keypoints.shape)}"
             )
         if start_direction_vectors.dim() != 2 or start_direction_vectors.shape[1:] != (
             2,
@@ -197,12 +200,12 @@ class EmbeddingGridMapEncoder(nn.Module):
                 f"start_positions must have shape (B, 2), got {tuple(start_positions.shape)}"
             )
         if (
-            cognitive_crop.shape[0] != reference_paths.shape[0]
+            cognitive_crop.shape[0] != trajectory_keypoints.shape[0]
             or cognitive_crop.shape[0] != start_direction_vectors.shape[0]
             or cognitive_crop.shape[0] != start_positions.shape[0]
         ):
             raise ValueError(
-                "batch sizes must match for cognitive_crop, reference_paths, "
+                "batch sizes must match for cognitive_crop, trajectory_keypoints, "
                 "start_direction_vectors, and start_positions"
             )
         return batch_size
@@ -210,13 +213,13 @@ class EmbeddingGridMapEncoder(nn.Module):
     def forward(
         self,
         cognitive_crop: torch.Tensor,
-        reference_paths: torch.Tensor,
+        trajectory_keypoints: torch.Tensor,
         start_direction_vectors: torch.Tensor,
         start_positions: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Args:
         cognitive_crop: (B, CATEGORIES, H, W)
-        reference_paths: (B, REFERENCE_PATH_LENGTH, 2)
+        trajectory_keypoints: (B, TRAJECTORY_KEYPOINT_COUNT, 2)
         start_direction_vectors: (B, 2)
         start_positions: (B, 2)
 
@@ -226,7 +229,7 @@ class EmbeddingGridMapEncoder(nn.Module):
         """
         batch_size = self._validate_inputs(
             cognitive_crop,
-            reference_paths,
+            trajectory_keypoints,
             start_direction_vectors,
             start_positions,
         )
@@ -238,7 +241,7 @@ class EmbeddingGridMapEncoder(nn.Module):
 
         metadata = torch.cat(
             [
-                reference_paths.flatten(start_dim=1),
+                trajectory_keypoints.flatten(start_dim=1),
                 start_direction_vectors,
                 start_positions,
             ],

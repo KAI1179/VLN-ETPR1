@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from gzip import open as gzip_open
 from json import load
-from typing import Iterable, Iterator, Literal
+from pathlib import Path
+from typing import Iterable, Iterator, Literal, Tuple
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
@@ -24,21 +25,27 @@ class VLNCEEpisodeEntry:
     start_position: list[float]
     start_rotation: list[float]
     instruction_tokens: list[int]
-    reference_path: list[list[float]]
+    ground_truth_trajectory: list[list[float]]
 
     @staticmethod
     def iter_from(
         dataset: Literal["R2R", "RxR"],
         splits: Iterable[str] = DEFAULT_SPLITS,
     ) -> Iterator["VLNCEEpisodeEntry"]:
-        """Iterate R2R/RxR VLN-CE episodes with reference-path waypoints."""
+        """Iterate R2R/RxR VLN-CE episodes with ground-truth trajectories."""
         for split in splits:
-            data_path = _file_for_split(dataset, split)
+            data_path, gt_path = _files_for_split(dataset, split)
             if not data_path.exists():
                 continue
+            if not gt_path.exists():
+                raise FileNotFoundError(
+                    f"Missing VLN-CE ground-truth file: {gt_path}"
+                )
 
             with gzip_open(data_path, "rt", encoding="utf-8") as f:
                 raw_data = load(f)
+            with gzip_open(gt_path, "rt", encoding="utf-8") as f:
+                gt_data = load(f)
 
             for episode in raw_data["episodes"]:
                 instruction_data = episode["instruction"]
@@ -47,6 +54,12 @@ class VLNCEEpisodeEntry:
                 #     continue  # TODO: How to extract nouns in other lang?
 
                 episode_id = episode["episode_id"]
+                gt_entry = gt_data.get(str(episode_id))
+                if gt_entry is None or "locations" not in gt_entry:
+                    raise ValueError(
+                        "Missing ground-truth trajectory for "
+                        f"{dataset} {split} episode {episode_id}"
+                    )
 
                 yield VLNCEEpisodeEntry(
                     dataset=dataset,
@@ -57,7 +70,7 @@ class VLNCEEpisodeEntry:
                     start_position=episode["start_position"],
                     start_rotation=episode["start_rotation"],
                     instruction_tokens=instruction_data["instruction_tokens"],
-                    reference_path=episode["reference_path"],
+                    ground_truth_trajectory=gt_entry["locations"],
                 )
 
     @property
@@ -76,14 +89,22 @@ def _scene_id_from_episode(raw_scene_id: str) -> str:
     return raw_scene_id.split("/")[1]
 
 
-def _file_for_split(dataset: Literal["R2R", "RxR"], split: str):
+def _files_for_split(
+    dataset: Literal["R2R", "RxR"], split: str
+) -> Tuple[Path, Path]:
     if dataset == "R2R":
         split_dir = R2R_DIR / split
-        return split_dir / f"{split}.json.gz"
+        return (
+            split_dir / f"{split}.json.gz",
+            split_dir / f"{split}_gt.json.gz",
+        )
 
     if dataset == "RxR":
         split_dir = RxR_DIR / split
-        return split_dir / f"{split}_guide.json.gz"
+        return (
+            split_dir / f"{split}_guide.json.gz",
+            split_dir / f"{split}_guide_gt.json.gz",
+        )
 
     raise ValueError(f"Unsupported dataset: {dataset}")
 

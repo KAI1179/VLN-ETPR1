@@ -304,9 +304,6 @@ COLS = int(DEPTH / CELL_SIZE)
 MAX_DISTANCE_CELLS = 3
 """Maximum distance (in cells) to consider as related to the position/path."""
 
-REFERENCE_PATH_LENGTH = 5
-"""Number of reference path waypoints exposed to model metadata."""
-
 # INTERNAL UTILITY CONSTANTS
 
 HABITAT_MP3D_ROTATION_VECTOR = Vector4(-0.707107, 0.0, 0.0, 0.707107)

@@ -479,7 +479,7 @@ In `map_encoder.py`, rename:
 
 - `reference_paths` -> `trajectory_keypoints`
 - error string to `trajectory_keypoints must have shape (B, 5, 2)`
-- docstring `(B, REFERENCE_PATH_LENGTH, 2)` -> `(B, TRAJECTORY_KEYPOINT_COUNT, 2)` if constants are renamed.
+- docstring uses `(B, TRAJECTORY_KEYPOINT_COUNT, 2)`.
 
 Keep shape `(B, 5, 2)`.
 

@@ -44,7 +44,7 @@ class RLTrainer(PriorGTRLTrainer):
         start_direction_vectors, start_positions = self._start_metadata_inputs(
             cognitive_maps
         )
-        map_logits, pred_reference_paths = self.policy.net(
+        map_logits, pred_trajectory_keypoints = self.policy.net(
             mode="predict_cognitive_map",
             txt_embeds=txt_embeds,
             txt_masks=txt_masks,
@@ -55,7 +55,7 @@ class RLTrainer(PriorGTRLTrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=pred_grid,
-            reference_paths=pred_reference_paths,
+            trajectory_keypoints=pred_trajectory_keypoints,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
@@ -71,9 +71,9 @@ class RLTrainer(PriorGTRLTrainer):
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
-        target_reference_paths = torch.stack(
+        target_trajectory_keypoints = torch.stack(
             [
-                cognitive_map["reference_paths"]
+                cognitive_map["trajectory_keypoints"]
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
@@ -83,16 +83,18 @@ class RLTrainer(PriorGTRLTrainer):
             target_grid,
             reduction="mean",
         )
-        reference_path_loss_weight = getattr(
-            map_cfg, "reference_path_loss_weight", 0.001
+        trajectory_keypoint_loss_weight = getattr(
+            map_cfg, "trajectory_keypoint_loss_weight", 0.001
         )
-        reference_path_loss = F.smooth_l1_loss(
-            pred_reference_paths,
-            target_reference_paths,
+        trajectory_keypoint_loss = F.smooth_l1_loss(
+            pred_trajectory_keypoints,
+            target_trajectory_keypoints,
             beta=5.0,
         )
         self.logs["map_loss"].append(map_loss.item())
-        self.logs["map_reference_path_loss"].append(reference_path_loss.item())
+        self.logs["map_trajectory_keypoint_loss"].append(
+            trajectory_keypoint_loss.item()
+        )
         return map_loss_weight * (
-            map_loss + reference_path_loss_weight * reference_path_loss
+            map_loss + trajectory_keypoint_loss_weight * trajectory_keypoint_loss
         )

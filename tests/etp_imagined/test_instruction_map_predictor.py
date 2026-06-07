@@ -53,12 +53,12 @@ def test_instruction_map_predictor_outputs_cognitive_grid_logits(monkeypatch):
         ]
     )
 
-    logits, reference_paths = predictor(txt_embeds, txt_masks)
+    logits, trajectory_keypoints = predictor(txt_embeds, txt_masks)
 
     assert logits.shape == (2, module.NUM_MAP_CATEGORIES, module.SIZE, module.SIZE)
-    assert reference_paths.shape == (2, module.REFERENCE_PATH_LENGTH, 2)
+    assert trajectory_keypoints.shape == (2, module.TRAJECTORY_KEYPOINT_COUNT, 2)
     assert torch.isfinite(logits).all()
-    assert torch.isfinite(reference_paths).all()
+    assert torch.isfinite(trajectory_keypoints).all()
 
 
 def test_instruction_map_predictor_rejects_bad_text_mask_shape(monkeypatch):

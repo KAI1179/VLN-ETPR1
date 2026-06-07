@@ -16,7 +16,7 @@ from vlnce_baselines.models.etp_imagined.train_map_predictor import (
 )
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     NUM_MAP_CATEGORIES,
-    REFERENCE_PATH_LENGTH,
+    TRAJECTORY_KEYPOINT_COUNT,
     SIZE,
 )
 
@@ -31,7 +31,6 @@ class _EpisodeEntry:
     start_position: Optional[list] = None
     start_rotation: Optional[list] = None
     instruction_tokens: Optional[list] = None
-    reference_path: Optional[list] = None
 
     def __post_init__(self):
         if self.start_position is None:
@@ -40,8 +39,6 @@ class _EpisodeEntry:
             self.start_rotation = [0.0, 0.0, 0.0, 1.0]
         if self.instruction_tokens is None:
             self.instruction_tokens = [10, 11, 12]
-        if self.reference_path is None:
-            self.reference_path = [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
 
     @property
     def unique_id(self):
@@ -67,7 +64,7 @@ def _patch_cognitive_map_generation(monkeypatch) -> None:
         "cached_cognitive_map_to_tensors",
         lambda scene_id, cache_id, random_rotation_augmentation=False: {
             "grid": grid,
-            "reference_paths": torch.zeros(REFERENCE_PATH_LENGTH, 2),
+            "trajectory_keypoints": torch.zeros(TRAJECTORY_KEYPOINT_COUNT, 2),
             "start_direction_vector": torch.tensor([0.0, 1.0]),
             "start_position": torch.tensor([10.0, 20.0]),
         },
@@ -88,8 +85,6 @@ def test_load_predictor_examples_matches_dataset_scene_episode(monkeypatch):
     assert examples[0].scene_id == "TestScene"
     assert examples[0].instruction_text == "go to the chair"
     assert examples[0].token_ids == [10, 11, 12]
-    assert examples[0].reference_path == [[1.0, 0.0, 2.0], [2.0, 0.0, 2.0]]
-    assert examples[0].start_rotation == [0.0, 0.0, 0.0, 1.0]
 
 
 def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
@@ -107,7 +102,7 @@ def test_collate_predictor_batch_pads_tokens_and_task_encoding(monkeypatch):
     assert batch["txt_task_encoding"].tolist() == [[1, 1, 1, 0, 0]]
     assert batch["txt_masks"].tolist() == [[True, True, True, False, False]]
     assert batch["grids"].shape == (1, NUM_MAP_CATEGORIES, SIZE, SIZE)
-    assert batch["reference_paths"].shape == (1, REFERENCE_PATH_LENGTH, 2)
+    assert batch["trajectory_keypoints"].shape == (1, TRAJECTORY_KEYPOINT_COUNT, 2)
     assert batch["start_direction_vectors"].tolist() == [[0.0, 1.0]]
     assert batch["start_positions"].tolist() == [[10.0, 20.0]]
 
@@ -120,8 +115,6 @@ def test_predictor_dataset_loads_cached_map_with_train_rotation(monkeypatch):
         dataset="R2R",
         instruction_text="go to the chair",
         token_ids=[1, 2, 3],
-        reference_path=[[1.0, 0.0, 2.0]],
-        start_rotation=[0.0, 0.0, 0.0, 1.0],
     )
     captured = {}
 
@@ -131,7 +124,7 @@ def test_predictor_dataset_loads_cached_map_with_train_rotation(monkeypatch):
         captured["random_rotation_augmentation"] = random_rotation_augmentation
         return {
             "grid": torch.zeros(NUM_MAP_CATEGORIES, SIZE, SIZE),
-            "reference_paths": torch.zeros(REFERENCE_PATH_LENGTH, 2),
+            "trajectory_keypoints": torch.zeros(TRAJECTORY_KEYPOINT_COUNT, 2),
             "start_direction_vector": torch.tensor([0.0, 1.0]),
             "start_position": torch.tensor([10.0, 20.0]),
         }

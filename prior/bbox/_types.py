@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Set, Tuple
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from prior.directions import DirectionVector
+from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 from ..constants import CELL_SIZE, COLS, MAX_DISTANCE_CELLS, ROWS
 
 Point2D = Tuple[float, float]
@@ -69,8 +70,21 @@ class RelevantSemanticBoxes(BaseModel):
     level_idx: int
     level: LevelSemanticBoxes
     instruction: str
-    reference_path: List[Point2D]
+    ground_truth_trajectory: List[Point2D]
+    trajectory_keypoints: List[Point2D]
     start_direction_vector: DirectionVector
+
+    @field_validator("trajectory_keypoints")
+    @classmethod
+    def _validate_trajectory_keypoint_count(
+        cls, points: List[Point2D]
+    ) -> List[Point2D]:
+        if len(points) != TRAJECTORY_KEYPOINT_COUNT:
+            raise ValueError(
+                "trajectory_keypoints must contain exactly "
+                f"{TRAJECTORY_KEYPOINT_COUNT} points, got {len(points)}"
+            )
+        return points
 
     @staticmethod
     def _rotate_point_by_right_angle(point: Point2D, turns: int) -> Point2D:
@@ -97,6 +111,27 @@ class RelevantSemanticBoxes(BaseModel):
         if turns == 2:
             return (float(-sin_value), float(-cos_value))
         return (float(-cos_value), float(sin_value))
+
+    @staticmethod
+    def _rotate_trajectory_keypoints_by_right_angle(
+        points: List[Point2D], turns: int
+    ) -> List[Point2D]:
+        last_nonzero_idx = next(
+            (
+                index
+                for index in range(len(points) - 1, -1, -1)
+                if points[index] != (0.0, 0.0)
+            ),
+            -1,
+        )
+        return [
+            (
+                RelevantSemanticBoxes._rotate_point_by_right_angle(point, turns)
+                if index <= last_nonzero_idx
+                else (0.0, 0.0)
+            )
+            for index, point in enumerate(points)
+        ]
 
     @staticmethod
     def _rotate_aabb_by_right_angle(box: AABB2D, turns: int) -> AABB2D:
@@ -144,10 +179,13 @@ class RelevantSemanticBoxes(BaseModel):
                 range_y=list(self.level.range_y),
             ),
             instruction=self.instruction,
-            reference_path=[
+            ground_truth_trajectory=[
                 self._rotate_point_by_right_angle(point, turns)
-                for point in self.reference_path
+                for point in self.ground_truth_trajectory
             ],
+            trajectory_keypoints=self._rotate_trajectory_keypoints_by_right_angle(
+                self.trajectory_keypoints, turns
+            ),
             start_direction_vector=self._rotate_direction_by_right_angle(
                 self.start_direction_vector, turns
             ),
@@ -193,8 +231,8 @@ class RelevantSemanticBoxes(BaseModel):
         cognitive_map = CognitiveGridMap()
         cognitive_map.range_y = list(self.level.range_y)
         cognitive_map.start_direction_vector = self.start_direction_vector
-        cognitive_map.reference_path = [
-            (float(x), float(z)) for x, z in self.reference_path
+        cognitive_map.trajectory_keypoints = [
+            (float(x), float(z)) for x, z in self.trajectory_keypoints
         ]
 
         _rasterize_level_semantic_boxes(self.level, cognitive_map.grid)
@@ -232,7 +270,7 @@ class SceneSemanticBoxes:
     def relevant_to(
         self,
         instruction: str,
-        reference_path: List[List[float]],
+        ground_truth_trajectory: List[List[float]],
         start_direction_vector: DirectionVector,
         max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
         category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
@@ -242,7 +280,7 @@ class SceneSemanticBoxes:
         return _extract_relevant_semantic_boxes(
             self,
             instruction,
-            reference_path,
+            ground_truth_trajectory,
             start_direction_vector=start_direction_vector,
             max_distance=max_distance,
             category_extractor=category_extractor,

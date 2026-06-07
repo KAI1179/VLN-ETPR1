@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Callable, List, Optional, Set, Tuple
 
 from prior.directions import DirectionVector
+from prior.trajectory import select_trajectory_keypoints
 
 from ..constants import CELL_SIZE, MAX_DISTANCE_CELLS
 from ._geometry import _empty_level_boxes, _is_position_in_level, _near_any_position
@@ -19,28 +20,28 @@ from ._types import (
 
 def _first_encountered_level(
     scene: SceneSemanticBoxes,
-    reference_path: List[List[float]],
+    ground_truth_trajectory: List[List[float]],
 ) -> tuple[int, LevelSemanticBoxes]:
     if not scene.levels:
         raise ValueError("SceneSemanticBoxes contains no levels")
-    if not reference_path:
-        raise ValueError("reference_path is empty")
+    if not ground_truth_trajectory:
+        raise ValueError("ground_truth_trajectory is empty")
 
-    for position in reference_path:
+    for position in ground_truth_trajectory:
         for level_idx, level in enumerate(scene.levels):
             if _is_position_in_level(position, level.range_y):
                 return level_idx, level
 
     ranges = [level.range_y for level in scene.levels]
     raise ValueError(
-        f"reference_path does not intersect any semantic level range: {ranges}"
+        f"ground_truth_trajectory does not intersect any semantic level range: {ranges}"
     )
 
 
 def _extract_relevant_semantic_boxes(
     scene: SceneSemanticBoxes,
     instruction: str,
-    reference_path: List[List[float]],
+    ground_truth_trajectory: List[List[float]],
     start_direction_vector: DirectionVector,
     max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
     category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
@@ -51,7 +52,7 @@ def _extract_relevant_semantic_boxes(
 
         category_extractor = extract_categories
 
-    level_idx, level = _first_encountered_level(scene, reference_path)
+    level_idx, level = _first_encountered_level(scene, ground_truth_trajectory)
     origin = scene._level_origins[level_idx]
     mentioned_objects, mentioned_regions = category_extractor(instruction)
 
@@ -59,9 +60,10 @@ def _extract_relevant_semantic_boxes(
     relevant_level.range_y = list(level.range_y)
     level_points = [
         _local_point(position, origin)
-        for position in reference_path
+        for position in ground_truth_trajectory
         if _is_position_in_level(position, level.range_y)
     ]
+    trajectory_keypoints = select_trajectory_keypoints(level_points)
 
     for category_idx, boxes in enumerate(level.objects):
         mentioned = category_idx in mentioned_objects
@@ -83,7 +85,8 @@ def _extract_relevant_semantic_boxes(
         level_idx=level_idx,
         level=relevant_level,
         instruction=instruction,
-        reference_path=level_points,
+        ground_truth_trajectory=level_points,
+        trajectory_keypoints=trajectory_keypoints,
         start_direction_vector=start_direction_vector,
     )
 

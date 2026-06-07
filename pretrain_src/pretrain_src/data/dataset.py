@@ -20,7 +20,9 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
 )
-from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
+from vlnce_baselines.models.etp_llm.navigation import (
+    llm_cached_cognitive_map_to_tensors,
+)
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
@@ -119,7 +121,7 @@ class ReverieTextPathData(object):
         )
         return {
             "cognitive_maps": tensors["grid"],
-            "reference_paths": tensors["reference_paths"],
+            "trajectory_keypoints": tensors["trajectory_keypoints"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
         }
@@ -138,7 +140,7 @@ class ReverieTextPathData(object):
         )
         return {
             "cognitive_maps": tensors["grid"],
-            "reference_paths": tensors["reference_paths"],
+            "trajectory_keypoints": tensors["trajectory_keypoints"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
         }
