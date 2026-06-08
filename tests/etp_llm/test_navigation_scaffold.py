@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_llm_navigation_policy_and_trainers_register():
     import vlnce_baselines  # noqa: F401
     from habitat_baselines.common.baseline_registry import baseline_registry
@@ -48,3 +51,25 @@ def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(
         / "scene_with_spaces"
         / "R2R_train_42.npz"
     )
+
+
+def test_llm_navigation_cache_loader_fails_fast_when_map_missing(tmp_path):
+    from vlnce_baselines.models.etp_llm.navigation import (
+        llm_cached_cognitive_map_to_tensors,
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=(
+            "Missing LLM-Navigation cognitive map cache: .*"
+            "generate_navigation_cache"
+        ),
+    ):
+        llm_cached_cognitive_map_to_tensors(
+            "scene-a",
+            "R2R_train_42",
+            "R2R",
+            "train",
+            cache_dir=tmp_path,
+            model_key="test-model",
+        )

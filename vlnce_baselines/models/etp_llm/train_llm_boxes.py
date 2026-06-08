@@ -101,6 +101,7 @@ def load_llm_boxes_examples(
         return []
 
     examples: List[LLMBoxesExample] = []
+    skipped_invalid: List[Tuple[str, str]] = []
     episodes = _progress(
         VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
         desc="load LLM-Boxes examples",
@@ -124,6 +125,7 @@ def load_llm_boxes_examples(
                 RuntimeWarning,
                 stacklevel=2,
             )
+            skipped_invalid.append((episode.unique_id, str(error)))
             continue
         examples.append(
             LLMBoxesExample(
@@ -141,6 +143,10 @@ def load_llm_boxes_examples(
         )
         if limit is not None and len(examples) >= limit:
             break
+    if skipped_invalid:
+        print(f"skipped_invalid_trajectory={len(skipped_invalid)}")
+        for example_id, reason in skipped_invalid:
+            print(f"  {example_id}: {reason}")
     return examples
 
 
@@ -263,6 +269,7 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
         TRAIN_SPLITS,
         limit=args.limit,
         quiet=quiet,
+        skip_invalid_trajectory=True,
     )
     if not examples:
         raise ValueError("No LLM-Boxes training examples were loaded")
@@ -576,6 +583,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
         EVAL_SPLITS,
         limit=args.limit,
         quiet=args.quiet,
+        skip_invalid_trajectory=True,
     )
     metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)

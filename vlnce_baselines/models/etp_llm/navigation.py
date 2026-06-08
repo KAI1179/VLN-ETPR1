@@ -71,14 +71,25 @@ def llm_cached_cognitive_map_to_tensors(
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     random_rotation_augmentation: bool = False,
 ):
-    cognitive_map_dir = (
-        llm_navigation_split_dir(dataset, split, cache_dir, model_key)
-        / "cognitive_maps"
+    cache_path = llm_navigation_cognitive_map_path(
+        scene_id,
+        cache_id,
+        dataset,
+        split,
+        cache_dir=cache_dir,
+        model_key=model_key,
     )
+    if not cache_path.is_file():
+        raise FileNotFoundError(
+            "Missing LLM-Navigation cognitive map cache: "
+            f"{cache_path}. Generate caches with "
+            "`python -m vlnce_baselines.models.etp_llm.generate_navigation_cache` "
+            "before running LLM navigation."
+        )
     return cached_cognitive_map_to_tensors(
         scene_id,
         cache_id,
-        cache_dir=cognitive_map_dir,
+        cache_dir=cache_path.parent.parent,
         random_rotation_augmentation=random_rotation_augmentation,
     )
 

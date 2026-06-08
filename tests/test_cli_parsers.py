@@ -313,6 +313,28 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
     }
 
 
+def test_pretrain_llm_map_requires_precomputed_cache(tmp_path):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    nav_db = pretrain_dataset.ReverieTextPathData.__new__(
+        pretrain_dataset.ReverieTextPathData
+    )
+    nav_db.llm_cache_dir = tmp_path
+    nav_db.llm_cache_model_key = "test-model"
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=(
+            "Missing LLM-Navigation cognitive map cache: .*"
+            "generate_navigation_cache"
+        ),
+    ):
+        nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
+
+
 def test_pretrain_parser_accepts_llm_mode_and_rejects_mixed_map_modes(monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:

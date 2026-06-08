@@ -170,6 +170,7 @@ def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
 
 def test_load_llm_boxes_examples_warns_and_skips_invalid_generation_entry(
     monkeypatch,
+    capsys,
 ):
     class RejectingSceneBoxes:
         @staticmethod
@@ -192,6 +193,9 @@ def test_load_llm_boxes_examples_warns_and_skips_invalid_generation_entry(
         )
 
     assert examples == []
+    output = capsys.readouterr().out
+    assert "skipped_invalid_trajectory=1" in output
+    assert "R2R_train_42: too short" in output
 
 
 def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
@@ -893,8 +897,16 @@ def test_llm_text_stats_report_lengths_and_truncation():
 def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):
     calls = []
 
-    def fake_load(dataset, splits, limit=None, quiet=False):
-        calls.append(("load", dataset, list(splits), limit, quiet))
+    def fake_load(
+        dataset,
+        splits,
+        limit=None,
+        quiet=False,
+        skip_invalid_trajectory=False,
+    ):
+        calls.append(
+            ("load", dataset, list(splits), limit, quiet, skip_invalid_trajectory)
+        )
         return ["example"]
 
     def fake_evaluate(model, tokenizer, dataset, args):
@@ -921,7 +933,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
     assert metrics == {"examples": 1.0}
     assert calls == [
         ("load_model", "data/models/Llama-3.1-8B-Instruct", "auto"),
-        ("load", "R2R", ["val_seen", "val_unseen"], 1, True),
+        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True),
         ("eval", str(tmp_path), ["example"]),
     ]
     assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
