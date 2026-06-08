@@ -6,6 +6,8 @@
 
 ## Results
 
+> Note: Aggregated before switching back to GT (`2bdf626`)
+
 ### `bbox_stat`
 
 #### Radius = 5 cells
