@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable, List, Tuple
 
 from prior import DATA_DIR
 from prior.bbox import SceneSemanticBoxes
@@ -23,6 +23,7 @@ def generate_cognitive_maps(
     output_dir.mkdir(parents=True, exist_ok=True)
     generated = 0
     skipped = 0
+    skipped_invalid: List[Tuple[str, str]] = []
 
     for i, entry in enumerate(data):
         scene_id = entry.scene_id
@@ -54,6 +55,7 @@ def generate_cognitive_maps(
             relevant_boxes.to_cognitive_map().save(save_path)
         except InsufficientTrajectoryPointsError as error:
             LOGGER.warning("skipping %s: %s", episode_key, error)
+            skipped_invalid.append((episode_key, str(error)))
             skipped += 1
             continue
 
@@ -64,18 +66,21 @@ def generate_cognitive_maps(
         )
 
     print(f"generated={generated} skipped={skipped}")
+    if skipped_invalid:
+        print(f"skipped_invalid_trajectory={len(skipped_invalid)}")
+        for episode_key, reason in skipped_invalid:
+            print(f"  {episode_key}: {reason}")
     return generated, skipped
 
 
 def main() -> None:
-    generated, skipped = generate_cognitive_maps(
+    generate_cognitive_maps(
         [
             *VLNCEEpisodeEntry.iter_from("R2R", splits=DEFAULT_SPLITS),
             *VLNCEEpisodeEntry.iter_from("RxR", splits=DEFAULT_SPLITS),
-        ]
+        ],
+        OUTPUT_DIR,
     )
-    if skipped:
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

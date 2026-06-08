@@ -83,7 +83,60 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "R2R_train_2.npz"]
     assert "WARNING" in caplog.text
     assert "R2R_train_1" in caplog.text
-    assert "generated=1 skipped=1" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "generated=1 skipped=1" in output
+    assert "skipped_invalid_trajectory=1" in output
+    assert (
+        "R2R_train_1: ground_truth_trajectory must contain at least 2 "
+        "selected-level points for trajectory_keypoints"
+    ) in output
+
+
+def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
+    monkeypatch, tmp_path, capsys
+):
+    entries = [
+        FakeVLNCEEntry(1, [[0.0, 0.0, 0.0]]),
+        FakeVLNCEEntry(
+            2,
+            [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
+        ),
+    ]
+
+    class FakeSceneBoxes:
+        @staticmethod
+        def from_scene_id(scene_id):
+            return FakeSceneBoxes()
+
+        def relevant_to(
+            self,
+            instruction,
+            ground_truth_trajectory,
+            start_direction_vector,
+        ):
+            if len(ground_truth_trajectory) < 2:
+                raise InsufficientTrajectoryPointsError(
+                    "ground_truth_trajectory must contain at least 2 "
+                    "selected-level points for trajectory_keypoints"
+                )
+            return FakeRelevantBoxes()
+
+    def iter_from(dataset, splits):
+        if dataset == "R2R":
+            return iter(entries)
+        return iter(())
+
+    FakeCognitiveMap.saved_paths.clear()
+    monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
+    monkeypatch.setattr(prior_main.VLNCEEpisodeEntry, "iter_from", iter_from)
+    monkeypatch.setattr(prior_main, "OUTPUT_DIR", tmp_path)
+
+    prior_main.main()
+
+    output = capsys.readouterr().out
+    assert "generated=1 skipped=1" in output
+    assert "skipped_invalid_trajectory=1" in output
+    assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "R2R_train_2.npz"]
 
 
 def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
