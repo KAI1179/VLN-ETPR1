@@ -224,13 +224,15 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
 
 When `--use_prior_gt` is enabled:
 
-- The dataset generates cognitive maps on the fly from `prior`.
+- The dataset loads precomputed maps from `data/cognitive_maps_etp_r1`.
+- Annotation entries without a corresponding cache are removed during dataset
+  construction and reported once as `skipped_missing`.
 - The collate path stacks `grid`, `trajectory_keypoints`, `start_direction_vector`, and
   `start_position`.
 - `EmbeddingGridMapEncoder` emits `map_tokens` and `map_token_masks`.
 - Pretraining `GlocalTextPathCMT` fuses map tokens into global graph embeddings through
   zero-initialized graph-to-map cross-attention.
 
-The pretraining loader intentionally does not fallback for missing map data. Missing
-scene assets, bad instruction metadata, or failed map construction should fail loudly
-rather than silently training on incorrect zero metadata.
+The loader does not substitute zero metadata for missing maps. A partially complete
+cache skips missing annotation entries; a completely absent cache fails before
+training starts.

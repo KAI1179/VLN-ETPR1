@@ -19,6 +19,7 @@ from .common import (
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
+    cognitive_map_cache_path,
 )
 from vlnce_baselines.models.etp_llm.navigation import (
     llm_cached_cognitive_map_to_tensors,
@@ -28,6 +29,33 @@ MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
+
+
+def _filter_missing_pretrain_cognitive_maps(items):
+    available = []
+    skipped = 0
+    for item in items:
+        cache_path = cognitive_map_cache_path(
+            item["scan"],
+            item["instr_id"],
+            PRETRAIN_COGNITIVE_MAP_DIR,
+        )
+        if cache_path.is_file():
+            available.append(item)
+        else:
+            skipped += 1
+
+    if skipped:
+        print(
+            "pretrain_cognitive_maps: "
+            f"available={len(available)} skipped_missing={skipped}"
+        )
+    if items and not available:
+        raise FileNotFoundError(
+            "No PriorGT pretraining cognitive-map caches were found under "
+            f"{PRETRAIN_COGNITIVE_MAP_DIR}"
+        )
+    return available
 
 
 class ReverieTextPathData(object):
@@ -101,6 +129,9 @@ class ReverieTextPathData(object):
             with jsonlines.open(anno_file, "r") as f:
                 for item in f:
                     self.data.append(item)
+
+        if self.use_prior_gt:
+            self.data = _filter_missing_pretrain_cognitive_maps(self.data)
 
         if val_sample_num:
             # cannot evaluate all the samples as it takes too much time

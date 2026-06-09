@@ -384,6 +384,51 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
 
+def test_pretrain_prior_map_filter_skips_missing_entries(
+    tmp_path, monkeypatch, capsys
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+    (scene_dir / "good.npz").touch()
+    items = [
+        {"instr_id": "good", "scan": "scene"},
+        {"instr_id": "missing", "scan": "scene"},
+    ]
+
+    filtered = pretrain_dataset._filter_missing_pretrain_cognitive_maps(items)
+
+    assert filtered == [{"instr_id": "good", "scan": "scene"}]
+    assert (
+        "pretrain_cognitive_maps: available=1 skipped_missing=1"
+        in capsys.readouterr().out
+    )
+
+
+def test_pretrain_prior_map_filter_rejects_entirely_missing_cache(
+    tmp_path, monkeypatch
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="No PriorGT pretraining cognitive-map caches were found",
+    ):
+        pretrain_dataset._filter_missing_pretrain_cognitive_maps(
+            [{"instr_id": "missing", "scan": "scene"}]
+        )
+
+
 @pytest.mark.parametrize(
     ("turns", "expected_paths", "expected_start", "expected_direction"),
     [
