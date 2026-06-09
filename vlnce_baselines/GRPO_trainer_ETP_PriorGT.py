@@ -46,6 +46,7 @@ import copy
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    available_vlnce_cognitive_map_episode_ids,
     cached_cognitive_map_to_tensors,
 )
 
@@ -257,7 +258,10 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.freeze()
 
         self.envs = construct_envs(
-            self.config, get_env_class(self.config.ENV_NAME), auto_reset_done=False
+            self.config,
+            get_env_class(self.config.ENV_NAME),
+            auto_reset_done=False,
+            episodes_allowed=self._finetuning_episodes_allowed(),
         )
         env_num = self.envs.num_envs
         dataset_len = sum(self.envs.number_of_episodes)
@@ -272,6 +276,15 @@ class RLTrainer(BaseVLNCETrainer):
         )
 
         return observation_space, action_space
+
+    def _finetuning_episodes_allowed(self):
+        map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        if map_cfg is None or not map_cfg.enabled:
+            return None
+        return available_vlnce_cognitive_map_episode_ids(
+            self.config.MODEL.task_type,
+            self.config.TASK_CONFIG.DATASET.SPLIT,
+        )
 
     def setup_training_parts(self):
         self.policy.eval()

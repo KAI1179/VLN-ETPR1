@@ -9,6 +9,9 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import start_metadata_for_epi
 class RLTrainer(PriorGTGRPOTrainer):
     """GRPO trainer that replaces GT cognitive maps with instruction-imagined maps."""
 
+    def _finetuning_episodes_allowed(self):
+        return None
+
     def _should_build_cognitive_maps(self, map_cfg):
         return False
 

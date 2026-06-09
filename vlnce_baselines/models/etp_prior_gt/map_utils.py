@@ -17,6 +17,7 @@ from prior.constants import (
 from prior.directions import start_rotation_to_direction_vector
 from prior.bbox import SceneSemanticBoxes
 from prior.grid_map import CognitiveGridMap
+from prior.vlnce import VLNCEEpisodeEntry
 from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
@@ -80,6 +81,36 @@ def cognitive_map_cache_path(
     if cache_dir is None:
         cache_dir = VLNCE_COGNITIVE_MAP_DIR
     return cache_dir / _scene_key(scene_id) / f"{cache_id}.npz"
+
+
+def available_vlnce_cognitive_map_episode_ids(
+    dataset: str,
+    split: str,
+    cache_dir: Optional[Path] = None,
+) -> list[str]:
+    available = []
+    skipped = []
+    for entry in VLNCEEpisodeEntry.iter_from(dataset.upper(), splits=(split,)):
+        cache_path = cognitive_map_cache_path(
+            entry.scene_id,
+            entry.unique_id,
+            cache_dir,
+        )
+        if cache_path.is_file():
+            available.append(str(entry.episode_id))
+        else:
+            skipped.append(entry.unique_id)
+
+    if skipped:
+        print(
+            "finetuning_cognitive_maps: "
+            f"available={len(available)} skipped_missing={len(skipped)}"
+        )
+    if not available:
+        raise FileNotFoundError(
+            f"No cognitive-map caches found for {dataset}/{split}"
+        )
+    return available
 
 
 def load_cached_cognitive_map(

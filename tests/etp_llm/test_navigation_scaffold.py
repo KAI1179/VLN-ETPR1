@@ -73,3 +73,58 @@ def test_llm_navigation_cache_loader_fails_fast_when_map_missing(tmp_path):
             cache_dir=tmp_path,
             model_key="test-model",
         )
+
+
+def test_available_llm_navigation_episode_ids_skips_missing(
+    tmp_path, monkeypatch, capsys
+):
+    from vlnce_baselines.models.etp_llm import navigation
+
+    entries = [
+        type(
+            "Entry",
+            (),
+            {
+                "scene_id": "scene-a",
+                "episode_id": 1,
+                "unique_id": "R2R_train_1",
+            },
+        )(),
+        type(
+            "Entry",
+            (),
+            {
+                "scene_id": "scene-a",
+                "episode_id": 2,
+                "unique_id": "R2R_train_2",
+            },
+        )(),
+    ]
+    monkeypatch.setattr(
+        navigation.VLNCEEpisodeEntry,
+        "iter_from",
+        staticmethod(lambda dataset, splits: iter(entries)),
+    )
+    map_path = navigation.llm_navigation_cognitive_map_path(
+        "scene-a",
+        "R2R_train_2",
+        "R2R",
+        "train",
+        cache_dir=tmp_path,
+        model_key="test-model",
+    )
+    map_path.parent.mkdir(parents=True)
+    map_path.touch()
+
+    allowed = navigation.available_llm_navigation_episode_ids(
+        "R2R",
+        "train",
+        cache_dir=tmp_path,
+        model_key="test-model",
+    )
+
+    assert allowed == ["2"]
+    assert (
+        "finetuning_llm_navigation_maps: available=1 skipped_missing=1"
+        in capsys.readouterr().out
+    )

@@ -2,7 +2,10 @@
 
 from habitat_baselines.common.baseline_registry import baseline_registry
 
-from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
+from vlnce_baselines.models.etp_llm.navigation import (
+    available_llm_navigation_episode_ids,
+    llm_cached_cognitive_map_to_tensors,
+)
 from vlnce_baselines.ss_trainer_ETP_PriorGT import RLTrainer as PriorGTRLTrainer
 
 
@@ -12,6 +15,21 @@ class RLTrainer(PriorGTRLTrainer):
 
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
+
+    def _finetuning_episodes_allowed(self):
+        map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        if map_cfg is None or not map_cfg.enabled:
+            return None
+        return available_llm_navigation_episode_ids(
+            self.config.MODEL.task_type,
+            self.config.TASK_CONFIG.DATASET.SPLIT,
+            cache_dir=getattr(map_cfg, "llm_cache_dir", None),
+            model_key=getattr(
+                map_cfg,
+                "llm_cache_model_key",
+                "llama-3.1-8b-instruct",
+            ),
+        )
 
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         dataset = self.config.MODEL.task_type

@@ -163,6 +163,51 @@ def test_cached_cognitive_map_to_tensors_fails_for_missing_cache(tmp_path, monke
         map_utils.cached_cognitive_map_to_tensors("scene.glb", "R2R_train_1")
 
 
+def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
+    tmp_path, monkeypatch, capsys
+):
+    entries = [
+        type(
+            "Entry",
+            (),
+            {
+                "scene_id": "scene",
+                "episode_id": 1,
+                "unique_id": "R2R_train_1",
+            },
+        )(),
+        type(
+            "Entry",
+            (),
+            {
+                "scene_id": "scene",
+                "episode_id": 2,
+                "unique_id": "R2R_train_2",
+            },
+        )(),
+    ]
+    monkeypatch.setattr(
+        map_utils.VLNCEEpisodeEntry,
+        "iter_from",
+        staticmethod(lambda dataset, splits: iter(entries)),
+    )
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+    (scene_dir / "R2R_train_2.npz").touch()
+
+    allowed = map_utils.available_vlnce_cognitive_map_episode_ids(
+        "R2R",
+        "train",
+        tmp_path,
+    )
+
+    assert allowed == ["2"]
+    assert (
+        "finetuning_cognitive_maps: available=1 skipped_missing=1"
+        in capsys.readouterr().out
+    )
+
+
 def test_tensor_rotation_preserves_zero_padded_trajectory_keypoints():
     tensors = {
         "grid": torch.zeros(1, 100, 100),

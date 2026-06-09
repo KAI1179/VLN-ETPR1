@@ -7,6 +7,7 @@ import re
 from typing import Optional
 
 from prior import DATA_DIR
+from prior.vlnce import VLNCEEpisodeEntry
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
@@ -92,6 +93,40 @@ def llm_cached_cognitive_map_to_tensors(
         cache_dir=cache_path.parent.parent,
         random_rotation_augmentation=random_rotation_augmentation,
     )
+
+
+def available_llm_navigation_episode_ids(
+    dataset: str,
+    split: str,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> list[str]:
+    available = []
+    skipped = []
+    for entry in VLNCEEpisodeEntry.iter_from(dataset.upper(), splits=(split,)):
+        cache_path = llm_navigation_cognitive_map_path(
+            entry.scene_id,
+            entry.unique_id,
+            dataset,
+            split,
+            cache_dir=cache_dir,
+            model_key=model_key,
+        )
+        if cache_path.is_file():
+            available.append(str(entry.episode_id))
+        else:
+            skipped.append(entry.unique_id)
+
+    if skipped:
+        print(
+            "finetuning_llm_navigation_maps: "
+            f"available={len(available)} skipped_missing={len(skipped)}"
+        )
+    if not available:
+        raise FileNotFoundError(
+            f"No LLM-Navigation caches found for {dataset}/{split}"
+        )
+    return available
 
 
 def _safe_path_part(value: str) -> str:

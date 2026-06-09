@@ -236,3 +236,7 @@ When `--use_prior_gt` is enabled:
 The loader does not substitute zero metadata for missing maps. A partially complete
 cache skips missing annotation entries; a completely absent cache fails before
 training starts.
+
+PriorGT and LLM finetuning apply the same policy before constructing vector
+environments: episodes without the required cache are excluded and summarized as
+`skipped_missing`. A completely absent split cache fails before rollout starts.
