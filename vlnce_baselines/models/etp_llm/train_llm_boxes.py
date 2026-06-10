@@ -24,7 +24,7 @@ from typing import (
 
 import prior.bbox as bbox
 from prior.bbox import SceneSemanticBoxes
-from prior.trajectory import InsufficientTrajectoryPointsError
+from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 from prior.vlnce import VLNCEEpisodeEntry
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
@@ -79,7 +79,7 @@ class LLMBoxesExample:
     instruction: str
     start_position: Sequence[float]
     start_direction: Sequence[float]
-    ground_truth_trajectory: Sequence[Sequence[float]]
+    ground_truth_trajectory: WorldTrajectory3D
     target_relevant: bbox.RelevantSemanticBoxes
     target_spec: LLMBoxesSpec = field(init=False)
 

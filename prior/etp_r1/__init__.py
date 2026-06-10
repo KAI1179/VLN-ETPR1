@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from sentencepiece import SentencePieceProcessor
 
 from prior.directions import DirectionVector, heading_to_direction_vector
+from prior.trajectory import WorldPoint3D, WorldTrajectory3D
 
 # Paths
 
@@ -76,7 +77,7 @@ class AnnotationEntry:
 
     def positions(
         self, connectivity_dir: str = str(CONNECTIVITY_DIR)
-    ) -> list[list[float]]:
+    ) -> WorldTrajectory3D:
         """Get a list of positions."""
         # `ConnectivityEntry.map_for` is cached, so this is efficient even if called multiple times.
         connectivity = ConnectivityEntry.map_for(self.scan, connectivity_dir)
@@ -117,9 +118,13 @@ class ConnectivityEntry:
         return connectivity_map
 
     @property
-    def position(self) -> list[float]:
+    def position(self) -> WorldPoint3D:
         """Get 3D position of the point."""
-        return [self.pose[3], self.pose[11] - self.height, -self.pose[7]]
+        return (
+            float(self.pose[3]),
+            float(self.pose[11] - self.height),
+            float(-self.pose[7]),
+        )
 
 
 # Tokens

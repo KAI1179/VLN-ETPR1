@@ -8,13 +8,13 @@ import pytest
 
 from prior import __main__ as prior_main
 from prior.etp_r1 import __main__ as etp_r1_main
-from prior.trajectory import InsufficientTrajectoryPointsError
+from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 
 
 @dataclass
 class FakeVLNCEEntry:
     episode_id: int
-    ground_truth_trajectory: List[List[float]]
+    ground_truth_trajectory: WorldTrajectory3D
     dataset: str = "R2R"
     scene_id: str = "scene"
     instruction: str = "Walk forward."

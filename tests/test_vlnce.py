@@ -33,9 +33,9 @@ def test_vlnce_episode_entry_iter_from_uses_r2r_ground_truth_trajectory(
     split_dir = tmp_path / "train"
     split_dir.mkdir()
     trajectory = [
-        [0.0, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
+        (0.0, 0.0, 0.0),
+        (0.5, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
     ]
     _write_gzip_json(split_dir / "train.json.gz", {"episodes": [_episode()]})
     _write_gzip_json(
@@ -61,7 +61,7 @@ def test_vlnce_episode_entry_iter_from_uses_rxr_guide_ground_truth_file(
 
     split_dir = tmp_path / "val_seen"
     split_dir.mkdir()
-    trajectory = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    trajectory = [(0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
     _write_gzip_json(
         split_dir / "val_seen_guide.json.gz",
         {"episodes": [_episode(12)]},

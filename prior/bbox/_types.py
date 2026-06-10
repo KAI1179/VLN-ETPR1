@@ -10,10 +10,14 @@ import numpy as np
 from pydantic import BaseModel, field_validator
 
 from prior.directions import DirectionVector
-from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
+from prior.trajectory import (
+    LevelTrajectory2D,
+    Point2D,
+    TRAJECTORY_KEYPOINT_COUNT,
+    WorldTrajectory3D,
+)
 from ..constants import CELL_SIZE, COLS, MAX_DISTANCE_CELLS, ROWS
 
-Point2D = Tuple[float, float]
 Axis2D = Tuple[float, float]
 IRRELEVANT_MULTIPLIER = 0.6
 """Confidence multiplier for trajectory-near boxes not mentioned in the instruction."""
@@ -70,7 +74,7 @@ class RelevantSemanticBoxes(BaseModel):
     level_idx: int
     level: LevelSemanticBoxes
     instruction: str
-    ground_truth_trajectory: List[Point2D]
+    ground_truth_trajectory: LevelTrajectory2D
     trajectory_keypoints: List[Point2D]
     start_direction_vector: DirectionVector
 
@@ -270,7 +274,7 @@ class SceneSemanticBoxes:
     def relevant_to(
         self,
         instruction: str,
-        ground_truth_trajectory: List[List[float]],
+        ground_truth_trajectory: WorldTrajectory3D,
         start_direction_vector: DirectionVector,
         max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
         category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,

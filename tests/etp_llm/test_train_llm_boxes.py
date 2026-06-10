@@ -55,7 +55,7 @@ class _Episode:
     instruction = "Go to the chair."
     start_position = [1.24, 0.0, 2.96]
     start_direction_vector = (0.0, 1.0)
-    ground_truth_trajectory = [[0.0, 0.0], [1.0, 1.0]]
+    ground_truth_trajectory = [(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)]
 
 
 class _EpisodeSameSceneA(_Episode):
@@ -88,7 +88,7 @@ class _SceneBoxes:
 
     def relevant_to(self, instruction, ground_truth_trajectory, start_direction_vector):
         assert instruction == "Go to the chair."
-        assert ground_truth_trajectory == [[0.0, 0.0], [1.0, 1.0]]
+        assert ground_truth_trajectory == [(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)]
         assert start_direction_vector == (0.0, 1.0)
         return _relevant_with_chair(instruction)
 
@@ -110,7 +110,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     assert example.instruction == "Go to the chair."
     assert example.start_position == [1.24, 0.0, 2.96]
     assert example.start_direction == (0.0, 1.0)
-    assert example.ground_truth_trajectory == [[0.0, 0.0], [1.0, 1.0]]
+    assert example.ground_truth_trajectory == [(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)]
     assert example.target_relevant.level.objects[1][0].center == (1.24, 2.96)
     assert example.target_spec.objects == (
         ObjectBoxSpec(
@@ -145,7 +145,7 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
         instruction="Go to the chair.",
         start_position=[0.0, 0.0],
         start_direction=(0.0, 1.0),
-        ground_truth_trajectory=[[0.0, 0.0], [1.0, 1.0]],
+        ground_truth_trajectory=[(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)],
         target_relevant=relevant,
     )
 
@@ -269,7 +269,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         instruction="Walk into the living room.",
         start_position=[3.0, 4.0],
         start_direction=(1.0, 0.0),
-        ground_truth_trajectory=[[0.0, 0.0], [1.0, 1.0]],
+        ground_truth_trajectory=[(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)],
         target_relevant=_relevant_with_chair("Walk into the living room."),
     )
 
@@ -312,8 +312,8 @@ def test_llm_boxes_dataset_item_uses_level_local_start_position():
         start_position=[101.24, 0.0, 202.96],
         start_direction=(1.0, 0.0),
         ground_truth_trajectory=[
-            [101.24, 0.0, 202.96],
-            [102.0, 0.0, 204.0],
+            (101.24, 0.0, 202.96),
+            (102.0, 0.0, 204.0),
         ],
         target_relevant=target_relevant,
     )

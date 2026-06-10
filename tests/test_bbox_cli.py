@@ -7,7 +7,7 @@ import pytest
 
 from prior import bbox
 from prior.bbox import __main__ as bbox_main
-from prior.trajectory import InsufficientTrajectoryPointsError
+from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 
 
 @dataclass
@@ -17,14 +17,14 @@ class FakeEpisode:
     scene_id: str = "17DRP5sb8fy"
     episode_id: int = 123
     instruction: str = "Walk to the table."
-    ground_truth_trajectory: Optional[list[list[float]]] = None
+    ground_truth_trajectory: Optional[WorldTrajectory3D] = None
     start_direction_vector: tuple[float, float] = (0.0, 1.0)
 
     def __post_init__(self):
         if self.ground_truth_trajectory is None:
             self.ground_truth_trajectory = [
-                [0.0, 5.0, 0.0],
-                [1.0, 5.0, 0.0],
+                (0.0, 5.0, 0.0),
+                (1.0, 5.0, 0.0),
             ]
 
 
@@ -233,7 +233,7 @@ def test_relevant_episode_boxes_rejects_too_short_selected_level_trajectory(
         regions=[[] for _ in range(bbox.REGION_CATEGORIES)],
         range_y=[None, None],
     )
-    episode = FakeEpisode(ground_truth_trajectory=[[0.0, 0.0, 0.0]])
+    episode = FakeEpisode(ground_truth_trajectory=[(0.0, 0.0, 0.0)])
     monkeypatch.setattr(
         bbox_main,
         "_find_episode",

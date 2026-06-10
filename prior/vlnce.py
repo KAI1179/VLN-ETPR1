@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from gzip import open as gzip_open
 from json import load
 from pathlib import Path
-from typing import Iterable, Iterator, Literal, Tuple
+from typing import Iterable, Iterator, Literal, Sequence, Tuple
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
+from prior.trajectory import WorldPoint3D, WorldTrajectory3D
 
 
 DEFAULT_SPLITS = ("train", "val_seen", "val_unseen")
@@ -25,7 +26,7 @@ class VLNCEEpisodeEntry:
     start_position: list[float]
     start_rotation: list[float]
     instruction_tokens: list[int]
-    ground_truth_trajectory: list[list[float]]
+    ground_truth_trajectory: WorldTrajectory3D
 
     @staticmethod
     def iter_from(
@@ -70,7 +71,9 @@ class VLNCEEpisodeEntry:
                     start_position=episode["start_position"],
                     start_rotation=episode["start_rotation"],
                     instruction_tokens=instruction_data["instruction_tokens"],
-                    ground_truth_trajectory=gt_entry["locations"],
+                    ground_truth_trajectory=_world_trajectory_3d(
+                        gt_entry["locations"]
+                    ),
                 )
 
     @property
@@ -87,6 +90,13 @@ class VLNCEEpisodeEntry:
 def _scene_id_from_episode(raw_scene_id: str) -> str:
     """Extract MP3D scene id from Habitat scene paths."""
     return raw_scene_id.split("/")[1]
+
+
+def _world_trajectory_3d(points: Iterable[Sequence[float]]) -> WorldTrajectory3D:
+    return [
+        (float(point[0]), float(point[1]), float(point[2]))
+        for point in points
+    ]
 
 
 def _files_for_split(

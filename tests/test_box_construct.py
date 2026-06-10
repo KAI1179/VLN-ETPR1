@@ -165,9 +165,9 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
         ground_truth_trajectory=[
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 0.0, 1.0],
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 1.0),
         ],
         start_direction_vector=(0.0, 1.0),
         max_distance=1.5,
@@ -219,9 +219,9 @@ def test_scene_semantic_boxes_skips_one_point_level_for_keypoints():
     relevant = box.SceneSemanticBoxes([first_level, second_level]).relevant_to(
         "walk to the table",
         ground_truth_trajectory=[
-            [0.0, 0.5, 0.0],
-            [2.0, 1.5, 0.0],
-            [3.0, 1.5, 0.0],
+            (0.0, 0.5, 0.0),
+            (2.0, 1.5, 0.0),
+            (3.0, 1.5, 0.0),
         ],
         start_direction_vector=(0.0, 1.0),
         max_distance=1.5,
@@ -273,7 +273,7 @@ def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
     assert scene_boxes.levels[0].objects[3][0].center == (3.0, 4.0)
     relevant = scene_boxes.relevant_to(
         "",
-        ground_truth_trajectory=[[4.0, 0.0, 6.0], [5.0, 0.0, 6.0]],
+        ground_truth_trajectory=[(4.0, 0.0, 6.0), (5.0, 0.0, 6.0)],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: (set(), set()),
     )
@@ -477,7 +477,7 @@ def test_relevant_semantic_boxes_to_cognitive_map_scales_unmentioned_confidence(
 
     relevant = box.SceneSemanticBoxes([level]).relevant_to(
         "walk to the table",
-        ground_truth_trajectory=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ground_truth_trajectory=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
         start_direction_vector=(0.0, 1.0),
         category_extractor=lambda instruction: ({3}, set()),
     )
@@ -505,7 +505,7 @@ def test_relevant_to_rejects_one_selected_level_point():
     with pytest.raises(ValueError, match="at least 2 selected-level points"):
         box.SceneSemanticBoxes([level]).relevant_to(
             "",
-            ground_truth_trajectory=[[0.0, 0.0, 0.0]],
+            ground_truth_trajectory=[(0.0, 0.0, 0.0)],
             start_direction_vector=(0.0, 1.0),
             category_extractor=lambda instruction: (set(), set()),
         )

@@ -5,6 +5,9 @@ from typing import List, Optional, Sequence, Tuple
 
 
 Point2D = Tuple[float, float]
+WorldPoint3D = Tuple[float, float, float]
+LevelTrajectory2D = List[Point2D]
+WorldTrajectory3D = List[WorldPoint3D]
 
 TRAJECTORY_KEYPOINT_COUNT = 5
 TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD = 0.8

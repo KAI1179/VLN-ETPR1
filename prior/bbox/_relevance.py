@@ -7,7 +7,10 @@ from typing import Callable, List, Optional, Set, Tuple
 
 from prior.directions import DirectionVector
 from prior.trajectory import (
+    LevelTrajectory2D,
     InsufficientTrajectoryPointsError,
+    WorldPoint3D,
+    WorldTrajectory3D,
     select_trajectory_keypoints,
 )
 
@@ -23,8 +26,8 @@ from ._types import (
 
 def _first_usable_level_points(
     scene: SceneSemanticBoxes,
-    ground_truth_trajectory: List[List[float]],
-) -> tuple[int, LevelSemanticBoxes, List[Point2D]]:
+    ground_truth_trajectory: WorldTrajectory3D,
+) -> tuple[int, LevelSemanticBoxes, LevelTrajectory2D]:
     if not scene.levels:
         raise ValueError("SceneSemanticBoxes contains no levels")
     if not ground_truth_trajectory:
@@ -66,7 +69,7 @@ def _first_usable_level_points(
 def _extract_relevant_semantic_boxes(
     scene: SceneSemanticBoxes,
     instruction: str,
-    ground_truth_trajectory: List[List[float]],
+    ground_truth_trajectory: WorldTrajectory3D,
     start_direction_vector: DirectionVector,
     max_distance: float = MAX_DISTANCE_CELLS * CELL_SIZE,
     category_extractor: Optional[Callable[[str], Tuple[Set[int], Set[int]]]] = None,
@@ -112,5 +115,5 @@ def _extract_relevant_semantic_boxes(
     )
 
 
-def _local_point(position: List[float], origin: Point2D) -> Point2D:
+def _local_point(position: WorldPoint3D, origin: Point2D) -> Point2D:
     return (float(position[0]) - origin[0], float(position[2]) - origin[1])

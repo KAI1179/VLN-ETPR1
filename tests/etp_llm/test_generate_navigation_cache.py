@@ -91,7 +91,7 @@ class _PretrainEntry:
     start_direction_vector = (0.0, 1.0)
 
     def positions(self):
-        return [[1.24, 0.0, 2.96], [2.0, 0.0, 4.0]]
+        return [(1.24, 0.0, 2.96), (2.0, 0.0, 4.0)]
 
 
 class _PretrainAnnotationEntry:
@@ -113,7 +113,7 @@ class _SceneBoxes:
 
     def relevant_to(self, instruction, ground_truth_trajectory, start_direction_vector):
         assert instruction == "Find the chair."
-        assert ground_truth_trajectory == [[1.24, 0.0, 2.96], [2.0, 0.0, 4.0]]
+        assert ground_truth_trajectory == [(1.24, 0.0, 2.96), (2.0, 0.0, 4.0)]
         assert start_direction_vector == (0.0, 1.0)
         relevant = _empty_relevant(instruction)
         relevant.trajectory_keypoints = [
