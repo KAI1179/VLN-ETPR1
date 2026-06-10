@@ -2,6 +2,9 @@ export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
+
 # 代码运行架构：
 # 节点：指的是一台独立的物理计算机或服务器，内部可能包含多个gpu。若节点为1则是单机多卡训练，若为1以上，则是多机多卡训练
 # 进程(即nproc_per_node的值)：一个“进程”是一个正在运行的程序实例。在 PyTorch 分布式训练（尤其是使用 DistributedDataParallel）中，通常每个 GPU 会由一个独立的 Python 进程来控制和运行训练代码。
@@ -17,12 +20,10 @@ export LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu
 
 # Continue from previous checkpoints: Set IL.load_from_ckpt and IL.is_requeue to True
 
-NPROC_PER_NODE=4
+configure_distributed_gpu_vars
 MASTER_PORT=${2:-2333}
 
 EXP_CONFIG="run_r2r/iter_train.yaml"
-GPU_IDS="[0,1,2,3]"
-GPU_NUMBERS=4
 BASE_NUM_ENVS=8
 MAP_NUM_ENVS=4
 
@@ -215,21 +216,22 @@ case $mode in
 esac
 
 # 命令行运行：
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash eval 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash infer 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_ss 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_eval_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_eval_ss 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_eval_grpo 2333
+# Uses all visible GPUs by default. Set CUDA_VISIBLE_DEVICES first to restrict cards.
+# bash run_r2r/main_server.bash dagger 2333
+# bash run_r2r/main_server.bash grpo 2333
+# bash run_r2r/main_server.bash eval 2333
+# bash run_r2r/main_server.bash infer 2333
+# bash run_r2r/main_server.bash priorgt_dagger 2333
+# bash run_r2r/main_server.bash priorgt_grpo 2333
+# bash run_r2r/main_server.bash priorgt_eval_ss 2333
+# bash run_r2r/main_server.bash priorgt_eval_grpo 2333
+# bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
+# bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
+# bash run_r2r/main_server.bash imagined_dagger 2333
+# bash run_r2r/main_server.bash imagined_eval_ss 2333
+# bash run_r2r/main_server.bash imagined_grpo 2333
+# bash run_r2r/main_server.bash imagined_eval_grpo 2333
+# bash run_r2r/main_server.bash llm_dagger 2333
+# bash run_r2r/main_server.bash llm_eval_ss 2333
+# bash run_r2r/main_server.bash llm_grpo 2333
+# bash run_r2r/main_server.bash llm_eval_grpo 2333

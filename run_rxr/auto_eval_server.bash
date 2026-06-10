@@ -1,12 +1,17 @@
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
+configure_distributed_gpu_vars
+MASTER_PORT="${MASTER_PORT:-2333}"
+
 flag_template=" --exp_name release_rxr_grpo
       --run-type eval
       --exp-config run_rxr/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
       NUM_ENVIRONMENTS 11
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING False
       EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_rxr_grpo/ckpt.iter{ckpt_num}.pth
@@ -29,8 +34,9 @@ for ((ckpt_num=$start_ckpt; ckpt_num>=$end_ckpt; ckpt_num+=$step)); do
     # 将 ckpt_num 替换到 flag 中
     flag=$(echo "$flag_template" | sed "s/{ckpt_num}/$ckpt_num/")
     # 运行 eval 模式
-    python -m torch.distributed.launch --nproc_per_node=4 --master_port 2333 run.py $flag 2>&1 | stdbuf -oL grep -v 'it/s' | tee -a $log_file
+    python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag 2>&1 | stdbuf -oL grep -v 'it/s' | tee -a $log_file
 
 done
 
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/auto_eval_server.bash
+# Uses all visible GPUs by default. Set CUDA_VISIBLE_DEVICES first to restrict cards.
+# bash run_rxr/auto_eval_server.bash

@@ -1,12 +1,17 @@
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
+configure_distributed_gpu_vars
+MASTER_PORT=${2:-2333}
+
 flag1="--exp_name release_rxr_dagger
       --run-type dagger
       --exp-config run_rxr/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
       NUM_ENVIRONMENTS 6
       ONLY_LAST_SAVEALL True
       IL.iters 30000
@@ -29,9 +34,9 @@ flag1="--exp_name release_rxr_dagger
 flag2="--exp_name release_rxr_grpo
       --run-type grpo
       --exp-config run_rxr/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
       NUM_ENVIRONMENTS 6
       ONLY_LAST_SAVEALL True
       TRAINER_NAME GRPO-R1
@@ -61,9 +66,9 @@ flag2="--exp_name release_rxr_grpo
 flag3=" --exp_name release_rxr_grpo
       --run-type eval
       --exp-config run_rxr/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
       NUM_ENVIRONMENTS 11
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING False
       EVAL.CKPT_PATH_DIR data/logs/checkpoints/release_rxr_grpo/store/ckpt.iter1320.pth
@@ -75,9 +80,9 @@ flag3=" --exp_name release_rxr_grpo
 flag4="--exp_name release_rxr_grpo
       --run-type inference
       --exp-config run_rxr/iter_train.yaml
-      SIMULATOR_GPU_IDS [0,1,2,3]
-      TORCH_GPU_IDS [0,1,2,3]
-      GPU_NUMBERS 4
+      SIMULATOR_GPU_IDS ${GPU_IDS}
+      TORCH_GPU_IDS ${GPU_IDS}
+      GPU_NUMBERS ${GPU_NUMBERS}
       NUM_ENVIRONMENTS 8
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING False
       INFERENCE.CKPT_PATH data/logs/checkpoints/release_rxr_grpo/store/ckpt.iter1320.pth
@@ -90,24 +95,25 @@ mode=$1
 case $mode in
       dagger)
       echo "###### dagger train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag1
+      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag1
       ;;
       grpo)
       echo "###### grpo train mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag2
+      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag2
       ;;
       eval)
       echo "###### eval mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag3
+      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag3
       ;;
       infer)
       echo "###### infer mode ######"
-      python -m torch.distributed.launch --nproc_per_node=4 --master_port $2 run.py $flag4
+      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag4
       ;;
 esac
 
 # 命令行运行：
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash dagger 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash grpo 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash eval 2333
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash infer 2333
+# Uses all visible GPUs by default. Set CUDA_VISIBLE_DEVICES first to restrict cards.
+# bash run_rxr/main_server.bash dagger 2333
+# bash run_rxr/main_server.bash grpo 2333
+# bash run_rxr/main_server.bash eval 2333
+# bash run_rxr/main_server.bash infer 2333

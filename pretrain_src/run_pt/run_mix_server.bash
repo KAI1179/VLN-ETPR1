@@ -1,5 +1,7 @@
 NODE_RANK=0
-NUM_GPUS=4
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../scripts/gpu-detection.bash"
+configure_pretrain_gpu_vars
 PORT=$1
 shift
 
