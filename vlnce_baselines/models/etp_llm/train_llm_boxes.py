@@ -23,6 +23,7 @@ from typing import (
 )
 
 import prior.bbox as bbox
+from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 from prior.bbox import SceneSemanticBoxes
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 from prior.vlnce import VLNCEEpisodeEntry
@@ -41,7 +42,7 @@ from .boxes_schema import (
     write_prediction_artifact,
 )
 
-DEFAULT_MODEL_NAME_OR_PATH = "data/models/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_boxes_system.md"
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")

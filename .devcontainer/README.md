@@ -97,6 +97,20 @@ rm -rf extra_files extra_files.zip
 
 ## Model Download
 
+The repo keeps local model weights under `data/models/`. Paths are centralized in
+`model_paths.py` and are interpreted relative to the project root.
+
+### CLIP ViT-B/32
+
+Download the OpenAI CLIP ViT-B/32 checkpoint before running RGB feature
+precomputation or cognitive-map category encoding:
+
+```shell
+mkdir -p data/models
+wget -O data/models/ViT-B-32.pt \
+  https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
+```
+
 ### Llama
 
 1. Request access on [Llama website](https://www.llama.com/llama-downloads/).

@@ -12,9 +12,10 @@ import clip
 import torch
 import torch.nn as nn
 
+from model_paths import CLIP_VIT_B32_MODEL
 
 logger = logging.getLogger(__name__)
-CLIP_MODEL_NAME = "ViT-B/32"
+CLIP_MODEL_NAME = CLIP_VIT_B32_MODEL
 CLIP_EMBEDDING_DIM = 512
 MAP_METADATA_DIM = TRAJECTORY_KEYPOINT_COUNT * 2 + 2 + 2
 MAP_TOKEN_GRID_SIZE = 10

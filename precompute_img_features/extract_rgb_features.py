@@ -26,6 +26,7 @@ except RuntimeError:
     pass
 
 import clip
+from model_paths import CLIP_VIT_B32_MODEL
 
 VIEWPOINT_SIZE = 36 # Number of discretized views from one viewpoint
 
@@ -135,7 +136,7 @@ def build_feature_file(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', default='ViT-B/32')
+    parser.add_argument('--model_name', default=CLIP_VIT_B32_MODEL)
     parser.add_argument('--checkpoint_file', default=None)
     parser.add_argument('--connectivity_dir', default='precompute_img_features/connectivity')
     parser.add_argument('--img_db', default='pretrain_src/img_features/habitat_256x256_vfov60_bgr.hdf5')

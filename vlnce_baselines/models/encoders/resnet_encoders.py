@@ -9,6 +9,7 @@ from habitat_baselines.rl.ddppo.policy import resnet
 from habitat_baselines.rl.ddppo.policy.resnet_policy import ResNetEncoder
 import torchvision
 import clip
+from model_paths import CLIP_VIT_B32_MODEL
 
 class VlnResnetDepthEncoder(nn.Module):
     def __init__(
@@ -255,7 +256,7 @@ class CLIPEncoder(nn.Module):
         self, device,
     ):
         super().__init__()
-        self.model, _ = clip.load("ViT-B/32", device=device)
+        self.model, _ = clip.load(CLIP_VIT_B32_MODEL, device=device)
         for param in self.model.parameters():
             param.requires_grad_(False)
         self.model.eval()

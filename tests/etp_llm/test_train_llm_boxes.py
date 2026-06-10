@@ -5,6 +5,7 @@ from typing import List
 import pytest
 import torch
 
+from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 import prior.bbox as bbox
 from prior.trajectory import InsufficientTrajectoryPointsError
 from vlnce_baselines.models.etp_llm.boxes_schema import (
@@ -932,7 +933,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
 
     assert metrics == {"examples": 1.0}
     assert calls == [
-        ("load_model", "data/models/Llama-3.1-8B-Instruct", "auto"),
+        ("load_model", LLAMA_3_1_8B_INSTRUCT_MODEL, "auto"),
         ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True),
         ("eval", str(tmp_path), ["example"]),
     ]
@@ -993,7 +994,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.device_map == "auto"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
-    assert eval_args.model_name_or_path == "data/models/Llama-3.1-8B-Instruct"
+    assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
     assert eval_args.output_dir == "eval-out"
     assert eval_args.max_new_tokens == 1024
     assert eval_args.max_grad_norm == 1.0
@@ -1025,7 +1026,7 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
         ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]
     )
 
-    assert calls == [("data/models/Llama-3.1-8B-Instruct", None)]
+    assert calls == [(LLAMA_3_1_8B_INSTRUCT_MODEL, None)]
 
 
 def test_cli_parser_rejects_torch_dtype_arg():

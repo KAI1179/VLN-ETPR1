@@ -11,6 +11,7 @@ import spacy
 from spacy.tokens import Token
 import torch
 
+from model_paths import CLIP_VIT_B32_MODEL
 
 from ..constants import (
     MAPPED_OBJECT_NAMES,
@@ -47,7 +48,7 @@ SPATIAL_IGNORE_LIST = {
 nlp = spacy.load("en_core_web_sm")
 
 CLIP_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CLIP_MODEL_NAME = "ViT-B/32"
+CLIP_MODEL_NAME = CLIP_VIT_B32_MODEL
 CLIP_MODEL, _ = clip.load(CLIP_MODEL_NAME, device=CLIP_DEVICE)
 CLIP_MODEL.eval()
 

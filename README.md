@@ -26,7 +26,7 @@ In this paper, we try to bridge this gap by introducing ETP-R1, a framework that
 > Checkout [Instruction for devcontainer](./.devcontainer/README.md) for easier setup process.
 
 ### 1. System Requirements
-* **Hardware:** We trained our models on a server equipped with **4 NVIDIA A6000 GPUs**. The provided scripts default to using 4 GPUs (`CUDA_VISIBLE_DEVICES=0,1,2,3`).
+* **Hardware:** We trained our models on a server equipped with **4 NVIDIA A6000 GPUs**. The launcher scripts use all visible GPUs by default. Set `CUDA_VISIBLE_DEVICES` first if you want to restrict which cards are used.
 
 ### 2. Environment Setup
 
@@ -102,7 +102,6 @@ python copy_extra_files.py
 rm -rf extra_files extra_files.zip
 ```
 
-
 #### Key Assets Overview
 
 The `extra_files.zip` includes our Gemini-annotated dataset and all trained checkpoints, among other resources.
@@ -144,6 +143,21 @@ The `extra_files.zip` includes our Gemini-annotated dataset and all trained chec
 * **Gemini Annotations:** `pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/R2R_Prevalent_gemini_aug_enc_xlmr.jsonl`
 
 
+### 3. Local Model Weights
+
+The code expects locally downloaded model weights under `data/models/`.
+
+Download the OpenAI CLIP ViT-B/32 checkpoint used by the RGB feature extractor and cognitive-map category encoders:
+
+```bash
+mkdir -p data/models
+wget -O data/models/ViT-B-32.pt \
+  https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
+```
+
+LLM-Boxes uses `data/models/Llama-3.1-8B-Instruct` when running the LLM candidate. Download that Hugging Face model separately after receiving access from Meta/Hugging Face.
+
+
 
 
 ## Training and Evaluation
@@ -155,14 +169,14 @@ We provide scripts for Pretraining, Online SFT, and Online RFT across R2R-CE and
 Start the pretraining process on the joint dataset:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333
+bash pretrain_src/run_pt/run_mix_server.bash 2333
 ```
 
 PriorGT and imagined-map variants use the same helper with extra flags:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_prior_gt
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_prior_gt
+bash pretrain_src/run_pt/run_mix_server.bash 2333 \
   --use_imagined \
   --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
 ```
@@ -175,13 +189,13 @@ Run the following commands for Supervised Fine-tuning (SFT), Reinforcement Fine-
 
 ```bash
 # Online SFT (DAgger)
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash dagger 2333
+bash run_r2r/main_server.bash dagger 2333
 
 # Online RFT (GRPO)
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash grpo 2333
+bash run_r2r/main_server.bash grpo 2333
 
 # Evaluation
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash eval 2333
+bash run_r2r/main_server.bash eval 2333
 ```
 
 ### 3. RxR-CE Benchmark
@@ -190,13 +204,13 @@ Run the following commands for RxR-CE experiments:
 
 ```bash
 # Online SFT (DAgger)
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash dagger 2333
+bash run_rxr/main_server.bash dagger 2333
 
 # Online RFT (GRPO)
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash grpo 2333
+bash run_rxr/main_server.bash grpo 2333
 
 # Evaluation
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_rxr/main_server.bash eval 2333
+bash run_rxr/main_server.bash eval 2333
 ```
 
 
