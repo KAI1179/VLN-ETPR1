@@ -75,11 +75,13 @@ class _CharChatTokenizer:
 class _CacheGenerationModel:
     def __init__(self, text):
         self.text = text
+        self.generate_calls = 0
 
     def eval(self):
         pass
 
     def generate(self, **kwargs):
+        self.generate_calls += 1
         suffix = [ord(char) for char in self.text]
         return [[*row, *suffix] for row in kwargs["input_ids"]]
 
@@ -189,6 +191,116 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     ] == "tiny"
 
 
+def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": "R2R_train_42",
+            "scene_id": "scene-a",
+            "input_text": "find the chair",
+            "target_text": "none",
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Find the chair.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+        overwrite=False,
+    )
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
+    map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
+    prediction_path.parent.mkdir(parents=True)
+    map_path.parent.mkdir(parents=True)
+    prediction_path.write_text("already done\n")
+    map_path.write_bytes(b"cached")
+    model = _CacheGenerationModel("should not run")
+
+    metrics = generate_navigation_cache.generate_navigation_cache(
+        model,
+        _CharChatTokenizer(),
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="train",
+    )
+
+    assert model.generate_calls == 0
+    assert prediction_path.read_text() == "already done\n"
+    assert map_path.read_bytes() == b"cached"
+    assert metrics["examples"] == 1.0
+    assert metrics["cached"] == 1.0
+    assert metrics["attempted"] == 0.0
+    assert metrics["generated"] == 0.0
+
+
+def test_generate_navigation_cache_overwrite_regenerates_existing_cache(tmp_path):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": "R2R_train_42",
+            "scene_id": "scene-a",
+            "input_text": "find the chair",
+            "target_text": "none",
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Find the chair.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+        overwrite=True,
+    )
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
+    map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
+    prediction_path.parent.mkdir(parents=True)
+    map_path.parent.mkdir(parents=True)
+    prediction_path.write_text("stale\n")
+    map_path.write_bytes(b"stale")
+    model = _CacheGenerationModel("keypoints 0 0 1 1 0 0 0 0 0 0")
+
+    metrics = generate_navigation_cache.generate_navigation_cache(
+        model,
+        _CharChatTokenizer(),
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="train",
+    )
+
+    assert model.generate_calls == 1
+    assert prediction_path.read_text().startswith("keypoints")
+    assert map_path.read_bytes() != b"stale"
+    assert metrics["cached"] == 0.0
+    assert metrics["generated"] == 1.0
+
+
 def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
     _PretrainAnnotationEntry.calls = []
     _SceneBoxes.calls = []
@@ -215,6 +327,57 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
     assert "instruction Find the chair." in items[0]["input_text"]
 
 
+def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
+    monkeypatch, tmp_path
+):
+    _PretrainAnnotationEntry.calls = []
+    _SceneBoxes.calls = []
+    monkeypatch.setattr(
+        generate_navigation_cache,
+        "PretrainAnnotationEntry",
+        _PretrainAnnotationEntry,
+    )
+    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    args = argparse.Namespace(
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        overwrite=False,
+    )
+    prediction_path = (
+        tmp_path
+        / "test-model"
+        / "pretrain"
+        / "mixed"
+        / "predictions"
+        / "scene-a"
+        / "prevalent_1_0.txt"
+    )
+    map_path = (
+        tmp_path
+        / "test-model"
+        / "pretrain"
+        / "mixed"
+        / "cognitive_maps"
+        / "scene-a"
+        / "prevalent_1_0.npz"
+    )
+    prediction_path.parent.mkdir(parents=True)
+    map_path.parent.mkdir(parents=True)
+    prediction_path.write_text("done\n")
+    map_path.write_bytes(b"done")
+
+    items = generate_navigation_cache.load_pretrain_cache_items(
+        annotation_files=["R2R_Prevalent_enc_xlmr.jsonl"],
+        limit=1,
+        quiet=True,
+        args=args,
+    )
+
+    assert items == []
+    assert _PretrainAnnotationEntry.calls == ["R2R_Prevalent_enc_xlmr.jsonl"]
+    assert _SceneBoxes.calls == []
+
+
 def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
     args = generate_navigation_cache.parse_args(
         [
@@ -226,6 +389,7 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
             "llama-test",
             "--limit",
             "2",
+            "--overwrite",
             "--quiet",
         ]
     )
@@ -234,6 +398,7 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
     assert args.cache_dir == "data/cache"
     assert args.cache_model_key == "llama-test"
     assert args.limit == 2
+    assert args.overwrite is True
     assert args.quiet is True
     assert not hasattr(args, "dataset")
     assert not hasattr(args, "split")

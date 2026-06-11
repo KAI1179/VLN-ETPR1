@@ -90,7 +90,7 @@ Generate all LLM-Navigation caches with one command:
 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
-  --batch-size 1 \
+  --batch-size 8 \
   --quiet
 ```
 
@@ -112,6 +112,10 @@ It generates `train`, `val_seen`, and `val_unseen` for both R2R and RxR, plus th
 mixed pretraining cache. The cache generator intentionally has no `--dataset`,
 `--split`, or `--annotation-file` selector; a complete cache should be generated as
 one reproducible artifact set.
+
+Generation resumes by default. If both the prediction text and cognitive-map `.npz`
+already exist for an item, that item is skipped before tokenization, LLM generation,
+and scene-box preprocessing. Use `--overwrite` to regenerate existing cache entries.
 
 VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used by
 `SS-ETP-LLM` and `GRPO-ETP-LLM`. Pretraining cache ids are `instr_id`.

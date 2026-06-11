@@ -8,10 +8,11 @@ import json
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 from prior.bbox import SceneSemanticBoxes
 from prior.trajectory import InsufficientTrajectoryPointsError
+from prior.vlnce import VLNCEEpisodeEntry
 from prior.etp_r1 import (
     ANNOTATION_FILES as PRETRAIN_ANNOTATION_FILES,
     AnnotationEntry as PretrainAnnotationEntry,
@@ -33,11 +34,9 @@ from .navigation import (
 )
 from .train_llm_boxes import (
     DEFAULT_MODEL_NAME_OR_PATH,
-    LLMBoxesDataset,
     LLMBoxesItem,
     collate_llm_boxes_prompt_batch,
     decode_generated_completion,
-    load_llm_boxes_examples,
     load_system_prompt,
     _batch_count,
     _default_device,
@@ -49,7 +48,7 @@ from .train_llm_boxes import (
     _progress,
 )
 
-VLNCE_DATASETS = ("R2R", "RxR")
+VLNCE_DATASETS: Tuple[Literal["R2R", "RxR"], ...] = ("R2R", "RxR")
 VLNCE_SPLITS = ("train", "val_seen", "val_unseen")
 PRETRAIN_DATASET_KEY = "pretrain"
 PRETRAIN_SPLIT = "mixed"
@@ -82,8 +81,26 @@ def generate_navigation_cache(
     split_dir.mkdir(parents=True, exist_ok=True)
     _write_navigation_cache_manifest(split_dir, args, system_prompt, dataset_key, split)
 
+    examples = 0
+    cached = 0
+
+    def pending_items() -> Iterable[LLMBoxesItem]:
+        nonlocal cached, examples
+        for item in dataset:
+            examples += 1
+            if not bool(getattr(args, "overwrite", False)) and _cache_complete(
+                item["scene_id"],
+                item["example_id"],
+                dataset_key,
+                split,
+                args,
+            ):
+                cached += 1
+                continue
+            yield item
+
     loader = _iter_collated_batches(
-        dataset,
+        pending_items(),
         args.batch_size,
         lambda batch: collate_llm_boxes_prompt_batch(
             batch,
@@ -99,7 +116,7 @@ def generate_navigation_cache(
         total=_batch_count(dataset, args.batch_size),
     )
 
-    examples = 0
+    attempted = 0
     strict_valid = 0
     salvaged = 0
     missing_keypoints = 0
@@ -107,8 +124,9 @@ def generate_navigation_cache(
     skipped = 0
     failure_records: List[Dict[str, Any]] = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in progress_loader:
+            attempted += len(batch["items"])
             model_inputs = _model_batch(batch, args.device, include_labels=False)
             generated_sequences = model.generate(
                 **model_inputs,
@@ -123,7 +141,6 @@ def generate_navigation_cache(
             ]
 
             for item, generated_text in zip(batch["items"], decoded):
-                examples += 1
                 cache_id = item["example_id"]
                 scene_id = item["scene_id"]
                 prediction_path = llm_navigation_prediction_path(
@@ -216,17 +233,19 @@ def generate_navigation_cache(
     _write_jsonl(split_dir / "failures.jsonl", failure_records)
     metrics = {
         "examples": float(examples),
+        "cached": float(cached),
+        "attempted": float(attempted),
         "strict_valid": float(strict_valid),
         "salvaged": float(salvaged),
         "missing_trajectory_keypoints": float(missing_keypoints),
         "generated": float(generated),
         "skipped": float(skipped),
         "strict_parse_failure_rate": (
-            float(examples - strict_valid) / float(examples) if examples else 0.0
+            float(attempted - strict_valid) / float(attempted) if attempted else 0.0
         ),
-        "salvage_rate": float(salvaged) / float(examples) if examples else 0.0,
+        "salvage_rate": float(salvaged) / float(attempted) if attempted else 0.0,
         "missing_trajectory_keypoints_rate": (
-            float(missing_keypoints) / float(examples) if examples else 0.0
+            float(missing_keypoints) / float(attempted) if attempted else 0.0
         ),
     }
     (split_dir / "metrics.json").write_text(
@@ -240,6 +259,7 @@ def load_pretrain_cache_items(
     annotation_files: Sequence[str] = PRETRAIN_ANNOTATION_FILES,
     limit: Optional[int] = None,
     quiet: bool = False,
+    args: Optional[argparse.Namespace] = None,
 ) -> List[LLMBoxesItem]:
     """Load ETP-R1 pretraining annotations as LLM-Navigation cache items."""
     if limit == 0:
@@ -255,6 +275,15 @@ def load_pretrain_cache_items(
         )
         dataset_tag = _pretrain_dataset_tag(annotation_file)
         for entry in entries:
+            if args is not None and not bool(getattr(args, "overwrite", False)):
+                if _cache_complete(
+                    entry.scan,
+                    entry.instr_id,
+                    PRETRAIN_DATASET_KEY,
+                    PRETRAIN_SPLIT,
+                    args,
+                ):
+                    continue
             positions = entry.positions()
             try:
                 target_relevant = SceneSemanticBoxes.from_scene_id(
@@ -301,6 +330,79 @@ def load_pretrain_cache_items(
     return items
 
 
+def load_vlnce_cache_items(
+    dataset_key: Literal["R2R", "RxR"],
+    split: str,
+    limit: Optional[int] = None,
+    quiet: bool = False,
+    args: Optional[argparse.Namespace] = None,
+) -> List[LLMBoxesItem]:
+    """Load uncached VLN-CE episodes as LLM-Navigation cache items."""
+    if limit == 0:
+        return []
+
+    items: List[LLMBoxesItem] = []
+    episodes = _progress(
+        VLNCEEpisodeEntry.iter_from(dataset_key, splits=(split,)),
+        desc=f"load VLN-CE cache items {dataset_key}/{split}",
+        quiet=quiet,
+        total=limit,
+    )
+    for episode in episodes:
+        if args is not None and not bool(getattr(args, "overwrite", False)):
+            if _cache_complete(
+                episode.scene_id,
+                episode.unique_id,
+                dataset_key,
+                split,
+                args,
+            ):
+                continue
+        try:
+            target_relevant = SceneSemanticBoxes.from_scene_id(
+                episode.scene_id
+            ).relevant_to(
+                episode.instruction,
+                episode.reference_path,
+                episode.start_direction_vector,
+            )
+        except InsufficientTrajectoryPointsError as error:
+            warnings.warn(
+                f"skipping {episode.unique_id}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        start_position = _level_local_start_position(
+            target_relevant.trajectory_keypoints,
+            episode.start_position,
+        )
+        target_spec = LLMBoxesSpec(objects=(), regions=())
+        items.append(
+            {
+                "input_text": build_llm_boxes_input(
+                    episode.dataset,
+                    episode.instruction,
+                    start_position,
+                    episode.start_direction_vector,
+                ),
+                "target_text": spec_to_llm_boxes_text(target_spec),
+                "target_spec": target_spec,
+                "target_relevant": target_relevant,
+                "example_id": episode.unique_id,
+                "scene_id": episode.scene_id,
+                "instruction": episode.instruction,
+                "level_idx": target_relevant.level_idx,
+                "trajectory_keypoints": target_relevant.trajectory_keypoints,
+                "start_direction": episode.start_direction_vector,
+                "start_position": start_position,
+            }
+        )
+        if limit is not None and len(items) >= limit:
+            break
+    return items
+
+
 def generate_all_navigation_caches(
     model: Any,
     tokenizer: Any,
@@ -310,23 +412,27 @@ def generate_all_navigation_caches(
     metrics: Dict[str, Dict[str, float]] = {}
     for dataset_key in VLNCE_DATASETS:
         for split in VLNCE_SPLITS:
-            examples = load_llm_boxes_examples(
+            examples = load_vlnce_cache_items(
                 dataset_key,
-                (split,),
+                split,
                 limit=args.limit,
                 quiet=args.quiet,
-                skip_invalid_trajectory=True,
+                args=args,
             )
             metrics[f"{dataset_key.lower()}/{split}"] = generate_navigation_cache(
                 model,
                 tokenizer,
-                LLMBoxesDataset(examples),
+                examples,
                 args,
                 dataset_key=dataset_key,
                 split=split,
             )
 
-    pretrain_items = load_pretrain_cache_items(limit=args.limit, quiet=args.quiet)
+    pretrain_items = load_pretrain_cache_items(
+        limit=args.limit,
+        quiet=args.quiet,
+        args=args,
+    )
     metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = generate_navigation_cache(
         model,
         tokenizer,
@@ -374,6 +480,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_LLM_NAVIGATION_MODEL_KEY,
         help="Model namespace under the cache root.",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Regenerate prediction text and cognitive maps even when both exist.",
+    )
     return parser.parse_args(argv)
 
 
@@ -400,6 +511,32 @@ def _pretrain_dataset_tag(annotation_file: str) -> str:
     if "prevalent" in name:
         return "Prevalent"
     return "R2R"
+
+
+def _cache_complete(
+    scene_id: str,
+    cache_id: str,
+    dataset_key: str,
+    split: str,
+    args: argparse.Namespace,
+) -> bool:
+    prediction_path = llm_navigation_prediction_path(
+        scene_id,
+        cache_id,
+        dataset_key,
+        split,
+        cache_dir=args.cache_dir,
+        model_key=args.cache_model_key,
+    )
+    cognitive_map_path = llm_navigation_cognitive_map_path(
+        scene_id,
+        cache_id,
+        dataset_key,
+        split,
+        cache_dir=args.cache_dir,
+        model_key=args.cache_model_key,
+    )
+    return prediction_path.exists() and cognitive_map_path.exists()
 
 
 def _level_local_start_position(
