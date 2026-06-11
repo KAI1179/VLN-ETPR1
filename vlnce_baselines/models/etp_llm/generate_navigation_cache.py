@@ -342,7 +342,7 @@ def load_vlnce_cache_items(
         return []
 
     items: List[LLMBoxesItem] = []
-    episodes = _progress(
+    episodes: Iterable[VLNCEEpisodeEntry] = _progress(
         VLNCEEpisodeEntry.iter_from(dataset_key, splits=(split,)),
         desc=f"load VLN-CE cache items {dataset_key}/{split}",
         quiet=quiet,
@@ -363,7 +363,7 @@ def load_vlnce_cache_items(
                 episode.scene_id
             ).relevant_to(
                 episode.instruction,
-                episode.reference_path,
+                episode.ground_truth_trajectory,
                 episode.start_direction_vector,
             )
         except InsufficientTrajectoryPointsError as error:
@@ -445,7 +445,9 @@ def generate_all_navigation_caches(
 
 
 def _skipped_cache_count(metrics: Dict[str, Dict[str, float]]) -> int:
-    return int(sum(split_metrics.get("skipped", 0.0) for split_metrics in metrics.values()))
+    return int(
+        sum(split_metrics.get("skipped", 0.0) for split_metrics in metrics.values())
+    )
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -600,8 +602,7 @@ def _warn_navigation_cache_failure(
     error: BaseException | str,
 ) -> None:
     warnings.warn(
-        f"LLM-Navigation cache warning for {item['example_id']} "
-        f"at {stage}: {error}",
+        f"LLM-Navigation cache warning for {item['example_id']} at {stage}: {error}",
         RuntimeWarning,
         stacklevel=2,
     )

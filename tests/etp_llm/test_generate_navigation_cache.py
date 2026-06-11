@@ -105,6 +105,27 @@ class _PretrainAnnotationEntry:
         yield _PretrainEntry()
 
 
+class _Episode:
+    dataset = "R2R"
+    split = "train"
+    scene_id = "scene-a"
+    episode_id = 42
+    unique_id = "R2R_train_42"
+    instruction = "Find the chair."
+    start_position = [1.24, 0.0, 2.96]
+    start_direction_vector = (0.0, 1.0)
+    ground_truth_trajectory = [(1.24, 0.0, 2.96), (2.0, 0.0, 4.0)]
+
+
+class _EpisodeSource:
+    calls = []
+
+    @staticmethod
+    def iter_from(dataset, splits):
+        _EpisodeSource.calls.append((dataset, tuple(splits)))
+        yield _Episode()
+
+
 class _SceneBoxes:
     calls = []
 
@@ -324,6 +345,27 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
     assert items[0]["scene_id"] == "scene-a"
     assert items[0]["start_position"] == (1.2, 3.0)
     assert "dataset Prevalent" in items[0]["input_text"]
+    assert "instruction Find the chair." in items[0]["input_text"]
+
+
+def test_load_vlnce_cache_items_uses_ground_truth_trajectory(monkeypatch):
+    _EpisodeSource.calls = []
+    _SceneBoxes.calls = []
+    monkeypatch.setattr(generate_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+
+    items = generate_navigation_cache.load_vlnce_cache_items(
+        "R2R",
+        "train",
+        limit=1,
+        quiet=True,
+    )
+
+    assert _EpisodeSource.calls == [("R2R", ("train",))]
+    assert _SceneBoxes.calls == ["scene-a"]
+    assert len(items) == 1
+    assert items[0]["example_id"] == "R2R_train_42"
+    assert items[0]["scene_id"] == "scene-a"
     assert "instruction Find the chair." in items[0]["input_text"]
 
 
