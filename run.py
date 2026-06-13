@@ -43,7 +43,7 @@ class RunArgs(Tap):
             nargs=argparse.REMAINDER,
             help="Modify config options from command line",
         )
-        self.add_argument("--local_rank", help="local gpu id")
+        self.add_argument("--local-rank", "--local_rank", help="local gpu id")
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> RunArgs:
@@ -55,8 +55,9 @@ def main():
     run_exp(**args.as_dict())
 
 
-def run_exp(exp_name: str, exp_config: str, 
-            run_type: str, opts=None, local_rank=None) -> None:
+def run_exp(
+    exp_name: str, exp_config: str, run_type: str, opts=None, local_rank=None
+) -> None:
     r"""Runs experiment given mode and config
 
     Args:
@@ -78,18 +79,20 @@ def run_exp(exp_name: str, exp_config: str,
     if os.path.isdir(config.EVAL_CKPT_PATH_DIR):
         config.EVAL_CKPT_PATH_DIR += exp_name
     config.RESULTS_DIR += exp_name
-    config.RESULTS_DIR += '/eval_results/'
+    config.RESULTS_DIR += "/eval_results/"
     config.VIDEO_DIR += exp_name
-    config.LOG_FILE = exp_name + '_' + config.LOG_FILE
+    config.LOG_FILE = exp_name + "_" + config.LOG_FILE
 
-    config.local_rank = local_rank 
+    config.local_rank = local_rank
     config.freeze()
     os.system("mkdir -p data/logs/running_log")
-    os.makedirs('data/logs/checkpoints/'+exp_name, exist_ok=True)
+    os.makedirs("data/logs/checkpoints/" + exp_name, exist_ok=True)
     if run_type == "dagger" or run_type == "grpo":
-        logger.add_filehandler('data/logs/checkpoints/'+exp_name+'/'+config.LOG_FILE)
+        logger.add_filehandler(
+            "data/logs/checkpoints/" + exp_name + "/" + config.LOG_FILE
+        )
     else:
-        logger.add_filehandler('data/logs/running_log/'+config.LOG_FILE)
+        logger.add_filehandler("data/logs/running_log/" + config.LOG_FILE)
 
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)
@@ -99,17 +102,18 @@ def run_exp(exp_name: str, exp_config: str,
     if torch.cuda.is_available():
         torch.set_num_threads(1)
 
-    trainer_init = baseline_registry.get_trainer(config.TRAINER_NAME) 
-    print("trainer_init\n", trainer_init) 
+    trainer_init = baseline_registry.get_trainer(config.TRAINER_NAME)
+    print("trainer_init\n", trainer_init)
     assert trainer_init is not None, f"{config.TRAINER_NAME} is not supported"
     trainer = trainer_init(config)
-    
+
     if run_type == "dagger" or run_type == "grpo":
         trainer.train()
     elif run_type == "eval":
         trainer.eval()
     elif run_type == "inference":
         trainer.inference()
+
 
 if __name__ == "__main__":
     main()
