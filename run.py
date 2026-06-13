@@ -43,7 +43,7 @@ class RunArgs(Tap):
             nargs=argparse.REMAINDER,
             help="Modify config options from command line",
         )
-        self.add_argument("--local-rank", help="local gpu id")
+        self.add_argument("--local-rank", type=int, help="local gpu id")
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> RunArgs:
