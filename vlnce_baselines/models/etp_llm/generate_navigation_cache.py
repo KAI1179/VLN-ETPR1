@@ -267,66 +267,93 @@ def load_pretrain_cache_items(
 
     items: List[LLMBoxesItem] = []
     for annotation_file in annotation_files:
+        start_count = len(items)
+        total = 0
+        cached = 0
+        raw_entries = PretrainAnnotationEntry.iter_from(annotation_file)
         entries = _progress(
-            PretrainAnnotationEntry.iter_from(annotation_file),
+            raw_entries,
             desc=f"load pretrain cache items {annotation_file}",
             quiet=quiet,
             total=limit,
         )
         dataset_tag = _pretrain_dataset_tag(annotation_file)
-        for entry in entries:
-            if args is not None and not bool(getattr(args, "overwrite", False)):
-                if _cache_complete(
-                    entry.scan,
-                    entry.instr_id,
-                    PRETRAIN_DATASET_KEY,
-                    PRETRAIN_SPLIT,
-                    args,
-                ):
-                    continue
-            positions = entry.positions()
-            try:
-                target_relevant = SceneSemanticBoxes.from_scene_id(
-                    entry.scan
-                ).relevant_to(
-                    entry.instruction,
-                    positions,
-                    entry.start_direction_vector,
-                )
-            except InsufficientTrajectoryPointsError as error:
-                warnings.warn(
-                    f"skipping {entry.instr_id}: {error}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                continue
-            start_position = _level_local_start_position(
-                target_relevant.trajectory_keypoints,
-                positions[0],
-            )
-            target_spec = LLMBoxesSpec(objects=(), regions=())
-            items.append(
-                {
-                    "input_text": build_llm_boxes_input(
-                        dataset_tag,
+        try:
+            for entry in entries:
+                total += 1
+                if args is not None and not bool(getattr(args, "overwrite", False)):
+                    if _cache_complete(
+                        entry.scan,
+                        entry.instr_id,
+                        PRETRAIN_DATASET_KEY,
+                        PRETRAIN_SPLIT,
+                        args,
+                    ):
+                        cached += 1
+                        continue
+                positions = entry.positions()
+                try:
+                    target_relevant = SceneSemanticBoxes.from_scene_id(
+                        entry.scan
+                    ).relevant_to(
                         entry.instruction,
-                        start_position,
+                        positions,
                         entry.start_direction_vector,
-                    ),
-                    "target_text": spec_to_llm_boxes_text(target_spec),
-                    "target_spec": target_spec,
-                    "target_relevant": target_relevant,
-                    "example_id": entry.instr_id,
-                    "scene_id": entry.scan,
-                    "instruction": entry.instruction,
-                    "level_idx": target_relevant.level_idx,
-                    "trajectory_keypoints": target_relevant.trajectory_keypoints,
-                    "start_direction": entry.start_direction_vector,
-                    "start_position": start_position,
-                }
+                    )
+                except InsufficientTrajectoryPointsError as error:
+                    warnings.warn(
+                        f"skipping {entry.instr_id}: {error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                start_position = _level_local_start_position(
+                    target_relevant.trajectory_keypoints,
+                    positions[0],
+                )
+                target_spec = LLMBoxesSpec(objects=(), regions=())
+                items.append(
+                    {
+                        "input_text": build_llm_boxes_input(
+                            dataset_tag,
+                            entry.instruction,
+                            start_position,
+                            entry.start_direction_vector,
+                        ),
+                        "target_text": spec_to_llm_boxes_text(target_spec),
+                        "target_spec": target_spec,
+                        "target_relevant": target_relevant,
+                        "example_id": entry.instr_id,
+                        "scene_id": entry.scan,
+                        "instruction": entry.instruction,
+                        "level_idx": target_relevant.level_idx,
+                        "trajectory_keypoints": target_relevant.trajectory_keypoints,
+                        "start_direction": entry.start_direction_vector,
+                        "start_position": start_position,
+                    }
+                )
+                if limit is not None and len(items) >= limit:
+                    _print_resume_summary(
+                        f"pretrain/{annotation_file}",
+                        total=total,
+                        cached=cached,
+                        pending=len(items) - start_count,
+                    )
+                    return items
+        except FileNotFoundError as error:
+            warnings.warn(
+                f"skipping missing pretrain annotation {annotation_file}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
             )
-            if limit is not None and len(items) >= limit:
-                return items
+        finally:
+            if total:
+                _print_resume_summary(
+                    f"pretrain/{annotation_file}",
+                    total=total,
+                    cached=cached,
+                    pending=len(items) - start_count,
+                )
     return items
 
 
@@ -342,6 +369,8 @@ def load_vlnce_cache_items(
         return []
 
     items: List[LLMBoxesItem] = []
+    total = 0
+    cached = 0
     episodes: Iterable[VLNCEEpisodeEntry] = _progress(
         VLNCEEpisodeEntry.iter_from(dataset_key, splits=(split,)),
         desc=f"load VLN-CE cache items {dataset_key}/{split}",
@@ -349,6 +378,7 @@ def load_vlnce_cache_items(
         total=limit,
     )
     for episode in episodes:
+        total += 1
         if args is not None and not bool(getattr(args, "overwrite", False)):
             if _cache_complete(
                 episode.scene_id,
@@ -357,6 +387,7 @@ def load_vlnce_cache_items(
                 split,
                 args,
             ):
+                cached += 1
                 continue
         try:
             target_relevant = SceneSemanticBoxes.from_scene_id(
@@ -400,6 +431,12 @@ def load_vlnce_cache_items(
         )
         if limit is not None and len(items) >= limit:
             break
+    _print_resume_summary(
+        f"{dataset_key}/{split}",
+        total=total,
+        cached=cached,
+        pending=len(items),
+    )
     return items
 
 
@@ -522,14 +559,6 @@ def _cache_complete(
     split: str,
     args: argparse.Namespace,
 ) -> bool:
-    prediction_path = llm_navigation_prediction_path(
-        scene_id,
-        cache_id,
-        dataset_key,
-        split,
-        cache_dir=args.cache_dir,
-        model_key=args.cache_model_key,
-    )
     cognitive_map_path = llm_navigation_cognitive_map_path(
         scene_id,
         cache_id,
@@ -538,7 +567,17 @@ def _cache_complete(
         cache_dir=args.cache_dir,
         model_key=args.cache_model_key,
     )
-    return prediction_path.exists() and cognitive_map_path.exists()
+    return cognitive_map_path.exists()
+
+
+def _print_resume_summary(
+    label: str,
+    *,
+    total: int,
+    cached: int,
+    pending: int,
+) -> None:
+    print(f"cache_resume {label}: total={total} cached={cached} pending={pending}")
 
 
 def _level_local_start_position(

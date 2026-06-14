@@ -369,6 +369,43 @@ def test_load_vlnce_cache_items_uses_ground_truth_trajectory(monkeypatch):
     assert "instruction Find the chair." in items[0]["input_text"]
 
 
+def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
+    monkeypatch, tmp_path
+):
+    _EpisodeSource.calls = []
+    _SceneBoxes.calls = []
+    monkeypatch.setattr(generate_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    args = argparse.Namespace(
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        overwrite=False,
+    )
+    map_path = (
+        tmp_path
+        / "test-model"
+        / "r2r"
+        / "train"
+        / "cognitive_maps"
+        / "scene-a"
+        / "R2R_train_42.npz"
+    )
+    map_path.parent.mkdir(parents=True)
+    map_path.write_bytes(b"done")
+
+    items = generate_navigation_cache.load_vlnce_cache_items(
+        "R2R",
+        "train",
+        limit=1,
+        quiet=True,
+        args=args,
+    )
+
+    assert items == []
+    assert _EpisodeSource.calls == [("R2R", ("train",))]
+    assert _SceneBoxes.calls == []
+
+
 def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     monkeypatch, tmp_path
 ):
@@ -385,15 +422,6 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
         cache_model_key="test-model",
         overwrite=False,
     )
-    prediction_path = (
-        tmp_path
-        / "test-model"
-        / "pretrain"
-        / "mixed"
-        / "predictions"
-        / "scene-a"
-        / "prevalent_1_0.txt"
-    )
     map_path = (
         tmp_path
         / "test-model"
@@ -403,9 +431,7 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
         / "scene-a"
         / "prevalent_1_0.npz"
     )
-    prediction_path.parent.mkdir(parents=True)
     map_path.parent.mkdir(parents=True)
-    prediction_path.write_text("done\n")
     map_path.write_bytes(b"done")
 
     items = generate_navigation_cache.load_pretrain_cache_items(
@@ -418,6 +444,28 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     assert items == []
     assert _PretrainAnnotationEntry.calls == ["R2R_Prevalent_enc_xlmr.jsonl"]
     assert _SceneBoxes.calls == []
+
+
+def test_load_pretrain_cache_items_warns_and_skips_missing_annotation(monkeypatch):
+    class MissingPretrainAnnotationEntry:
+        @staticmethod
+        def iter_from(filename):
+            raise FileNotFoundError(filename)
+            yield
+
+    monkeypatch.setattr(
+        generate_navigation_cache,
+        "PretrainAnnotationEntry",
+        MissingPretrainAnnotationEntry,
+    )
+
+    with pytest.warns(RuntimeWarning, match="skipping missing pretrain annotation"):
+        items = generate_navigation_cache.load_pretrain_cache_items(
+            annotation_files=["missing.jsonl"],
+            quiet=True,
+        )
+
+    assert items == []
 
 
 def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():

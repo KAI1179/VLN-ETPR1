@@ -112,9 +112,17 @@ mixed pretraining cache. The cache generator intentionally has no `--dataset`,
 `--split`, or `--annotation-file` selector; a complete cache should be generated as
 one reproducible artifact set.
 
-Generation resumes by default. If both the prediction text and cognitive-map `.npz`
-already exist for an item, that item is skipped before tokenization, LLM generation,
-and scene-box preprocessing. Use `--overwrite` to regenerate existing cache entries.
+Generation resumes by default. If the cognitive-map `.npz` already exists for an
+item, that item is skipped before tokenization, LLM generation, and scene-box
+preprocessing. The prediction text is kept for auditability, but navigation consumes
+the `.npz`, so a map is sufficient for resume. Use `--overwrite` to regenerate
+existing cache entries.
+
+Each source prints a resume summary before generation:
+
+```text
+cache_resume R2R/train: total=<seen> cached=<map_exists> pending=<to_generate>
+```
 
 VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used by
 `SS-ETP-LLM` and `GRPO-ETP-LLM`. Pretraining cache ids are `instr_id`.
