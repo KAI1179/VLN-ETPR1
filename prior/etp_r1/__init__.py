@@ -28,11 +28,8 @@ CONNECTIVITY_DIR = ETP_R1_DIR / "connectivity"
 """ETP-R1 connectivity directory."""
 
 ANNOTATION_FILES = [
-    "R2R_Prevalent_enc_xlmr.jsonl",
-    "R2R_Prevalent_gemini_aug_enc_xlmr.jsonl",
     "R2R_train_enc_xlmr.jsonl",
     "R2R_val_unseen_enc_xlmr.jsonl",
-    "rxr_marky_enc_xlmr.jsonl",
     "rxr_train_guide_xlmr.jsonl",
     "rxr_val_unseen_guide_xlmr.jsonl",
 ]

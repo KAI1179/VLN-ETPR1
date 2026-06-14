@@ -6,6 +6,5 @@ eval "$(conda shell.bash hook)" && conda activate etpr1-uv
 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
-  --batch-size 8 \
-  --quiet
+  --batch-size 8
 

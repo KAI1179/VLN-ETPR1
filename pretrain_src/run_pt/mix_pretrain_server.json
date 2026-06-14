@@ -31,10 +31,7 @@
             "name": "R2R",
             "train_traj_files": [
                 "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/R2R_train_enc_xlmr.jsonl",
-                "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/R2R_Prevalent_enc_xlmr.jsonl",
-                "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/R2R_Prevalent_gemini_aug_enc_xlmr.jsonl",
-                "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/rxr_train_guide_xlmr.jsonl",
-                "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/rxr_marky_enc_xlmr.jsonl"
+                "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/rxr_train_guide_xlmr.jsonl"
             ],
             "val_unseen_r2r_traj_files": [
                 "pretrain_src/datasets/R2R/annotations/pretrain_R2R_RxR/R2R_val_unseen_enc_xlmr.jsonl"
