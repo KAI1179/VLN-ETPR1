@@ -93,6 +93,34 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_n
   --batch-size 8
 ```
 
+By default, `--parallel-workers auto` launches one worker process per visible CUDA
+device. With `CUDA_VISIBLE_DEVICES=4,5,6,7`, the parent process starts four
+workers and gives each worker one logical GPU. Each worker loads its own LLM and
+generates a deterministic shard of cache ids, so existing `.npz` files are still
+skipped independently during resume.
+
+Use a smaller per-worker batch size when a single model copy nearly fills a GPU:
+
+```shell
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+  --model-name-or-path ./data/logs/llm/checkpoints/final/ \
+  --cache-model-key llama-3.1-8b-instruct \
+  --batch-size 1
+```
+
+Force single-process generation when debugging or when only one model copy fits:
+
+```shell
+CUDA_VISIBLE_DEVICES=4 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+  --model-name-or-path ./data/logs/llm/checkpoints/final/ \
+  --cache-model-key llama-3.1-8b-instruct \
+  --parallel-workers 1
+```
+
+Set `--parallel-workers N` to choose a fixed worker count. If `N` is larger than
+the visible GPU count, workers are assigned to visible devices round-robin; this
+usually only helps when the model is small enough for multiple workers per GPU.
+
 The command writes:
 
 ```text

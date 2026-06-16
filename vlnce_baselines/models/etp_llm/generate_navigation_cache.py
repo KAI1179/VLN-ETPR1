@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,6 +283,8 @@ def load_pretrain_cache_items(
         dataset_tag = _pretrain_dataset_tag(annotation_file)
         try:
             for entry in entries:
+                if args is not None and not _belongs_to_worker(entry.instr_id, args):
+                    continue
                 total += 1
                 if args is not None and not bool(getattr(args, "overwrite", False)):
                     if _cache_complete(
@@ -378,6 +383,8 @@ def load_vlnce_cache_items(
         total=limit,
     )
     for episode in episodes:
+        if args is not None and not _belongs_to_worker(episode.unique_id, args):
+            continue
         total += 1
         if args is not None and not bool(getattr(args, "overwrite", False)):
             if _cache_complete(
@@ -524,11 +531,25 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Regenerate prediction text and cognitive maps even when both exist.",
     )
+    parser.add_argument(
+        "--parallel-workers",
+        default="auto",
+        help=(
+            "Number of cache-generation worker processes. Use auto to launch one "
+            "worker per visible CUDA device; use 1 for single-process generation."
+        ),
+    )
+    parser.add_argument("--worker-count", type=int, default=1, help=argparse.SUPPRESS)
+    parser.add_argument("--worker-index", type=int, default=0, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> Dict[str, Dict[str, float]]:
     args = parse_args(argv)
+    worker_count = _resolve_parallel_worker_count(args.parallel_workers)
+    if worker_count > 1 and args.worker_count == 1:
+        return _run_parallel_workers(args, worker_count)
+
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
         device_map=_normalize_device_map(args.device_map),
@@ -539,6 +560,116 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, Dict[str, float]]:
     if skipped:
         raise SystemExit(1)
     return metrics
+
+
+def _resolve_parallel_worker_count(value: str) -> int:
+    if value == "auto":
+        return max(1, len(_visible_cuda_devices()))
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise ValueError("--parallel-workers must be auto or a positive integer") from error
+    if count < 1:
+        raise ValueError("--parallel-workers must be at least 1")
+    return count
+
+
+def _visible_cuda_devices() -> List[str]:
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices is not None:
+        return [
+            device.strip()
+            for device in cuda_visible_devices.split(",")
+            if device.strip() and device.strip() != "-1"
+        ]
+
+    try:
+        import torch
+    except Exception:
+        return []
+    if not torch.cuda.is_available():
+        return []
+    return [str(index) for index in range(torch.cuda.device_count())]
+
+
+def _run_parallel_workers(
+    args: argparse.Namespace,
+    worker_count: int,
+) -> Dict[str, Dict[str, float]]:
+    devices = _visible_cuda_devices()
+    processes: List[subprocess.Popen] = []
+    print(f"parallel_workers={worker_count} visible_cuda_devices={devices or ['cpu']}")
+    for worker_index in range(worker_count):
+        command = _worker_command(args, worker_count, worker_index)
+        env = os.environ.copy()
+        if devices:
+            env["CUDA_VISIBLE_DEVICES"] = devices[worker_index % len(devices)]
+        processes.append(subprocess.Popen(command, env=env))
+
+    failed = []
+    for worker_index, process in enumerate(processes):
+        return_code = process.wait()
+        if return_code:
+            failed.append((worker_index, return_code))
+
+    if failed:
+        raise SystemExit(f"LLM-Navigation cache workers failed: {failed}")
+    return {}
+
+
+def _worker_command(
+    args: argparse.Namespace,
+    worker_count: int,
+    worker_index: int,
+) -> List[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "vlnce_baselines.models.etp_llm.generate_navigation_cache",
+        "--model-name-or-path",
+        str(args.model_name_or_path),
+        "--max-input-length",
+        str(args.max_input_length),
+        "--max-new-tokens",
+        str(args.max_new_tokens),
+        "--batch-size",
+        str(args.batch_size),
+        "--device",
+        str(args.device),
+        "--device-map",
+        (
+            "none"
+            if _normalize_device_map(args.device_map) is None
+            else str(args.device_map)
+        ),
+        "--cache-dir",
+        str(args.cache_dir),
+        "--cache-model-key",
+        str(args.cache_model_key),
+        "--parallel-workers",
+        "1",
+        "--worker-count",
+        str(worker_count),
+        "--worker-index",
+        str(worker_index),
+    ]
+    if args.limit is not None:
+        command.extend(["--limit", str(args.limit)])
+    if args.quiet:
+        command.append("--quiet")
+    if args.overwrite:
+        command.append("--overwrite")
+    return command
+
+
+def _belongs_to_worker(cache_id: str, args: argparse.Namespace) -> bool:
+    worker_count = int(getattr(args, "worker_count", 1))
+    worker_index = int(getattr(args, "worker_index", 0))
+    if worker_count <= 1:
+        return True
+    digest = hashlib.sha1(str(cache_id).encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], "big") % worker_count
+    return bucket == worker_index
 
 
 def _pretrain_dataset_tag(annotation_file: str) -> str:

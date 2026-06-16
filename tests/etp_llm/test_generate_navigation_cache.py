@@ -488,6 +488,9 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
     assert args.cache_dir == "data/cache"
     assert args.cache_model_key == "llama-test"
     assert args.limit == 2
+    assert args.parallel_workers == "auto"
+    assert args.worker_count == 1
+    assert args.worker_index == 0
     assert args.overwrite is True
     assert args.quiet is True
     assert not hasattr(args, "dataset")
@@ -502,6 +505,91 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
         generate_navigation_cache.parse_args(
             ["--annotation-file", "R2R_Prevalent_enc_xlmr.jsonl"]
         )
+
+
+def test_visible_cuda_devices_uses_cuda_visible_devices(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5, 6,7")
+
+    assert generate_navigation_cache._visible_cuda_devices() == ["4", "5", "6", "7"]
+
+
+def test_visible_cuda_devices_treats_disabled_cuda_as_no_devices(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+
+    assert generate_navigation_cache._visible_cuda_devices() == []
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+
+    assert generate_navigation_cache._visible_cuda_devices() == []
+
+
+def test_parallel_worker_count_resolves_auto_from_visible_cuda(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+    assert generate_navigation_cache._resolve_parallel_worker_count("auto") == 4
+    assert generate_navigation_cache._resolve_parallel_worker_count("2") == 2
+
+    with pytest.raises(ValueError, match="positive integer"):
+        generate_navigation_cache._resolve_parallel_worker_count("many")
+    with pytest.raises(ValueError, match="at least 1"):
+        generate_navigation_cache._resolve_parallel_worker_count("0")
+
+
+def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_path):
+    args = argparse.Namespace(
+        model_name_or_path="tiny-llm",
+        max_input_length=128,
+        max_new_tokens=64,
+        batch_size=3,
+        device="cuda",
+        device_map="none",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        limit=5,
+        quiet=True,
+        overwrite=True,
+    )
+
+    command = generate_navigation_cache._worker_command(
+        args,
+        worker_count=4,
+        worker_index=2,
+    )
+
+    assert command[:3] == [
+        generate_navigation_cache.sys.executable,
+        "-m",
+        "vlnce_baselines.models.etp_llm.generate_navigation_cache",
+    ]
+    assert command[command.index("--parallel-workers") + 1] == "1"
+    assert command[command.index("--worker-count") + 1] == "4"
+    assert command[command.index("--worker-index") + 1] == "2"
+    assert command[command.index("--device-map") + 1] == "none"
+    assert command[command.index("--cache-dir") + 1] == str(tmp_path)
+    assert command[command.index("--limit") + 1] == "5"
+    assert "--quiet" in command
+    assert "--overwrite" in command
+
+
+def test_belongs_to_worker_assigns_each_cache_id_once():
+    cache_ids = [f"R2R_train_{index}" for index in range(50)]
+    worker_count = 4
+
+    for cache_id in cache_ids:
+        owners = [
+            index
+            for index in range(worker_count)
+            if generate_navigation_cache._belongs_to_worker(
+                cache_id,
+                argparse.Namespace(worker_count=worker_count, worker_index=index),
+            )
+        ]
+        assert len(owners) == 1
+
+    assert generate_navigation_cache._belongs_to_worker(
+        "R2R_train_42",
+        argparse.Namespace(worker_count=1, worker_index=0),
+    )
 
 
 def test_skipped_cache_count_sums_split_metrics():
