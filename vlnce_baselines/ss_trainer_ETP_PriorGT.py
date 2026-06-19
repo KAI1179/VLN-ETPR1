@@ -1485,7 +1485,8 @@ class RLTrainer(BaseVLNCETrainer):
                     if ep_id in self.stat_eps:
                         print("ERROR!!!!!!!!!! ", ep_id)
                     self.stat_eps[ep_id] = metric
-                    self.pbar.update()
+                    if self.pbar:
+                        self.pbar.update()
 
             # record path
             if mode == "infer":
@@ -1512,7 +1513,8 @@ class RLTrainer(BaseVLNCETrainer):
                             )
                     self.path_eps[ep_id] = self.path_eps[ep_id][:500]
                     self.path_eps[ep_id][-1]["stop"] = True
-                    self.pbar.update()
+                    if self.pbar:
+                        self.pbar.update()
 
             # pause env
             if sum(dones) > 0:
