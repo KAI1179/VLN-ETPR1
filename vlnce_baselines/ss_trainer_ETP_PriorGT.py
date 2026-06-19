@@ -1221,7 +1221,7 @@ class RLTrainer(BaseVLNCETrainer):
         map_cfg = self.config.MODEL.MAP_ENCODER
         if self._should_load_cognitive_maps(mode, map_cfg):
             cognitive_maps = self._build_cognitive_maps(
-                random_rotation_augmentation=(mode == "train")
+                random_rotation_augmentation=False
             )
         else:
             cognitive_maps = None

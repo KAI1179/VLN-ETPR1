@@ -1198,7 +1198,7 @@ class RLTrainer(BaseVLNCETrainer):
             self.envs.current_episodes(),
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
-            random_rotation_augmentation=True,
+            random_rotation_augmentation=False,
         )
 
     def _prepare_map_inputs(

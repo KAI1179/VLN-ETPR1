@@ -47,7 +47,7 @@ class RLTrainer(PriorGTGRPOTrainer):
                 split,
                 cache_dir=cache_dir,
                 model_key=model_key,
-                random_rotation_augmentation=True,
+                random_rotation_augmentation=False,
             )
             for ep in self.envs.current_episodes()
         ]
