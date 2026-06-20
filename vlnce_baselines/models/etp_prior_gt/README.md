@@ -6,7 +6,7 @@ ETP PriorGT extends ETP-R1 by adding cognitive map features into the navigation 
 
 - Cognitive-map encoder: `EmbeddingGridMapEncoder`
 - Map loading utilities for precomputed episode maps
-- Token-level graph-to-map cross-attention in navigation forward
+- Token-level bidirectional map-token fusion in navigation forward
 - New policy: `PriorGTPolicy`
 - New trainers:
   - `SS-ETP-PriorGT`
@@ -63,11 +63,11 @@ Notes:
 - `map_tokens`
 - `map_token_masks`
 
-Graph node embeddings query map tokens through `GraphMapCrossAttention` before the
-existing global encoder. The fusion module uses `nn.MultiheadAttention` with graph
-nodes as queries and map tokens as keys/values. Its residual projection is
-zero-initialized, so initial behavior is identity when map tokens are present and
-also no-op when map tokens are absent.
+The shared `BidirectionalMapTokenFusion` module updates cognitive-map tokens from
+valid global graph nodes first, excluding the STOP pseudo-node, then updates graph
+node embeddings from those updated map tokens before the existing global encoder.
+Both residual projections are zero-initialized, so initial behavior is identity
+when map tokens are present and also no-op when map tokens are absent.
 
 ## Data Requirement
 
@@ -91,9 +91,10 @@ Both PriorGT trainers load checkpoints with `strict=False`, so **existing R1 che
 loaded directly**. New `map_encoder.*` and `graph_map_attention.*` keys will be absent
 and are initialised from defaults.
 
-`GraphMapCrossAttention` has a zero-initialized residual projection, so map-token fusion
-starts as an identity operation. This keeps initial navigation behavior aligned with the
-R1 baseline while still allowing gradients to train map fusion.
+`BidirectionalMapTokenFusion` has zero-initialized residual projections, so
+map-token fusion starts as an identity operation. This keeps initial navigation
+behavior aligned with the R1 baseline while still allowing gradients to train map
+fusion.
 
 The map encoder initializes its category projection from built-in CLIP text
 embeddings for the fixed 37 object+region labels.
@@ -230,8 +231,8 @@ When `--use_prior_gt` is enabled:
 - The collate path stacks `grid`, `trajectory_keypoints`, `start_direction_vector`, and
   `start_position`.
 - `EmbeddingGridMapEncoder` emits `map_tokens` and `map_token_masks`.
-- Pretraining `GlocalTextPathCMT` fuses map tokens into global graph embeddings through
-  zero-initialized graph-to-map cross-attention.
+- Pretraining `GlocalTextPathCMT` uses the same shared bidirectional map-token fusion
+  module as finetuning.
 
 The loader does not substitute zero metadata for missing maps. A partially complete
 cache skips missing annotation entries; a completely absent cache fails before

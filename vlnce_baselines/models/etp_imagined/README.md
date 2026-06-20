@@ -5,7 +5,7 @@
 PriorGT consumes precomputed ground-truth cognitive maps. ETP Imagined predicts a
 soft cognitive map from the instruction text embeddings plus inference-safe start
 pose metadata, then feeds that predicted map through the existing PriorGT
-map-token encoder and graph-map cross-attention.
+map-token encoder and bidirectional map-token fusion.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ text embeddings + start metadata -> InstructionCognitiveMapPredictor
 predicted grid logits -> sigmoid -> soft cognitive grid (B,37,100,100)
 predicted trajectory keypoints (B,5,2)
 soft grid + predicted trajectory keypoints + real start metadata -> PriorGT map_encoding
-map tokens -> GraphMapCrossAttention -> navigation logits
+map tokens -> BidirectionalMapTokenFusion -> navigation logits
 ```
 
 `InstructionCognitiveMapPredictor` uses an OccWorld-style latent map prior:

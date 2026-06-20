@@ -15,6 +15,8 @@ from torch import Tensor, device, dtype
 
 from transformers import BertPreTrainedModel
 
+from vlnce_baselines.models.etp_prior_gt.map_fusion import BidirectionalMapTokenFusion
+
 from .ops import create_transformer_encoder
 from .ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
 
@@ -564,40 +566,6 @@ class LocalVPEncoder(nn.Module):
         vp_embeds = self.encoder(txt_embeds, txt_masks, vp_embeds, vp_masks)
         return vp_embeds
 
-class GraphMapCrossAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.attention = nn.MultiheadAttention(
-            hidden_size, num_heads, dropout=dropout, batch_first=True
-        )
-        self.residual_projection = nn.Linear(hidden_size, hidden_size)
-        self._zero_residual_projection()
-
-    def _zero_residual_projection(self):
-        nn.init.zeros_(self.residual_projection.weight)
-        nn.init.zeros_(self.residual_projection.bias)
-
-    def forward(self, gmap_embeds, map_tokens, map_token_masks):
-        if map_tokens is None:
-            return gmap_embeds
-
-        key_padding_mask = None
-        if map_token_masks is not None:
-            if map_token_masks.any(dim=1).logical_not().any():
-                map_token_masks = map_token_masks.clone()
-                map_token_masks[map_token_masks.any(dim=1).logical_not(), 0] = True
-            key_padding_mask = map_token_masks.logical_not()
-
-        map_context, _ = self.attention(
-            gmap_embeds,
-            map_tokens,
-            map_tokens,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        return gmap_embeds + self.residual_projection(map_context)
-
-
 class GlobalMapEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -608,7 +576,7 @@ class GlobalMapEncoder(nn.Module):
         self.gmap_step_embeddings = nn.Embedding(config.max_action_steps, config.hidden_size)
         self.gmap_task_embeddings = nn.Embedding(config.max_gmap_task_embeddings, config.hidden_size, padding_idx=0)
         self.encoder = CrossmodalEncoder(config)
-        self.graph_map_attention = GraphMapCrossAttention(
+        self.graph_map_attention = BidirectionalMapTokenFusion(
             config.hidden_size,
             config.num_attention_heads,
             config.hidden_dropout_prob,
@@ -687,8 +655,8 @@ class GlobalMapEncoder(nn.Module):
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens
         )
 
-        gmap_embeds = self.graph_map_attention(
-            gmap_embeds, map_tokens, map_token_masks
+        gmap_embeds, _ = self.graph_map_attention(
+            gmap_embeds, gmap_masks, map_tokens, map_token_masks
         )
             
         if self.sprel_linear is not None:

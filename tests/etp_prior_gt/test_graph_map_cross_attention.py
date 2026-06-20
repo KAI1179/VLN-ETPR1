@@ -46,11 +46,23 @@ def _load_vilmodel_cmt(monkeypatch):
         tensors, batch_first=True
     )
 
-    for name in ["vlnce_baselines", "vlnce_baselines.common"]:
+    for name in [
+        "vlnce_baselines",
+        "vlnce_baselines.common",
+        "vlnce_baselines.models",
+        "vlnce_baselines.models.etp_prior_gt",
+    ]:
         module = types.ModuleType(name)
         module.__path__ = []
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setitem(sys.modules, "vlnce_baselines.common.ops", fake_ops)
+    map_fusion_spec = importlib.util.spec_from_file_location(
+        "vlnce_baselines.models.etp_prior_gt.map_fusion",
+        ROOT / "vlnce_baselines/models/etp_prior_gt/map_fusion.py",
+    )
+    map_fusion_module = importlib.util.module_from_spec(map_fusion_spec)
+    monkeypatch.setitem(sys.modules, map_fusion_spec.name, map_fusion_module)
+    map_fusion_spec.loader.exec_module(map_fusion_module)
 
     spec = importlib.util.spec_from_file_location(
         "vilmodel_cmt_under_test",
