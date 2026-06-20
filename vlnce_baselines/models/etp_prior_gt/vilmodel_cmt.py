@@ -19,7 +19,7 @@ from vlnce_baselines.common.ops import create_transformer_encoder
 from vlnce_baselines.common.ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
 from vlnce_baselines.models.etp_prior_gt.map_fusion import (
     BidirectionalMapTokenFusion,
-    GraphMapCrossAttention,
+    GraphMapCrossAttention as GraphMapCrossAttention,
 )
 
 
@@ -502,7 +502,7 @@ class ImageEmbeddings(nn.Module):
             if self.obj_linear is None:
                 traj_obj_img_embeds = self.img_layer_norm(self.img_linear(traj_obj_img_fts))
             else:
-                traj_obj_img_embeds = self.obj_layer_norm(self.obj_linear(traj_obj_img_embeds))
+                traj_obj_img_embeds = self.obj_layer_norm(self.obj_linear(traj_obj_img_fts))
             traj_img_embeds = []
             for view_embed, obj_embed, view_len, obj_len in zip(
                 traj_view_img_embeds, traj_obj_img_embeds, traj_vp_view_lens, traj_vp_obj_lens
