@@ -24,3 +24,8 @@ The following APIs for `prior` are already cached, so do not cache again:
 
 - `SceneSemanticBoxes.from_scene_id`
 - `ConnectivityEntry.map_for`
+
+## Coding guidelines
+
+- You have `ty` and `ruff` available in env. Utilize them to catch potential bugs and improve code quality.
+- Commit when interim results are achieved.
