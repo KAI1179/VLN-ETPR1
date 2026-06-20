@@ -32,6 +32,10 @@ _Avoid_: floor plan, occupancy map when object and region semantics matter
 A model component that converts a cognitive map into map tokens for navigation.
 _Avoid_: map embedder
 
+**Bidirectional map-token fusion**:
+A navigation-model interaction in which cognitive-map tokens and global navigation graph representations remain distinct, but each representation is updated using information from the other.
+_Avoid_: map concatenation, pooled map fusion, single fused map
+
 **Map predictor**:
 A model component that predicts a cognitive map or cognitive-map-like representation from instruction metadata.
 _Avoid_: instruction mapper
@@ -205,3 +209,11 @@ Domain expert: "No. LLM-Boxes should use deterministic category and geometry ord
 Developer: "Should LLM-Boxes save JSON prediction artifacts?"
 
 Domain expert: "No. Save plain LLM-Boxes text artifacts so artifacts mirror the model-facing compact text format."
+
+Developer: "Does bidirectional map-token fusion mean merging the cognitive map and topological map into one representation?"
+
+Domain expert: "No. The cognitive-map tokens and global navigation graph representations remain distinct; fusion updates both representations without collapsing them into a single map."
+
+Developer: "Should cognitive-map tokens attend to the STOP action when they are updated from the global navigation graph?"
+
+Domain expert: "No. STOP is an action pseudo-node rather than a spatial graph node, so bidirectional map-token fusion should update cognitive-map tokens from real valid graph nodes."
