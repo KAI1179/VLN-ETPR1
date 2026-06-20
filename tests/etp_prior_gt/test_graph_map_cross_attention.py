@@ -9,6 +9,23 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class RecordingAttention(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.key_padding_mask = None
+
+    def forward(
+        self,
+        query,
+        key,
+        value,
+        key_padding_mask=None,
+        need_weights=False,
+    ):
+        self.key_padding_mask = key_padding_mask.detach().clone()
+        return torch.zeros_like(query), None
+
+
 def _load_vilmodel_cmt(monkeypatch):
     fake_transformers = types.ModuleType("transformers")
 
@@ -110,6 +127,7 @@ def _load_grpo_replay_helper(monkeypatch):
     sys.modules["habitat_extensions.measures"].NDTW = object
     sys.modules["fastdtw"].fastdtw = lambda *args, **kwargs: None
     map_utils = sys.modules["vlnce_baselines.models.etp_prior_gt.map_utils"]
+    map_utils.available_vlnce_cognitive_map_episode_ids = lambda *args, **kwargs: set()
     map_utils.cached_cognitive_map_to_tensors = lambda *args, **kwargs: {}
     sys.modules["vlnce_baselines.utils"].get_camera_orientations12 = (
         lambda *args, **kwargs: None
@@ -199,6 +217,46 @@ def test_graph_map_cross_attention_without_map_tokens_is_exact_no_op(monkeypatch
     output = cross_attention(gmap_embeds, None, None)
 
     assert torch.equal(output, original)
+
+
+def test_bidirectional_map_token_fusion_is_identity_at_initialization(monkeypatch):
+    vilmodel_cmt = _load_vilmodel_cmt(monkeypatch)
+    fusion = vilmodel_cmt.BidirectionalMapTokenFusion(
+        hidden_size=768, num_heads=12, dropout=0.0
+    )
+    gmap_embeds = torch.randn(2, 5, 768)
+    map_tokens = torch.randn(2, 101, 768)
+    map_token_masks = torch.ones(2, 101, dtype=torch.bool)
+    gmap_masks = torch.ones(2, 5, dtype=torch.bool)
+
+    updated_gmap_embeds, updated_map_tokens = fusion(
+        gmap_embeds, gmap_masks, map_tokens, map_token_masks
+    )
+
+    assert updated_gmap_embeds.shape == gmap_embeds.shape
+    assert updated_map_tokens.shape == map_tokens.shape
+    assert torch.allclose(updated_gmap_embeds, gmap_embeds, atol=1e-6)
+    assert torch.allclose(updated_map_tokens, map_tokens, atol=1e-6)
+
+
+def test_bidirectional_map_token_fusion_masks_stop_for_map_update(monkeypatch):
+    vilmodel_cmt = _load_vilmodel_cmt(monkeypatch)
+    fusion = vilmodel_cmt.BidirectionalMapTokenFusion(
+        hidden_size=768, num_heads=12, dropout=0.0
+    )
+    recording_attention = RecordingAttention()
+    fusion.map_from_graph_attention = recording_attention
+    gmap_embeds = torch.randn(1, 4, 768)
+    map_tokens = torch.randn(1, 3, 768)
+    map_token_masks = torch.ones(1, 3, dtype=torch.bool)
+    gmap_masks = torch.tensor([[True, True, True, False]])
+
+    fusion(gmap_embeds, gmap_masks, map_tokens, map_token_masks)
+
+    assert torch.equal(
+        recording_attention.key_padding_mask,
+        torch.tensor([[True, False, False, True]]),
+    )
 
 
 def test_grpo_replay_map_tokens_and_masks_use_same_active_indices(monkeypatch):
