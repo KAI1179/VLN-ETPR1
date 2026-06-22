@@ -236,8 +236,12 @@ class EmbeddingGridMapEncoder(nn.Module):
         )
 
         embedding_map = self.category_projection(cognitive_crop)
-        spatial_tokens = self.spatial_tokenizer(embedding_map)
-        spatial_tokens = spatial_tokens.flatten(start_dim=2).transpose(1, 2)
+        spatial_tokens = self.spatial_tokenizer(
+            embedding_map
+        )  # (B, 768, 10, 10), kernel_size=10, stride=10.
+        spatial_tokens = spatial_tokens.flatten(start_dim=2).transpose(
+            1, 2
+        )  # (B, 100, 768)
         spatial_tokens = self.spatial_token_norm(spatial_tokens)
 
         metadata = torch.cat(
