@@ -264,15 +264,18 @@ Main reading:
     - rank = 32
     - 如果第一个遇到的楼层路径点不足，使用其它楼层
     - 随机旋转
+    - -> 生成的预训练 navigation cache 仅 8621/109507
 - LLM 5: 禁用随机旋转
 
 ### 基于 LLM 的 pipeline
 
-- Nav 1
-    - 只使用 VLNCE 数据预训练
-    - LLM4 的微调模型
-    - -> 生成的预训练 navigation cache 仅 8621/109507 (可视化？)
-- Nav 2?
+- Smoke: LLM-derived cognitive-map cache + Try 7 navigation checkpoint
+    - Script: `scripts/tries/smoke-llm-map-try7.sh`
+    - Matrix: LLM4 cache, LLM5 cache
+    - Checkpoint: `data/logs/checkpoints/release_r2r_priorgt_dagger/store/try7.iter29600.pth`
+    - R2R evaluation only for the first smoke pass
+    - Missing `.npz` cache entries use current LLM-Navigation skip behavior
+    - RxR English-only filtering and fallback/zero-map policies are deferred
 
 ## 阶段
 
