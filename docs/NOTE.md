@@ -250,7 +250,7 @@ Main reading:
 | LLM 2  | [`4ec2b81`](https://github.com/PRO-2684/ETP-R1/commit/4ec2b81ae06abf70678cdd83aa61638d2edfcd3b) | 99.42%  | 1.42%  | 67.53%        | 56.26% |
 | LLM 3  | [`92d2476`](https://github.com/PRO-2684/ETP-R1/commit/92d247614c70a19fea083d272db66045aa0535f2) | 94.17%  | 2.22%  | 26.18%        | 33.90% |
 | LLM 4  | `4e9a456`                                                                                       | 94.22%  | 1.31%  | 18.72%        | 23.43% |
-| LLM 5  | `42c16c8`                                                                                       | TBD     | TBD    | TBD           | TBD    |
+| LLM 5  | `42c16c8`                                                                                       | 95.24%  | 1.76%  | 23.06%        | 29.42% |
 
 - LLM 1: Tell2Design-style
     - e.g. `[ object appliances | center x = 14.0 | center z = 26.9 | half x = 1.2 | half z = 0.3 | rotation = -2.55 ]`
