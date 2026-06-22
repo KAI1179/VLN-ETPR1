@@ -802,6 +802,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - [x] 剔除非英语数据
 - fail?
     - fallback 到原模型？
+    - [x] 认为失败，记录数据
 - 认知地图/拓扑地图交互
     - 之前：已有单向特征融合 (GraphMapCrossAttention)，可以表述为 A + B => A + B*
     - Implemented (try 8)：拓扑地图 -> 认知地图的 attn（双向 attn）
@@ -811,11 +812,6 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - B* = B + graph_residual(B <- A*)
             - `graph_from_map_attention` + `graph_residual_projection`
         - 后续流程使用 B*
-- 当前运行
-    - 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@VIPL)
-    - 去除随机旋转的 LLM 评估 (llm 5@超算)
-    - 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
-        - R2R：10556/10565
 - 工作
     1. 认知地图训练的并行实验
         - LLM 微调结果 (llm 4/5?) -> try 7 dagger, 直接测试
@@ -826,3 +822,10 @@ For VLN this is stronger than instruction-only because partial observation ancho
             - Imagine Before Go：网格地图的前瞻
             - 迁移到当前工作：拓扑图的前瞻
         - 没有前瞻则考虑加前瞻
+
+# 实验
+
+- [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@VIPL)
+- [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
+- [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
+    - R2R：10556/10565
