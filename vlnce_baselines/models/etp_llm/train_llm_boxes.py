@@ -191,6 +191,8 @@ def collate_llm_boxes_batch(
     max_input_length: int,
     max_new_tokens: int,
 ) -> Dict[str, Any]:
+    # Tokenizer output tensors use shape (B, T), where T is padded to the
+    # longest prompt+completion sequence in this batch, capped by max_length.
     target_texts = [
         truncate_llm_boxes_text_at_entity_boundary(
             _target_text(item), tokenizer, max_new_tokens
@@ -219,6 +221,8 @@ def collate_llm_boxes_batch(
         truncation=True,
         return_tensors="pt",
     )
+    # labels: (B, T). Prompt and padding positions are masked with -100 so the
+    # causal LM loss only trains on compact LLM-Boxes completion tokens.
     encoded["labels"] = _causal_lm_labels(
         encoded["input_ids"],
         prompt_lengths,
@@ -241,6 +245,7 @@ def collate_llm_boxes_prompt_batch(
     system_prompt: str,
     max_input_length: int,
 ) -> Dict[str, Any]:
+    # Prompt-only generation input: input_ids/attention_mask have shape (B, T).
     prompt_texts = [
         _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         for item in batch

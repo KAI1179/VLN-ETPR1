@@ -320,6 +320,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             return map_tokens, map_token_masks, map_loss
 
         if self.use_prior_gt or self.use_llm:
+            # Pretraining collate stacks cached map tensors to:
+            # cognitive_maps=(B, 37, 100, 100), keypoints=(B, 5, 2),
+            # direction=(B, 2), start=(B, 2). The map encoder returns
+            # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
             map_tokens, map_token_masks = self.map_encoder(
                 batch["cognitive_maps"],
                 batch["trajectory_keypoints"],

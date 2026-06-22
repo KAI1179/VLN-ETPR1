@@ -794,11 +794,16 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         if self.global_encoder.training:
             gmap_keep_mask = (torch.rand((batch_size, 1, 1), device=gmap_task_embeddings.device) > self.global_encoder.task_embedding_dropout_prob).float()
             task_type_encoding = task_type_encoding * gmap_keep_mask
+        # gmap_* tensors are padded over graph nodes:
+        # gmap_img_fts/gmap_pos_fts-derived embeddings=(B, G, hidden_size),
+        # gmap_masks=(B, G), map_tokens=(B, 101, hidden_size) when maps are enabled.
         gmap_embeds = gmap_img_fts + \
                       self.global_encoder.gmap_step_embeddings(gmap_step_ids) + \
                       task_type_encoding + \
                       self.global_encoder.gmap_pos_embeddings(gmap_pos_fts)
 
+        # Bidirectional fusion preserves both views:
+        # gmap_embeds stays (B, G, hidden_size), updated_map_tokens is (B, 101, hidden_size).
         gmap_embeds, updated_map_tokens = self.graph_map_attention(
             gmap_embeds, gmap_masks, map_tokens, map_token_masks
         )
@@ -818,6 +823,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
 
         graph_attentioned_txt_embeds, _ = self.graph_query_text(gmap_embeds, txt_embeds, attention_mask=extended_txt_masks)
         graph_attentioned_txt_embeds = self.graph_attentioned_txt_embeds_transform(graph_attentioned_txt_embeds)
+        # fusion_input=(B, G, hidden_size*2), global_logits=(B, G).
         fusion_input = torch.cat([gmap_embeds, graph_attentioned_txt_embeds], dim=-1)
         global_logits = self.global_sap_head(fusion_input).squeeze(2)
         global_logits.masked_fill_(gmap_visited_masks, -float('inf'))

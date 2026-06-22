@@ -131,6 +131,8 @@ def generate_navigation_cache(
         for batch in progress_loader:
             attempted += len(batch["items"])
             model_inputs = _model_batch(batch, args.device, include_labels=False)
+            # input_ids/attention_mask: (B, T_prompt).
+            # generated_sequences: (B, T_prompt + T_generated).
             generated_sequences = model.generate(
                 **model_inputs,
                 max_new_tokens=args.max_new_tokens,
@@ -214,6 +216,9 @@ def generate_navigation_cache(
                     f"{spec_to_llm_boxes_text(spec)}\n",
                     encoding="utf-8",
                 )
+                # Spec geometry remains level-local meters:
+                # keypoints=(5, 2), object boxes=(center[2], half_extents[2], rot),
+                # region boxes=(min[2], max[2]).
                 relevant = spec_to_relevant_semantic_boxes(
                     spec,
                     instruction=item["instruction"],
@@ -230,6 +235,8 @@ def generate_navigation_cache(
                     model_key=args.cache_model_key,
                 )
                 cognitive_map_path.parent.mkdir(parents=True, exist_ok=True)
+                # Saved .npz contains grid=(37, 100, 100),
+                # trajectory_keypoints=(5, 2), start_direction_vector=(2,).
                 relevant.to_cognitive_map().save(cognitive_map_path)
                 generated += 1
 

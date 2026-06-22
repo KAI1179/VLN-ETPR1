@@ -1081,6 +1081,9 @@ class RLTrainer(BaseVLNCETrainer):
         # PriorGT uses the full dynamically generated cognitive map directly.
         if not map_cfg.enabled or cognitive_maps is None:
             return None
+        # Per-env cached tensors are stacked into the map encoder batch:
+        # grid=(B, 37, 100, 100), keypoints=(B, 5, 2),
+        # direction=(B, 2), start=(B, 2).
         cognitive_crops = torch.stack(
             [
                 cognitive_map["grid"]
@@ -1112,6 +1115,7 @@ class RLTrainer(BaseVLNCETrainer):
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
+        # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
         nav_inputs["map_tokens"] = map_tokens
         nav_inputs["map_token_masks"] = map_token_masks
         return None

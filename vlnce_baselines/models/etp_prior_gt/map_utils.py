@@ -63,6 +63,9 @@ def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
 
 
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
+    # The cached grid is category-first: (27 object + 10 region, 100, 100).
+    # Keypoints and start_position are converted from level-local meters to
+    # grid row/col coordinates before entering the map encoder.
     return {
         "grid": torch.from_numpy(cognitive_map.grid),
         "trajectory_keypoints": _trajectory_keypoints_to_grid_tensor(cognitive_map),

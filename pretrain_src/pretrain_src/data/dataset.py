@@ -169,6 +169,8 @@ class ReverieTextPathData(object):
                 self, "random_rotation_augmentation", False
             ),
         )
+        # Single-example cached tensors: grid=(37, 100, 100),
+        # keypoints=(5, 2), direction=(2,), start=(2,). Collate stacks B first.
         return {
             "cognitive_maps": tensors["grid"],
             "trajectory_keypoints": tensors["trajectory_keypoints"],

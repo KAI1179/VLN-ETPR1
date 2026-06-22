@@ -235,15 +235,17 @@ class EmbeddingGridMapEncoder(nn.Module):
             start_positions,
         )
 
+        # cognitive_crop: (B, 37, 100, 100) -> embedding_map: (B, 512, 100, 100).
         embedding_map = self.category_projection(cognitive_crop)
         spatial_tokens = self.spatial_tokenizer(
             embedding_map
-        )  # (B, 768, 10, 10), kernel_size=10, stride=10.
+        )  # (B, hidden_size, 10, 10), kernel_size=10, stride=10.
         spatial_tokens = spatial_tokens.flatten(start_dim=2).transpose(
             1, 2
-        )  # (B, 100, 768)
+        )  # (B, 100, hidden_size)
         spatial_tokens = self.spatial_token_norm(spatial_tokens)
 
+        # metadata: (B, 14) = flattened keypoints (5*2), direction (2), start (2).
         metadata = torch.cat(
             [
                 trajectory_keypoints.flatten(start_dim=1),
@@ -252,8 +254,11 @@ class EmbeddingGridMapEncoder(nn.Module):
             ],
             dim=1,
         )
+        # metadata_token: (B, 1, hidden_size), appended after the 10x10 map tokens.
         metadata_token = self.metadata_encoder(metadata).unsqueeze(1)
 
+        # map_tokens: (B, 101, hidden_size). The mask is all true because the
+        # dense raster always emits all 100 spatial tokens plus one metadata token.
         map_tokens = torch.cat([spatial_tokens, metadata_token], dim=1)
         map_tokens = self.token_transformer(map_tokens)
         map_tokens = self.output_norm(map_tokens)
