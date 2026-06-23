@@ -820,11 +820,24 @@ For VLN this is stronger than instruction-only because partial observation ancho
     2. 加入认知地图的更新
         - 更新后的认知地图 embedding A* 接入解码器，解码成更新后的认知地图，用 GT loss 约束（每一步都约束并更新）
     3. 视觉拓扑图的前瞻更新
-        - **确认** 拓扑图构造方法：每一步更新？是否有前瞻（预测，例如 Imagine Before Go）？
+        - 确认拓扑图构造方法：每一步更新？
             - Imagine Before Go：网格地图的前瞻
             - 迁移到当前工作：拓扑图的前瞻
-            - 存储细节？
-        - 没有前瞻则考虑加前瞻
+            - 构造方法：在线更新
+            - 存储细节
+                - `node_pos[vp]`: 3D simulator position (x, y, z)
+                - `node_embeds[vp]`: panoramic embedding for that visited location, computed from avg_pano_embeds[i]
+                - `node_stepId[vp]`: rollout step when the node was inserted
+                - `node_stop_scores[vp]`: model’s STOP probability when at that node
+                - `graph_nx`: NetworkX graph with weighted edges
+                - `shortest_path`, `shortest_dist`: all-pairs shortest path/distance caches
+        - 确认拓扑图是否有前瞻（预测，例如 Imagine Before Go）？没有前瞻则考虑加前瞻
+            - 局部的单步前瞻/预测；ghost node
+            - `vlnce_baselines/models/R1Policy.py:187`, `vlnce_baselines/models/graph_utils.py:69`
+            - From the current panoramic RGB/depth observation, it predicts candidate waypoint directions/distances.
+            - Internally this is a heatmap over 120 angle bins x 12 distance bins.
+            - NMS keeps up to 5 candidate waypoints.
+            - Each candidate becomes a possible ghost/frontier node with an estimated 3D position from current pose + predicted angle/distance.
 
 ## 06/23
 
