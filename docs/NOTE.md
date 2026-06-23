@@ -276,6 +276,8 @@ Main reading:
     - R2R evaluation only for the first smoke pass
     - Missing `.npz` cache entries use current LLM-Navigation skip behavior
     - RxR English-only filtering and fallback/zero-map policies are deferred
+    - SR 46.43%; Missing cache 26.48%; SR in entries with cache 63.17%
+
 
 ## 阶段
 
