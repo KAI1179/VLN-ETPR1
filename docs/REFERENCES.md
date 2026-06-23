@@ -1,0 +1,4 @@
+- 认知地图 Decoder
+    - [Masked-attention Mask Transformer for Universal Image Segmentation](http://openaccess.thecvf.com/content/CVPR2022/html/Cheng_Masked-Attention_Mask_Transformer_for_Universal_Image_Segmentation_CVPR_2022_paper.html)
+    - ⭐ [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html)
+    - [End-to-End Object Detection with Transformers](https://arxiv.org/abs/2005.12872)

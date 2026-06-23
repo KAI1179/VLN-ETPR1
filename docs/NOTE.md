@@ -821,7 +821,23 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - **确认** 拓扑图构造方法：每一步更新？是否有前瞻（预测，例如 Imagine Before Go）？
             - Imagine Before Go：网格地图的前瞻
             - 迁移到当前工作：拓扑图的前瞻
+            - 存储细节？
         - 没有前瞻则考虑加前瞻
+
+## 06/23
+
+- 认知地图 Decoder 路径
+    - [Masked-attention Mask Transformer for Universal Image Segmentation](http://openaccess.thecvf.com/content/CVPR2022/html/Cheng_Masked-Attention_Mask_Transformer_for_Universal_Image_Segmentation_CVPR_2022_paper.html): 直接生成 mask
+        - 重点：Transformer Decoder
+        - feature 作为 k, v, N queries 解码出来 N 个特征 token，认为是 N 个 mask (可以为空)
+        - MLP 向右预测 mask 类别，向下 mask embedding
+        - pixel-level 特征和 mask embedding 相乘，得 N x H x W mask 形状
+        - 丢弃空集
+    - ⭐ [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html): 物体检测
+        - feature 作为 k, v, N queries 解码出来 N 个特征 token，认为各对应一个检测框
+        - 直接预测检测框位置与类别
+        - 区别：无需细粒度 mask，只需类别与框位置
+        - 工作：调查 bbox 损失的计算，考虑如何加入旋转角度
 
 # 实验
 
