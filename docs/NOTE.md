@@ -857,14 +857,9 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - 区别：无需细粒度 mask，只需类别与框位置
         - 工作：调查 bbox 损失的计算，考虑如何加入旋转角度
 
-## 06/23?
-
-- Try 7 + LLM 5 Smoke Test
-    - 模型不匹配：try7 没有拓扑地图 -> 认知地图的 attn
-
 # 实验
 
-- [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@VIPL)
+- [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
 - [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
-    - R2R：10556/10565
+    - R2R：10560/10565
