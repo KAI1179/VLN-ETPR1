@@ -31,7 +31,7 @@ BASE_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt"
 BASE_DAGGER_CKPT="data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth"
 BASE_GRPO_CKPT="data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth"
 
-GT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try7_step_435000.pt"
+GT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try8_step_495000.pt"
 GT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try7.iter29600.pth"
 GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.iter350.pth"
 GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
