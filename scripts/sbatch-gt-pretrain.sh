@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=try7
+#SBATCH --job-name=gt-pretrain
 #SBATCH --gpus=4
 #SBATCH -p vip_gpu_scze096
 eval "$(conda shell.bash hook)" && conda activate etpr1-uv
