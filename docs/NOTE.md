@@ -245,12 +245,12 @@ Main reading:
 ### 基于 LLM 的预测器
 
 | Method | Commit                                                                                          | E-valid | IoU    | Cat Precision | Cat-F1 |
-| ------ | ----------------------------------------------------------------------------------------------- | ------- | ------ | ------------- | ------ |
-| LLM 1  | [`1e8b031`](https://github.com/PRO-2684/ETP-R1/commit/1e8b031c1525965af1d62c217d0bd6bc1d2bc139) | 99.98%  | 0.121% | 1.28%         | 0.34%  |
-| LLM 2  | [`4ec2b81`](https://github.com/PRO-2684/ETP-R1/commit/4ec2b81ae06abf70678cdd83aa61638d2edfcd3b) | 99.42%  | 1.42%  | 67.53%        | 56.26% |
-| LLM 3  | [`92d2476`](https://github.com/PRO-2684/ETP-R1/commit/92d247614c70a19fea083d272db66045aa0535f2) | 94.17%  | 2.22%  | 26.18%        | 33.90% |
-| LLM 4  | `4e9a456`                                                                                       | 94.22%  | 1.31%  | 18.72%        | 23.43% |
-| LLM 5  | `42c16c8`                                                                                       | 95.24%  | 1.76%  | 23.06%        | 29.42% |
+| - | - | - | - | - | - |
+| LLM 1  | `1e8b031` | 99.98%  | 0.121% | 1.28%         | 0.34%  |
+| LLM 2  | `4ec2b81` | 99.42%  | 1.42%  | 67.53%        | 56.26% |
+| LLM 3  | `92d2476` | 94.17%  | 2.22%  | 26.18%        | 33.90% |
+| LLM 4  | `4e9a456` | 94.22%  | 1.31%  | 18.72%        | 23.43% |
+| LLM 5  | `42c16c8` | 95.24%  | 1.76%  | 23.06%        | 29.42% |
 
 - LLM 1: Tell2Design-style
     - e.g. `[ object appliances | center x = 14.0 | center z = 26.9 | half x = 1.2 | half z = 0.3 | rotation = -2.55 ]`
@@ -266,7 +266,6 @@ Main reading:
     - 随机旋转
     - -> 生成的预训练 navigation cache 仅 8621/109507
 - LLM 5: 禁用随机旋转
-- LLM 6: 只使用英文数据?
 
 ### 基于 LLM 的 pipeline
 
@@ -864,7 +863,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - [x] Cache failure rate?
     - Episodes that fail pre-generation item construction
     - 更新输出结构以方便诊断
-- [ ] Nav 1: Try 8 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
+- [x] Nav 1: Try 8 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
 - [x] 添加认知地图 Decoder
 
 决策：
@@ -878,7 +877,8 @@ For VLN this is stronger than instruction-only because partial observation ancho
 
 - [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
-- [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
+- [x] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
     - R2R train: 10494/10819
     - R2R val_unseen: 1351/1839
-    -> 缓解：使用 LLM 6 生成的缓存
+    -> 缓解：只使用英文数据生成缓存 (LLM 6)?
+- [ ] Nav 1: Try 8 + LLM 5
