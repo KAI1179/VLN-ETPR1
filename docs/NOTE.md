@@ -282,6 +282,7 @@ Main reading:
         - assign zero navigation metrics
         - report `llm_cache_missing_count` / `llm_cache_missing_rate`
     - SR 46.43%; Missing cache 26.48%; SR in entries with cache 63.17%
+- Nav 1: Try 8 + LLM 5
 
 ## 阶段
 
@@ -863,7 +864,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - [x] Cache failure rate?
     - Episodes that fail pre-generation item construction
     - 更新输出结构以方便诊断
-- [ ] 当前模型 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
+- [ ] Nav 1: Try 8 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
 - [ ] 添加认知地图 Decoder
 
 # 实验
