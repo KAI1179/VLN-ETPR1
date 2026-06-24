@@ -853,11 +853,11 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - MLP 向右预测 mask 类别，向下 mask embedding
         - pixel-level 特征和 mask embedding 相乘，得 N x H x W mask 形状
         - 丢弃空集
-    - ⭐ [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html): 物体检测
-        - feature 作为 k, v, N queries 解码出来 N 个特征 token，认为各对应一个检测框
-        - 直接预测检测框位置与类别
-        - 区别：无需细粒度 mask，只需类别与框位置
-        - 工作：调查 bbox 损失的计算，考虑如何加入旋转角度
+    - ⭐ [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html): mask query 分割
+        - feature 作为 k, v, N queries 解码出来 N 个特征 token，认为各对应一个候选 mask
+        - 实际输出是类别 logits 和二值 mask logits，不预测 bbox
+        - Hungarian matching 基于类别、focal mask loss、dice mask loss
+        - 若迁移到认知地图，需要 per-entity raster mask 作为监督目标
 
 ## 06/24
 
@@ -865,7 +865,14 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - Episodes that fail pre-generation item construction
     - 更新输出结构以方便诊断
 - [ ] Nav 1: Try 8 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
-- [ ] 添加认知地图 Decoder
+- [x] 添加认知地图 Decoder
+
+决策：
+
+- MaskFormer 论文不是基于 bbox 计算损失，而是基于 mask query 和匹配后的 mask loss。
+- 真正的 MaskFormer-style 监督需要 per-entity raster masks；当前认知地图只有 category-first dense grid，没有保存不同 entity 的独立 mask。
+- per-entity raster masks 会改变认知地图存储格式，先记录为后续方向。
+- 当前先实现简单替代方案：从 updated map tokens 解码完整 updated cognitive map logits，使用 dense BCE loss 对齐现有 `(37, 100, 100)` 认知地图。
 
 # 实验
 

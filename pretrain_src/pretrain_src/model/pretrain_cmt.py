@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformers import BertPreTrainedModel
+from transformers.models.bert.modeling_bert import BertPreTrainedModel
 from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 
 from .vilmodel import (
@@ -101,6 +101,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.trajectory_keypoint_loss_weight = getattr(
             config, "trajectory_keypoint_loss_weight", 0.001
         )
+        self.map_encoder = None
+        self.map_decoder = None
+        self.map_predictor = None
 
         if "mlm" in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
@@ -113,20 +116,20 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 self.config, self.config.hidden_size, self.config.pred_head_dropout_prob
             )
 
-        try:
-            import os
-            import sys
-
-            if "vlnce_baselines" not in sys.modules:
-                sys.path.insert(
-                    0,
-                    os.path.abspath(
-                        os.path.join(os.path.dirname(__file__), "../../../..")
-                    ),
+        map_inputs_enabled = self.use_imagined or self.use_prior_gt or self.use_llm
+        if map_inputs_enabled:
+            try:
+                from vlnce_baselines.models.etp_prior_gt.map_encoder import (
+                    EmbeddingGridMapEncoder,
                 )
-            from vlnce_baselines.models.etp_prior_gt.map_encoder import (
-                EmbeddingGridMapEncoder,
-            )
+                from vlnce_baselines.models.etp_prior_gt.map_decoder import (
+                    CognitiveMapDecoder,
+                )
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Map-enabled pretraining requires etp_prior_gt map modules "
+                    "to be importable from PYTHONPATH."
+                ) from exc
 
             print(
                 "Successfully imported EmbeddingGridMapEncoder, initializing map encoder..."
@@ -134,6 +137,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=self.config.hidden_size
             )
+            self.map_decoder = CognitiveMapDecoder(hidden_size=self.config.hidden_size)
             if self.use_imagined:
                 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
                     InstructionCognitiveMapPredictor,
@@ -148,9 +152,6 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 print(
                     "Successfully initialized InstructionCognitiveMapPredictor for imagined pretraining"
                 )
-        except ImportError:
-            self.map_encoder = None
-            self.map_predictor = None
 
         self.init_weights()
         self.tie_weights()
@@ -165,9 +166,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             raise FileNotFoundError(checkpoint_path)
         if (
             not getattr(self, "use_imagined", False)
-            or getattr(self, "map_predictor", None) is None
+            or self.map_predictor is None
         ):
             raise ValueError("--map_predictor_checkpoint requires --use_imagined")
+        map_predictor = self.map_predictor
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         if "map_predictor" in checkpoint:
@@ -189,7 +191,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         if not state_dict:
             raise ValueError(f"No map predictor weights found in {checkpoint_path}")
         load_complete_state_dict(
-            self.map_predictor,
+            map_predictor,
             state_dict,
             checkpoint_path,
             "map_predictor",
@@ -232,6 +234,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch["gmap_vpids"],
                 batch["txt_labels"],
                 compute_loss,
+                cognitive_maps=batch["cognitive_maps"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
             )
@@ -263,6 +266,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch["global_act_labels"],
                 batch["local_act_labels"],
                 compute_loss,
+                cognitive_maps=batch["cognitive_maps"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
             )
@@ -276,11 +280,15 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         if (
             "cognitive_maps" not in batch
             or batch["cognitive_maps"] is None
-            or getattr(self, "map_encoder", None) is None
+            or self.map_encoder is None
         ):
             return None, None, None
+        map_encoder = self.map_encoder
 
         if self.use_imagined:
+            if self.map_predictor is None:
+                raise RuntimeError("use_imagined requires map_predictor")
+            map_predictor = self.map_predictor
             txt_token_type_ids = torch.zeros_like(batch["txt_ids"])
             txt_embeds = self.bert.embeddings(
                 batch["txt_ids"],
@@ -289,13 +297,13 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             txt_masks = gen_seq_masks(batch["txt_lens"])
             txt_embeds = self.bert.lang_encoder(txt_embeds, txt_masks)
-            map_logits, pred_trajectory_keypoints = self.map_predictor(
+            map_logits, pred_trajectory_keypoints = map_predictor(
                 txt_embeds,
                 txt_masks,
                 start_direction_vectors=batch["start_direction_vectors"],
                 start_positions=batch["start_positions"],
             )
-            map_tokens, map_token_masks = self.map_encoder(
+            map_tokens, map_token_masks = map_encoder(
                 torch.sigmoid(map_logits),
                 pred_trajectory_keypoints,
                 batch["start_direction_vectors"],
@@ -324,7 +332,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             # cognitive_maps=(B, 37, 100, 100), keypoints=(B, 5, 2),
             # direction=(B, 2), start=(B, 2). The map encoder returns
             # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
-            map_tokens, map_token_masks = self.map_encoder(
+            map_tokens, map_token_masks = map_encoder(
                 batch["cognitive_maps"],
                 batch["trajectory_keypoints"],
                 batch["start_direction_vectors"],
@@ -333,6 +341,34 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             return map_tokens, map_token_masks, None
 
         return None, None, None
+
+    def _compute_updated_cognitive_map_loss(
+        self,
+        updated_map_tokens,
+        cognitive_maps,
+        compute_loss,
+    ):
+        if not compute_loss or updated_map_tokens is None:
+            return None
+        if cognitive_maps is None:
+            raise ValueError(
+                "cognitive_maps are required to supervise updated_map_tokens"
+            )
+        if self.map_decoder is None:
+            raise RuntimeError(
+                "updated_map_tokens were produced but map_decoder is not initialized"
+            )
+        updated_map_logits = self.map_decoder(updated_map_tokens)
+        if updated_map_logits.shape != cognitive_maps.shape:
+            raise ValueError(
+                "decoded updated cognitive map shape must match cognitive_maps, "
+                f"got {tuple(updated_map_logits.shape)} and {tuple(cognitive_maps.shape)}"
+            )
+        return self.map_loss_weight * F.binary_cross_entropy_with_logits(
+            updated_map_logits,
+            cognitive_maps,
+            reduction="mean",
+        )
 
     def forward_mlm(
         self,
@@ -357,10 +393,11 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         gmap_vpids,
         txt_labels,
         compute_loss,
+        cognitive_maps=None,
         map_tokens=None,
         map_token_masks=None,
     ):
-        txt_embeds, _ = self.bert(
+        navigation_output = self.bert(
             txt_ids,
             txt_lens,
             txt_task_encoding,
@@ -383,6 +420,12 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
         )
+        txt_embeds = navigation_output.txt_embeds
+        updated_map_loss = self._compute_updated_cognitive_map_loss(
+            navigation_output.updated_map_tokens,
+            cognitive_maps,
+            compute_loss,
+        )
 
         masked_output = self._compute_masked_hidden(txt_embeds, txt_labels != -1)
         prediction_scores = self.mlm_head(masked_output)
@@ -391,6 +434,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             mask_loss = F.cross_entropy(
                 prediction_scores, txt_labels[txt_labels != -1], reduction="none"
             )
+            if updated_map_loss is not None:
+                mask_loss = mask_loss + updated_map_loss
             return mask_loss
         else:
             return prediction_scores
@@ -426,10 +471,11 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         global_act_labels,
         local_act_labels,
         compute_loss,
+        cognitive_maps=None,
         map_tokens=None,
         map_token_masks=None,
     ):
-        txt_embeds, gmap_embeds = self.bert(
+        navigation_output = self.bert(
             txt_ids,
             txt_lens,
             txt_task_encoding,
@@ -451,6 +497,13 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             gmap_vpids,
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
+        )
+        txt_embeds = navigation_output.txt_embeds
+        gmap_embeds = navigation_output.gmap_embeds
+        updated_map_loss = self._compute_updated_cognitive_map_loss(
+            navigation_output.updated_map_tokens,
+            cognitive_maps,
+            compute_loss,
         )
 
         txt_masks = gen_seq_masks(txt_lens)
@@ -474,6 +527,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 global_logits, global_act_labels, reduction="none"
             )
             losses = global_losses
+            if updated_map_loss is not None:
+                losses = losses + updated_map_loss
             return losses
         else:
             return global_logits, global_act_labels

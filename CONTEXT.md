@@ -36,6 +36,10 @@ _Avoid_: map delta, map patch
 A model component that converts a cognitive map into map tokens for navigation.
 _Avoid_: map embedder
 
+**Cognitive map decoder**:
+A model component that converts updated map tokens into an updated cognitive map for dense supervision or inspection.
+_Avoid_: box decoder when the component predicts dense map logits
+
 **Bidirectional map-token fusion**:
 A navigation-model interaction in which cognitive-map tokens and global navigation graph representations remain distinct, but each representation is updated using information from the other.
 _Avoid_: map concatenation, pooled map fusion, single fused map

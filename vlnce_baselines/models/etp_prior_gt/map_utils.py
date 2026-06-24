@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import random
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 import torch
 from prior import DATA_DIR
@@ -23,6 +23,9 @@ from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
 VLNCE_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps"
 ETP_R1_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
+MAP_TOKEN_GRID_SIZE = 10
+MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
+MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
 
 SIZE = ROWS
 """Number of rows and cols in the grid map."""
@@ -33,6 +36,15 @@ if ROWS != COLS:
 
 def _scene_key(scene_id: str) -> str:
     return os.path.splitext(os.path.basename(scene_id))[0]
+
+
+def _normalize_vlnce_dataset_name(dataset: str) -> Literal["R2R", "RxR"]:
+    dataset_key = dataset.upper()
+    if dataset_key == "R2R":
+        return "R2R"
+    if dataset_key == "RXR":
+        return "RxR"
+    raise ValueError(f"Unsupported VLN-CE dataset: {dataset}")
 
 
 def _trajectory_keypoints_to_grid_tensor(
@@ -93,7 +105,8 @@ def available_vlnce_cognitive_map_episode_ids(
 ) -> list[str]:
     available = []
     skipped = []
-    for entry in VLNCEEpisodeEntry.iter_from(dataset.upper(), splits=(split,)):
+    dataset_name = _normalize_vlnce_dataset_name(dataset)
+    for entry in VLNCEEpisodeEntry.iter_from(dataset_name, splits=(split,)):
         cache_path = cognitive_map_cache_path(
             entry.scene_id,
             entry.unique_id,

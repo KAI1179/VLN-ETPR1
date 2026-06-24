@@ -1,19 +1,12 @@
-import json
 import logging
 import math
-import os
-import sys
-from io import open
-from typing import Callable, List, Tuple
-import numpy as np
-import copy
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
 from torch import nn
-import torch.nn.functional as F
-from torch import Tensor, device, dtype
 
-from transformers import BertPreTrainedModel
+from transformers.models.bert.modeling_bert import BertPreTrainedModel
 
 from vlnce_baselines.models.etp_prior_gt.map_fusion import BidirectionalMapTokenFusion
 
@@ -23,11 +16,14 @@ from .ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
 
 logger = logging.getLogger(__name__)
 
-try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm as BertLayerNorm
-except (ImportError, AttributeError) as e:
-    # logger.info("Better speed can be achieved with apex installed from https://www.github.com/nvidia/apex .")
-    BertLayerNorm = torch.nn.LayerNorm
+
+@dataclass
+class NavigationModelOutput:
+    txt_embeds: torch.Tensor
+    gmap_embeds: torch.Tensor
+    updated_map_tokens: Optional[torch.Tensor]
+
+BertLayerNorm = torch.nn.LayerNorm
 
 
 def gelu(x):
@@ -494,6 +490,8 @@ class ImageEmbeddings(nn.Module):
 
         traj_view_img_embeds = self.img_layer_norm(self.img_linear(traj_view_img_fts)) 
         if self.dep_linear is not None:
+            if self.dep_layer_norm is None:
+                raise RuntimeError("dep_layer_norm must exist when dep_linear exists")
             traj_view_img_embeds = traj_view_img_embeds + \
                                    self.dep_layer_norm(self.dep_linear(traj_view_dep_fts))
 
@@ -501,6 +499,8 @@ class ImageEmbeddings(nn.Module):
             if self.obj_linear is None:
                 traj_obj_img_embeds = self.img_layer_norm(self.img_linear(traj_obj_img_fts))
             else:
+                if self.obj_layer_norm is None:
+                    raise RuntimeError("obj_layer_norm must exist when obj_linear exists")
                 traj_obj_img_embeds = self.obj_layer_norm(self.obj_linear(traj_obj_img_fts))
             traj_img_embeds = []
             for view_embed, obj_embed, view_len, obj_len in zip(
@@ -655,11 +655,13 @@ class GlobalMapEncoder(nn.Module):
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens
         )
 
-        gmap_embeds, _ = self.graph_map_attention(
+        gmap_embeds, updated_map_tokens = self.graph_map_attention(
             gmap_embeds, gmap_masks, map_tokens, map_token_masks
         )
             
         if self.sprel_linear is not None:
+            if graph_sprels is None:
+                raise ValueError("graph_sprels are required when graph_sprels is enabled")
             graph_sprels = self.sprel_linear(graph_sprels.unsqueeze(3)).squeeze(3).unsqueeze(1) 
         else:
             graph_sprels = None
@@ -668,7 +670,11 @@ class GlobalMapEncoder(nn.Module):
             txt_embeds, txt_masks, gmap_embeds, gmap_masks,
             graph_sprels=graph_sprels
         )
-        return txt_embeds, gmap_embeds
+        return NavigationModelOutput(
+            txt_embeds=txt_embeds,
+            gmap_embeds=gmap_embeds,
+            updated_map_tokens=updated_map_tokens,
+        )
        
 
 class GlocalTextPathCMT(BertPreTrainedModel):
@@ -704,12 +710,11 @@ class GlocalTextPathCMT(BertPreTrainedModel):
             self.embeddings.token_type_embeddings
         )
         
-        txt_embeds, gmap_embeds = self.global_encoder(
+        return self.global_encoder(
             txt_embeds, txt_masks,
             split_traj_embeds, split_traj_vp_lens, traj_vpids, traj_cand_vpids, gmap_vpids,
             gmap_step_ids, gmap_task_embeddings, gmap_pos_fts, gmap_lens, graph_sprels=gmap_pair_dists,
             map_tokens=map_tokens, map_token_masks=map_token_masks
         )
-        return txt_embeds, gmap_embeds
 
     
