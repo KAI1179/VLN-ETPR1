@@ -266,6 +266,7 @@ Main reading:
     - 随机旋转
     - -> 生成的预训练 navigation cache 仅 8621/109507
 - LLM 5: 禁用随机旋转
+- LLM 6: 只使用英文数据?
 
 ### 基于 LLM 的 pipeline
 
@@ -857,9 +858,19 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - 区别：无需细粒度 mask，只需类别与框位置
         - 工作：调查 bbox 损失的计算，考虑如何加入旋转角度
 
+## 06/24
+
+- [x] Cache failure rate?
+    - Episodes that fail pre-generation item construction
+    - 更新输出结构以方便诊断
+- [ ] 当前模型 (加 decoder 之前) 使用 LLM5 Nav Cache 训练并验证
+- [ ] 添加认知地图 Decoder
+
 # 实验
 
 - [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
 - [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
-    - R2R：10560/10565
+    - R2R train: 10494/10819
+    - R2R val_unseen: 1351/1839
+    -> 缓解：使用 LLM 6 生成的缓存
