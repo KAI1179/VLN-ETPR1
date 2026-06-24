@@ -211,7 +211,12 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     assert status["salvaged"] is True
     assert status["prediction_path"] == str(prediction_path)
     assert status["cognitive_map_path"] == str(map_path)
-    assert (split_dir / "failures.jsonl").read_text()
+    assert status["failures"][0]["stage"] == "strict_parse"
+    assert status["failures"][1]["stage"] == "salvage_parse"
+    assert status["failures"][1]["dropped_entities"] == [
+        "obj alien 1 2 0.5 0.5 0"
+    ]
+    assert not (split_dir / "failures.jsonl").exists()
     assert json.loads((split_dir / "metrics.json").read_text())[
         "strict_parse_failure_rate"
     ] == 1.0
@@ -343,6 +348,10 @@ def test_generate_navigation_cache_records_conversion_failure_status(
     status = json.loads(status_path.read_text())
     assert status["status"] == "conversion_failed"
     assert status["error"] == "bad geometry"
+    assert status["failures"][-1] == {
+        "error": "bad geometry",
+        "stage": "conversion_failed",
+    }
     assert status["prediction_path"] == str(prediction_path)
     assert status["cognitive_map_path"] == str(map_path)
     assert metrics["cached"] == 0.0
@@ -633,6 +642,88 @@ def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_pat
     assert command[command.index("--limit") + 1] == "5"
     assert "--quiet" in command
     assert "--overwrite" not in command
+
+
+def test_write_split_metrics_uses_worker_file_for_parallel_workers(tmp_path):
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    args = argparse.Namespace(worker_count=4, worker_index=2)
+    metrics = {
+        "examples": 1.0,
+        "cached": 0.0,
+        "attempted": 1.0,
+        "strict_valid": 0.0,
+        "salvaged": 1.0,
+        "missing_trajectory_keypoints": 0.0,
+        "generated": 1.0,
+        "skipped": 0.0,
+        "strict_parse_failure_rate": 1.0,
+        "salvage_rate": 1.0,
+        "missing_trajectory_keypoints_rate": 0.0,
+    }
+
+    generate_navigation_cache._write_split_metrics(split_dir, metrics, args)
+
+    worker_path = split_dir / "worker_metrics" / "worker_2.json"
+    assert worker_path.is_file()
+    assert not (split_dir / "metrics.json").exists()
+    assert json.loads(worker_path.read_text())["generated"] == 1.0
+
+
+def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    worker_dir = split_dir / "worker_metrics"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "worker_0.json").write_text(
+        json.dumps(
+            {
+                "examples": 2.0,
+                "cached": 1.0,
+                "attempted": 1.0,
+                "strict_valid": 1.0,
+                "salvaged": 0.0,
+                "missing_trajectory_keypoints": 0.0,
+                "generated": 1.0,
+                "skipped": 0.0,
+                "strict_parse_failure_rate": 0.0,
+                "salvage_rate": 0.0,
+                "missing_trajectory_keypoints_rate": 0.0,
+            }
+        )
+    )
+    (worker_dir / "worker_1.json").write_text(
+        json.dumps(
+            {
+                "examples": 3.0,
+                "cached": 0.0,
+                "attempted": 3.0,
+                "strict_valid": 1.0,
+                "salvaged": 1.0,
+                "missing_trajectory_keypoints": 1.0,
+                "generated": 1.0,
+                "skipped": 2.0,
+                "strict_parse_failure_rate": 2.0 / 3.0,
+                "salvage_rate": 1.0 / 3.0,
+                "missing_trajectory_keypoints_rate": 1.0 / 3.0,
+            }
+        )
+    )
+
+    metrics = generate_navigation_cache._aggregate_worker_metrics(split_dir)
+
+    assert metrics == {
+        "examples": 5.0,
+        "cached": 1.0,
+        "attempted": 4.0,
+        "strict_valid": 2.0,
+        "salvaged": 1.0,
+        "missing_trajectory_keypoints": 1.0,
+        "generated": 2.0,
+        "skipped": 2.0,
+        "strict_parse_failure_rate": 0.5,
+        "salvage_rate": 0.25,
+        "missing_trajectory_keypoints_rate": 0.25,
+    }
+    assert json.loads((split_dir / "metrics.json").read_text()) == metrics
 
 
 def test_belongs_to_worker_assigns_each_cache_id_once():

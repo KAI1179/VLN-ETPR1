@@ -126,7 +126,6 @@ def generate_navigation_cache(
     missing_keypoints = 0
     generated = 0
     skipped = 0
-    failure_records: List[Dict[str, Any]] = []
 
     with torch.inference_mode():
         for batch in progress_loader:
@@ -167,19 +166,13 @@ def generate_navigation_cache(
                     model_key=args.cache_model_key,
                 )
                 _write_prediction_text(prediction_path, generated_text)
+                failures: List[Dict[str, Any]] = []
 
                 try:
                     strict_spec = parse_llm_boxes_text(generated_text)
                 except Exception as exc:
                     strict_spec = None
-                    failure_records.append(
-                        _navigation_cache_failure_record(
-                            item,
-                            stage="strict_parse",
-                            error=exc,
-                            prediction_path=prediction_path,
-                        )
-                    )
+                    failures.append(_failure_detail("strict_parse", exc))
                     _warn_navigation_cache_failure(item, "strict_parse", exc)
                 else:
                     strict_valid += 1
@@ -189,12 +182,10 @@ def generate_navigation_cache(
                 if salvage.dropped_entity_count:
                     salvaged += 1
                     error_text = "; ".join(salvage.errors)
-                    failure_records.append(
-                        _navigation_cache_failure_record(
-                            item,
-                            stage="salvage_parse",
-                            error=error_text,
-                            prediction_path=prediction_path,
+                    failures.append(
+                        _failure_detail(
+                            "salvage_parse",
+                            error_text,
                             dropped_entities=salvage.dropped_entities,
                         )
                     )
@@ -203,18 +194,16 @@ def generate_navigation_cache(
                 if not spec.trajectory_keypoints:
                     missing_keypoints += 1
                     skipped += 1
-                    failure_records.append(
-                        _navigation_cache_failure_record(
-                            item,
-                            stage="missing_trajectory_keypoints",
-                            error="refusing to generate cache without trajectory keypoints",
-                            prediction_path=prediction_path,
-                        )
+                    error_text = (
+                        "refusing to generate cache without trajectory keypoints"
+                    )
+                    failures.append(
+                        _failure_detail("missing_trajectory_keypoints", error_text)
                     )
                     _warn_navigation_cache_failure(
                         item,
                         "missing_trajectory_keypoints",
-                        "refusing to generate cache without trajectory keypoints",
+                        error_text,
                     )
                     _write_navigation_cache_status(
                         item,
@@ -226,7 +215,8 @@ def generate_navigation_cache(
                         cognitive_map_path=cognitive_map_path,
                         strict_valid=strict_spec is not None,
                         salvaged=bool(salvage.dropped_entity_count),
-                        error="refusing to generate cache without trajectory keypoints",
+                        error=error_text,
+                        failures=failures,
                     )
                     continue
 
@@ -247,14 +237,7 @@ def generate_navigation_cache(
                     relevant.to_cognitive_map().save(cognitive_map_path)
                 except Exception as exc:
                     skipped += 1
-                    failure_records.append(
-                        _navigation_cache_failure_record(
-                            item,
-                            stage="conversion_failed",
-                            error=exc,
-                            prediction_path=prediction_path,
-                        )
-                    )
+                    failures.append(_failure_detail("conversion_failed", exc))
                     _warn_navigation_cache_failure(item, "conversion_failed", exc)
                     _write_navigation_cache_status(
                         item,
@@ -267,6 +250,7 @@ def generate_navigation_cache(
                         strict_valid=strict_spec is not None,
                         salvaged=bool(salvage.dropped_entity_count),
                         error=str(exc),
+                        failures=failures,
                     )
                     continue
                 _write_navigation_cache_status(
@@ -279,10 +263,10 @@ def generate_navigation_cache(
                     cognitive_map_path=cognitive_map_path,
                     strict_valid=strict_spec is not None,
                     salvaged=bool(salvage.dropped_entity_count),
+                    failures=failures,
                 )
                 generated += 1
 
-    _write_jsonl(split_dir / "failures.jsonl", failure_records)
     metrics = {
         "examples": float(examples),
         "cached": float(cached),
@@ -300,10 +284,7 @@ def generate_navigation_cache(
             float(missing_keypoints) / float(attempted) if attempted else 0.0
         ),
     }
-    (split_dir / "metrics.json").write_text(
-        json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    _write_split_metrics(split_dir, metrics, args)
     return metrics
 
 
@@ -563,6 +544,15 @@ def _skipped_cache_count(metrics: Dict[str, Dict[str, float]]) -> int:
     )
 
 
+def _cache_split_keys() -> List[Tuple[str, str]]:
+    keys: List[Tuple[str, str]] = []
+    for dataset_key in VLNCE_DATASETS:
+        for split in VLNCE_SPLITS:
+            keys.append((dataset_key, split))
+    keys.append((PRETRAIN_DATASET_KEY, PRETRAIN_SPLIT))
+    return keys
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -678,7 +668,18 @@ def _run_parallel_workers(
 
     if failed:
         raise SystemExit(f"LLM-Navigation cache workers failed: {failed}")
-    return {}
+    metrics: Dict[str, Dict[str, float]] = {}
+    for dataset_key, split in _cache_split_keys():
+        split_dir = llm_navigation_split_dir(
+            dataset_key,
+            split,
+            cache_dir=args.cache_dir,
+            model_key=args.cache_model_key,
+        )
+        metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(
+            split_dir
+        )
+    return metrics
 
 
 def _worker_command(
@@ -809,6 +810,63 @@ def _write_navigation_cache_manifest(
     )
 
 
+def _write_split_metrics(
+    split_dir: Path,
+    metrics: Dict[str, float],
+    args: argparse.Namespace,
+) -> None:
+    worker_count = int(getattr(args, "worker_count", 1))
+    worker_index = int(getattr(args, "worker_index", 0))
+    if worker_count > 1:
+        metrics_path = split_dir / "worker_metrics" / f"worker_{worker_index}.json"
+    else:
+        metrics_path = split_dir / "metrics.json"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_text(
+        json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _aggregate_worker_metrics(split_dir: Path) -> Dict[str, float]:
+    worker_metrics = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((split_dir / "worker_metrics").glob("worker_*.json"))
+    ]
+    metrics = _sum_metrics(worker_metrics)
+    (split_dir / "metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return metrics
+
+
+def _sum_metrics(metrics_by_worker: Sequence[Dict[str, float]]) -> Dict[str, float]:
+    metrics = {
+        "examples": 0.0,
+        "cached": 0.0,
+        "attempted": 0.0,
+        "strict_valid": 0.0,
+        "salvaged": 0.0,
+        "missing_trajectory_keypoints": 0.0,
+        "generated": 0.0,
+        "skipped": 0.0,
+    }
+    for worker_metrics in metrics_by_worker:
+        for key in metrics:
+            metrics[key] += float(worker_metrics.get(key, 0.0))
+
+    attempted = metrics["attempted"]
+    metrics["strict_parse_failure_rate"] = (
+        (attempted - metrics["strict_valid"]) / attempted if attempted else 0.0
+    )
+    metrics["salvage_rate"] = metrics["salvaged"] / attempted if attempted else 0.0
+    metrics["missing_trajectory_keypoints_rate"] = (
+        metrics["missing_trajectory_keypoints"] / attempted if attempted else 0.0
+    )
+    return metrics
+
+
 def _write_prediction_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     suffix = "" if text.endswith("\n") else "\n"
@@ -827,6 +885,7 @@ def _write_navigation_cache_status(
     strict_valid: Optional[bool] = None,
     salvaged: Optional[bool] = None,
     error: Optional[str] = None,
+    failures: Sequence[Dict[str, Any]] = (),
 ) -> None:
     _write_navigation_cache_status_record(
         scene_id=item["scene_id"],
@@ -840,6 +899,7 @@ def _write_navigation_cache_status(
         strict_valid=strict_valid,
         salvaged=salvaged,
         error=error,
+        failures=failures,
     )
 
 
@@ -856,6 +916,7 @@ def _write_navigation_cache_status_record(
     strict_valid: Optional[bool] = None,
     salvaged: Optional[bool] = None,
     error: Optional[str] = None,
+    failures: Sequence[Dict[str, Any]] = (),
 ) -> None:
     record: Dict[str, Any] = {
         "example_id": cache_id,
@@ -874,6 +935,8 @@ def _write_navigation_cache_status_record(
         record["salvaged"] = salvaged
     if error is not None:
         record["error"] = error
+    if failures:
+        record["failures"] = list(failures)
 
     status_path = llm_navigation_status_path(
         scene_id,
@@ -890,20 +953,12 @@ def _write_navigation_cache_status_record(
     )
 
 
-def _navigation_cache_failure_record(
-    item: LLMBoxesItem,
+def _failure_detail(
     stage: str,
     error: BaseException | str,
-    prediction_path: Path,
     dropped_entities: Sequence[str] = (),
 ) -> Dict[str, Any]:
-    record: Dict[str, Any] = {
-        "example_id": item["example_id"],
-        "scene_id": item["scene_id"],
-        "stage": stage,
-        "error": str(error),
-        "prediction_path": str(prediction_path),
-    }
+    record: Dict[str, Any] = {"stage": stage, "error": str(error)}
     if dropped_entities:
         record["dropped_entities"] = list(dropped_entities)
     return record
@@ -919,15 +974,6 @@ def _warn_navigation_cache_failure(
         RuntimeWarning,
         stacklevel=2,
     )
-
-
-def _write_jsonl(path: Path, records: Sequence[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        for record in records:
-            file.write(json.dumps(record, ensure_ascii=True, sort_keys=True))
-            file.write("\n")
-
 
 if __name__ == "__main__":
     main()

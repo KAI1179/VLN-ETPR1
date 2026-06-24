@@ -51,9 +51,10 @@ data/llm_navigation/
       train/
         predictions/<scene>/<cache_id>.txt
         cognitive_maps/<scene>/<cache_id>.npz
-        failures.jsonl
+        status/<scene>/<cache_id>.json
         manifest.json
         metrics.json
+        worker_metrics/worker_<index>.json
       val_seen/
       val_unseen/
     rxr/
@@ -64,9 +65,10 @@ data/llm_navigation/
       mixed/
         predictions/<scene>/<instr_id>.txt
         cognitive_maps/<scene>/<instr_id>.npz
-        failures.jsonl
+        status/<scene>/<instr_id>.json
         manifest.json
         metrics.json
+        worker_metrics/worker_<index>.json
 ```
 
 VLN-CE navigation cache ids use the existing PriorGT convention:
@@ -80,7 +82,8 @@ Pretraining cache ids use the pretraining annotation `instr_id` and are stored u
 
 Cache generation should warn and continue on malformed LLM output. Valid compact
 entities from the output are still parsed and rasterized; invalid entities are recorded
-in `failures.jsonl`, and aggregate failure rates are written to `metrics.json`.
+in per-entry `status` JSON files, and aggregate failure rates are written to
+`metrics.json`.
 
 ### Generate Navigation Cache
 
@@ -127,9 +130,9 @@ The command writes:
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/predictions/<scene>/<cache_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/cognitive_maps/<scene>/<cache_id>.npz
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/status/<scene>/<cache_id>.json
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/failures.jsonl
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/manifest.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/metrics.json
+data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/worker_metrics/worker_<index>.json
 data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/predictions/<scene>/<cache_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/cognitive_maps/<scene>/<cache_id>.npz
 data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/status/<scene>/<cache_id>.json
@@ -151,7 +154,13 @@ existing cache entries, remove the target cache directory and run generation aga
 
 Per-entry `status` JSON files record generation attempt outcomes only:
 `complete`, `missing_keypoints`, `conversion_failed`, or `skipped_input`. Resume
-skips do not write or overwrite status files.
+skips do not write or overwrite status files. Failed or partially salvaged entries
+also include a `failures` array with the parse, salvage, missing-keypoint, or
+conversion details for that entry.
+
+Single-process generation writes split-level `metrics.json` directly. Parallel
+generation writes per-worker metrics under `worker_metrics/` and aggregates them
+into the split-level `metrics.json` after all workers finish.
 
 Each source prints a resume summary before generation:
 
@@ -165,8 +174,8 @@ VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used 
 Malformed output does not abort the cache run. The generator first tries strict
 parsing, then salvage parsing. Salvage parsing keeps valid `keypoints`, `obj`, and
 `reg` entities even when other semicolon- or newline-separated entities are invalid.
-Warnings are emitted per affected item, dropped entities are written to
-`failures.jsonl`, and rates are summarized in `metrics.json`.
+Warnings are emitted per affected item, dropped entities are written to that entry's
+`status` JSON, and rates are summarized in `metrics.json`.
 
 If the output omits `keypoints`, the generator warns, records the failure, and
 refuses to create a cognitive-map cache for that entry. Other entries continue.
