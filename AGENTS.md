@@ -29,3 +29,4 @@ The following APIs for `prior` are already cached, so do not cache again:
 
 - You have `ty` and `ruff` available in env. Utilize them to catch potential bugs and improve code quality.
 - Commit when interim results are achieved.
+- Use Chinese in `docs/NOTE.md`, and English in all other places.
