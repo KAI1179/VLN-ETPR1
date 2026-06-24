@@ -126,13 +126,16 @@ The command writes:
 ```text
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/predictions/<scene>/<cache_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/cognitive_maps/<scene>/<cache_id>.npz
+data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/status/<scene>/<cache_id>.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/failures.jsonl
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/manifest.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/metrics.json
 data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/predictions/<scene>/<cache_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/cognitive_maps/<scene>/<cache_id>.npz
+data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/status/<scene>/<cache_id>.json
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
+data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/status/<scene>/<instr_id>.json
 ```
 
 It generates `train`, `val_seen`, and `val_unseen` for both R2R and RxR, plus the
@@ -142,9 +145,13 @@ one reproducible artifact set.
 
 Generation resumes by default. If the cognitive-map `.npz` already exists for an
 item, that item is skipped before tokenization, LLM generation, and scene-box
-preprocessing. The prediction text is kept for auditability, but navigation consumes
-the `.npz`, so a map is sufficient for resume. Use `--overwrite` to regenerate
-existing cache entries.
+preprocessing. The prediction text stores raw decoded model output for auditability,
+but navigation consumes the `.npz`, so a map is sufficient for resume. To regenerate
+existing cache entries, remove the target cache directory and run generation again.
+
+Per-entry `status` JSON files record generation attempt outcomes only:
+`complete`, `missing_keypoints`, `conversion_failed`, or `skipped_input`. Resume
+skips do not write or overwrite status files.
 
 Each source prints a resume summary before generation:
 

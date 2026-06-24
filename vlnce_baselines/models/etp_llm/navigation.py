@@ -88,6 +88,22 @@ def llm_navigation_cognitive_map_path(
     )
 
 
+def llm_navigation_status_path(
+    scene_id: str,
+    cache_id: str,
+    dataset: str,
+    split: str,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> Path:
+    return (
+        llm_navigation_split_dir(dataset, split, cache_dir, model_key)
+        / "status"
+        / _scene_key(scene_id)
+        / f"{_safe_path_part(cache_id)}.json"
+    )
+
+
 def llm_cached_cognitive_map_to_tensors(
     scene_id: str,
     cache_id: str,

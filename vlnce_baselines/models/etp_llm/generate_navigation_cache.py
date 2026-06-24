@@ -34,6 +34,7 @@ from .navigation import (
     llm_navigation_cognitive_map_path,
     llm_navigation_prediction_path,
     llm_navigation_split_dir,
+    llm_navigation_status_path,
 )
 from .train_llm_boxes import (
     DEFAULT_MODEL_NAME_OR_PATH,
@@ -91,7 +92,7 @@ def generate_navigation_cache(
         nonlocal cached, examples
         for item in dataset:
             examples += 1
-            if not bool(getattr(args, "overwrite", False)) and _cache_complete(
+            if _cache_complete(
                 item["scene_id"],
                 item["example_id"],
                 dataset_key,
@@ -157,6 +158,15 @@ def generate_navigation_cache(
                     model_key=args.cache_model_key,
                 )
                 prediction_path.parent.mkdir(parents=True, exist_ok=True)
+                cognitive_map_path = llm_navigation_cognitive_map_path(
+                    scene_id,
+                    cache_id,
+                    dataset_key,
+                    split,
+                    cache_dir=args.cache_dir,
+                    model_key=args.cache_model_key,
+                )
+                _write_prediction_text(prediction_path, generated_text)
 
                 try:
                     strict_spec = parse_llm_boxes_text(generated_text)
@@ -206,38 +216,70 @@ def generate_navigation_cache(
                         "missing_trajectory_keypoints",
                         "refusing to generate cache without trajectory keypoints",
                     )
-                    prediction_path.write_text(
-                        f"{generated_text.strip()}\n",
-                        encoding="utf-8",
+                    _write_navigation_cache_status(
+                        item,
+                        status="missing_keypoints",
+                        dataset_key=dataset_key,
+                        split=split,
+                        args=args,
+                        prediction_path=prediction_path,
+                        cognitive_map_path=cognitive_map_path,
+                        strict_valid=strict_spec is not None,
+                        salvaged=bool(salvage.dropped_entity_count),
+                        error="refusing to generate cache without trajectory keypoints",
                     )
                     continue
 
-                prediction_path.write_text(
-                    f"{spec_to_llm_boxes_text(spec)}\n",
-                    encoding="utf-8",
-                )
                 # Spec geometry remains level-local meters:
                 # keypoints=(5, 2), object boxes=(center[2], half_extents[2], rot),
                 # region boxes=(min[2], max[2]).
-                relevant = spec_to_relevant_semantic_boxes(
-                    spec,
-                    instruction=item["instruction"],
-                    level_idx=item["level_idx"],
-                    start_direction_vector=item["start_direction"],
-                    range_y=item["target_relevant"].level.range_y,
+                try:
+                    relevant = spec_to_relevant_semantic_boxes(
+                        spec,
+                        instruction=item["instruction"],
+                        level_idx=item["level_idx"],
+                        start_direction_vector=item["start_direction"],
+                        range_y=item["target_relevant"].level.range_y,
+                    )
+                    cognitive_map_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Saved .npz contains grid=(37, 100, 100),
+                    # trajectory_keypoints=(5, 2), start_direction_vector=(2,).
+                    relevant.to_cognitive_map().save(cognitive_map_path)
+                except Exception as exc:
+                    skipped += 1
+                    failure_records.append(
+                        _navigation_cache_failure_record(
+                            item,
+                            stage="conversion_failed",
+                            error=exc,
+                            prediction_path=prediction_path,
+                        )
+                    )
+                    _warn_navigation_cache_failure(item, "conversion_failed", exc)
+                    _write_navigation_cache_status(
+                        item,
+                        status="conversion_failed",
+                        dataset_key=dataset_key,
+                        split=split,
+                        args=args,
+                        prediction_path=prediction_path,
+                        cognitive_map_path=cognitive_map_path,
+                        strict_valid=strict_spec is not None,
+                        salvaged=bool(salvage.dropped_entity_count),
+                        error=str(exc),
+                    )
+                    continue
+                _write_navigation_cache_status(
+                    item,
+                    status="complete",
+                    dataset_key=dataset_key,
+                    split=split,
+                    args=args,
+                    prediction_path=prediction_path,
+                    cognitive_map_path=cognitive_map_path,
+                    strict_valid=strict_spec is not None,
+                    salvaged=bool(salvage.dropped_entity_count),
                 )
-                cognitive_map_path = llm_navigation_cognitive_map_path(
-                    scene_id,
-                    cache_id,
-                    dataset_key,
-                    split,
-                    cache_dir=args.cache_dir,
-                    model_key=args.cache_model_key,
-                )
-                cognitive_map_path.parent.mkdir(parents=True, exist_ok=True)
-                # Saved .npz contains grid=(37, 100, 100),
-                # trajectory_keypoints=(5, 2), start_direction_vector=(2,).
-                relevant.to_cognitive_map().save(cognitive_map_path)
                 generated += 1
 
     _write_jsonl(split_dir / "failures.jsonl", failure_records)
@@ -293,7 +335,7 @@ def load_pretrain_cache_items(
                 if args is not None and not _belongs_to_worker(entry.instr_id, args):
                     continue
                 total += 1
-                if args is not None and not bool(getattr(args, "overwrite", False)):
+                if args is not None:
                     if _cache_complete(
                         entry.scan,
                         entry.instr_id,
@@ -318,6 +360,16 @@ def load_pretrain_cache_items(
                         RuntimeWarning,
                         stacklevel=2,
                     )
+                    if args is not None:
+                        _write_navigation_cache_status_record(
+                            scene_id=entry.scan,
+                            cache_id=entry.instr_id,
+                            dataset_key=PRETRAIN_DATASET_KEY,
+                            split=PRETRAIN_SPLIT,
+                            args=args,
+                            status="skipped_input",
+                            error=str(error),
+                        )
                     continue
                 start_position = _level_local_start_position(
                     target_relevant.trajectory_keypoints,
@@ -393,7 +445,7 @@ def load_vlnce_cache_items(
         if args is not None and not _belongs_to_worker(episode.unique_id, args):
             continue
         total += 1
-        if args is not None and not bool(getattr(args, "overwrite", False)):
+        if args is not None:
             if _cache_complete(
                 episode.scene_id,
                 episode.unique_id,
@@ -417,6 +469,16 @@ def load_vlnce_cache_items(
                 RuntimeWarning,
                 stacklevel=2,
             )
+            if args is not None:
+                _write_navigation_cache_status_record(
+                    scene_id=episode.scene_id,
+                    cache_id=episode.unique_id,
+                    dataset_key=dataset_key,
+                    split=split,
+                    args=args,
+                    status="skipped_input",
+                    error=str(error),
+                )
             continue
         start_position = _level_local_start_position(
             target_relevant.trajectory_keypoints,
@@ -532,11 +594,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--cache-model-key",
         default=DEFAULT_LLM_NAVIGATION_MODEL_KEY,
         help="Model namespace under the cache root.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Regenerate prediction text and cognitive maps even when both exist.",
     )
     parser.add_argument(
         "--parallel-workers",
@@ -664,8 +721,6 @@ def _worker_command(
         command.extend(["--limit", str(args.limit)])
     if args.quiet:
         command.append("--quiet")
-    if args.overwrite:
-        command.append("--overwrite")
     return command
 
 
@@ -750,6 +805,87 @@ def _write_navigation_cache_manifest(
     }
     (split_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _write_prediction_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = "" if text.endswith("\n") else "\n"
+    path.write_text(f"{text}{suffix}", encoding="utf-8")
+
+
+def _write_navigation_cache_status(
+    item: LLMBoxesItem,
+    *,
+    status: str,
+    dataset_key: str,
+    split: str,
+    args: argparse.Namespace,
+    prediction_path: Optional[Path] = None,
+    cognitive_map_path: Optional[Path] = None,
+    strict_valid: Optional[bool] = None,
+    salvaged: Optional[bool] = None,
+    error: Optional[str] = None,
+) -> None:
+    _write_navigation_cache_status_record(
+        scene_id=item["scene_id"],
+        cache_id=item["example_id"],
+        dataset_key=dataset_key,
+        split=split,
+        args=args,
+        status=status,
+        prediction_path=prediction_path,
+        cognitive_map_path=cognitive_map_path,
+        strict_valid=strict_valid,
+        salvaged=salvaged,
+        error=error,
+    )
+
+
+def _write_navigation_cache_status_record(
+    *,
+    scene_id: str,
+    cache_id: str,
+    dataset_key: str,
+    split: str,
+    args: argparse.Namespace,
+    status: str,
+    prediction_path: Optional[Path] = None,
+    cognitive_map_path: Optional[Path] = None,
+    strict_valid: Optional[bool] = None,
+    salvaged: Optional[bool] = None,
+    error: Optional[str] = None,
+) -> None:
+    record: Dict[str, Any] = {
+        "example_id": cache_id,
+        "scene_id": scene_id,
+        "dataset": dataset_key,
+        "split": split,
+        "status": status,
+    }
+    if prediction_path is not None:
+        record["prediction_path"] = str(prediction_path)
+    if cognitive_map_path is not None:
+        record["cognitive_map_path"] = str(cognitive_map_path)
+    if strict_valid is not None:
+        record["strict_valid"] = strict_valid
+    if salvaged is not None:
+        record["salvaged"] = salvaged
+    if error is not None:
+        record["error"] = error
+
+    status_path = llm_navigation_status_path(
+        scene_id,
+        cache_id,
+        dataset_key,
+        split,
+        cache_dir=args.cache_dir,
+        model_key=args.cache_model_key,
+    )
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 

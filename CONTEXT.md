@@ -28,6 +28,10 @@ _Avoid_: RFT when the specific optimizer matters
 A spatial semantic prior over the environment that describes likely objects, regions, and navigation-relevant layout information.
 _Avoid_: floor plan, occupancy map when object and region semantics matter
 
+**Updated cognitive map**:
+A full cognitive map revised during navigation using current navigation state, rather than a delta or patch to a previous cognitive map.
+_Avoid_: map delta, map patch
+
 **Map encoder**:
 A model component that converts a cognitive map into map tokens for navigation.
 _Avoid_: map embedder

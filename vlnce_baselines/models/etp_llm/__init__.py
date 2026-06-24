@@ -25,6 +25,7 @@ from .navigation import (
     llm_navigation_cognitive_map_path,
     llm_navigation_prediction_path,
     llm_navigation_split_dir,
+    llm_navigation_status_path,
 )
 
 __all__ = [
@@ -50,4 +51,5 @@ __all__ = [
     "llm_navigation_cognitive_map_path",
     "llm_navigation_prediction_path",
     "llm_navigation_split_dir",
+    "llm_navigation_status_path",
 ]
