@@ -848,6 +848,21 @@ class RLTrainer(BaseVLNCETrainer):
             episodes_allowed = self.config.EVAL.EPISODE_ID
         else:
             episodes_allowed = self.traj
+        episodes_allowed = self._prepare_eval_episodes_allowed(episodes_allowed)
+        prefilled_stats = self._eval_prefilled_episode_stats()
+        if not episodes_allowed and prefilled_stats:
+            self.stat_eps = prefilled_stats
+            self.pbar = (
+                tqdm.tqdm(total=len(prefilled_stats))
+                if self.config.use_pbar
+                else None
+            )
+            if self.pbar:
+                self.pbar.update(len(prefilled_stats))
+                self.pbar.close()
+            self._write_eval_results(writer, checkpoint_index)
+            return
+
         self.envs = construct_envs(
             self.config,
             get_env_class(self.config.ENV_NAME),
@@ -877,59 +892,24 @@ class RLTrainer(BaseVLNCETrainer):
                 self.config.EVAL.EPISODE_COUNT, sum(self.envs.number_of_episodes)
             )
         self.stat_eps = {}
+        self.stat_eps.update(prefilled_stats)
+        if self.config.EVAL.EPISODE_COUNT == -1:
+            eps_to_eval += len(prefilled_stats)
+        else:
+            eps_to_eval = min(
+                self.config.EVAL.EPISODE_COUNT,
+                eps_to_eval + len(prefilled_stats),
+            )
         self.pbar = tqdm.tqdm(total=eps_to_eval) if self.config.use_pbar else None
+        if self.pbar and prefilled_stats:
+            self.pbar.update(len(prefilled_stats))
 
         while len(self.stat_eps) < eps_to_eval:
             self.rollout("eval")
 
         self.envs.close()
 
-        if self.world_size > 1:
-            distr.barrier()
-        aggregated_states = {}
-        num_episodes = len(self.stat_eps)
-        for stat_key in next(iter(self.stat_eps.values())).keys():
-            aggregated_states[stat_key] = (
-                sum(v[stat_key] for v in self.stat_eps.values()) / num_episodes
-            )
-        total = torch.tensor(num_episodes).cuda()
-        if self.world_size > 1:
-            distr.reduce(total, dst=0)
-        total = total.item()
-
-        if self.world_size > 1:
-            logger.info(
-                f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}"
-            )
-            for k, v in aggregated_states.items():
-                v = torch.tensor(v * num_episodes).cuda()
-                cat_v = gather_list_and_concat(v, self.world_size)
-                v = (sum(cat_v) / total).item()
-                aggregated_states[k] = v
-
-        split = self.config.TASK_CONFIG.DATASET.SPLIT
-        fname = os.path.join(
-            self.config.RESULTS_DIR,
-            f"stats_ep_ckpt_{checkpoint_index}_{split}_r{self.local_rank}_w{self.world_size}.json",
-        )
-        with open(fname, "w") as f:
-            json.dump(self.stat_eps, f, indent=2)
-
-        if self.local_rank < 1:
-            if self.config.EVAL.SAVE_RESULTS:
-                fname = os.path.join(
-                    self.config.RESULTS_DIR,
-                    f"stats_ckpt_{checkpoint_index}_{split}.json",
-                )
-                with open(fname, "w") as f:
-                    json.dump(aggregated_states, f, indent=2)
-
-            logger.info(f"Episodes evaluated: {total}")
-            checkpoint_num = checkpoint_index + 1
-            for k, v in aggregated_states.items():
-                logger.info(f"Average episode {k}: {v:.6f}")
-                writer.add_scalar(f"eval_{k}/{split}", v, checkpoint_num)
-            print(f"Episodes evaluated: {total}")
+        self._write_eval_results(writer, checkpoint_index)
 
     @torch.no_grad()
     def inference(self):
@@ -1137,6 +1117,71 @@ class RLTrainer(BaseVLNCETrainer):
             )
             for ep in self.envs.current_episodes()
         ]
+
+    def _prepare_eval_episodes_allowed(self, episodes_allowed):
+        return episodes_allowed
+
+    def _eval_prefilled_episode_stats(self):
+        return {}
+
+    def _augment_eval_aggregated_states(self, aggregated_states, total):
+        return aggregated_states
+
+    def _write_eval_results(self, writer, checkpoint_index):
+        if self.world_size > 1:
+            distr.barrier()
+        aggregated_states = {}
+        num_episodes = len(self.stat_eps)
+        stat_keys = sorted(
+            {key for episode_stats in self.stat_eps.values() for key in episode_stats}
+        )
+        for stat_key in stat_keys:
+            aggregated_states[stat_key] = (
+                sum(v.get(stat_key, 0.0) for v in self.stat_eps.values())
+                / num_episodes
+            )
+        total = torch.tensor(num_episodes).cuda()
+        if self.world_size > 1:
+            distr.reduce(total, dst=0)
+        total = total.item()
+
+        if self.world_size > 1:
+            logger.info(
+                f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}"
+            )
+            for k, v in aggregated_states.items():
+                v = torch.tensor(v * num_episodes).cuda()
+                cat_v = gather_list_and_concat(v, self.world_size)
+                v = (sum(cat_v) / total).item()
+                aggregated_states[k] = v
+        aggregated_states = self._augment_eval_aggregated_states(
+            aggregated_states,
+            total,
+        )
+
+        split = self.config.TASK_CONFIG.DATASET.SPLIT
+        fname = os.path.join(
+            self.config.RESULTS_DIR,
+            f"stats_ep_ckpt_{checkpoint_index}_{split}_r{self.local_rank}_w{self.world_size}.json",
+        )
+        with open(fname, "w") as f:
+            json.dump(self.stat_eps, f, indent=2)
+
+        if self.local_rank < 1:
+            if self.config.EVAL.SAVE_RESULTS:
+                fname = os.path.join(
+                    self.config.RESULTS_DIR,
+                    f"stats_ckpt_{checkpoint_index}_{split}.json",
+                )
+                with open(fname, "w") as f:
+                    json.dump(aggregated_states, f, indent=2)
+
+            logger.info(f"Episodes evaluated: {total}")
+            checkpoint_num = checkpoint_index + 1
+            for k, v in aggregated_states.items():
+                logger.info(f"Average episode {k}: {v:.6f}")
+                writer.add_scalar(f"eval_{k}/{split}", v, checkpoint_num)
+            print(f"Episodes evaluated: {total}")
 
     def rollout(self, mode, ml_weight=None, sample_ratio=None):
         if mode == "train":

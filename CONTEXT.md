@@ -76,6 +76,14 @@ _Avoid_: Imagined policy when the map path uses text generation and JSON parsing
 A cognitive map generated from LLM-Boxes output before navigation rollout and consumed as a fixed map input by LLM-Navigation.
 _Avoid_: online LLM map when generation is not part of rollout
 
+**LLM-Navigation cache miss**:
+The absence of the expected navigation-ready `.npz` cache file for a language-filtered LLM-Navigation episode.
+_Avoid_: navigation failure when the policy never receives a map input
+
+**LLM generation failure**:
+An LLM-Navigation evaluation outcome where a cache miss is counted in the evaluation denominator with zero navigation metrics and reported separately from rollout-completed episodes.
+_Avoid_: fallback navigation, zero-map rollout, skipped evaluation episode
+
 **Structured cognitive-map specification**:
 A text-generated representation of predicted objects, regions, and spatial metadata that can be converted into relevant semantic boxes before rasterization.
 _Avoid_: raw JSON when discussing model semantics
@@ -201,6 +209,10 @@ Domain expert: "No. LLM-Navigation should use separate policy and trainer names 
 Developer: "Should LLM-Navigation run the LLM online during rollout?"
 
 Domain expert: "No. LLM-Navigation should consume precomputed LLM-derived cognitive maps so rollout uses deterministic map tensors and generation failures can be measured before navigation."
+
+Developer: "How should LLM-Navigation evaluation handle a missing cache file?"
+
+Domain expert: "Treat the LLM-Navigation cache miss as an LLM generation failure: keep the episode in the denominator, assign zero navigation metrics, and report cache-missing count and rate."
 
 Developer: "Should generated entities be ordered along the path?"
 

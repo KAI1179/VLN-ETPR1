@@ -10,7 +10,7 @@ from typing import Iterable, Iterator, Literal, Sequence, Tuple
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
-from prior.trajectory import WorldPoint3D, WorldTrajectory3D
+from prior.trajectory import WorldTrajectory3D
 
 
 DEFAULT_SPLITS = ("train", "val_seen", "val_unseen")
@@ -50,9 +50,9 @@ class VLNCEEpisodeEntry:
 
             for episode in raw_data["episodes"]:
                 instruction_data = episode["instruction"]
-                # language = instruction_data.get("language", "en-US")
-                # if not language.startswith("en-"):
-                #     continue  # TODO: How to extract nouns in other lang?
+                language = instruction_data.get("language", "en-US")
+                if not language.startswith("en-"):
+                    continue
 
                 episode_id = episode["episode_id"]
                 gt_entry = gt_data.get(str(episode_id))
@@ -89,7 +89,7 @@ class VLNCEEpisodeEntry:
 
 def _scene_id_from_episode(raw_scene_id: str) -> str:
     """Extract MP3D scene id from Habitat scene paths."""
-    return raw_scene_id.split("/")[1]
+    return Path(raw_scene_id).stem
 
 
 def _world_trajectory_3d(points: Iterable[Sequence[float]]) -> WorldTrajectory3D:

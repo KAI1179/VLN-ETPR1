@@ -22,13 +22,19 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cognitive_map_cache_path,
 )
 from vlnce_baselines.models.etp_llm.navigation import (
+    DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_cached_cognitive_map_to_tensors,
+    llm_navigation_cognitive_map_path,
 )
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
+PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
+PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
+PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
+PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY = DEFAULT_LLM_NAVIGATION_MODEL_KEY
 
 
 def _filter_missing_pretrain_cognitive_maps(items):
@@ -54,6 +60,36 @@ def _filter_missing_pretrain_cognitive_maps(items):
         raise FileNotFoundError(
             "No PriorGT pretraining cognitive-map caches were found under "
             f"{PRETRAIN_COGNITIVE_MAP_DIR}"
+        )
+    return available
+
+
+def _filter_missing_pretrain_llm_cognitive_maps(items):
+    available = []
+    skipped = 0
+    for item in items:
+        cache_path = llm_navigation_cognitive_map_path(
+            item["scan"],
+            item["instr_id"],
+            PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
+            PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
+            cache_dir=PRETRAIN_LLM_COGNITIVE_MAP_DIR,
+            model_key=PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY,
+        )
+        if cache_path.is_file():
+            available.append(item)
+        else:
+            skipped += 1
+
+    if skipped:
+        print(
+            "pretrain_llm_navigation_maps: "
+            f"available={len(available)} skipped_missing={skipped}"
+        )
+    if items and not available:
+        raise FileNotFoundError(
+            "No LLM-Navigation pretraining cognitive-map caches were found under "
+            f"{PRETRAIN_LLM_COGNITIVE_MAP_DIR}"
         )
     return available
 
@@ -132,6 +168,8 @@ class ReverieTextPathData(object):
 
         if self.use_prior_gt:
             self.data = _filter_missing_pretrain_cognitive_maps(self.data)
+        if self.use_llm:
+            self.data = _filter_missing_pretrain_llm_cognitive_maps(self.data)
 
         if val_sample_num:
             # cannot evaluate all the samples as it takes too much time

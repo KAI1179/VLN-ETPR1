@@ -54,6 +54,27 @@ def test_vlnce_episode_entry_iter_from_uses_r2r_ground_truth_trajectory(
     assert not hasattr(entries[0], "positions")
 
 
+def test_vlnce_episode_entry_iter_from_normalizes_full_habitat_scene_path(
+    tmp_path, monkeypatch
+):
+    from prior import vlnce
+
+    split_dir = tmp_path / "train"
+    split_dir.mkdir()
+    episode = _episode()
+    episode["scene_id"] = "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb"
+    _write_gzip_json(split_dir / "train.json.gz", {"episodes": [episode]})
+    _write_gzip_json(
+        split_dir / "train_gt.json.gz",
+        {"7": {"locations": [(0.0, 0.0, 0.0)]}},
+    )
+    monkeypatch.setattr(vlnce, "R2R_DIR", tmp_path)
+
+    entries = list(vlnce.VLNCEEpisodeEntry.iter_from("R2R", splits=["train"]))
+
+    assert entries[0].scene_id == "X7HyMhZNoso"
+
+
 def test_vlnce_episode_entry_iter_from_uses_rxr_guide_ground_truth_file(
     tmp_path, monkeypatch
 ):
@@ -76,6 +97,35 @@ def test_vlnce_episode_entry_iter_from_uses_rxr_guide_ground_truth_file(
 
     assert len(entries) == 1
     assert entries[0].ground_truth_trajectory == trajectory
+
+
+def test_vlnce_episode_entry_iter_from_skips_non_english_instructions(
+    tmp_path, monkeypatch
+):
+    from prior import vlnce
+
+    split_dir = tmp_path / "val_seen"
+    split_dir.mkdir()
+    english_episode = _episode(12)
+    english_episode["instruction"]["language"] = "en-US"
+    non_english_episode = _episode(13)
+    non_english_episode["instruction"]["language"] = "hi-IN"
+    _write_gzip_json(
+        split_dir / "val_seen_guide.json.gz",
+        {"episodes": [english_episode, non_english_episode]},
+    )
+    _write_gzip_json(
+        split_dir / "val_seen_guide_gt.json.gz",
+        {
+            "12": {"locations": [(0.0, 0.0, 0.0)]},
+            "13": {"locations": [(1.0, 0.0, 0.0)]},
+        },
+    )
+    monkeypatch.setattr(vlnce, "RxR_DIR", tmp_path)
+
+    entries = list(vlnce.VLNCEEpisodeEntry.iter_from("RxR", splits=["val_seen"]))
+
+    assert [entry.episode_id for entry in entries] == [12]
 
 
 def test_vlnce_episode_entry_iter_from_fails_when_gt_file_missing(

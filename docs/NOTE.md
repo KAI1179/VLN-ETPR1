@@ -274,10 +274,13 @@ Main reading:
     - Matrix: LLM4 cache, LLM5 cache
     - Checkpoint: `data/logs/checkpoints/release_r2r_priorgt_dagger/store/try7.iter29600.pth`
     - R2R evaluation only for the first smoke pass
-    - Missing `.npz` cache entries use current LLM-Navigation skip behavior
-    - RxR English-only filtering and fallback/zero-map policies are deferred
+    - Shared VLN-CE episode iteration filters to English instructions
+    - Training skips missing LLM-Navigation `.npz` cache entries
+    - Evaluation treats a missing `.npz` as an LLM generation failure:
+        - keep the episode in the denominator
+        - assign zero navigation metrics
+        - report `llm_cache_missing_count` / `llm_cache_missing_rate`
     - SR 46.43%; Missing cache 26.48%; SR in entries with cache 63.17%
-
 
 ## 阶段
 
@@ -804,7 +807,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - [x] 剔除非英语数据
 - fail?
     - fallback 到原模型？
-    - [x] 认为失败，记录数据
+    - [x] 认为 LLM generation failure，记录 `llm_cache_missing_count/rate`
 - 认知地图/拓扑地图交互
     - 之前：已有单向特征融合 (GraphMapCrossAttention)，可以表述为 A + B => A + B*
     - Implemented (try 8)：拓扑地图 -> 认知地图的 attn（双向 attn）
@@ -853,6 +856,11 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - 直接预测检测框位置与类别
         - 区别：无需细粒度 mask，只需类别与框位置
         - 工作：调查 bbox 损失的计算，考虑如何加入旋转角度
+
+## 06/23?
+
+- Try 7 + LLM 5 Smoke Test
+    - 模型不匹配：try7 没有拓扑地图 -> 认知地图的 attn
 
 # 实验
 

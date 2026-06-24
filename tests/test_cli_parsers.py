@@ -429,6 +429,58 @@ def test_pretrain_prior_map_filter_rejects_entirely_missing_cache(
         )
 
 
+def test_pretrain_llm_map_filter_skips_missing_entries(
+    tmp_path, monkeypatch, capsys
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_LLM_COGNITIVE_MAP_DIR", tmp_path)
+    cache_path = pretrain_dataset.llm_navigation_cognitive_map_path(
+        "scene",
+        "good",
+        "pretrain",
+        "mixed",
+        cache_dir=tmp_path,
+        model_key="llama-3.1-8b-instruct",
+    )
+    cache_path.parent.mkdir(parents=True)
+    cache_path.touch()
+    items = [
+        {"instr_id": "good", "scan": "scene"},
+        {"instr_id": "missing", "scan": "scene"},
+    ]
+
+    filtered = pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(items)
+
+    assert filtered == [{"instr_id": "good", "scan": "scene"}]
+    assert (
+        "pretrain_llm_navigation_maps: available=1 skipped_missing=1"
+        in capsys.readouterr().out
+    )
+
+
+def test_pretrain_llm_map_filter_rejects_entirely_missing_cache(
+    tmp_path, monkeypatch
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_LLM_COGNITIVE_MAP_DIR", tmp_path)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="No LLM-Navigation pretraining cognitive-map caches were found",
+    ):
+        pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(
+            [{"instr_id": "missing", "scan": "scene"}]
+        )
+
+
 @pytest.mark.parametrize(
     ("turns", "expected_paths", "expected_start", "expected_direction"),
     [

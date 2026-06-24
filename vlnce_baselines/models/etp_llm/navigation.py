@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Optional
+from typing import Literal, Optional, cast
 
 from prior import DATA_DIR
 from prior.vlnce import VLNCEEpisodeEntry
@@ -15,6 +16,30 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 
 DEFAULT_LLM_NAVIGATION_MODEL_KEY = "llama-3.1-8b-instruct"
 DEFAULT_LLM_NAVIGATION_CACHE_DIR = DATA_DIR / "llm_navigation"
+
+
+@dataclass(frozen=True)
+class LLMNavigationCacheReport:
+    available_episode_ids: list[str]
+    missing_episode_ids: list[str]
+
+    @property
+    def available_count(self) -> int:
+        return len(self.available_episode_ids)
+
+    @property
+    def missing_count(self) -> int:
+        return len(self.missing_episode_ids)
+
+    @property
+    def total_count(self) -> int:
+        return self.available_count + self.missing_count
+
+    @property
+    def missing_rate(self) -> float:
+        if self.total_count == 0:
+            return 0.0
+        return self.missing_count / self.total_count
 
 
 def llm_navigation_split_dir(
@@ -42,7 +67,7 @@ def llm_navigation_prediction_path(
     return (
         llm_navigation_split_dir(dataset, split, cache_dir, model_key)
         / "predictions"
-        / _safe_path_part(scene_id)
+        / _scene_key(scene_id)
         / f"{_safe_path_part(cache_id)}.txt"
     )
 
@@ -58,7 +83,7 @@ def llm_navigation_cognitive_map_path(
     return (
         llm_navigation_split_dir(dataset, split, cache_dir, model_key)
         / "cognitive_maps"
-        / _safe_path_part(scene_id)
+        / _scene_key(scene_id)
         / f"{_safe_path_part(cache_id)}.npz"
     )
 
@@ -101,9 +126,45 @@ def available_llm_navigation_episode_ids(
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
 ) -> list[str]:
+    report = llm_navigation_cache_report(
+        dataset,
+        split,
+        episode_ids=None,
+        cache_dir=cache_dir,
+        model_key=model_key,
+    )
+
+    if report.missing_episode_ids:
+        print(
+            "finetuning_llm_navigation_maps: "
+            f"available={report.available_count} "
+            f"skipped_missing={report.missing_count}"
+        )
+    if not report.available_episode_ids:
+        raise FileNotFoundError(
+            f"No LLM-Navigation caches found for {dataset}/{split}"
+        )
+    return report.available_episode_ids
+
+
+def llm_navigation_cache_report(
+    dataset: str,
+    split: str,
+    episode_ids: Optional[list[str]] = None,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> LLMNavigationCacheReport:
+    canonical_dataset = dataset.upper()
+    if canonical_dataset not in ("R2R", "RxR"):
+        raise ValueError(f"Unsupported dataset: {dataset}")
+    vlnce_dataset = cast(Literal["R2R", "RxR"], canonical_dataset)
+    requested = set(str(episode_id) for episode_id in episode_ids or [])
     available = []
-    skipped = []
-    for entry in VLNCEEpisodeEntry.iter_from(dataset.upper(), splits=(split,)):
+    missing = []
+    for entry in VLNCEEpisodeEntry.iter_from(vlnce_dataset, splits=(split,)):
+        episode_id = str(entry.episode_id)
+        if requested and episode_id not in requested:
+            continue
         cache_path = llm_navigation_cognitive_map_path(
             entry.scene_id,
             entry.unique_id,
@@ -113,20 +174,14 @@ def available_llm_navigation_episode_ids(
             model_key=model_key,
         )
         if cache_path.is_file():
-            available.append(str(entry.episode_id))
+            available.append(episode_id)
         else:
-            skipped.append(entry.unique_id)
+            missing.append(episode_id)
 
-    if skipped:
-        print(
-            "finetuning_llm_navigation_maps: "
-            f"available={len(available)} skipped_missing={len(skipped)}"
-        )
-    if not available:
-        raise FileNotFoundError(
-            f"No LLM-Navigation caches found for {dataset}/{split}"
-        )
-    return available
+    return LLMNavigationCacheReport(
+        available_episode_ids=available,
+        missing_episode_ids=missing,
+    )
 
 
 def _safe_path_part(value: str) -> str:
@@ -135,3 +190,7 @@ def _safe_path_part(value: str) -> str:
         part = part.replace("..", "__")
     part = part.strip("._-")
     return part or "item"
+
+
+def _scene_key(scene_id: str) -> str:
+    return _safe_path_part(Path(scene_id).stem)
