@@ -882,6 +882,8 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - 想办法生成 entity mask，用 MaskFormer
     - 保留认知地图存储形式，换成语义分割范式，例如 Segmenter
 - 当前流程更像指称分割 (Referring Expression Segmentation)，解码的时候语言指令要不要送入到 Decoder?
+    - Referring Expression Segmentation (RES) is a vision-language task: given an image and a natural-language phrase such as “the man in the red shirt” or “the dog under the table,” the model must output a pixel-level mask for the referred object.
+    - A typical RES model has three parts: an image encoder, a text encoder, and a fusion/segmentation decoder that combines visual and linguistic features to produce a binary mask. Recent systems increasingly use transformer vision-language backbones and sometimes large multimodal language models. For example, LISA extends this idea to “reasoning segmentation,” where the query can be implicit and require world knowledge.
 
 # 实验
 
