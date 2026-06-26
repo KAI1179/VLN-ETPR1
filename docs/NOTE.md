@@ -875,6 +875,14 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - per-entity raster masks 会改变认知地图存储格式，先记录为后续方向。
 - 当前先实现简单替代方案：从 updated map tokens 解码完整 updated cognitive map logits，使用 dense BCE loss 对齐现有 `(37, 100, 100)` 认知地图。
 
+## 06/26
+
+- Decoder 可能是三条路：
+    - 改变认知地图存储格式，重跑出来，用 DETR
+    - 想办法生成 entity mask，用 MaskFormer
+    - 保留认知地图存储形式，换成语义分割范式，例如 Segmenter
+- 当前流程更像指称分割 (Referring Expression Segmentation)，解码的时候语言指令要不要送入到 Decoder?
+
 # 实验
 
 - [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
@@ -884,3 +892,4 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - R2R val_unseen: 1351/1839
     -> 缓解：只使用英文数据生成缓存 (LLM 6)?
 - [ ] Nav 1: Try 8 + LLM 5
+- [ ] Try 9: 简易的认知地图 Decoder @ VIPL
