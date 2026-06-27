@@ -164,7 +164,7 @@
 | Try 5 (GRPO)               | **0.7417** | **0.7830** | 0.6304     | 420     |
 | Try 6 (Dagger)             | 0.6449     | 0.6835     | 0.5609     | 27800   |
 | Try 7 (Dagger)             | 0.6520     | 0.7230     | 0.5450     | 29600   |
-| Try 8 (Dagger)             |            |            |            |         |
+| Try 8 (Dagger)             | 0.6400     | 0.7025     | 0.5382     | 26800   |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
@@ -887,7 +887,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
 
 # 实验
 
-- [ ] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
+- [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
 - [x] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
     - R2R train: 10494/10819
