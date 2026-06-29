@@ -284,6 +284,7 @@ Main reading:
         - report `llm_cache_missing_count` / `llm_cache_missing_rate`
     - SR 46.43%; Missing cache 26.48%; SR in entries with cache 63.17%
 - Nav 1: Try 8 + LLM 5
+    - 未完整运行 - 检查点丢失
 
 ## 阶段
 
@@ -889,9 +890,8 @@ For VLN this is stronger than instruction-only because partial observation ancho
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
-- [x] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
+- [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
     - R2R train: 10494/10819
     - R2R val_unseen: 1351/1839
-    -> 缓解：只使用英文数据生成缓存 (LLM 6)?
-- [ ] Nav 1: Try 8 + LLM 5
+- ~~Nav 1: Try 8 + LLM 5~~
 - [ ] Try 9: 简易的认知地图 Decoder @ VIPL
