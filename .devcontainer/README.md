@@ -70,13 +70,11 @@ routes.
 > [!WARNING]
 > We assume that you have obtained [permission from Matterport](https://niessner.github.io/Matterport/#:~:text=Please%20fill%20and%20sign%20the%20Terms%20of%20Use%20agreement%20form%20and%20send%20it%20to%20matterport3d%40googlegroups.com%20to%20request%20access%20to%20the%20dataset.).
 
-We recommend using [Matterport3D-Dataset-Downloader](https://github.com/wtzmx/Matterport3D-Dataset-Downloader) for faster download speed. Clone the repo, install dependencies as instructed and run in its folder:
-
 ```shell
-python3 download_mp.py --task_data habitat --scans scans.txt -o /path/to/data/scene_datasets/mp3d/
+cd data && wget http://kaldir.vc.in.tum.de/matterport/v1/tasks/mp3d_habitat.zip
 ```
 
-Then, move the files so that the file structure follows this format: `data/scene_datasets/mp3d/{scene}/{scene}.glb`. There should be **90 scenes** in total:
+Then, unzip and move the files so that the file structure follows this format: `data/scene_datasets/mp3d/{scene}/{scene}.glb`. There should be **90 scenes** in total:
 
 ```shell
 ls ./data/scene_datasets/mp3d | wc

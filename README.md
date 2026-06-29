@@ -73,8 +73,7 @@ python setup.py develop --all
 Download the Matterport3D scene dataset. You may need to request access via [Matterport](https://niessner.github.io/Matterport/).
 
 ```bash
-# Download MP3D data for Habitat
-python download_mp.py --task habitat -o data/scene_datasets/mp3d/
+cd data && wget http://kaldir.vc.in.tum.de/matterport/v1/tasks/mp3d_habitat.zip
 ```
 
 **Note:**
