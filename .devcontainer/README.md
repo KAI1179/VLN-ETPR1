@@ -88,6 +88,7 @@ wget "https://huggingface.co/datasets/cepillarskeira/ETP-R1-extra-files/resolve/
 unzip extra_files.zip
 # Before running the script below, please open `copy_extra_files.py` and modify the `source_root` and `target_root` variables to match your local absolute paths.
 python copy_extra_files.py
+mkdir -p pretrained/r2r_rxr_ce/baseline && mv pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2 pretrained/r2r_rxr_ce/baseline/ && rm -r pretrained/r2r_rxr_ce/mlm.sap_habitat_depth
 
 # Clean up (Optional)
 rm -rf extra_files extra_files.zip
