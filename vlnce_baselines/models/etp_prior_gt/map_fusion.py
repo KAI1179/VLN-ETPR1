@@ -4,41 +4,6 @@ import torch
 import torch.nn as nn
 
 
-class GraphMapCrossAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.attention = nn.MultiheadAttention(
-            hidden_size, num_heads, dropout=dropout, batch_first=True
-        )
-        self.residual_projection = nn.Linear(hidden_size, hidden_size)
-        self._zero_residual_projection()
-
-    def _zero_residual_projection(self):
-        nn.init.zeros_(self.residual_projection.weight)
-        nn.init.zeros_(self.residual_projection.bias)
-
-    def forward(self, gmap_embeds, map_tokens, map_token_masks):
-        if map_tokens is None:
-            return gmap_embeds
-
-        key_padding_mask = None
-        if map_token_masks is not None:
-            if map_token_masks.any(dim=1).logical_not().any():
-                # MultiheadAttention returns NaNs for rows with all keys masked.
-                map_token_masks = map_token_masks.clone()
-                map_token_masks[map_token_masks.any(dim=1).logical_not(), 0] = True
-            key_padding_mask = map_token_masks.logical_not()
-
-        map_context, _ = self.attention(
-            gmap_embeds,
-            map_tokens,
-            map_tokens,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        return gmap_embeds + self.residual_projection(map_context)
-
-
 class BidirectionalMapTokenFusion(nn.Module):
     def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
         super().__init__()
@@ -106,5 +71,7 @@ class BidirectionalMapTokenFusion(nn.Module):
             key_padding_mask=map_key_padding_mask,
             need_weights=False,
         )
-        updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(graph_context)
+        updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(
+            graph_context
+        )
         return updated_gmap_embeds, updated_map_tokens
