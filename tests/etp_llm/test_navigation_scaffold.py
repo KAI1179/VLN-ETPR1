@@ -33,7 +33,9 @@ def test_llm_navigation_policy_and_trainers_register(monkeypatch):
 
 def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(tmp_path):
     from vlnce_baselines.models.etp_llm.navigation import (
+        llm_navigation_cognitive_map_boxes_path,
         llm_navigation_cognitive_map_path,
+        llm_navigation_cognitive_map_raster_path,
         llm_navigation_prediction_path,
         llm_navigation_status_path,
     )
@@ -47,6 +49,22 @@ def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(
         model_key="Llama 3.1/8B",
     )
     map_path = llm_navigation_cognitive_map_path(
+        "scene/with spaces",
+        "R2R_train_42",
+        "R2R",
+        "train",
+        cache_dir=tmp_path,
+        model_key="Llama 3.1/8B",
+    )
+    boxes_path = llm_navigation_cognitive_map_boxes_path(
+        "scene/with spaces",
+        "R2R_train_42",
+        "R2R",
+        "train",
+        cache_dir=tmp_path,
+        model_key="Llama 3.1/8B",
+    )
+    raster_path = llm_navigation_cognitive_map_raster_path(
         "scene/with spaces",
         "R2R_train_42",
         "R2R",
@@ -78,6 +96,26 @@ def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(
         / "r2r"
         / "train"
         / "cognitive_maps"
+        / "with_spaces"
+        / "R2R_train_42.npz"
+    )
+    assert boxes_path == (
+        tmp_path
+        / "Llama_3.1_8B"
+        / "r2r"
+        / "train"
+        / "cognitive_maps"
+        / "boxes"
+        / "with_spaces"
+        / "R2R_train_42.npz"
+    )
+    assert raster_path == (
+        tmp_path
+        / "Llama_3.1_8B"
+        / "r2r"
+        / "train"
+        / "cognitive_maps"
+        / "raster"
         / "with_spaces"
         / "R2R_train_42.npz"
     )

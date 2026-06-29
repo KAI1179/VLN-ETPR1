@@ -80,9 +80,46 @@ def llm_navigation_cognitive_map_path(
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
 ) -> Path:
+    """Return the legacy raster cognitive-map path used by current loaders."""
     return (
         llm_navigation_split_dir(dataset, split, cache_dir, model_key)
         / "cognitive_maps"
+        / _scene_key(scene_id)
+        / f"{_safe_path_part(cache_id)}.npz"
+    )
+
+
+def llm_navigation_cognitive_map_boxes_path(
+    scene_id: str,
+    cache_id: str,
+    dataset: str,
+    split: str,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> Path:
+    """Return the canonical structured box cache path for LLM-Navigation."""
+    return (
+        llm_navigation_split_dir(dataset, split, cache_dir, model_key)
+        / "cognitive_maps"
+        / "boxes"
+        / _scene_key(scene_id)
+        / f"{_safe_path_part(cache_id)}.npz"
+    )
+
+
+def llm_navigation_cognitive_map_raster_path(
+    scene_id: str,
+    cache_id: str,
+    dataset: str,
+    split: str,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> Path:
+    """Return the derived raster cache path in the structured layout."""
+    return (
+        llm_navigation_split_dir(dataset, split, cache_dir, model_key)
+        / "cognitive_maps"
+        / "raster"
         / _scene_key(scene_id)
         / f"{_safe_path_part(cache_id)}.npz"
     )
