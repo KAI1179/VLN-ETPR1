@@ -165,6 +165,7 @@
 | Try 6 (Dagger)             | 0.6449     | 0.6835     | 0.5609     | 27800   |
 | Try 7 (Dagger)             | 0.6520     | 0.7230     | 0.5450     | 29600   |
 | Try 8 (Dagger)             | 0.6400     | 0.7025     | 0.5382     | 26800   |
+| Try 9 (Dagger)             |            |            |            |         |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
@@ -268,6 +269,7 @@ Main reading:
     - 随机旋转
     - -> 生成的预训练 navigation cache 仅 8621/109507
 - LLM 5: 禁用随机旋转
+    - -> ?
 
 ### 基于 LLM 的 pipeline
 
@@ -285,6 +287,7 @@ Main reading:
     - SR 46.43%; Missing cache 26.48%; SR in entries with cache 63.17%
 - Nav 1: Try 8 + LLM 5
     - 未完整运行 - 检查点丢失
+- Nav 2: Try 9 + LLM 5
 
 ## 阶段
 
@@ -895,3 +898,5 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - R2R val_unseen: 1351/1839
 - ~~Nav 1: Try 8 + LLM 5~~
 - [ ] Try 9: 简易的认知地图 Decoder @ VIPL
+- [ ] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
+- [ ] Nav 2: Try 9 + LLM 5 @ 超算
