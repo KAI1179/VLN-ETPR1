@@ -334,7 +334,10 @@ def load_pretrain_cache_items(
         start_count = len(items)
         total = 0
         cached = 0
-        raw_entries = PretrainAnnotationEntry.iter_from(annotation_file)
+        raw_entries = PretrainAnnotationEntry.iter_from(
+            annotation_file,
+            english_only=True,
+        )
         entries = _progress(
             raw_entries,
             desc=f"load pretrain cache items {annotation_file}",

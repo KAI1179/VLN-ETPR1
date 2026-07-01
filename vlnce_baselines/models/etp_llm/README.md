@@ -187,6 +187,11 @@ annotations through `prior.etp_r1.AnnotationEntry`, which decodes `instr_encodin
 resolves viewpoint paths through connectivity, and exposes `scan`, `instr_id`,
 instruction text, positions, and start direction.
 
+LLM-Navigation pretraining cache generation asks `AnnotationEntry.iter_from` for
+English-like entries only. The filter is opt-in for `AnnotationEntry` callers and
+keeps mostly ASCII decoded instructions while rejecting Hindi and Telugu script
+ranges.
+
 Pretraining consumers use this namespace:
 
 ```text
@@ -194,5 +199,5 @@ data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<in
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
 ```
 
-The pretraining loader does not use `VLNCEEpisodeEntry`; it loads by `item["scan"]`
-and `item["instr_id"]`.
+The pretraining loader does not use `VLNCEEpisodeEntry` or `AnnotationEntry`; it
+loads raw JSONL rows by `item["scan"]` and `item["instr_id"]`.

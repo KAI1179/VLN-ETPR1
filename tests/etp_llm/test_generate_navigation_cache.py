@@ -103,8 +103,8 @@ class _PretrainAnnotationEntry:
     calls = []
 
     @staticmethod
-    def iter_from(filename):
-        _PretrainAnnotationEntry.calls.append(filename)
+    def iter_from(filename, english_only=False):
+        _PretrainAnnotationEntry.calls.append((filename, english_only))
         yield _PretrainEntry()
 
 
@@ -471,7 +471,9 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
         quiet=True,
     )
 
-    assert _PretrainAnnotationEntry.calls == ["R2R_Prevalent_enc_xlmr.jsonl"]
+    assert _PretrainAnnotationEntry.calls == [
+        ("R2R_Prevalent_enc_xlmr.jsonl", True)
+    ]
     assert _SceneBoxes.calls == ["scene-a"]
     assert len(items) == 1
     assert items[0]["example_id"] == "prevalent_1_0"
@@ -621,14 +623,16 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     )
 
     assert items == []
-    assert _PretrainAnnotationEntry.calls == ["R2R_Prevalent_enc_xlmr.jsonl"]
+    assert _PretrainAnnotationEntry.calls == [
+        ("R2R_Prevalent_enc_xlmr.jsonl", True)
+    ]
     assert _SceneBoxes.calls == []
 
 
 def test_load_pretrain_cache_items_warns_and_skips_missing_annotation(monkeypatch):
     class MissingPretrainAnnotationEntry:
         @staticmethod
-        def iter_from(filename):
+        def iter_from(filename, english_only=False):
             raise FileNotFoundError(filename)
             yield
 

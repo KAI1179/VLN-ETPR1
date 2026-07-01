@@ -48,13 +48,19 @@ class AnnotationEntry:
     task_type_encoding: int
 
     @staticmethod
-    def iter_from(filename: str) -> Iterator["AnnotationEntry"]:
+    def iter_from(
+        filename: str,
+        english_only: bool = False,
+    ) -> Iterator["AnnotationEntry"]:
         """Iterates entries from the annotation file with given filename."""
         path = ANNOTATION_DIR / filename
         with open(path) as f:
             for line in f:
                 entry = loads(line)
-                yield AnnotationEntry.from_dict(entry)
+                annotation = AnnotationEntry.from_dict(entry)
+                if english_only and not annotation.is_english_like:
+                    continue
+                yield annotation
 
     @staticmethod
     def from_dict(entry: Mapping[str, Any]) -> "AnnotationEntry":
@@ -71,6 +77,10 @@ class AnnotationEntry:
     @property
     def instruction(self) -> str:
         return decode_tokens(self.instr_encoding)
+
+    @property
+    def is_english_like(self) -> bool:
+        return is_english_like_instruction(self.instruction)
 
     def positions(
         self, connectivity_dir: str = str(CONNECTIVITY_DIR)
@@ -138,6 +148,20 @@ def decode_tokens(tokens: list[int]) -> str:
     return SP.Decode(sp_ids)
 
 
+def is_english_like_instruction(instruction: str) -> bool:
+    """Return whether a decoded pretraining instruction is English-like."""
+    compact_chars = [char for char in instruction if not char.isspace()]
+    if not compact_chars:
+        return False
+    if any(
+        "\u0900" <= char <= "\u097f" or "\u0c00" <= char <= "\u0c7f"
+        for char in instruction
+    ):
+        return False
+    ascii_chars = sum(ord(char) < 128 for char in compact_chars)
+    return ascii_chars / len(compact_chars) >= 0.95
+
+
 __all__ = [
     "ETP_R1_DIR",
     "SENTENCEPIECE_MODEL_PATH",
@@ -147,4 +171,5 @@ __all__ = [
     "AnnotationEntry",
     "ConnectivityEntry",
     "decode_tokens",
+    "is_english_like_instruction",
 ]
