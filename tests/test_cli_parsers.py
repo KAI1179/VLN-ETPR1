@@ -23,7 +23,7 @@ def test_run_parser_returns_typed_args_with_passthrough_opts():
             "eval",
             "--exp-config",
             "run_r2r/iter_train.yaml",
-            "--local_rank",
+            "--local-rank",
             "3",
             "MODEL.hidden_size",
             "768",
