@@ -3,6 +3,7 @@ import importlib
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -479,6 +480,99 @@ def test_pretrain_llm_map_filter_rejects_entirely_missing_cache(
         pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(
             [{"instr_id": "missing", "scan": "scene"}]
         )
+
+
+def test_pretrain_llm_language_filter_keeps_raw_dict_shape(monkeypatch, capsys):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "is_english_like_pretrain_record",
+        lambda item: item["instr_id"] != "non-english",
+    )
+    items = [
+        {"instr_id": "english", "scan": "scene", "instr_encoding": [1]},
+        {"instr_id": "non-english", "scan": "scene", "instr_encoding": [2]},
+    ]
+
+    filtered = pretrain_dataset._filter_non_english_pretrain_records(items)
+
+    assert filtered == [{"instr_id": "english", "scan": "scene", "instr_encoding": [1]}]
+    assert filtered[0] is items[0]
+    assert (
+        "pretrain_language_filter: available=1 skipped_non_english=1"
+        in capsys.readouterr().out
+    )
+
+
+def test_pretrain_llm_dataset_init_filters_non_english_records(
+    tmp_path,
+    monkeypatch,
+):
+    pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
+    if str(pretrain_src) not in sys.path:
+        sys.path.insert(0, str(pretrain_src))
+
+    pretrain_dataset = importlib.import_module("data.dataset")
+    records = [
+        {"instr_id": "english", "scan": "scene", "instr_encoding": [1]},
+        {"instr_id": "non-english", "scan": "scene", "instr_encoding": [2]},
+    ]
+
+    class FakeJsonLines:
+        def __enter__(self):
+            return iter(records)
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(
+        pretrain_dataset.jsonlines,
+        "open",
+        lambda *_args, **_kwargs: FakeJsonLines(),
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "is_english_like_pretrain_record",
+        lambda item: item["instr_id"] != "non-english",
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "_filter_missing_pretrain_llm_cognitive_maps",
+        lambda items: items,
+    )
+    monkeypatch.setattr(pretrain_dataset, "load_nav_graphs", lambda *_args: ({}, {}, {}))
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "get_view_rel_angles",
+        lambda baseViewId: np.zeros((1, 2), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "get_angle_fts",
+        lambda headings, elevations, angle_feat_size: np.zeros(
+            (len(headings), angle_feat_size), dtype=np.float32
+        ),
+    )
+    scanvp_cands_file = tmp_path / "scanvp_cands.json"
+    scanvp_cands_file.write_text("{}")
+
+    nav_db = pretrain_dataset.ReverieTextPathData(
+        anno_files=["ignored.jsonl"],
+        img_ft_file="ignored.hdf5",
+        dep_ft_file="ignored.hdf5",
+        obj_ft_file=None,
+        scanvp_cands_file=scanvp_cands_file,
+        connectivity_dir="ignored",
+        use_llm=True,
+        in_memory=False,
+    )
+
+    assert nav_db.data == [{"instr_id": "english", "scan": "scene", "instr_encoding": [1]}]
+    assert nav_db.data[0] is records[0]
 
 
 @pytest.mark.parametrize(

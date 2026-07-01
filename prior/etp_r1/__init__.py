@@ -162,6 +162,20 @@ def is_english_like_instruction(instruction: str) -> bool:
     return ascii_chars / len(compact_chars) >= 0.95
 
 
+def is_english_like_pretrain_record(record: Mapping[str, Any]) -> bool:
+    """Return whether a raw ETP-R1 pretraining JSONL record is English-like."""
+    instruction = record.get("instruction")
+    if isinstance(instruction, str):
+        return is_english_like_instruction(instruction)
+
+    instr_encoding = record.get("instr_encoding")
+    if not isinstance(instr_encoding, list):
+        return False
+    return is_english_like_instruction(
+        decode_tokens([int(token) for token in instr_encoding])
+    )
+
+
 __all__ = [
     "ETP_R1_DIR",
     "SENTENCEPIECE_MODEL_PATH",
@@ -172,4 +186,5 @@ __all__ = [
     "ConnectivityEntry",
     "decode_tokens",
     "is_english_like_instruction",
+    "is_english_like_pretrain_record",
 ]

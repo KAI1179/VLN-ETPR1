@@ -70,3 +70,30 @@ def test_is_english_like_instruction_rejects_supported_non_latin_scripts():
     assert etp_r1.is_english_like_instruction("You’re facing the hallway.")
     assert not etp_r1.is_english_like_instruction("भोजनकक्ष के कोने में दाएं चलिये।")
     assert not etp_r1.is_english_like_instruction("మీరు నిల్చున్న ప్రదేశము నుంచి నేరుగా వెళ్లండి.")
+
+
+def test_is_english_like_pretrain_record_decodes_raw_jsonl_record(monkeypatch):
+    _patch_decode_tokens(monkeypatch)
+
+    assert etp_r1.is_english_like_pretrain_record({"instr_encoding": [1]})
+    assert not etp_r1.is_english_like_pretrain_record({"instr_encoding": [2]})
+
+
+def test_is_english_like_pretrain_record_prefers_instruction_text(monkeypatch):
+    def fail_decode_tokens(tokens):
+        raise AssertionError(f"unexpected decode for {tokens}")
+
+    monkeypatch.setattr(etp_r1, "decode_tokens", fail_decode_tokens)
+
+    assert etp_r1.is_english_like_pretrain_record(
+        {
+            "instruction": "You’re facing the hallway.",
+            "instr_encoding": [2],
+        }
+    )
+    assert not etp_r1.is_english_like_pretrain_record(
+        {
+            "instruction": "మీరు నిల్చున్న ప్రదేశము నుంచి నేరుగా వెళ్లండి.",
+            "instr_encoding": [1],
+        }
+    )

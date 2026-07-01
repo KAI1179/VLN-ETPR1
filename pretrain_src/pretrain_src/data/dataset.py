@@ -26,6 +26,7 @@ from vlnce_baselines.models.etp_llm.navigation import (
     llm_cached_cognitive_map_to_tensors,
     llm_navigation_cognitive_map_path,
 )
+from prior.etp_r1 import is_english_like_pretrain_record
 
 MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
@@ -90,6 +91,23 @@ def _filter_missing_pretrain_llm_cognitive_maps(items):
         raise FileNotFoundError(
             "No LLM-Navigation pretraining cognitive-map caches were found under "
             f"{PRETRAIN_LLM_COGNITIVE_MAP_DIR}"
+        )
+    return available
+
+
+def _filter_non_english_pretrain_records(items):
+    available = []
+    skipped = 0
+    for item in items:
+        if is_english_like_pretrain_record(item):
+            available.append(item)
+        else:
+            skipped += 1
+
+    if skipped:
+        print(
+            "pretrain_language_filter: "
+            f"available={len(available)} skipped_non_english={skipped}"
         )
     return available
 
@@ -166,6 +184,8 @@ class ReverieTextPathData(object):
                 for item in f:
                     self.data.append(item)
 
+        if self.use_llm:
+            self.data = _filter_non_english_pretrain_records(self.data)
         if self.use_prior_gt:
             self.data = _filter_missing_pretrain_cognitive_maps(self.data)
         if self.use_llm:

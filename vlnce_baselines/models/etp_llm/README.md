@@ -200,4 +200,6 @@ data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/
 ```
 
 The pretraining loader does not use `VLNCEEpisodeEntry` or `AnnotationEntry`; it
-loads raw JSONL rows by `item["scan"]` and `item["instr_id"]`.
+loads raw JSONL rows by `item["scan"]` and `item["instr_id"]`. When `--use_llm`
+is enabled, it applies the same English-like predicate before checking for
+LLM-Navigation cognitive-map cache files.
