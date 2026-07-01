@@ -535,6 +535,19 @@ def generate_all_navigation_caches(
 ) -> Dict[str, Dict[str, float]]:
     """Generate all VLN-CE and pretraining LLM-Navigation caches."""
     metrics: Dict[str, Dict[str, float]] = {}
+    pretrain_items = load_pretrain_cache_items(
+        limit=args.limit,
+        quiet=args.quiet,
+        args=args,
+    )
+    metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = generate_navigation_cache(
+        model,
+        tokenizer,
+        pretrain_items,
+        args,
+        dataset_key=PRETRAIN_DATASET_KEY,
+        split=PRETRAIN_SPLIT,
+    )
     for dataset_key in VLNCE_DATASETS:
         for split in VLNCE_SPLITS:
             examples = load_vlnce_cache_items(
@@ -553,19 +566,6 @@ def generate_all_navigation_caches(
                 split=split,
             )
 
-    pretrain_items = load_pretrain_cache_items(
-        limit=args.limit,
-        quiet=args.quiet,
-        args=args,
-    )
-    metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = generate_navigation_cache(
-        model,
-        tokenizer,
-        pretrain_items,
-        args,
-        dataset_key=PRETRAIN_DATASET_KEY,
-        split=PRETRAIN_SPLIT,
-    )
     return metrics
 
 
@@ -653,7 +653,9 @@ def _resolve_parallel_worker_count(value: str) -> int:
     try:
         count = int(value)
     except ValueError as error:
-        raise ValueError("--parallel-workers must be auto or a positive integer") from error
+        raise ValueError(
+            "--parallel-workers must be auto or a positive integer"
+        ) from error
     if count < 1:
         raise ValueError("--parallel-workers must be at least 1")
     return count
@@ -707,9 +709,7 @@ def _run_parallel_workers(
             cache_dir=args.cache_dir,
             model_key=args.cache_model_key,
         )
-        metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(
-            split_dir
-        )
+        metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(split_dir)
     return metrics
 
 
@@ -1035,6 +1035,7 @@ def _warn_navigation_cache_failure(
         RuntimeWarning,
         stacklevel=2,
     )
+
 
 if __name__ == "__main__":
     main()
