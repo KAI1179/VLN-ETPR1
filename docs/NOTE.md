@@ -889,6 +889,19 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - Referring Expression Segmentation (RES) is a vision-language task: given an image and a natural-language phrase such as “the man in the red shirt” or “the dog under the table,” the model must output a pixel-level mask for the referred object.
     - A typical RES model has three parts: an image encoder, a text encoder, and a fusion/segmentation decoder that combines visual and linguistic features to produce a binary mask. Recent systems increasingly use transformer vision-language backbones and sometimes large multimodal language models. For example, LISA extends this idea to “reasoning segmentation,” where the query can be implicit and require world knowledge.
 
+## Q
+
+- Nav cache failure 常见的失败原因
+    - unknown region category: 'structure';
+    - unknown region category: 'void';
+    - unknown region category: 'free-space';
+    - unknown object category: 'free-space 2.1 2.0 1.9 1.4 4.1'
+    - missing_trajectory_keypoints: refusing to generate cache without trajectory keypoints
+- 其它观察到的问题
+    - **过度重复**
+        - `data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/5q7pvUzZiYa/2675_0.txt`
+        - `data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/ur6pFq6Qu1A/827_0.txt`
+
 # 实验
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
