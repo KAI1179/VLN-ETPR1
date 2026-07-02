@@ -32,7 +32,6 @@ from .boxes_schema import (
 from .navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_navigation_cognitive_map_boxes_path,
-    llm_navigation_cognitive_map_path,
     llm_navigation_cognitive_map_raster_path,
     llm_navigation_prediction_path,
     llm_navigation_split_dir,
@@ -159,14 +158,6 @@ def generate_navigation_cache(
                     model_key=args.cache_model_key,
                 )
                 prediction_path.parent.mkdir(parents=True, exist_ok=True)
-                cognitive_map_path = llm_navigation_cognitive_map_path(
-                    scene_id,
-                    cache_id,
-                    dataset_key,
-                    split,
-                    cache_dir=args.cache_dir,
-                    model_key=args.cache_model_key,
-                )
                 cognitive_map_boxes_path = llm_navigation_cognitive_map_boxes_path(
                     scene_id,
                     cache_id,
@@ -230,7 +221,6 @@ def generate_navigation_cache(
                         split=split,
                         args=args,
                         prediction_path=prediction_path,
-                        cognitive_map_path=cognitive_map_path,
                         cognitive_map_boxes_path=cognitive_map_boxes_path,
                         cognitive_map_raster_path=cognitive_map_raster_path,
                         strict_valid=strict_spec is not None,
@@ -257,11 +247,6 @@ def generate_navigation_cache(
                     cognitive_map = relevant.to_cognitive_map()
                     cognitive_map_raster_path.parent.mkdir(parents=True, exist_ok=True)
                     cognitive_map.save(cognitive_map_raster_path)
-
-                    cognitive_map_path.parent.mkdir(parents=True, exist_ok=True)
-                    # Keep writing the legacy raster cache until training loaders
-                    # move to the structured raster path.
-                    cognitive_map.save(cognitive_map_path)
                 except Exception as exc:
                     skipped += 1
                     failures.append(_failure_detail("conversion_failed", exc))
@@ -273,7 +258,6 @@ def generate_navigation_cache(
                         split=split,
                         args=args,
                         prediction_path=prediction_path,
-                        cognitive_map_path=cognitive_map_path,
                         cognitive_map_boxes_path=cognitive_map_boxes_path,
                         cognitive_map_raster_path=cognitive_map_raster_path,
                         strict_valid=strict_spec is not None,
@@ -289,7 +273,6 @@ def generate_navigation_cache(
                     split=split,
                     args=args,
                     prediction_path=prediction_path,
-                    cognitive_map_path=cognitive_map_path,
                     cognitive_map_boxes_path=cognitive_map_boxes_path,
                     cognitive_map_raster_path=cognitive_map_raster_path,
                     strict_valid=strict_spec is not None,
@@ -787,14 +770,6 @@ def _cache_complete(
     split: str,
     args: argparse.Namespace,
 ) -> bool:
-    cognitive_map_path = llm_navigation_cognitive_map_path(
-        scene_id,
-        cache_id,
-        dataset_key,
-        split,
-        cache_dir=args.cache_dir,
-        model_key=args.cache_model_key,
-    )
     cognitive_map_boxes_path = llm_navigation_cognitive_map_boxes_path(
         scene_id,
         cache_id,
@@ -812,8 +787,7 @@ def _cache_complete(
         model_key=args.cache_model_key,
     )
     return (
-        cognitive_map_path.exists()
-        and cognitive_map_boxes_path.exists()
+        cognitive_map_boxes_path.exists()
         and cognitive_map_raster_path.exists()
     )
 
@@ -935,7 +909,6 @@ def _write_navigation_cache_status(
     split: str,
     args: argparse.Namespace,
     prediction_path: Optional[Path] = None,
-    cognitive_map_path: Optional[Path] = None,
     cognitive_map_boxes_path: Optional[Path] = None,
     cognitive_map_raster_path: Optional[Path] = None,
     strict_valid: Optional[bool] = None,
@@ -951,7 +924,6 @@ def _write_navigation_cache_status(
         args=args,
         status=status,
         prediction_path=prediction_path,
-        cognitive_map_path=cognitive_map_path,
         cognitive_map_boxes_path=cognitive_map_boxes_path,
         cognitive_map_raster_path=cognitive_map_raster_path,
         strict_valid=strict_valid,
@@ -970,7 +942,6 @@ def _write_navigation_cache_status_record(
     args: argparse.Namespace,
     status: str,
     prediction_path: Optional[Path] = None,
-    cognitive_map_path: Optional[Path] = None,
     cognitive_map_boxes_path: Optional[Path] = None,
     cognitive_map_raster_path: Optional[Path] = None,
     strict_valid: Optional[bool] = None,
@@ -987,8 +958,6 @@ def _write_navigation_cache_status_record(
     }
     if prediction_path is not None:
         record["prediction_path"] = str(prediction_path)
-    if cognitive_map_path is not None:
-        record["cognitive_map_path"] = str(cognitive_map_path)
     if cognitive_map_boxes_path is not None:
         record["cognitive_map_boxes_path"] = str(cognitive_map_boxes_path)
     if cognitive_map_raster_path is not None:

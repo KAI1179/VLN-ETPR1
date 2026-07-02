@@ -72,23 +72,6 @@ def llm_navigation_prediction_path(
     )
 
 
-def llm_navigation_cognitive_map_path(
-    scene_id: str,
-    cache_id: str,
-    dataset: str,
-    split: str,
-    cache_dir: Optional[str | Path] = None,
-    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
-) -> Path:
-    """Return the legacy raster cognitive-map path used by current loaders."""
-    return (
-        llm_navigation_split_dir(dataset, split, cache_dir, model_key)
-        / "cognitive_maps"
-        / _scene_key(scene_id)
-        / f"{_safe_path_part(cache_id)}.npz"
-    )
-
-
 def llm_navigation_cognitive_map_boxes_path(
     scene_id: str,
     cache_id: str,
@@ -150,7 +133,7 @@ def llm_cached_cognitive_map_to_tensors(
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     random_rotation_augmentation: bool = False,
 ):
-    cache_path = llm_navigation_cognitive_map_path(
+    cache_path = llm_navigation_cognitive_map_raster_path(
         scene_id,
         cache_id,
         dataset,
@@ -160,7 +143,7 @@ def llm_cached_cognitive_map_to_tensors(
     )
     if not cache_path.is_file():
         raise FileNotFoundError(
-            "Missing LLM-Navigation cognitive map cache: "
+            "Missing LLM-Navigation raster cognitive map cache: "
             f"{cache_path}. Generate caches with "
             "`python -m vlnce_baselines.models.etp_llm.generate_navigation_cache` "
             "before running LLM navigation."
@@ -218,7 +201,7 @@ def llm_navigation_cache_report(
         episode_id = str(entry.episode_id)
         if requested and episode_id not in requested:
             continue
-        cache_path = llm_navigation_cognitive_map_path(
+        boxes_path = llm_navigation_cognitive_map_boxes_path(
             entry.scene_id,
             entry.unique_id,
             dataset,
@@ -226,7 +209,15 @@ def llm_navigation_cache_report(
             cache_dir=cache_dir,
             model_key=model_key,
         )
-        if cache_path.is_file():
+        raster_path = llm_navigation_cognitive_map_raster_path(
+            entry.scene_id,
+            entry.unique_id,
+            dataset,
+            split,
+            cache_dir=cache_dir,
+            model_key=model_key,
+        )
+        if boxes_path.is_file() and raster_path.is_file():
             available.append(episode_id)
         else:
             missing.append(episode_id)

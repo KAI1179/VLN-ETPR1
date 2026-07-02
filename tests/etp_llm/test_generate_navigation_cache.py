@@ -212,20 +212,18 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
         "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
         "obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0\n"
     )
-    assert map_path.exists()
+    assert not map_path.exists()
     assert boxes_path.exists()
     assert raster_path.exists()
     boxes = bbox.RelevantSemanticBoxes.load(boxes_path)
     raster = CognitiveGridMap.load(raster_path)
-    legacy_raster = CognitiveGridMap.load(map_path)
     np.testing.assert_array_equal(boxes.to_cognitive_map().grid, raster.grid)
-    np.testing.assert_array_equal(raster.grid, legacy_raster.grid)
     status = json.loads(status_path.read_text())
     assert status["status"] == "complete"
     assert status["strict_valid"] is False
     assert status["salvaged"] is True
     assert status["prediction_path"] == str(prediction_path)
-    assert status["cognitive_map_path"] == str(map_path)
+    assert "cognitive_map_path" not in status
     assert status["cognitive_map_boxes_path"] == str(boxes_path)
     assert status["cognitive_map_raster_path"] == str(raster_path)
     assert status["failures"][0]["stage"] == "strict_parse"
@@ -281,12 +279,10 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
     )
     status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
     prediction_path.parent.mkdir(parents=True)
-    map_path.parent.mkdir(parents=True)
     boxes_path.parent.mkdir(parents=True)
     raster_path.parent.mkdir(parents=True)
     status_path.parent.mkdir(parents=True)
     prediction_path.write_text("already done\n")
-    map_path.write_bytes(b"cached")
     boxes_path.write_bytes(b"cached boxes")
     raster_path.write_bytes(b"cached raster")
     status_path.write_text(json.dumps({"status": "complete", "attempt": "old"}))
@@ -303,7 +299,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
 
     assert model.generate_calls == 0
     assert prediction_path.read_text() == "already done\n"
-    assert map_path.read_bytes() == b"cached"
+    assert not map_path.exists()
     assert boxes_path.read_bytes() == b"cached boxes"
     assert raster_path.read_bytes() == b"cached raster"
     assert json.loads(status_path.read_text()) == {
@@ -316,7 +312,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
     assert metrics["generated"] == 0.0
 
 
-def test_generate_navigation_cache_regenerates_legacy_raster_only_cache(tmp_path):
+def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
@@ -345,15 +341,14 @@ def test_generate_navigation_cache_regenerates_legacy_raster_only_cache(tmp_path
         system_prompt="system prompt",
     )
     split_dir = tmp_path / "test-model" / "r2r" / "train"
-    map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
     boxes_path = (
         split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
     )
     raster_path = (
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
-    map_path.parent.mkdir(parents=True)
-    map_path.write_bytes(b"legacy-only")
+    boxes_path.parent.mkdir(parents=True)
+    boxes_path.write_bytes(b"boxes-only")
     model = _CacheGenerationModel("keypoints 0 0 1 1 0 0 0 0 0 0")
 
     metrics = generate_navigation_cache.generate_navigation_cache(
@@ -368,7 +363,6 @@ def test_generate_navigation_cache_regenerates_legacy_raster_only_cache(tmp_path
     assert model.generate_calls == 1
     assert boxes_path.exists()
     assert raster_path.exists()
-    assert map_path.read_bytes() != b"legacy-only"
     assert metrics["cached"] == 0.0
     assert metrics["generated"] == 1.0
 
@@ -447,7 +441,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
         "stage": "conversion_failed",
     }
     assert status["prediction_path"] == str(prediction_path)
-    assert status["cognitive_map_path"] == str(map_path)
+    assert "cognitive_map_path" not in status
     assert status["cognitive_map_boxes_path"] == str(boxes_path)
     assert status["cognitive_map_raster_path"] == str(raster_path)
     assert metrics["cached"] == 0.0
@@ -515,15 +509,6 @@ def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
         cache_dir=str(tmp_path),
         cache_model_key="test-model",
     )
-    map_path = (
-        tmp_path
-        / "test-model"
-        / "r2r"
-        / "train"
-        / "cognitive_maps"
-        / "scene-a"
-        / "R2R_train_42.npz"
-    )
     boxes_path = (
         tmp_path
         / "test-model"
@@ -544,10 +529,8 @@ def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
         / "scene-a"
         / "R2R_train_42.npz"
     )
-    map_path.parent.mkdir(parents=True)
     boxes_path.parent.mkdir(parents=True)
     raster_path.parent.mkdir(parents=True)
-    map_path.write_bytes(b"done")
     boxes_path.write_bytes(b"done")
     raster_path.write_bytes(b"done")
 
@@ -579,15 +562,6 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
         cache_dir=str(tmp_path),
         cache_model_key="test-model",
     )
-    map_path = (
-        tmp_path
-        / "test-model"
-        / "pretrain"
-        / "mixed"
-        / "cognitive_maps"
-        / "scene-a"
-        / "prevalent_1_0.npz"
-    )
     boxes_path = (
         tmp_path
         / "test-model"
@@ -608,10 +582,8 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
         / "scene-a"
         / "prevalent_1_0.npz"
     )
-    map_path.parent.mkdir(parents=True)
     boxes_path.parent.mkdir(parents=True)
     raster_path.parent.mkdir(parents=True)
-    map_path.write_bytes(b"done")
     boxes_path.write_bytes(b"done")
     raster_path.write_bytes(b"done")
 

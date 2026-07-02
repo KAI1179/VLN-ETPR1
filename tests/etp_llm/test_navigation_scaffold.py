@@ -34,21 +34,12 @@ def test_llm_navigation_policy_and_trainers_register(monkeypatch):
 def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(tmp_path):
     from vlnce_baselines.models.etp_llm.navigation import (
         llm_navigation_cognitive_map_boxes_path,
-        llm_navigation_cognitive_map_path,
         llm_navigation_cognitive_map_raster_path,
         llm_navigation_prediction_path,
         llm_navigation_status_path,
     )
 
     prediction_path = llm_navigation_prediction_path(
-        "scene/with spaces",
-        "R2R_train_42",
-        "R2R",
-        "train",
-        cache_dir=tmp_path,
-        model_key="Llama 3.1/8B",
-    )
-    map_path = llm_navigation_cognitive_map_path(
         "scene/with spaces",
         "R2R_train_42",
         "R2R",
@@ -90,15 +81,6 @@ def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(
         / "with_spaces"
         / "R2R_train_42.txt"
     )
-    assert map_path == (
-        tmp_path
-        / "Llama_3.1_8B"
-        / "r2r"
-        / "train"
-        / "cognitive_maps"
-        / "with_spaces"
-        / "R2R_train_42.npz"
-    )
     assert boxes_path == (
         tmp_path
         / "Llama_3.1_8B"
@@ -138,7 +120,7 @@ def test_llm_navigation_cache_loader_fails_fast_when_map_missing(tmp_path):
     with pytest.raises(
         FileNotFoundError,
         match=(
-            "Missing LLM-Navigation cognitive map cache: .*"
+            "Missing LLM-Navigation raster cognitive map cache: .*"
             "generate_navigation_cache"
         ),
     ):
@@ -161,17 +143,18 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
 
     cache_id = "R2R_val_unseen_120"
     scene_path = "data/scene_datasets/mp3d/X7HyMhZNoso/X7HyMhZNoso.glb"
-    map_path = (
+    raster_path = (
         tmp_path
         / "llm5"
         / "r2r"
         / "val_unseen"
         / "cognitive_maps"
+        / "raster"
         / "X7HyMhZNoso"
         / f"{cache_id}.npz"
     )
-    map_path.parent.mkdir(parents=True)
-    map_path.touch()
+    raster_path.parent.mkdir(parents=True)
+    raster_path.touch()
 
     captured = {}
 
@@ -206,7 +189,7 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
     assert captured == {
         "scene_id": scene_path,
         "cache_id": cache_id,
-        "cache_dir": map_path.parent.parent,
+        "cache_dir": raster_path.parent.parent,
         "random_rotation_augmentation": False,
     }
 
@@ -241,7 +224,7 @@ def test_available_llm_navigation_episode_ids_skips_missing(
         "iter_from",
         staticmethod(lambda dataset, splits: iter(entries)),
     )
-    map_path = navigation.llm_navigation_cognitive_map_path(
+    raster_path = navigation.llm_navigation_cognitive_map_raster_path(
         "scene-a",
         "R2R_train_2",
         "R2R",
@@ -249,8 +232,18 @@ def test_available_llm_navigation_episode_ids_skips_missing(
         cache_dir=tmp_path,
         model_key="test-model",
     )
-    map_path.parent.mkdir(parents=True)
-    map_path.touch()
+    boxes_path = navigation.llm_navigation_cognitive_map_boxes_path(
+        "scene-a",
+        "R2R_train_2",
+        "R2R",
+        "train",
+        cache_dir=tmp_path,
+        model_key="test-model",
+    )
+    raster_path.parent.mkdir(parents=True)
+    boxes_path.parent.mkdir(parents=True)
+    raster_path.touch()
+    boxes_path.touch()
 
     allowed = navigation.available_llm_navigation_episode_ids(
         "R2R",
@@ -296,7 +289,7 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
         "iter_from",
         staticmethod(lambda dataset, splits: iter(entries)),
     )
-    map_path = navigation.llm_navigation_cognitive_map_path(
+    raster_path = navigation.llm_navigation_cognitive_map_raster_path(
         "scene-a",
         "R2R_val_unseen_2",
         "R2R",
@@ -304,8 +297,18 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
         cache_dir=tmp_path,
         model_key="test-model",
     )
-    map_path.parent.mkdir(parents=True)
-    map_path.touch()
+    boxes_path = navigation.llm_navigation_cognitive_map_boxes_path(
+        "scene-a",
+        "R2R_val_unseen_2",
+        "R2R",
+        "val_unseen",
+        cache_dir=tmp_path,
+        model_key="test-model",
+    )
+    raster_path.parent.mkdir(parents=True)
+    boxes_path.parent.mkdir(parents=True)
+    raster_path.touch()
+    boxes_path.touch()
 
     report = navigation.llm_navigation_cache_report(
         "R2R",

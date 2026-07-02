@@ -24,7 +24,8 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 from vlnce_baselines.models.etp_llm.navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_cached_cognitive_map_to_tensors,
-    llm_navigation_cognitive_map_path,
+    llm_navigation_cognitive_map_boxes_path,
+    llm_navigation_cognitive_map_raster_path,
 )
 from prior.etp_r1 import is_english_like_pretrain_record
 
@@ -69,7 +70,7 @@ def _filter_missing_pretrain_llm_cognitive_maps(items):
     available = []
     skipped = 0
     for item in items:
-        cache_path = llm_navigation_cognitive_map_path(
+        boxes_path = llm_navigation_cognitive_map_boxes_path(
             item["scan"],
             item["instr_id"],
             PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
@@ -77,7 +78,15 @@ def _filter_missing_pretrain_llm_cognitive_maps(items):
             cache_dir=PRETRAIN_LLM_COGNITIVE_MAP_DIR,
             model_key=PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY,
         )
-        if cache_path.is_file():
+        raster_path = llm_navigation_cognitive_map_raster_path(
+            item["scan"],
+            item["instr_id"],
+            PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
+            PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
+            cache_dir=PRETRAIN_LLM_COGNITIVE_MAP_DIR,
+            model_key=PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY,
+        )
+        if boxes_path.is_file() and raster_path.is_file():
             available.append(item)
         else:
             skipped += 1

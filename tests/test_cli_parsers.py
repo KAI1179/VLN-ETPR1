@@ -329,7 +329,7 @@ def test_pretrain_llm_map_requires_precomputed_cache(tmp_path):
     with pytest.raises(
         FileNotFoundError,
         match=(
-            "Missing LLM-Navigation cognitive map cache: .*"
+            "Missing LLM-Navigation raster cognitive map cache: .*"
             "generate_navigation_cache"
         ),
     ):
@@ -439,7 +439,7 @@ def test_pretrain_llm_map_filter_skips_missing_entries(
 
     pretrain_dataset = importlib.import_module("data.dataset")
     monkeypatch.setattr(pretrain_dataset, "PRETRAIN_LLM_COGNITIVE_MAP_DIR", tmp_path)
-    cache_path = pretrain_dataset.llm_navigation_cognitive_map_path(
+    raster_path = pretrain_dataset.llm_navigation_cognitive_map_raster_path(
         "scene",
         "good",
         "pretrain",
@@ -447,8 +447,18 @@ def test_pretrain_llm_map_filter_skips_missing_entries(
         cache_dir=tmp_path,
         model_key="llama-3.1-8b-instruct",
     )
-    cache_path.parent.mkdir(parents=True)
-    cache_path.touch()
+    boxes_path = pretrain_dataset.llm_navigation_cognitive_map_boxes_path(
+        "scene",
+        "good",
+        "pretrain",
+        "mixed",
+        cache_dir=tmp_path,
+        model_key="llama-3.1-8b-instruct",
+    )
+    raster_path.parent.mkdir(parents=True)
+    boxes_path.parent.mkdir(parents=True)
+    raster_path.touch()
+    boxes_path.touch()
     items = [
         {"instr_id": "good", "scan": "scene"},
         {"instr_id": "missing", "scan": "scene"},
