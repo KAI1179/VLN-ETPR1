@@ -166,6 +166,7 @@
 | Try 7 (Dagger)             | 0.6520     | 0.7230     | 0.5450     | 29600   |
 | Try 8 (Dagger)             | 0.6400     | 0.7025     | 0.5382     | 26800   |
 | Try 9 (Dagger)             | 0.6378     | 0.6965     | 0.5394     | 28800   |
+| Try 10 (Dagger)            |            |            |            |         |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
@@ -193,6 +194,8 @@
     - 加入拓扑地图 -> 认知地图的 attn
 - Try 9 (`9caeb61`, @VIPL)
     - 简易的认知地图 Decoder
+i Try 10 (`0a31d47`, @VIPL)
+   - DETR-style Decoder
 
 ### 地图预测器 - 弃用
 
@@ -910,6 +913,8 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - R2R train: 10494/10819
     - R2R val_unseen: 1351/1839
 - ~~Nav 1: Try 8 + LLM 5~~
-- [ ] Try 9: 简易的认知地图 Decoder @ VIPL
+- [x] Try 9: 简易的认知地图 Decoder @ VIPL
 - [ ] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
 - [ ] Nav 2: Try 9 + LLM 5 @ 超算
+- [ ] Try 10: DETR-style decoder @ VIPL
+
