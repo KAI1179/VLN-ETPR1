@@ -165,7 +165,7 @@
 | Try 6 (Dagger)             | 0.6449     | 0.6835     | 0.5609     | 27800   |
 | Try 7 (Dagger)             | 0.6520     | 0.7230     | 0.5450     | 29600   |
 | Try 8 (Dagger)             | 0.6400     | 0.7025     | 0.5382     | 26800   |
-| Try 9 (Dagger)             |            |            |            |         |
+| Try 9 (Dagger)             | 0.6378     | 0.6965     | 0.5394     | 28800   |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
