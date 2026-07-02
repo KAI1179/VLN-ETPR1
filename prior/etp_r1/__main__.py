@@ -31,11 +31,10 @@ def generate_cognitive_maps(
             continue
 
         scene_id = entry.scan
-        scene_path = OUTPUT_DIR / scene_id
-        scene_path.mkdir(parents=True, exist_ok=True)
-        save_path = scene_path / f"{instr_id}.npz"
+        boxes_path = OUTPUT_DIR / "boxes" / scene_id / f"{instr_id}.npz"
+        raster_path = OUTPUT_DIR / "raster" / scene_id / f"{instr_id}.npz"
 
-        if save_path.exists() and instr_id not in sampled_ids:
+        if boxes_path.exists() and raster_path.exists() and instr_id not in sampled_ids:
             print(
                 f"[{annotation_file}] Cognitive map for instruction ID "
                 f"{instr_id} in scene {scene_id} already exists, skipping."
@@ -51,7 +50,10 @@ def generate_cognitive_maps(
                 entry.start_direction_vector,
             )
             cognitive_map = relevant_boxes.to_cognitive_map()
-            cognitive_map.save(save_path)
+            boxes_path.parent.mkdir(parents=True, exist_ok=True)
+            raster_path.parent.mkdir(parents=True, exist_ok=True)
+            relevant_boxes.save(boxes_path)
+            cognitive_map.save(raster_path)
         except InsufficientTrajectoryPointsError as error:
             LOGGER.warning("skipping %s: %s", instr_id, error)
             skipped += 1

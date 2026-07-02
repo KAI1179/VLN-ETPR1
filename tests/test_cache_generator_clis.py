@@ -34,6 +34,10 @@ class FakeCognitiveMap:
 
 class FakeRelevantBoxes:
     level_idx = 0
+    saved_paths: ClassVar[List[Path]] = []
+
+    def save(self, path: Path) -> None:
+        self.saved_paths.append(path)
 
     def to_cognitive_map(self) -> FakeCognitiveMap:
         return FakeCognitiveMap()
@@ -43,10 +47,10 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     monkeypatch, tmp_path, caplog, capsys
 ):
     entries = [
-        FakeVLNCEEntry(1, [[0.0, 0.0, 0.0]]),
+        FakeVLNCEEntry(1, [(0.0, 0.0, 0.0)]),
         FakeVLNCEEntry(
             2,
-            [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
+            [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
         ),
     ]
     received_trajectories = []
@@ -71,16 +75,22 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
             return FakeRelevantBoxes()
 
     FakeCognitiveMap.saved_paths.clear()
+    FakeRelevantBoxes.saved_paths.clear()
     monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
 
     generated, skipped = prior_main.generate_cognitive_maps(entries, tmp_path)
 
     assert received_trajectories == [
-        [[0.0, 0.0, 0.0]],
-        [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
+        [(0.0, 0.0, 0.0)],
+        [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
     ]
     assert (generated, skipped) == (1, 1)
-    assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "R2R_train_2.npz"]
+    assert FakeRelevantBoxes.saved_paths == [
+        tmp_path / "boxes" / "scene" / "R2R_train_2.npz"
+    ]
+    assert FakeCognitiveMap.saved_paths == [
+        tmp_path / "raster" / "scene" / "R2R_train_2.npz"
+    ]
     assert "WARNING" in caplog.text
     assert "R2R_train_1" in caplog.text
     output = capsys.readouterr().out
@@ -96,10 +106,10 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
     monkeypatch, tmp_path, capsys
 ):
     entries = [
-        FakeVLNCEEntry(1, [[0.0, 0.0, 0.0]]),
+        FakeVLNCEEntry(1, [(0.0, 0.0, 0.0)]),
         FakeVLNCEEntry(
             2,
-            [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
+            [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
         ),
     ]
 
@@ -127,6 +137,7 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
         return iter(())
 
     FakeCognitiveMap.saved_paths.clear()
+    FakeRelevantBoxes.saved_paths.clear()
     monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
     monkeypatch.setattr(prior_main.VLNCEEpisodeEntry, "iter_from", iter_from)
     monkeypatch.setattr(prior_main, "OUTPUT_DIR", tmp_path)
@@ -136,7 +147,12 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
     output = capsys.readouterr().out
     assert "generated=1 skipped=1" in output
     assert "skipped_invalid_trajectory=1" in output
-    assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "R2R_train_2.npz"]
+    assert FakeRelevantBoxes.saved_paths == [
+        tmp_path / "boxes" / "scene" / "R2R_train_2.npz"
+    ]
+    assert FakeCognitiveMap.saved_paths == [
+        tmp_path / "raster" / "scene" / "R2R_train_2.npz"
+    ]
 
 
 def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
@@ -182,6 +198,7 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
             return FakeRelevantBoxes()
 
     FakeCognitiveMap.saved_paths.clear()
+    FakeRelevantBoxes.saved_paths.clear()
     monkeypatch.setattr(etp_r1_main, "ANNOTATION_FILES", ["annotations.jsonl"])
     monkeypatch.setattr(
         etp_r1_main.AnnotationEntry,
@@ -199,7 +216,12 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
         [[1.0, 0.0, 2.0], [3.0, 0.0, 4.0]],
     ]
     assert exc_info.value.code == 1
-    assert FakeCognitiveMap.saved_paths == [tmp_path / "scene" / "good.npz"]
+    assert FakeRelevantBoxes.saved_paths == [
+        tmp_path / "boxes" / "scene" / "good.npz"
+    ]
+    assert FakeCognitiveMap.saved_paths == [
+        tmp_path / "raster" / "scene" / "good.npz"
+    ]
     assert "WARNING" in caplog.text
     assert "bad" in caplog.text
     assert "generated=1 skipped=1" in capsys.readouterr().out

@@ -19,6 +19,7 @@ from .common import (
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
+    cognitive_map_boxes_cache_path,
     cognitive_map_cache_path,
 )
 from vlnce_baselines.models.etp_prior_gt.map_box_targets import (
@@ -30,7 +31,7 @@ from vlnce_baselines.models.etp_llm.navigation import (
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
 )
-from prior.bbox import RelevantSemanticBoxes, SceneSemanticBoxes
+from prior.bbox import RelevantSemanticBoxes
 from prior.etp_r1 import is_english_like_pretrain_record
 
 MAX_DIST = 30  # normalize
@@ -47,12 +48,17 @@ def _filter_missing_pretrain_cognitive_maps(items):
     available = []
     skipped = 0
     for item in items:
-        cache_path = cognitive_map_cache_path(
+        raster_path = cognitive_map_cache_path(
             item["scan"],
             item["instr_id"],
             PRETRAIN_COGNITIVE_MAP_DIR,
         )
-        if cache_path.is_file():
+        boxes_path = cognitive_map_boxes_cache_path(
+            item["scan"],
+            item["instr_id"],
+            PRETRAIN_COGNITIVE_MAP_DIR,
+        )
+        if raster_path.is_file() and boxes_path.is_file():
             available.append(item)
         else:
             skipped += 1
@@ -222,11 +228,12 @@ class ReverieTextPathData(object):
                 self, "random_rotation_augmentation", False
             ),
         )
-        relevant = SceneSemanticBoxes.from_scene_id(item["scan"]).relevant_to(
-            item["instruction"],
-            self._path_positions(item),
-            tuple(tensors["start_direction_vector"].tolist()),
+        boxes_path = cognitive_map_boxes_cache_path(
+            item["scan"],
+            item["instr_id"],
+            PRETRAIN_COGNITIVE_MAP_DIR,
         )
+        relevant = RelevantSemanticBoxes.load(boxes_path)
         return {
             "cognitive_maps": tensors["grid"],
             "trajectory_keypoints": tensors["trajectory_keypoints"],
@@ -270,12 +277,6 @@ class ReverieTextPathData(object):
                 relevant
             ),
         }
-
-    def _path_positions(self, item: Dict[str, Any]):
-        return [
-            self.graphs[item["scan"]].nodes[viewpoint]["position"]
-            for viewpoint in item["path"]
-        ]
 
     def _reject_box_target_rotation_augmentation(self) -> None:
         if getattr(self, "random_rotation_augmentation", False):

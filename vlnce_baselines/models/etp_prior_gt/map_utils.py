@@ -93,9 +93,21 @@ def cognitive_map_cache_path(
     cache_id: str,
     cache_dir: Optional[Path] = None,
 ) -> Path:
+    """Return the derived raster cognitive-map path."""
     if cache_dir is None:
         cache_dir = VLNCE_COGNITIVE_MAP_DIR
-    return cache_dir / _scene_key(scene_id) / f"{cache_id}.npz"
+    return cache_dir / "raster" / _scene_key(scene_id) / f"{cache_id}.npz"
+
+
+def cognitive_map_boxes_cache_path(
+    scene_id: str,
+    cache_id: str,
+    cache_dir: Optional[Path] = None,
+) -> Path:
+    """Return the canonical relevant-box cognitive-map path."""
+    if cache_dir is None:
+        cache_dir = VLNCE_COGNITIVE_MAP_DIR
+    return cache_dir / "boxes" / _scene_key(scene_id) / f"{cache_id}.npz"
 
 
 def available_vlnce_cognitive_map_episode_ids(
@@ -107,12 +119,17 @@ def available_vlnce_cognitive_map_episode_ids(
     skipped = []
     dataset_name = _normalize_vlnce_dataset_name(dataset)
     for entry in VLNCEEpisodeEntry.iter_from(dataset_name, splits=(split,)):
-        cache_path = cognitive_map_cache_path(
+        raster_path = cognitive_map_cache_path(
             entry.scene_id,
             entry.unique_id,
             cache_dir,
         )
-        if cache_path.is_file():
+        boxes_path = cognitive_map_boxes_cache_path(
+            entry.scene_id,
+            entry.unique_id,
+            cache_dir,
+        )
+        if raster_path.is_file() and boxes_path.is_file():
             available.append(str(entry.episode_id))
         else:
             skipped.append(entry.unique_id)

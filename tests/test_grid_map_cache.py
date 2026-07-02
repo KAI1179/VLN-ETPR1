@@ -124,8 +124,10 @@ def test_cached_cognitive_map_to_tensors_loads_by_scene_and_cache_id(
     tmp_path, monkeypatch
 ):
     cache_dir = tmp_path / "cognitive_maps"
-    scene_dir = cache_dir / "scene"
+    scene_dir = cache_dir / "raster" / "scene"
+    boxes_scene_dir = cache_dir / "boxes" / "scene"
     scene_dir.mkdir(parents=True)
+    boxes_scene_dir.mkdir(parents=True)
     grid_map = CognitiveGridMap()
     grid_map.grid[0, 2, 3] = 1.0
     grid_map.trajectory_keypoints = [
@@ -137,6 +139,7 @@ def test_cached_cognitive_map_to_tensors_loads_by_scene_and_cache_id(
     ]
     grid_map.start_direction_vector = (0.0, 1.0)
     grid_map.save(scene_dir / "R2R_train_1.npz")
+    (boxes_scene_dir / "R2R_train_1.npz").touch()
 
     monkeypatch.setattr(map_utils, "VLNCE_COGNITIVE_MAP_DIR", cache_dir)
 
@@ -191,9 +194,12 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
         "iter_from",
         staticmethod(lambda dataset, splits: iter(entries)),
     )
-    scene_dir = tmp_path / "scene"
-    scene_dir.mkdir()
-    (scene_dir / "R2R_train_2.npz").touch()
+    raster_scene_dir = tmp_path / "raster" / "scene"
+    boxes_scene_dir = tmp_path / "boxes" / "scene"
+    raster_scene_dir.mkdir(parents=True)
+    boxes_scene_dir.mkdir(parents=True)
+    (raster_scene_dir / "R2R_train_2.npz").touch()
+    (boxes_scene_dir / "R2R_train_2.npz").touch()
 
     allowed = map_utils.available_vlnce_cognitive_map_episode_ids(
         "R2R",

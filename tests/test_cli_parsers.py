@@ -228,6 +228,16 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         "cached_cognitive_map_to_tensors",
         fake_cached_cognitive_map_to_tensors,
     )
+    monkeypatch.setattr(
+        pretrain_dataset.RelevantSemanticBoxes,
+        "load",
+        staticmethod(lambda path: "relevant-boxes"),
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "relevant_semantic_boxes_to_decoder_target",
+        lambda relevant: f"target:{relevant}",
+    )
 
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
@@ -250,6 +260,7 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         "trajectory_keypoints": "trajectory_keypoints",
         "start_direction_vectors": "direction",
         "start_positions": "position",
+        "cognitive_map_box_targets": "target:relevant-boxes",
     }
 
 
@@ -289,11 +300,20 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         "llm_cached_cognitive_map_to_tensors",
         fake_llm_cached_cognitive_map_to_tensors,
     )
+    monkeypatch.setattr(
+        pretrain_dataset.RelevantSemanticBoxes,
+        "load",
+        staticmethod(lambda path: "llm-relevant-boxes"),
+    )
+    monkeypatch.setattr(
+        pretrain_dataset,
+        "relevant_semantic_boxes_to_decoder_target",
+        lambda relevant: f"target:{relevant}",
+    )
 
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
-    nav_db.random_rotation_augmentation = True
 
     outputs = nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
@@ -304,13 +324,14 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         "split": "mixed",
         "cache_dir": None,
         "model_key": "llama-3.1-8b-instruct",
-        "random_rotation_augmentation": True,
+        "random_rotation_augmentation": False,
     }
     assert outputs == {
         "cognitive_maps": "llm-grid",
         "trajectory_keypoints": "llm-trajectory-keypoints",
         "start_direction_vectors": "llm-direction",
         "start_positions": "llm-start",
+        "cognitive_map_box_targets": "target:llm-relevant-boxes",
     }
 
 
@@ -394,9 +415,12 @@ def test_pretrain_prior_map_filter_skips_missing_entries(
 
     pretrain_dataset = importlib.import_module("data.dataset")
     monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
-    scene_dir = tmp_path / "scene"
-    scene_dir.mkdir()
-    (scene_dir / "good.npz").touch()
+    raster_dir = tmp_path / "raster" / "scene"
+    boxes_dir = tmp_path / "boxes" / "scene"
+    raster_dir.mkdir(parents=True)
+    boxes_dir.mkdir(parents=True)
+    (raster_dir / "good.npz").touch()
+    (boxes_dir / "good.npz").touch()
     items = [
         {"instr_id": "good", "scan": "scene"},
         {"instr_id": "missing", "scan": "scene"},
@@ -625,56 +649,16 @@ def test_pretrain_prior_map_rotates_tensor_bundle(
     )
 
 
-def test_pretrain_prior_map_applies_random_rotation(tmp_path, monkeypatch):
+def test_pretrain_prior_map_rejects_random_rotation(tmp_path, monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
 
     pretrain_dataset = importlib.import_module("data.dataset")
-    captured = {}
-
-    def fake_cached_cognitive_map_to_tensors(
-        scene_id,
-        cache_id,
-        cache_dir,
-        random_rotation_augmentation,
-    ):
-        captured["scene_id"] = scene_id
-        captured["cache_id"] = cache_id
-        captured["cache_dir"] = cache_dir
-        captured["random_rotation_augmentation"] = random_rotation_augmentation
-        return {
-            "grid": torch.arange(100 * 100, dtype=torch.float32).reshape(1, 100, 100),
-            "trajectory_keypoints": torch.tensor([[10.0, 20.0]], dtype=torch.float32),
-            "start_direction_vector": torch.tensor([1.0, 2.0], dtype=torch.float32),
-            "start_position": torch.tensor([10.0, 20.0], dtype=torch.float32),
-        }
-
-    monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
-    monkeypatch.setattr(
-        pretrain_dataset,
-        "cached_cognitive_map_to_tensors",
-        fake_cached_cognitive_map_to_tensors,
-    )
-
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
     nav_db.random_rotation_augmentation = True
 
-    outputs = nav_db._load_pretrain_cognitive_map(
-        {
-            "instr_id": "42_0",
-            "scan": "scene",
-        }
-    )
-
-    assert captured == {
-        "scene_id": "scene",
-        "cache_id": "42_0",
-        "cache_dir": tmp_path,
-        "random_rotation_augmentation": True,
-    }
-    assert outputs["trajectory_keypoints"].tolist() == [[10.0, 20.0]]
-    assert outputs["start_positions"].tolist() == [10.0, 20.0]
-    assert outputs["start_direction_vectors"].tolist() == [1.0, 2.0]
+    with pytest.raises(ValueError, match="random_rotation_augmentation"):
+        nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
