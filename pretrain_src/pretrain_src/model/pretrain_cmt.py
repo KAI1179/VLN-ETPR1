@@ -103,6 +103,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         )
         self.map_encoder = None
         self.map_decoder = None
+        self.map_box_criterion = None
         self.map_predictor = None
 
         if "mlm" in config.pretrain_tasks:
@@ -124,6 +125,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 )
                 from vlnce_baselines.models.etp_prior_gt.map_decoder import (
                     CognitiveMapDecoder,
+                    CognitiveMapSetCriterion,
                 )
             except ImportError as exc:
                 raise RuntimeError(
@@ -138,6 +140,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 hidden_size=self.config.hidden_size
             )
             self.map_decoder = CognitiveMapDecoder(hidden_size=self.config.hidden_size)
+            self.map_box_criterion = CognitiveMapSetCriterion()
             if self.use_imagined:
                 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
                     InstructionCognitiveMapPredictor,
@@ -235,6 +238,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch["txt_labels"],
                 compute_loss,
                 cognitive_maps=batch["cognitive_maps"],
+                cognitive_map_box_targets=batch["cognitive_map_box_targets"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
             )
@@ -267,6 +271,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 batch["local_act_labels"],
                 compute_loss,
                 cognitive_maps=batch["cognitive_maps"],
+                cognitive_map_box_targets=batch["cognitive_map_box_targets"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
             )
@@ -345,29 +350,27 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
     def _compute_updated_cognitive_map_loss(
         self,
         updated_map_tokens,
-        cognitive_maps,
+        cognitive_map_box_targets,
         compute_loss,
     ):
         if not compute_loss or updated_map_tokens is None:
             return None
-        if cognitive_maps is None:
+        if cognitive_map_box_targets is None:
             raise ValueError(
-                "cognitive_maps are required to supervise updated_map_tokens"
+                "cognitive_map_box_targets are required to supervise updated_map_tokens"
             )
         if self.map_decoder is None:
             raise RuntimeError(
                 "updated_map_tokens were produced but map_decoder is not initialized"
             )
-        updated_map_logits = self.map_decoder(updated_map_tokens)
-        if updated_map_logits.shape != cognitive_maps.shape:
-            raise ValueError(
-                "decoded updated cognitive map shape must match cognitive_maps, "
-                f"got {tuple(updated_map_logits.shape)} and {tuple(cognitive_maps.shape)}"
+        if self.map_box_criterion is None:
+            raise RuntimeError(
+                "updated_map_tokens were produced but map_box_criterion is not initialized"
             )
-        return self.map_loss_weight * F.binary_cross_entropy_with_logits(
-            updated_map_logits,
-            cognitive_maps,
-            reduction="mean",
+        decoder_output = self.map_decoder(updated_map_tokens)
+        return self.map_loss_weight * self.map_box_criterion(
+            decoder_output,
+            cognitive_map_box_targets,
         )
 
     def forward_mlm(
@@ -394,6 +397,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         txt_labels,
         compute_loss,
         cognitive_maps=None,
+        cognitive_map_box_targets=None,
         map_tokens=None,
         map_token_masks=None,
     ):
@@ -423,7 +427,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         txt_embeds = navigation_output.txt_embeds
         updated_map_loss = self._compute_updated_cognitive_map_loss(
             navigation_output.updated_map_tokens,
-            cognitive_maps,
+            cognitive_map_box_targets,
             compute_loss,
         )
 
@@ -472,6 +476,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         local_act_labels,
         compute_loss,
         cognitive_maps=None,
+        cognitive_map_box_targets=None,
         map_tokens=None,
         map_token_masks=None,
     ):
@@ -502,7 +507,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         gmap_embeds = navigation_output.gmap_embeds
         updated_map_loss = self._compute_updated_cognitive_map_loss(
             navigation_output.updated_map_tokens,
-            cognitive_maps,
+            cognitive_map_box_targets,
             compute_loss,
         )
 

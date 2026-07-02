@@ -21,12 +21,16 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
     cognitive_map_cache_path,
 )
+from vlnce_baselines.models.etp_prior_gt.map_box_targets import (
+    relevant_semantic_boxes_to_decoder_target,
+)
 from vlnce_baselines.models.etp_llm.navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_cached_cognitive_map_to_tensors,
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
 )
+from prior.bbox import RelevantSemanticBoxes, SceneSemanticBoxes
 from prior.etp_r1 import is_english_like_pretrain_record
 
 MAX_DIST = 30  # normalize
@@ -209,6 +213,7 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
+        self._reject_box_target_rotation_augmentation()
         tensors = cached_cognitive_map_to_tensors(
             item["scan"],
             item["instr_id"],
@@ -217,14 +222,23 @@ class ReverieTextPathData(object):
                 self, "random_rotation_augmentation", False
             ),
         )
+        relevant = SceneSemanticBoxes.from_scene_id(item["scan"]).relevant_to(
+            item["instruction"],
+            self._path_positions(item),
+            tuple(tensors["start_direction_vector"].tolist()),
+        )
         return {
             "cognitive_maps": tensors["grid"],
             "trajectory_keypoints": tensors["trajectory_keypoints"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
+            "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
+                relevant
+            ),
         }
 
     def _load_llm_cognitive_map(self, item: Dict[str, Any]):
+        self._reject_box_target_rotation_augmentation()
         tensors = llm_cached_cognitive_map_to_tensors(
             item["scan"],
             item["instr_id"],
@@ -236,6 +250,15 @@ class ReverieTextPathData(object):
                 self, "random_rotation_augmentation", False
             ),
         )
+        boxes_path = llm_navigation_cognitive_map_boxes_path(
+            item["scan"],
+            item["instr_id"],
+            getattr(self, "llm_cache_dataset", "pretrain"),
+            getattr(self, "llm_cache_split", "mixed"),
+            cache_dir=getattr(self, "llm_cache_dir", None),
+            model_key=getattr(self, "llm_cache_model_key", "llama-3.1-8b-instruct"),
+        )
+        relevant = RelevantSemanticBoxes.load(boxes_path)
         # Single-example cached tensors: grid=(37, 100, 100),
         # keypoints=(5, 2), direction=(2,), start=(2,). Collate stacks B first.
         return {
@@ -243,7 +266,23 @@ class ReverieTextPathData(object):
             "trajectory_keypoints": tensors["trajectory_keypoints"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
+            "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
+                relevant
+            ),
         }
+
+    def _path_positions(self, item: Dict[str, Any]):
+        return [
+            self.graphs[item["scan"]].nodes[viewpoint]["position"]
+            for viewpoint in item["path"]
+        ]
+
+    def _reject_box_target_rotation_augmentation(self) -> None:
+        if getattr(self, "random_rotation_augmentation", False):
+            raise ValueError(
+                "random_rotation_augmentation is not supported with "
+                "cognitive_map_box_targets yet"
+            )
 
     def get_scanvp_feature(self, scan, viewpoint):
         key = "%s_%s" % (scan, viewpoint)
