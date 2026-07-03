@@ -7,7 +7,7 @@ import jsonlines
 import numpy as np
 import h5py
 import math
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .common import (
     load_nav_graphs,
@@ -17,6 +17,7 @@ from .common import (
     softmax,
 )
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DEFAULT_COGNITIVE_MAP_NAMESPACE,
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
     cognitive_map_boxes_cache_path,
@@ -38,25 +39,33 @@ MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
+PRETRAIN_COGNITIVE_MAP_NAMESPACE = DEFAULT_COGNITIVE_MAP_NAMESPACE
 PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
 PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
 PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
 PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY = DEFAULT_LLM_NAVIGATION_MODEL_KEY
 
 
-def _filter_missing_pretrain_cognitive_maps(items):
+def _filter_missing_pretrain_cognitive_maps(
+    items,
+    namespace: Optional[str] = None,
+):
+    if namespace is None:
+        namespace = PRETRAIN_COGNITIVE_MAP_NAMESPACE
     available = []
     skipped = 0
     for item in items:
         raster_path = cognitive_map_cache_path(
             item["scan"],
             item["instr_id"],
-            PRETRAIN_COGNITIVE_MAP_DIR,
+            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            namespace=namespace,
         )
         boxes_path = cognitive_map_boxes_cache_path(
             item["scan"],
             item["instr_id"],
-            PRETRAIN_COGNITIVE_MAP_DIR,
+            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            namespace=namespace,
         )
         if raster_path.is_file() and boxes_path.is_file():
             available.append(item)
@@ -153,10 +162,16 @@ class ReverieTextPathData(object):
         val_sample_num=None,
         use_prior_gt=False,
         use_llm=False,
+        cognitive_map_namespace=None,
         random_rotation_augmentation=False,
     ):
         self.use_prior_gt = use_prior_gt
         self.use_llm = use_llm
+        self.cognitive_map_namespace = (
+            PRETRAIN_COGNITIVE_MAP_NAMESPACE
+            if cognitive_map_namespace is None
+            else cognitive_map_namespace
+        )
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -206,7 +221,10 @@ class ReverieTextPathData(object):
         if self.use_llm:
             self.data = _filter_non_english_pretrain_records(self.data)
         if self.use_prior_gt:
-            self.data = _filter_missing_pretrain_cognitive_maps(self.data)
+            self.data = _filter_missing_pretrain_cognitive_maps(
+                self.data,
+                self.cognitive_map_namespace,
+            )
         if self.use_llm:
             self.data = _filter_missing_pretrain_llm_cognitive_maps(self.data)
 
@@ -224,6 +242,11 @@ class ReverieTextPathData(object):
             item["scan"],
             item["instr_id"],
             cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            namespace=getattr(
+                self,
+                "cognitive_map_namespace",
+                PRETRAIN_COGNITIVE_MAP_NAMESPACE,
+            ),
             random_rotation_augmentation=getattr(
                 self, "random_rotation_augmentation", False
             ),
@@ -231,7 +254,12 @@ class ReverieTextPathData(object):
         boxes_path = cognitive_map_boxes_cache_path(
             item["scan"],
             item["instr_id"],
-            PRETRAIN_COGNITIVE_MAP_DIR,
+            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            namespace=getattr(
+                self,
+                "cognitive_map_namespace",
+                PRETRAIN_COGNITIVE_MAP_NAMESPACE,
+            ),
         )
         relevant = RelevantSemanticBoxes.load(boxes_path)
         return {
@@ -684,6 +712,7 @@ class R2RTextPathData(ReverieTextPathData):
         start_vp_file=None,
         use_prior_gt=False,
         use_llm=False,
+        cognitive_map_namespace=None,
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -706,6 +735,7 @@ class R2RTextPathData(ReverieTextPathData):
             val_sample_num=val_sample_num,
             use_prior_gt=use_prior_gt,
             use_llm=use_llm,
+            cognitive_map_namespace=cognitive_map_namespace,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 

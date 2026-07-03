@@ -124,8 +124,8 @@ def test_cached_cognitive_map_to_tensors_loads_by_scene_and_cache_id(
     tmp_path, monkeypatch
 ):
     cache_dir = tmp_path / "cognitive_maps"
-    scene_dir = cache_dir / "raster" / "scene"
-    boxes_scene_dir = cache_dir / "boxes" / "scene"
+    scene_dir = cache_dir / "bbox_r1p5" / "raster" / "scene"
+    boxes_scene_dir = cache_dir / "bbox_r1p5" / "boxes" / "scene"
     scene_dir.mkdir(parents=True)
     boxes_scene_dir.mkdir(parents=True)
     grid_map = CognitiveGridMap()
@@ -166,6 +166,30 @@ def test_cached_cognitive_map_to_tensors_fails_for_missing_cache(tmp_path, monke
         map_utils.cached_cognitive_map_to_tensors("scene.glb", "R2R_train_1")
 
 
+def test_cached_cognitive_map_to_tensors_ignores_flat_legacy_cache_root(
+    tmp_path, monkeypatch
+):
+    flat_scene_dir = tmp_path / "raster" / "scene"
+    flat_scene_dir.mkdir(parents=True)
+    grid_map = CognitiveGridMap()
+    grid_map.trajectory_keypoints = [
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
+    grid_map.start_direction_vector = (0.0, 1.0)
+    grid_map.save(flat_scene_dir / "R2R_train_1.npz")
+    monkeypatch.setattr(map_utils, "VLNCE_COGNITIVE_MAP_DIR", tmp_path)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"bbox_r1p5/raster/scene/R2R_train_1\.npz",
+    ):
+        map_utils.cached_cognitive_map_to_tensors("scene.glb", "R2R_train_1")
+
+
 def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
     tmp_path, monkeypatch, capsys
 ):
@@ -194,8 +218,8 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
         "iter_from",
         staticmethod(lambda dataset, splits: iter(entries)),
     )
-    raster_scene_dir = tmp_path / "raster" / "scene"
-    boxes_scene_dir = tmp_path / "boxes" / "scene"
+    raster_scene_dir = tmp_path / "legacy_r2p5" / "raster" / "scene"
+    boxes_scene_dir = tmp_path / "legacy_r2p5" / "boxes" / "scene"
     raster_scene_dir.mkdir(parents=True)
     boxes_scene_dir.mkdir(parents=True)
     (raster_scene_dir / "R2R_train_2.npz").touch()
@@ -205,6 +229,7 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
         "R2R",
         "train",
         tmp_path,
+        namespace="legacy_r2p5",
     )
 
     assert allowed == ["2"]

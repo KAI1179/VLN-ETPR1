@@ -55,6 +55,12 @@ def load_parser():
         type=str,
         help="Optional predictor-only checkpoint used to initialize --use_imagined pretraining",
     )
+    parser.add_argument(
+        "--cognitive_map_namespace",
+        default="bbox_r1p5",
+        type=str,
+        help="PriorGT cognitive-map cache namespace under data/cognitive_maps_etp_r1",
+    )
     # training parameters
     parser.add_argument(
         "--train_batch_size",

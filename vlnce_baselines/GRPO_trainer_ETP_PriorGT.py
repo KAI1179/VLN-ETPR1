@@ -85,12 +85,14 @@ def _build_cognitive_maps_for_episodes(
     episodes,
     dataset: str,
     split: str,
+    namespace: str,
     random_rotation_augmentation=False,
 ):
     return [
         cached_cognitive_map_to_tensors(
             ep.scene_id,
             _cognitive_map_cache_id(dataset, split, ep),
+            namespace=namespace,
             random_rotation_augmentation=random_rotation_augmentation,
         )
         for ep in episodes
@@ -284,6 +286,7 @@ class RLTrainer(BaseVLNCETrainer):
         return available_vlnce_cognitive_map_episode_ids(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
+            namespace=map_cfg.cache_namespace,
         )
 
     def setup_training_parts(self):
@@ -1198,6 +1201,7 @@ class RLTrainer(BaseVLNCETrainer):
             self.envs.current_episodes(),
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
+            self.config.MODEL.MAP_ENCODER.cache_namespace,
             random_rotation_augmentation=False,
         )
 

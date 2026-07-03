@@ -11,7 +11,7 @@ from prior import DATA_DIR
 from prior.vlnce import VLNCEEpisodeEntry
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    cached_cognitive_map_to_tensors,
+    cognitive_map_file_to_tensors,
 )
 
 DEFAULT_LLM_NAVIGATION_MODEL_KEY = "llama-3.1-8b-instruct"
@@ -148,10 +148,8 @@ def llm_cached_cognitive_map_to_tensors(
             "`python -m vlnce_baselines.models.etp_llm.generate_navigation_cache` "
             "before running LLM navigation."
         )
-    return cached_cognitive_map_to_tensors(
-        scene_id,
-        cache_id,
-        cache_dir=cache_path.parent.parent.parent,
+    return cognitive_map_file_to_tensors(
+        cache_path,
         random_rotation_augmentation=random_rotation_augmentation,
     )
 

@@ -226,6 +226,7 @@ class RLTrainer(BaseVLNCETrainer):
         return available_vlnce_cognitive_map_episode_ids(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
+            namespace=map_cfg.cache_namespace,
         )
 
     def _initialize_policy(
@@ -1113,6 +1114,7 @@ class RLTrainer(BaseVLNCETrainer):
             cached_cognitive_map_to_tensors(
                 ep.scene_id,
                 self._cognitive_map_cache_id(ep),
+                namespace=self.config.MODEL.MAP_ENCODER.cache_namespace,
                 random_rotation_augmentation=random_rotation_augmentation,
             )
             for ep in self.envs.current_episodes()

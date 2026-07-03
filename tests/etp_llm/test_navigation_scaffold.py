@@ -158,22 +158,18 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
 
     captured = {}
 
-    def fake_cached_cognitive_map_to_tensors(
-        scene_id,
-        cache_id,
-        cache_dir,
+    def fake_cognitive_map_file_to_tensors(
+        cache_path,
         random_rotation_augmentation,
     ):
-        captured["scene_id"] = scene_id
-        captured["cache_id"] = cache_id
-        captured["cache_dir"] = cache_dir
+        captured["cache_path"] = cache_path
         captured["random_rotation_augmentation"] = random_rotation_augmentation
         return {"grid": "ok"}
 
     monkeypatch.setattr(
         navigation,
-        "cached_cognitive_map_to_tensors",
-        fake_cached_cognitive_map_to_tensors,
+        "cognitive_map_file_to_tensors",
+        fake_cognitive_map_file_to_tensors,
     )
 
     tensors = navigation.llm_cached_cognitive_map_to_tensors(
@@ -187,9 +183,7 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
 
     assert tensors == {"grid": "ok"}
     assert captured == {
-        "scene_id": scene_path,
-        "cache_id": cache_id,
-        "cache_dir": raster_path.parent.parent.parent,
+        "cache_path": raster_path,
         "random_rotation_augmentation": False,
     }
 

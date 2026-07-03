@@ -7,6 +7,7 @@ from typing import Dict, Literal, Optional
 
 import torch
 from prior import DATA_DIR
+from prior.cognitive_map_generation import DEFAULT_RADIUS_M, map_cache_namespace
 from prior._coords import meters_to_grid
 from prior.constants import (
     COLS,
@@ -23,6 +24,7 @@ from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
 VLNCE_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps"
 ETP_R1_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
+DEFAULT_COGNITIVE_MAP_NAMESPACE = map_cache_namespace("bbox", DEFAULT_RADIUS_M)
 MAP_TOKEN_GRID_SIZE = 10
 MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
 MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
@@ -92,28 +94,35 @@ def cognitive_map_cache_path(
     scene_id: str,
     cache_id: str,
     cache_dir: Optional[Path] = None,
+    namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> Path:
     """Return the derived raster cognitive-map path."""
     if cache_dir is None:
         cache_dir = VLNCE_COGNITIVE_MAP_DIR
-    return cache_dir / "raster" / _scene_key(scene_id) / f"{cache_id}.npz"
+    if not namespace:
+        raise ValueError("cognitive map cache namespace is required")
+    return cache_dir / namespace / "raster" / _scene_key(scene_id) / f"{cache_id}.npz"
 
 
 def cognitive_map_boxes_cache_path(
     scene_id: str,
     cache_id: str,
     cache_dir: Optional[Path] = None,
+    namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> Path:
     """Return the canonical relevant-box cognitive-map path."""
     if cache_dir is None:
         cache_dir = VLNCE_COGNITIVE_MAP_DIR
-    return cache_dir / "boxes" / _scene_key(scene_id) / f"{cache_id}.npz"
+    if not namespace:
+        raise ValueError("cognitive map cache namespace is required")
+    return cache_dir / namespace / "boxes" / _scene_key(scene_id) / f"{cache_id}.npz"
 
 
 def available_vlnce_cognitive_map_episode_ids(
     dataset: str,
     split: str,
     cache_dir: Optional[Path] = None,
+    namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> list[str]:
     available = []
     skipped = []
@@ -123,11 +132,13 @@ def available_vlnce_cognitive_map_episode_ids(
             entry.scene_id,
             entry.unique_id,
             cache_dir,
+            namespace,
         )
         boxes_path = cognitive_map_boxes_cache_path(
             entry.scene_id,
             entry.unique_id,
             cache_dir,
+            namespace,
         )
         if raster_path.is_file() and boxes_path.is_file():
             available.append(str(entry.episode_id))
@@ -150,21 +161,48 @@ def load_cached_cognitive_map(
     scene_id: str,
     cache_id: str,
     cache_dir: Optional[Path] = None,
+    namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> CognitiveGridMap:
-    cache_path = cognitive_map_cache_path(scene_id, cache_id, cache_dir)
+    cache_path = cognitive_map_cache_path(
+        scene_id,
+        cache_id,
+        cache_dir=cache_dir,
+        namespace=namespace,
+    )
     if not cache_path.is_file():
         raise FileNotFoundError(f"Missing cached cognitive map: {cache_path}")
     return CognitiveGridMap.load(cache_path)
+
+
+def cognitive_map_file_to_tensors(
+    cache_path: Path,
+    random_rotation_augmentation: bool = False,
+) -> Dict[str, torch.Tensor]:
+    if not cache_path.is_file():
+        raise FileNotFoundError(f"Missing cached cognitive map: {cache_path}")
+    tensors = cognitive_map_to_tensors(CognitiveGridMap.load(cache_path))
+    if random_rotation_augmentation:
+        tensors = rotate_cognitive_map_tensors_by_right_angle(
+            tensors,
+            random.randrange(4),
+        )
+    return tensors
 
 
 def cached_cognitive_map_to_tensors(
     scene_id: str,
     cache_id: str,
     cache_dir: Optional[Path] = None,
+    namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
     random_rotation_augmentation: bool = False,
 ) -> Dict[str, torch.Tensor]:
     tensors = cognitive_map_to_tensors(
-        load_cached_cognitive_map(scene_id, cache_id, cache_dir)
+        load_cached_cognitive_map(
+            scene_id,
+            cache_id,
+            cache_dir=cache_dir,
+            namespace=namespace,
+        )
     )
     if random_rotation_augmentation:
         tensors = rotate_cognitive_map_tensors_by_right_angle(
