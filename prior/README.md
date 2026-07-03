@@ -9,19 +9,63 @@ Following modules could be run with `python -m`:
 
 For analyzing, see `./analyze/README.md`.
 
+# Cognitive Map Generators
+
+Both `prior` and `prior.etp_r1` generate paired cache files:
+
+```text
+<output-dir>/<namespace>/boxes/<scene-id>/<episode-or-instr-id>.npz
+<output-dir>/<namespace>/raster/<scene-id>/<episode-or-instr-id>.npz
+```
+
+The `boxes/` file stores the selected relevant semantic boxes sidecar. The
+`raster/` file stores the cognitive map consumed by PriorGT-style navigation
+models.
+
+Shared generator options:
+
+- `--map-source {bbox,legacy}`: `bbox` rasterizes relevant semantic boxes;
+  `legacy` builds a Try5-style path-neighborhood raster from the selected
+  full-level semantic grid.
+- `--radius-m FLOAT`: Path-neighborhood radius in meters. Default is `1.5`.
+- `--namespace NAME`: Cache namespace under `--output-dir`. If omitted, the
+  namespace is derived as `<map-source>_r<radius>`, such as `bbox_r1p5` or
+  `legacy_r2p5`.
+- `--output-dir PATH`: Cache root. Defaults to `data/cognitive_maps` for
+  VLN-CE and `data/cognitive_maps_etp_r1` for ETP-R1.
+
+Examples:
+
+```bash
+python -m prior --map-source legacy --radius-m 1.5
+python -m prior --map-source legacy --radius-m 2.5
+python -m prior --map-source bbox --radius-m 2.5
+python -m prior.etp_r1 --map-source legacy --radius-m 1.5
+python -m prior.etp_r1 --map-source bbox --radius-m 2.5 42_0
+```
+
+The optional positional arguments to `prior.etp_r1` are sampled instruction IDs.
+When provided, only those instructions are regenerated and visualized.
+
+Level selection is shared by `bbox` and `legacy`: the first semantic level
+touched by the ground-truth trajectory is selected. If that level has fewer
+than two selected-level points, generation raises
+`InsufficientTrajectoryPointsError` and skips the episode instead of falling
+back to a later level.
+
 # API
 
 - `SceneSemanticBoxes.from_scene_id` -> `SceneSemanticBoxes` (collection of `LevelSemanticBoxes`)
 - `SceneSemanticBoxes` -`relevant_to`-> `RelevantSemanticBoxes`
 - `RelevantSemanticBoxes` -`to_cognitive_map`-> `CognitiveGridMap`
 
-# Saved NPZ Data
+# Saved Raster Data
 
-`.npz` is used for first encountered level of cognitive grid maps.
+Raster cognitive maps are saved as compressed `.npz` files under `raster/`.
 
-## NPZ Overview
+## Raster NPZ Overview
 
-Each npz file contains:
+Each raster npz file contains:
 
 - `grid`: Grid data of dimension (OBJECT_CATEGORIES + REGION_CATEGORIES) x ROWS x COLS.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. Not useful for our job.
@@ -29,7 +73,9 @@ Each npz file contains:
   zero-padded when needed.
 - `start_direction_vector`: Direction vector of the start position.
 
-Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 3 cells around each waypoint.
+Together they showcase navigation trajectory and semantic surroundings for a
+navigation instruction. The covered path neighborhood is controlled by
+`--radius-m`.
 
 ## Grid
 
@@ -47,15 +93,16 @@ Angles follow standard mathematical convention in visualization space, increasin
 | 0° | (cos=1, sin=0) | Right | -col |
 | 90° | (cos=0, sin=1) | Up | -row |
 
-# Saved JSON Data
+# Saved Relevant-Box Data
 
-`.json` is used for first encountered level of relevant semantic bounding boxes.
+Relevant semantic boxes can be saved as `.json`. Generator sidecars are saved as
+compressed `.npz` files under `boxes/`, with the same serialized payload.
 
 ## JSON Overview
 
 Each json file contains:
 
-- `level_idx`: First ground-truth-trajectory level selected for the episode.
+- `level_idx`: First ground-truth-trajectory level touched by the episode.
 - `level`: Relevant boxes on that selected level.
 - `instruction`: Episode instruction text.
 - `ground_truth_trajectory`: Dense selected-level positions as `[x, z]`.
@@ -68,7 +115,9 @@ The nested `level` object contains:
 - `regions`: 10 arrays of region AABBs, indexed by mapped region category.
 - `range_y`: Y range of the floor, stored as `[min_y, max_y]`; either value may be `null`. When element `null`, indicates no bound. Not useful for our job.
 
-Together they showcase navigation trajectory and semantic surroundings for a navigation instruction, covering a local neighborhood of radius 1.5m around each waypoint. Every position in each bounding box should be positive.
+Together they showcase navigation trajectory and semantic surroundings for a
+navigation instruction, covering a local neighborhood around each waypoint.
+Every position in each bounding box should be positive.
 
 ## Objects
 
