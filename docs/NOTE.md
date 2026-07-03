@@ -909,12 +909,11 @@ For VLN this is stronger than instruction-only because partial observation ancho
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
 - [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
-- [ ] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
+- [x] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
     - R2R train: 10494/10819
     - R2R val_unseen: 1351/1839
 - ~~Nav 1: Try 8 + LLM 5~~
 - [x] Try 9: 简易的认知地图 Decoder @ VIPL
-- [ ] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
+- [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
 - [ ] Nav 2: Try 9 + LLM 5 @ 超算
 - [ ] Try 10: DETR-style decoder @ VIPL
-
