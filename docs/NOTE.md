@@ -861,11 +861,12 @@ For VLN this is stronger than instruction-only because partial observation ancho
         - MLP 向右预测 mask 类别，向下 mask embedding
         - pixel-level 特征和 mask embedding 相乘，得 N x H x W mask 形状
         - 丢弃空集
-    - ⭐ [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html): mask query 分割
+    - [Per-Pixel Classification is Not All You Need for Semantic Segmentation](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html): mask query 分割
         - feature 作为 k, v, N queries 解码出来 N 个特征 token，认为各对应一个候选 mask
         - 实际输出是类别 logits 和二值 mask logits，不预测 bbox
         - Hungarian matching 基于类别、focal mask loss、dice mask loss
         - 若迁移到认知地图，需要 per-entity raster mask 作为监督目标
+    - ⭐ [End-to-End Object Detection with Transformers](https://arxiv.org/abs/2005.12872)
 
 ## 06/24
 
