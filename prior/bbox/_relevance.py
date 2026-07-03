@@ -24,7 +24,7 @@ from ._types import (
 )
 
 
-def _first_usable_level_points(
+def _first_touched_level_points(
     scene: SceneSemanticBoxes,
     ground_truth_trajectory: WorldTrajectory3D,
 ) -> tuple[int, LevelSemanticBoxes, LevelTrajectory2D]:
@@ -33,7 +33,7 @@ def _first_usable_level_points(
     if not ground_truth_trajectory:
         raise ValueError("ground_truth_trajectory is empty")
 
-    candidates: List[tuple[int, int, LevelSemanticBoxes, List[Point2D]]] = []
+    touched_levels: List[tuple[int, int, LevelSemanticBoxes, List[Point2D]]] = []
     touched_ranges = []
     for level_idx, level in enumerate(scene.levels):
         origin = scene._level_origins[level_idx]
@@ -46,20 +46,22 @@ def _first_usable_level_points(
             _local_point(position, origin)
             for _, position in indexed_positions
         ]
-        if len(level_points) >= 2:
-            candidates.append((indexed_positions[0][0], level_idx, level, level_points))
         if level_points:
+            touched_levels.append(
+                (indexed_positions[0][0], level_idx, level, level_points)
+            )
             touched_ranges.append(level.range_y)
 
-    if candidates:
-        _, level_idx, level, level_points = min(candidates, key=lambda item: item[0])
-        return level_idx, level, level_points
-
-    if touched_ranges:
-        raise InsufficientTrajectoryPointsError(
-            "ground_truth_trajectory must contain at least 2 selected-level "
-            "points for trajectory_keypoints"
+    if touched_levels:
+        _, level_idx, level, level_points = min(
+            touched_levels, key=lambda item: (item[0], item[1])
         )
+        if len(level_points) < 2:
+            raise InsufficientTrajectoryPointsError(
+                "ground_truth_trajectory must contain at least 2 selected-level "
+                "points for trajectory_keypoints"
+            )
+        return level_idx, level, level_points
     ranges = [level.range_y for level in scene.levels]
     raise ValueError(
         f"ground_truth_trajectory does not intersect any semantic level range: {ranges}"
@@ -80,7 +82,7 @@ def _extract_relevant_semantic_boxes(
 
         category_extractor = extract_categories
 
-    level_idx, level, level_points = _first_usable_level_points(
+    level_idx, level, level_points = _first_touched_level_points(
         scene, ground_truth_trajectory
     )
     mentioned_objects, mentioned_regions = category_extractor(instruction)

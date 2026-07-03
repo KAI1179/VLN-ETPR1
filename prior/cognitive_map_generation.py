@@ -11,7 +11,7 @@ import numpy as np
 
 from prior.bbox import LevelSemanticBoxes, RelevantSemanticBoxes, SceneSemanticBoxes
 from prior.bbox._rasterize import _rasterize_level_semantic_boxes
-from prior.bbox._relevance import _first_usable_level_points
+from prior.bbox._relevance import _first_touched_level_points
 from prior.constants import (
     CELL_SIZE,
     COLS,
@@ -131,7 +131,7 @@ def legacy_cognitive_map(
     start_direction_vector: DirectionVector,
     radius_m: float,
 ) -> CognitiveGridMap:
-    _, level, level_points = _first_usable_level_points(
+    _, level, level_points = _first_touched_level_points(
         scene_boxes,
         ground_truth_trajectory,
     )

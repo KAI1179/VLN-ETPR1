@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from prior._coords import meters_to_grid
 from prior import bbox as box
 from prior.bbox import _construct as box_construct
+from prior.trajectory import InsufficientTrajectoryPointsError
 
 
 def test_semantic_box_models_do_not_expose_source_ids():
@@ -198,7 +199,7 @@ def test_scene_semantic_boxes_relevant_to_returns_typed_relevant_level():
     assert relevant.level.regions[7][0].mentioned is False
 
 
-def test_scene_semantic_boxes_skips_one_point_level_for_keypoints():
+def test_scene_semantic_boxes_rejects_first_touched_one_point_level():
     first_level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
@@ -216,28 +217,21 @@ def test_scene_semantic_boxes_skips_one_point_level_for_keypoints():
         box.OBB2D(center=(2.0, 0.0), half_extents=(1.0, 1.0))
     ]
 
-    relevant = box.SceneSemanticBoxes([first_level, second_level]).relevant_to(
-        "walk to the table",
-        ground_truth_trajectory=[
-            (0.0, 0.5, 0.0),
-            (2.0, 1.5, 0.0),
-            (3.0, 1.5, 0.0),
-        ],
-        start_direction_vector=(0.0, 1.0),
-        max_distance=1.5,
-        category_extractor=lambda instruction: ({3}, set()),
-    )
-
-    assert relevant.level_idx == 1
-    assert relevant.ground_truth_trajectory == [(2.0, 0.0), (3.0, 0.0)]
-    assert relevant.trajectory_keypoints == [
-        (2.0, 0.0),
-        (3.0, 0.0),
-        (0.0, 0.0),
-        (0.0, 0.0),
-        (0.0, 0.0),
-    ]
-    assert [obb.center for obb in relevant.level.objects[3]] == [(2.0, 0.0)]
+    with pytest.raises(
+        InsufficientTrajectoryPointsError,
+        match="at least 2 selected-level points",
+    ):
+        box.SceneSemanticBoxes([first_level, second_level]).relevant_to(
+            "walk to the table",
+            ground_truth_trajectory=[
+                (0.0, 0.5, 0.0),
+                (2.0, 1.5, 0.0),
+                (3.0, 1.5, 0.0),
+            ],
+            start_direction_vector=(0.0, 1.0),
+            max_distance=1.5,
+            category_extractor=lambda instruction: ({3}, set()),
+        )
 
 
 def test_scene_semantic_boxes_from_scene_id_uses_level_wise_disk_cache(
@@ -502,7 +496,10 @@ def test_relevant_to_rejects_one_selected_level_point():
         range_y=[None, None],
     )
 
-    with pytest.raises(ValueError, match="at least 2 selected-level points"):
+    with pytest.raises(
+        InsufficientTrajectoryPointsError,
+        match="at least 2 selected-level points",
+    ):
         box.SceneSemanticBoxes([level]).relevant_to(
             "",
             ground_truth_trajectory=[(0.0, 0.0, 0.0)],
