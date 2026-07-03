@@ -918,8 +918,8 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - GT 为空：跳过？
 - 实验
     1. 去掉“拓扑地图 -> 认知地图的 attn”，仅 GT+VLN
-    2. GT 认知地图生成：Try 5（2.5m 半径+按路径切）
-    3. GT 认知地图生成：Try 5（1.5m 半径+按路径切）
+    2. ~~GT 认知地图生成：Try 5（2.5m 半径+按路径切）~~ -> on-the-fly
+    3. ~~GT 认知地图生成：Try 5（1.5m 半径+按路径切）~~ -> on-the-fly
     4. GT 认知地图生成：bbox, 2.5m 半径
 
 # 实验
@@ -932,5 +932,6 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - ~~Nav 1: Try 8 + LLM 5~~
 - [x] Try 9: 简易的认知地图 Decoder @ VIPL
 - [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
-- [ ] Nav 2: Try 9 + LLM 5 @ 超算
-- [ ] Try 10: DETR-style decoder @ VIPL
+- [ ] ~~Nav 2: Try 9 + LLM 5 @ 超算~~
+- [ ] ~~Try 10: DETR-style decoder @ VIPL~~
+- [ ] Try 5 repro (半径 1.5, on-the-fly)
