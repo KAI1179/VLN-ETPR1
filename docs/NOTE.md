@@ -194,8 +194,8 @@
     - 加入拓扑地图 -> 认知地图的 attn
 - Try 9 (`9caeb61`, @VIPL)
     - 简易的认知地图 Decoder
-i Try 10 (`0a31d47`, @VIPL)
-   - DETR-style Decoder
+- Try 10 (`0a31d47`, @VIPL)
+    - DETR-style Decoder
 
 ### 地图预测器 - 弃用
 
@@ -893,7 +893,7 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - Referring Expression Segmentation (RES) is a vision-language task: given an image and a natural-language phrase such as “the man in the red shirt” or “the dog under the table,” the model must output a pixel-level mask for the referred object.
     - A typical RES model has three parts: an image encoder, a text encoder, and a fusion/segmentation decoder that combines visual and linguistic features to produce a binary mask. Recent systems increasingly use transformer vision-language backbones and sometimes large multimodal language models. For example, LISA extends this idea to “reasoning segmentation,” where the query can be implicit and require world knowledge.
 
-## Q
+## 07/03
 
 - Nav cache failure 常见的失败原因
     - unknown region category: 'structure';
@@ -905,6 +905,22 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - **过度重复**
         - `data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/5q7pvUzZiYa/2675_0.txt`
         - `data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/ur6pFq6Qu1A/827_0.txt`
+- [x] 确认 try7 测试是否有旋转，开了的话重新测试 - 测试没有旋转
+- Try 5 变量
+    - 半径 2.5 -> 1.5
+    - path-mask -> bounding box
+    - `direction_vectors` -> `reference_path`?
+    - 如果第一个遇到的楼层路径点不足，使用其它楼层的 fallback?
+- 先保持模型结构，不要加 attn 和 decoder
+- 8 卡比 4 卡慢？
+- 实验：GT + LLM 训练 + Nav
+- 并行实验与模型结构改进
+- GT 为空：跳过？
+- 实验
+    1. 去掉“拓扑地图 -> 认知地图的 attn”，仅 GT+VLN
+    2. GT 认知地图生成：Try 5（2.5m 半径+按路径切）
+    3. GT 认知地图生成：Try 5（1.5m 半径+按路径切）
+    4. GT 认知地图生成：bbox, 2.5m 半径
 
 # 实验
 
