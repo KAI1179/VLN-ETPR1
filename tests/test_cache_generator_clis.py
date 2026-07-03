@@ -8,6 +8,7 @@ import pytest
 
 from prior import __main__ as prior_main
 from prior import bbox as box
+from prior import cognitive_map_generation
 from prior.etp_r1 import __main__ as etp_r1_main
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 
@@ -73,10 +74,8 @@ def test_vlnce_generator_parser_accepts_source_radius_and_namespace():
         ("bbox", 2.5, "bbox_r2p5"),
     ],
 )
-def test_map_cache_namespace_uses_source_and_radius_label(
-    map_source, radius_m, expected
-):
-    assert prior_main.map_cache_namespace(map_source, radius_m) == expected
+def test_map_cache_namespace_uses_source_and_radius_label(map_source, radius_m, expected):
+    assert cognitive_map_generation.map_cache_namespace(map_source, radius_m) == expected
 
 
 def test_vlnce_bbox_generator_passes_radius_and_namespace(monkeypatch, tmp_path):
@@ -180,7 +179,9 @@ def test_vlnce_legacy_generator_writes_legacy_raster_and_compat_boxes(
     FakeRelevantBoxes.saved_paths.clear()
     monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
     monkeypatch.setattr(
-        prior_main, "_legacy_cognitive_map", fake_legacy_cognitive_map
+        cognitive_map_generation,
+        "legacy_cognitive_map",
+        fake_legacy_cognitive_map,
     )
 
     generated, skipped = prior_main.generate_cognitive_maps(
@@ -208,6 +209,11 @@ def test_vlnce_legacy_generator_writes_legacy_raster_and_compat_boxes(
     ]
 
 
+def test_legacy_cognitive_map_lives_in_shared_generation_module():
+    assert not hasattr(prior_main, "_legacy_cognitive_map")
+    assert hasattr(cognitive_map_generation, "legacy_cognitive_map")
+
+
 def test_legacy_cognitive_map_copies_square_path_neighborhood():
     level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
@@ -228,7 +234,7 @@ def test_legacy_cognitive_map_copies_square_path_neighborhood():
     )
     scene_boxes = box.SceneSemanticBoxes([level])
 
-    cognitive_map = prior_main._legacy_cognitive_map(
+    cognitive_map = cognitive_map_generation.legacy_cognitive_map(
         scene_boxes,
         "walk to the table",
         [(0.25, 0.0, 0.25), (0.75, 0.0, 0.25)],
@@ -396,6 +402,7 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
             instruction,
             ground_truth_trajectory,
             start_direction_vector,
+            max_distance,
         ):
             received_trajectories.append(ground_truth_trajectory)
             if len(ground_truth_trajectory) < 2:
@@ -425,11 +432,33 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
     ]
     assert exc_info.value.code == 1
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "boxes" / "scene" / "good.npz"
+        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "good.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "raster" / "scene" / "good.npz"
+        tmp_path / "bbox_r1p5" / "raster" / "scene" / "good.npz"
     ]
     assert "WARNING" in caplog.text
     assert "bad" in caplog.text
     assert "generated=1 skipped=1" in capsys.readouterr().out
+
+
+def test_etp_r1_generator_parser_accepts_source_radius_namespace_and_samples():
+    args = etp_r1_main.parse_args(
+        [
+            "--map-source",
+            "legacy",
+            "--radius-m",
+            "2.5",
+            "--namespace",
+            "legacy_r2p5",
+            "--output-dir",
+            "data/cognitive_maps_etp_r1",
+            "42_0",
+        ]
+    )
+
+    assert args.map_source == "legacy"
+    assert args.radius_m == 2.5
+    assert args.namespace == "legacy_r2p5"
+    assert args.output_dir == Path("data/cognitive_maps_etp_r1")
+    assert args.sampled_instr_ids == ["42_0"]

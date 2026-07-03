@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
-import sys
+from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 from prior import DATA_DIR, VISUALIZATIONS_DIR
 from prior.bbox import SceneSemanticBoxes
+from prior.cognitive_map_generation import (
+    DEFAULT_RADIUS_M,
+    MapSource,
+    build_cognitive_map,
+    cache_paths,
+    cache_root,
+    map_cache_namespace,
+)
 from prior.trajectory import InsufficientTrajectoryPointsError
 
 from . import ANNOTATION_FILES, AnnotationEntry
@@ -16,11 +25,51 @@ OUTPUT_DIR = DATA_DIR / "cognitive_maps_etp_r1"
 LOGGER = logging.getLogger(__name__)
 
 
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate ETP-R1 cognitive-map caches."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Root output directory for cognitive-map cache namespaces.",
+    )
+    parser.add_argument(
+        "--map-source",
+        choices=("bbox", "legacy"),
+        default="bbox",
+        help="Cognitive-map construction method.",
+    )
+    parser.add_argument(
+        "--radius-m",
+        type=float,
+        default=DEFAULT_RADIUS_M,
+        help="Path-neighborhood radius in meters.",
+    )
+    parser.add_argument(
+        "--namespace",
+        default=None,
+        help=(
+            "Optional cache namespace under output-dir. Defaults to "
+            "<map-source>_r<radius>, such as legacy_r2p5."
+        ),
+    )
+    parser.add_argument("sampled_instr_ids", nargs="*")
+    return parser.parse_args(argv)
+
+
 def generate_cognitive_maps(
     annotation_file: str,
     sampled_instr_ids: Sequence[str],
+    output_dir: Path = OUTPUT_DIR,
+    map_source: MapSource = "bbox",
+    radius_m: float = DEFAULT_RADIUS_M,
+    namespace: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Generate cognitive maps for one ETP-R1 annotation file."""
+    cache_namespace = namespace or map_cache_namespace(map_source, radius_m)
+    cache_root(output_dir, cache_namespace).mkdir(parents=True, exist_ok=True)
     generated = 0
     skipped = 0
     sampled_ids = set(sampled_instr_ids)
@@ -31,8 +80,12 @@ def generate_cognitive_maps(
             continue
 
         scene_id = entry.scan
-        boxes_path = OUTPUT_DIR / "boxes" / scene_id / f"{instr_id}.npz"
-        raster_path = OUTPUT_DIR / "raster" / scene_id / f"{instr_id}.npz"
+        boxes_path, raster_path = cache_paths(
+            output_dir,
+            cache_namespace,
+            scene_id,
+            instr_id,
+        )
 
         if boxes_path.exists() and raster_path.exists() and instr_id not in sampled_ids:
             print(
@@ -44,12 +97,15 @@ def generate_cognitive_maps(
 
         ground_truth_trajectory = entry.positions()
         try:
-            relevant_boxes = SceneSemanticBoxes.from_scene_id(scene_id).relevant_to(
+            scene_boxes = SceneSemanticBoxes.from_scene_id(scene_id)
+            relevant_boxes, cognitive_map = build_cognitive_map(
+                scene_boxes,
                 entry.instruction,
                 ground_truth_trajectory,
                 entry.start_direction_vector,
+                map_source,
+                radius_m,
             )
-            cognitive_map = relevant_boxes.to_cognitive_map()
             boxes_path.parent.mkdir(parents=True, exist_ok=True)
             raster_path.parent.mkdir(parents=True, exist_ok=True)
             relevant_boxes.save(boxes_path)
@@ -84,15 +140,20 @@ def generate_cognitive_maps(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
-    sampled_instr_ids = list(sys.argv[1:] if argv is None else argv)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args(argv)
+    namespace = args.namespace or map_cache_namespace(args.map_source, args.radius_m)
+    cache_root(args.output_dir, namespace).mkdir(parents=True, exist_ok=True)
     generated = 0
     skipped = 0
 
     for annotation_file in ANNOTATION_FILES:
         file_generated, file_skipped = generate_cognitive_maps(
             annotation_file,
-            sampled_instr_ids,
+            args.sampled_instr_ids,
+            args.output_dir,
+            map_source=args.map_source,
+            radius_m=args.radius_m,
+            namespace=namespace,
         )
         generated += file_generated
         skipped += file_skipped

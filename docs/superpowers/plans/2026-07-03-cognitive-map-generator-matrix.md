@@ -14,6 +14,7 @@
 
 **Files:**
 - Modify: `tests/test_cache_generator_clis.py`
+- Add: `prior/cognitive_map_generation.py`
 - Modify: `prior/__main__.py`
 
 - [x] **Step 1: Write failing parser and namespace tests**
@@ -66,7 +67,7 @@ Expected: all generator tests pass.
 
 - [x] **Step 1: Write failing legacy mode tests**
 
-Add tests that `map_source="legacy"` writes a raster from `_legacy_cognitive_map` and still writes a compatibility boxes file.
+Add tests that `map_source="legacy"` writes a raster from the shared `legacy_cognitive_map` generator and still writes the paired boxes sidecar.
 
 - [x] **Step 2: Run the focused legacy test and confirm failure**
 
@@ -75,7 +76,7 @@ Expected: FAIL because legacy mode does not exist.
 
 - [x] **Step 3: Implement minimal legacy mode**
 
-Add `_legacy_cognitive_map` that builds a selected-level full semantic grid, copies square path neighborhoods by radius, scales unmentioned categories, stores trajectory keypoints and start direction, and returns `CognitiveGridMap`.
+Add `legacy_cognitive_map` that builds a selected-level full semantic grid, copies square path neighborhoods by radius, scales unmentioned categories, stores trajectory keypoints and start direction, and returns `CognitiveGridMap`.
 
 - [x] **Step 4: Run focused and quality checks**
 
