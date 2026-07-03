@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from magnum import Vector3
 
@@ -82,7 +82,7 @@ def _point_to_obb_distance(point: Point2D, box: OBB2D) -> float:
 
 
 def _is_position_in_level(
-    position: List[float], range_y: List[Optional[float]]
+    position: Sequence[float], range_y: List[Optional[float]]
 ) -> bool:
     y = position[1]
     if range_y[0] is not None and y < range_y[0]:

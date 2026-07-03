@@ -7,6 +7,7 @@ from typing import ClassVar, List
 import pytest
 
 from prior import __main__ as prior_main
+from prior import bbox as box
 from prior.etp_r1 import __main__ as etp_r1_main
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 
@@ -43,6 +44,211 @@ class FakeRelevantBoxes:
         return FakeCognitiveMap()
 
 
+def test_vlnce_generator_parser_accepts_source_radius_and_namespace():
+    args = prior_main.parse_args(
+        [
+            "--map-source",
+            "legacy",
+            "--radius-m",
+            "2.5",
+            "--namespace",
+            "legacy_r2p5",
+            "--output-dir",
+            "data/cognitive_maps",
+        ]
+    )
+
+    assert args.map_source == "legacy"
+    assert args.radius_m == 2.5
+    assert args.namespace == "legacy_r2p5"
+    assert args.output_dir == Path("data/cognitive_maps")
+
+
+@pytest.mark.parametrize(
+    ("map_source", "radius_m", "expected"),
+    [
+        ("legacy", 1.5, "legacy_r1p5"),
+        ("legacy", 2.5, "legacy_r2p5"),
+        ("bbox", 1.5, "bbox_r1p5"),
+        ("bbox", 2.5, "bbox_r2p5"),
+    ],
+)
+def test_map_cache_namespace_uses_source_and_radius_label(
+    map_source, radius_m, expected
+):
+    assert prior_main.map_cache_namespace(map_source, radius_m) == expected
+
+
+def test_vlnce_bbox_generator_passes_radius_and_namespace(monkeypatch, tmp_path):
+    entries = [
+        FakeVLNCEEntry(
+            2,
+            [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
+        ),
+    ]
+    captured = {}
+
+    class FakeSceneBoxes:
+        @staticmethod
+        def from_scene_id(scene_id):
+            captured["scene_id"] = scene_id
+            return FakeSceneBoxes()
+
+        def relevant_to(
+            self,
+            instruction,
+            ground_truth_trajectory,
+            start_direction_vector,
+            max_distance,
+        ):
+            captured["instruction"] = instruction
+            captured["ground_truth_trajectory"] = ground_truth_trajectory
+            captured["start_direction_vector"] = start_direction_vector
+            captured["max_distance"] = max_distance
+            return FakeRelevantBoxes()
+
+    FakeCognitiveMap.saved_paths.clear()
+    FakeRelevantBoxes.saved_paths.clear()
+    monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
+
+    generated, skipped = prior_main.generate_cognitive_maps(
+        entries,
+        tmp_path,
+        map_source="bbox",
+        radius_m=2.5,
+        namespace="bbox_r2p5",
+    )
+
+    assert (generated, skipped) == (1, 0)
+    assert captured == {
+        "scene_id": "scene",
+        "instruction": "Walk forward.",
+        "ground_truth_trajectory": [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
+        "start_direction_vector": (0.0, 1.0),
+        "max_distance": 2.5,
+    }
+    assert FakeRelevantBoxes.saved_paths == [
+        tmp_path / "bbox_r2p5" / "boxes" / "scene" / "R2R_train_2.npz"
+    ]
+    assert FakeCognitiveMap.saved_paths == [
+        tmp_path / "bbox_r2p5" / "raster" / "scene" / "R2R_train_2.npz"
+    ]
+
+
+def test_vlnce_legacy_generator_writes_legacy_raster_and_compat_boxes(
+    monkeypatch, tmp_path
+):
+    entries = [
+        FakeVLNCEEntry(
+            2,
+            [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
+        ),
+    ]
+    legacy_map = FakeCognitiveMap()
+    captured = {}
+
+    class FakeSceneBoxes:
+        @staticmethod
+        def from_scene_id(scene_id):
+            captured["scene_id"] = scene_id
+            return FakeSceneBoxes()
+
+        def relevant_to(
+            self,
+            instruction,
+            ground_truth_trajectory,
+            start_direction_vector,
+            max_distance,
+        ):
+            captured["max_distance"] = max_distance
+            return FakeRelevantBoxes()
+
+    def fake_legacy_cognitive_map(
+        scene_boxes,
+        instruction,
+        ground_truth_trajectory,
+        start_direction_vector,
+        radius_m,
+    ):
+        captured["legacy_instruction"] = instruction
+        captured["legacy_trajectory"] = ground_truth_trajectory
+        captured["legacy_start_direction_vector"] = start_direction_vector
+        captured["legacy_radius_m"] = radius_m
+        return legacy_map
+
+    FakeCognitiveMap.saved_paths.clear()
+    FakeRelevantBoxes.saved_paths.clear()
+    monkeypatch.setattr(prior_main, "SceneSemanticBoxes", FakeSceneBoxes)
+    monkeypatch.setattr(
+        prior_main, "_legacy_cognitive_map", fake_legacy_cognitive_map
+    )
+
+    generated, skipped = prior_main.generate_cognitive_maps(
+        entries,
+        tmp_path,
+        map_source="legacy",
+        radius_m=1.5,
+        namespace="legacy_r1p5",
+    )
+
+    assert (generated, skipped) == (1, 0)
+    assert captured == {
+        "scene_id": "scene",
+        "max_distance": 1.5,
+        "legacy_instruction": "Walk forward.",
+        "legacy_trajectory": [(1.0, 0.0, 2.0), (3.0, 0.0, 4.0)],
+        "legacy_start_direction_vector": (0.0, 1.0),
+        "legacy_radius_m": 1.5,
+    }
+    assert FakeRelevantBoxes.saved_paths == [
+        tmp_path / "legacy_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
+    ]
+    assert FakeCognitiveMap.saved_paths == [
+        tmp_path / "legacy_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
+    ]
+
+
+def test_legacy_cognitive_map_copies_square_path_neighborhood():
+    level = box.LevelSemanticBoxes(
+        objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
+        regions=[[] for _ in range(box.REGION_CATEGORIES)],
+        range_y=[None, None],
+    )
+    level.objects[3].append(
+        box.OBB2D(
+            center=(0.25, 0.25),
+            half_extents=(0.25, 0.25),
+        )
+    )
+    level.objects[1].append(
+        box.OBB2D(
+            center=(1.25, 0.25),
+            half_extents=(0.25, 0.25),
+        )
+    )
+    scene_boxes = box.SceneSemanticBoxes([level])
+
+    cognitive_map = prior_main._legacy_cognitive_map(
+        scene_boxes,
+        "walk to the table",
+        [(0.25, 0.0, 0.25), (0.75, 0.0, 0.25)],
+        (0.0, 1.0),
+        radius_m=0.5,
+    )
+
+    assert cognitive_map.grid[3, 0, 0] == 1.0
+    assert cognitive_map.grid[1, 2, 0] == pytest.approx(0.6)
+    assert cognitive_map.grid[3, 4, 0] == 0.0
+    assert cognitive_map.trajectory_keypoints == [
+        (0.25, 0.25),
+        (0.75, 0.25),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
+    assert cognitive_map.start_direction_vector == (0.0, 1.0)
+
+
 def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     monkeypatch, tmp_path, caplog, capsys
 ):
@@ -65,6 +271,7 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
             instruction,
             ground_truth_trajectory,
             start_direction_vector,
+            max_distance,
         ):
             received_trajectories.append(ground_truth_trajectory)
             if len(ground_truth_trajectory) < 2:
@@ -86,10 +293,10 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     ]
     assert (generated, skipped) == (1, 1)
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "bbox_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
     ]
     assert "WARNING" in caplog.text
     assert "R2R_train_1" in caplog.text
@@ -123,6 +330,7 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
             instruction,
             ground_truth_trajectory,
             start_direction_vector,
+            max_distance,
         ):
             if len(ground_truth_trajectory) < 2:
                 raise InsufficientTrajectoryPointsError(
@@ -142,16 +350,16 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
     monkeypatch.setattr(prior_main.VLNCEEpisodeEntry, "iter_from", iter_from)
     monkeypatch.setattr(prior_main, "OUTPUT_DIR", tmp_path)
 
-    prior_main.main()
+    prior_main.main([])
 
     output = capsys.readouterr().out
     assert "generated=1 skipped=1" in output
     assert "skipped_invalid_trajectory=1" in output
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "bbox_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
     ]
 
 
