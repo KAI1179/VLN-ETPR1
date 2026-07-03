@@ -182,7 +182,7 @@ predictor-only checkpoint:
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
   --use_imagined \
   --map_predictor_checkpoint data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.best.pt \
-  --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
+  --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 ```
 
 The helper writes checkpoints under:

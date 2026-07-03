@@ -175,10 +175,10 @@ bash pretrain_src/run_pt/run_mix_server.bash 2333
 PriorGT and imagined-map variants use the same helper with extra flags:
 
 ```bash
-bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_prior_gt --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
+bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_prior_gt --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
   --use_imagined \
-  --checkpoint pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt
+  --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 ```
 
 <!-- Start from pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt -->

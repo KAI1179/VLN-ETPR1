@@ -27,7 +27,7 @@ EXP_CONFIG="run_r2r/iter_train.yaml"
 BASE_NUM_ENVS=8
 MAP_NUM_ENVS=4
 
-BASE_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/baseline/ckpts/model_step_367500.pt"
+BASE_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt"
 BASE_DAGGER_CKPT="data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth"
 BASE_GRPO_CKPT="data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth"
 
