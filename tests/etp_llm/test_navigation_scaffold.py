@@ -189,7 +189,7 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
     assert captured == {
         "scene_id": scene_path,
         "cache_id": cache_id,
-        "cache_dir": raster_path.parent.parent,
+        "cache_dir": raster_path.parent.parent.parent,
         "random_rotation_augmentation": False,
     }
 

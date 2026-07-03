@@ -151,7 +151,7 @@ def llm_cached_cognitive_map_to_tensors(
     return cached_cognitive_map_to_tensors(
         scene_id,
         cache_id,
-        cache_dir=cache_path.parent.parent,
+        cache_dir=cache_path.parent.parent.parent,
         random_rotation_augmentation=random_rotation_augmentation,
     )
 
