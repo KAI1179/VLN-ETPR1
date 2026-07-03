@@ -143,6 +143,7 @@ def test_default_config_exposes_llm_navigation_cache_settings():
     config = get_config()
 
     assert config.MODEL.MAP_ENCODER.cache_namespace == "bbox_r1p5"
+    assert config.MODEL.MAP_ENCODER.fusion == "bidirectional"
     assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
     assert config.MODEL.MAP_ENCODER.llm_cache_model_key == "llama-3.1-8b-instruct"
 

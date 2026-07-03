@@ -21,7 +21,7 @@ from vlnce_baselines.common.ops import (
     gen_seq_masks,
     pad_tensors_wgrad,
 )
-from vlnce_baselines.models.etp_prior_gt.map_fusion import BidirectionalMapTokenFusion
+from vlnce_baselines.models.etp_prior_gt.map_fusion import build_map_token_fusion
 
 
 logger = logging.getLogger(__name__)
@@ -861,7 +861,8 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         self.lang_encoder = LanguageEncoder(config)
         self.img_embeddings = ImageEmbeddings(config)
         self.global_encoder = GlobalMapEncoder(config)
-        self.graph_map_attention = BidirectionalMapTokenFusion(
+        self.graph_map_attention = build_map_token_fusion(
+            getattr(config, "map_fusion", "bidirectional"),
             config.hidden_size,
             config.num_attention_heads,
             config.hidden_dropout_prob,

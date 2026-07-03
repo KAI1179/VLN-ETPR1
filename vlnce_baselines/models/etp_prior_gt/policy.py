@@ -9,6 +9,8 @@ The author's R1Policy.py and etp/ directory are not modified.
 """
 
 from copy import deepcopy
+from typing import Any
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,7 +39,7 @@ class PriorGTPolicy(ILPolicy):
     def __init__(
         self,
         observation_space: Space,
-        action_space: Space,
+        action_space: Any,
         model_config: Config,
         dropout_rate=0.1,
     ):
@@ -56,11 +58,34 @@ class PriorGTPolicy(ILPolicy):
         cls,
         config: Config,
         observation_space: Space,
-        action_space: Space,
+        action_space: Any,
         dropout_rate=0.1,
     ):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
+        config.freeze()
+
+        return cls(
+            observation_space=observation_space,
+            action_space=action_space,
+            model_config=config.MODEL,
+            dropout_rate=dropout_rate,
+        )
+
+
+@baseline_registry.register_policy
+class PriorGTTry5Policy(PriorGTPolicy):
+    @classmethod
+    def from_config(
+        cls,
+        config: Config,
+        observation_space: Space,
+        action_space: Any,
+        dropout_rate=0.1,
+    ):
+        config.defrost()
+        config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
+        config.MODEL.MAP_ENCODER.fusion = "try5"
         config.freeze()
 
         return cls(

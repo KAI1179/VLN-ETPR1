@@ -201,6 +201,7 @@ _C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE 
 _C.MODEL.MAP_ENCODER.trajectory_keypoint_loss_weight = 0.001      # Huber weight for imagined trajectory-keypoint target
 _C.MODEL.MAP_ENCODER.predictor_checkpoint = ""               # optional predictor-only checkpoint for ImaginedPolicy
 _C.MODEL.MAP_ENCODER.cache_namespace = "bbox_r1p5"           # PriorGT cache namespace under data/cognitive_maps
+_C.MODEL.MAP_ENCODER.fusion = "bidirectional"                # bidirectional or try5 one-way graph-map fusion
 _C.MODEL.MAP_ENCODER.llm_cache_dir = ""                      # optional LLM-Navigation cache root override
 _C.MODEL.MAP_ENCODER.llm_cache_model_key = "llama-3.1-8b-instruct"
 

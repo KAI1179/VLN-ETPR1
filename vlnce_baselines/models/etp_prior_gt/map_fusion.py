@@ -4,6 +4,43 @@ import torch
 import torch.nn as nn
 
 
+class GraphMapCrossAttention(nn.Module):
+    """Try5 one-way map-token fusion: graph nodes attend to fixed map tokens."""
+
+    def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            hidden_size, num_heads, dropout=dropout, batch_first=True
+        )
+        self.residual_projection = nn.Linear(hidden_size, hidden_size)
+        self._zero_residual_projection()
+
+    def _zero_residual_projection(self):
+        nn.init.zeros_(self.residual_projection.weight)
+        nn.init.zeros_(self.residual_projection.bias)
+
+    def _map_key_padding_mask(self, map_token_masks):
+        if map_token_masks is None:
+            return None
+        if map_token_masks.any(dim=1).logical_not().any():
+            map_token_masks = map_token_masks.clone()
+            map_token_masks[map_token_masks.any(dim=1).logical_not(), 0] = True
+        return map_token_masks.logical_not()
+
+    def forward(self, gmap_embeds, gmap_masks, map_tokens, map_token_masks):
+        if map_tokens is None:
+            return gmap_embeds, None
+
+        map_context, _ = self.attention(
+            gmap_embeds,
+            map_tokens,
+            map_tokens,
+            key_padding_mask=self._map_key_padding_mask(map_token_masks),
+            need_weights=False,
+        )
+        return gmap_embeds + self.residual_projection(map_context), None
+
+
 class BidirectionalMapTokenFusion(nn.Module):
     def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
         super().__init__()
@@ -75,3 +112,16 @@ class BidirectionalMapTokenFusion(nn.Module):
             graph_context
         )
         return updated_gmap_embeds, updated_map_tokens
+
+
+def build_map_token_fusion(
+    fusion: str,
+    hidden_size: int,
+    num_heads: int,
+    dropout: float = 0.1,
+) -> nn.Module:
+    if fusion == "bidirectional":
+        return BidirectionalMapTokenFusion(hidden_size, num_heads, dropout)
+    if fusion == "try5":
+        return GraphMapCrossAttention(hidden_size, num_heads, dropout)
+    raise ValueError(f"Unknown map-token fusion mode: {fusion}")

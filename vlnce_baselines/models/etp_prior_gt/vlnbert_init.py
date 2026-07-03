@@ -11,6 +11,8 @@ def get_tokenizer(args):
     return tokenizer
 
 def get_vlnbert_models(config=None, dropout_rate=0.1):
+    if config is None:
+        raise ValueError("config is required")
 
     from transformers import PretrainedConfig
     from vlnce_baselines.models.etp_prior_gt.vilmodel_cmt import GlocalTextPathNavCMT
@@ -61,6 +63,12 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
 
     vis_config.max_txt_task_embeddings = 4
     vis_config.max_gmap_task_embeddings = 3
+    map_cfg = getattr(config, "MAP_ENCODER", None)
+    vis_config.map_fusion = (
+        getattr(map_cfg, "fusion", "bidirectional")
+        if map_cfg is not None
+        else "bidirectional"
+    )
 
     visual_model = model_class.from_pretrained(
         pretrained_model_name_or_path=None,
