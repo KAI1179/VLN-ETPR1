@@ -179,7 +179,7 @@
     - 新增 [`start_direction_vector`](https://github.com/PRO-2684/ETP-R1/commit/e8a4d1210b7b815104dfd66dd25c2f12183c296c)
     - VLNCE variant: 预训练只使用 VLNCE 标注数据，未使用作者的增广数据
         - (new-vlnce-only, try-5-vlnce)
-    - 实现有问题：没有单词向量相似度匹配
+    - 实现有问题：没有单词向量相似度匹配，于 [`8189627`](https://github.com/PRO-2684/ETP-R1/commit/81896270673eb6ccd67ea375c97375d9878b7863) 修复
     - **Lesson: 多参考已有工作**
 - Try 6 (try6, [`705dd7b`](https://github.com/PRO-2684/ETP-R1/commit/705dd7bd5977238d4b7da02c35a6235189932ec5))
     - 基于 bounding box 的 gt 认知地图
