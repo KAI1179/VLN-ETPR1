@@ -923,6 +923,30 @@ For VLN this is stronger than instruction-only because partial observation ancho
     3. ~~GT 认知地图生成：Try 5（1.5m 半径+按路径切）~~ -> on-the-fly
     4. GT 认知地图生成：bbox, 2.5m 半径
 
+## Q - 改进 LLM 预测
+
+> https://chatgpt.com/g/g-6a3dee67d7d88191b59bb4ccb82063b7-paper-chat/c/6a48f3a4-1f58-83ec-bc7f-32748234dfe7
+
+- 部分数据期望输出过长导致截断，没有终止符，可能会让模型倾向于不输出终止符，从而导致重复
+- 查看期望输出中是否有重复
+- 施加重复惩罚
+- 对比实验
+    - rank:           8, 16, 32
+    - target modules: q/v vs. q/k/v/o
+    - format:         free text vs. navigation DSL
+    - decoding:       unconstrained vs. grammar-constrained
+    - termination:    normal EOS vs. EOS + record-repeat stop
+- Reasoning/CoT?
+- 参考文献
+    - [Dense Coordinate-List Fine-Tuning Induces a Controllable Interference Surface in Vision-Language Models](https://arxiv.org/html/2606.14507v1): 微调 LLM 输出结构化信息，缓解输出尾部重复
+    - [NaviLLM: Towards Learning a Generalist Model for Embodied Navigation](https://arxiv.org/html/2312.02010v3): VLN 任务中微调 LLM 输出结构化信息
+    - [Uni-NaVid: A Video-based Vision-Language-Action Model for Unifying Embodied Navigation Tasks](https://arxiv.org/html/2412.06224v2): 有限长度的输出可能更容易学习 (3–6 actions / waypoints)
+    - [NavGPT](https://ar5iv.labs.arxiv.org/html/2305.16986) / [NavGPT-2](https://arxiv.org/abs/2407.12366): Reasoning
+    - [UIE: Unified Structure Generation for Universal Information Extraction](https://arxiv.org/abs/2203.12277): 统一的结构化输出框架
+    - [GoLLIE: Annotation Guidelines improve Zero-Shot Information-Extraction](https://arxiv.org/abs/2310.03668): Prompt 中包含清楚的定义/规则很重要（角度、坐标、STOP...）
+    - [PICARD: Parsing Incrementally for Constrained Auto-Regressive Decoding from Language Models](https://arxiv.org/abs/2109.05093): 渐进式解析输出，拒绝让输出无效的 token (SQL)
+    - [Grammar-Constrained Decoding for Structured NLP Tasks without Finetuning](https://arxiv.org/abs/2305.13971): 约束输出的格式，格式可根据输入的不同动态调整（输入依赖型语法）
+
 # 实验
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
