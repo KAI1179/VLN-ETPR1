@@ -471,19 +471,19 @@ def test_decode_generated_completion_strips_prompt_tokens():
 
 
 def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
-    args = argparse.Namespace(
-        model_name_or_path="unused",
-        output_dir=str(tmp_path),
-        dataset="R2R",
-        max_input_length=32,
-        max_new_tokens=64,
-        batch_size=2,
-        epochs=1,
-        learning_rate=1e-4,
-        limit=None,
-        device="cpu",
-        quiet=True,
-        finetune_method="full",
+    args = train_llm_boxes.parse_args(
+        [
+            "train",
+            "--model-name-or-path",
+            "unused",
+            "--output-dir",
+            str(tmp_path),
+            "--finetune-method",
+            "full",
+            "--device",
+            "cpu",
+            "--quiet",
+        ]
     )
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
@@ -825,19 +825,21 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         return []
 
     monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
-    args = argparse.Namespace(
-        model_name_or_path="unused",
-        output_dir=str(tmp_path),
-        dataset="R2R",
-        max_input_length=32,
-        max_new_tokens=64,
-        batch_size=2,
-        epochs=1,
-        learning_rate=1e-4,
-        limit=None,
-        device="cpu",
-        quiet=True,
-        finetune_method="lora",
+    args = train_llm_boxes.parse_args(
+        [
+            "train",
+            "--model-name-or-path",
+            "unused",
+            "--output-dir",
+            str(tmp_path),
+            "--batch-size",
+            "2",
+            "--epochs",
+            "1",
+            "--device",
+            "cpu",
+            "--quiet",
+        ]
     )
 
     with pytest.raises(ValueError, match="No LLM-Boxes training examples"):

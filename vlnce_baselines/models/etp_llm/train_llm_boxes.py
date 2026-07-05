@@ -21,15 +21,16 @@ from typing import (
     TypedDict,
 )
 
+import torch
+from tap import Tap
+from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
+
 import prior.bbox as bbox
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
-from tap import Tap
 from prior.bbox import RelevantSemanticBoxes
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 from prior.vlnce import VLNCEEpisodeEntry
-from torch.utils.data import Dataset
-from tqdm.auto import tqdm
-
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DEFAULT_COGNITIVE_MAP_NAMESPACE,
     cognitive_map_boxes_cache_path,
@@ -270,7 +271,7 @@ def collate_llm_boxes_prompt_batch(
     return encoded
 
 
-def train_model(args: Any) -> Dict[str, float]:
+def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Fine-tune a causal language model on LLM-Boxes examples."""
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
@@ -282,15 +283,10 @@ def train_model(args: Any) -> Dict[str, float]:
         limit=args.limit,
         quiet=quiet,
         skip_invalid_trajectory=True,
-        cognitive_map_namespace=getattr(
-            args, "cognitive_map_namespace", DEFAULT_COGNITIVE_MAP_NAMESPACE
-        ),
+        cognitive_map_namespace=args.cognitive_map_namespace,
     )
     if not examples:
         raise ValueError("No LLM-Boxes training examples were loaded")
-
-    import torch
-    from torch.utils.data import DataLoader
 
     system_prompt = load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)
@@ -409,8 +405,6 @@ def evaluate_model(
     args: Any,
 ) -> Dict[str, float]:
     """Generate, validate, artifact, and score LLM-Boxes predictions."""
-    import torch
-
     if hasattr(model, "to") and not _model_uses_device_map(model):
         model.to(args.device)
     if hasattr(model, "eval"):
@@ -592,10 +586,10 @@ class LLMBoxesArgs(Tap):
     max_grad_norm: float = 1.0
     """Clip trainable parameter gradients to this norm; use 0 to disable."""
     limit: Optional[int] = None
-    device: Optional[str] = None
-    device_map: Literal[
-        "auto", "balanced", "balanced_low_0", "sequential", "none"
-    ] = "auto"
+    device: str = ""
+    device_map: Literal["auto", "balanced", "balanced_low_0", "sequential", "none"] = (
+        "auto"
+    )
     """Optional Transformers/Accelerate model-parallel device map."""
     cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE
     """Cached boxes namespace under the cognitive-map cache root."""
@@ -608,8 +602,8 @@ class LLMBoxesArgs(Tap):
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
     args = LLMBoxesArgs(underscores_to_dashes=True).parse_args(argv)
-    if args.device is None:
-        args.device = _default_device()
+    if not args.device:
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
     return args
 
 
@@ -628,9 +622,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
         limit=args.limit,
         quiet=args.quiet,
         skip_invalid_trajectory=True,
-        cognitive_map_namespace=getattr(
-            args, "cognitive_map_namespace", DEFAULT_COGNITIVE_MAP_NAMESPACE
-        ),
+        cognitive_map_namespace=args.cognitive_map_namespace,
     )
     metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -1052,14 +1044,6 @@ def _percentile(values: Sequence[int], quantile: float) -> float:
         return float((sorted_values[middle - 1] + sorted_values[middle]) / 2.0)
     index = math.ceil(quantile * len(sorted_values)) - 1
     return float(sorted_values[max(0, min(index, len(sorted_values) - 1))])
-
-
-def _default_device() -> str:
-    try:
-        import torch
-    except Exception:
-        return "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 if __name__ == "__main__":
