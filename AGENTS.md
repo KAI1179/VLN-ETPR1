@@ -18,15 +18,10 @@ Single-context repo. Read `CONTEXT.md` and relevant ADRs if they exist. See `doc
 
 Sub-agents are allowed explicitly for the main agent.
 
-## Caching
-
-The following APIs for `prior` are already cached, so do not cache again:
-
-- `SceneSemanticBoxes.from_scene_id`
-- `ConnectivityEntry.map_for`
-
 ## Coding guidelines
 
 - You have `ty` and `ruff` available in env. Utilize them to catch potential bugs and improve code quality.
 - Commit when interim results are achieved.
+- Prefer `tap.Tap` instead of bare `argparse`, which would provide decent typing. You can see example at `prior/bbox/__main__.py`.
 - Use Chinese in `docs/NOTE.md`, and English in all other places.
+- Some APIs for `prior` are already cached, so do not cache again. Examples include `SceneSemanticBoxes.from_scene_id` and `ConnectivityEntry.map_for`.
