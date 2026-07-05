@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import warnings
@@ -24,11 +23,17 @@ from typing import (
 
 import prior.bbox as bbox
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
-from prior.bbox import SceneSemanticBoxes
+from tap import Tap
+from prior.bbox import RelevantSemanticBoxes
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 from prior.vlnce import VLNCEEpisodeEntry
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
+
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    DEFAULT_COGNITIVE_MAP_NAMESPACE,
+    cognitive_map_boxes_cache_path,
+)
 
 from .boxes_metrics import evaluate_llm_boxes_prediction
 from .boxes_schema import (
@@ -96,8 +101,9 @@ def load_llm_boxes_examples(
     limit: Optional[int] = None,
     quiet: bool = False,
     skip_invalid_trajectory: bool = False,
+    cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> List[LLMBoxesExample]:
-    """Load VLN-CE episodes and attach target relevant semantic boxes."""
+    """Load VLN-CE episodes and attach cached target relevant semantic boxes."""
     if limit == 0:
         return []
 
@@ -110,13 +116,13 @@ def load_llm_boxes_examples(
         total=limit,
     )
     for episode in episodes:
-        scene_boxes = SceneSemanticBoxes.from_scene_id(episode.scene_id)
-
         try:
-            target_relevant = scene_boxes.relevant_to(
-                episode.instruction,
-                episode.ground_truth_trajectory,
-                episode.start_direction_vector,
+            target_relevant = RelevantSemanticBoxes.load(
+                cognitive_map_boxes_cache_path(
+                    episode.scene_id,
+                    episode.unique_id,
+                    namespace=cognitive_map_namespace,
+                )
             )
         except InsufficientTrajectoryPointsError as error:
             if not skip_invalid_trajectory:
@@ -264,7 +270,7 @@ def collate_llm_boxes_prompt_batch(
     return encoded
 
 
-def train_model(args: argparse.Namespace) -> Dict[str, float]:
+def train_model(args: Any) -> Dict[str, float]:
     """Fine-tune a causal language model on LLM-Boxes examples."""
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
@@ -276,6 +282,9 @@ def train_model(args: argparse.Namespace) -> Dict[str, float]:
         limit=args.limit,
         quiet=quiet,
         skip_invalid_trajectory=True,
+        cognitive_map_namespace=getattr(
+            args, "cognitive_map_namespace", DEFAULT_COGNITIVE_MAP_NAMESPACE
+        ),
     )
     if not examples:
         raise ValueError("No LLM-Boxes training examples were loaded")
@@ -397,7 +406,7 @@ def evaluate_model(
     model: Any,
     tokenizer: Any,
     dataset: Iterable[LLMBoxesItem],
-    args: argparse.Namespace,
+    args: Any,
 ) -> Dict[str, float]:
     """Generate, validate, artifact, and score LLM-Boxes predictions."""
     import torch
@@ -567,12 +576,41 @@ def _load_causal_lm_model_and_tokenizer(
     return model, tokenizer
 
 
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="mode", required=True)
-    _add_common_args(subparsers.add_parser("train", help="Fine-tune LLM-Boxes"))
-    _add_common_args(subparsers.add_parser("eval", help="Evaluate LLM-Boxes"))
-    return parser.parse_args(argv)
+class LLMBoxesArgs(Tap):
+    mode: Literal["train", "eval"]
+    """Run mode."""
+    model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
+    """Pretrained or checkpoint path for the causal language model."""
+    output_dir: str = "./data/logs/llm/"
+    dataset: Literal["R2R", "RxR"] = "R2R"
+    max_input_length: int = 1024
+    max_new_tokens: int = 1024
+    finetune_method: Literal["lora", "full"] = "lora"
+    batch_size: int = 1
+    epochs: int = 10
+    learning_rate: float = 1e-4
+    max_grad_norm: float = 1.0
+    """Clip trainable parameter gradients to this norm; use 0 to disable."""
+    limit: Optional[int] = None
+    device: Optional[str] = None
+    device_map: Literal[
+        "auto", "balanced", "balanced_low_0", "sequential", "none"
+    ] = "auto"
+    """Optional Transformers/Accelerate model-parallel device map."""
+    cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE
+    """Cached boxes namespace under the cognitive-map cache root."""
+    quiet: bool = False
+    """Disable progress bars."""
+
+    def configure(self) -> None:
+        self.add_argument("mode")
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
+    args = LLMBoxesArgs(underscores_to_dashes=True).parse_args(argv)
+    if args.device is None:
+        args.device = _default_device()
+    return args
 
 
 def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
@@ -590,6 +628,9 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
         limit=args.limit,
         quiet=args.quiet,
         skip_invalid_trajectory=True,
+        cognitive_map_namespace=getattr(
+            args, "cognitive_map_namespace", DEFAULT_COGNITIVE_MAP_NAMESPACE
+        ),
     )
     metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -598,44 +639,6 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
         encoding="utf-8",
     )
     return metrics
-
-
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--model-name-or-path",
-        default=DEFAULT_MODEL_NAME_OR_PATH,
-        help="Pretrained or checkpoint path for the causal language model.",
-    )
-    parser.add_argument("--output-dir", default=Path("./data/logs/llm/"))
-    parser.add_argument("--dataset", default="R2R", choices=["R2R", "RxR"])
-    parser.add_argument("--max-input-length", type=int, default=1024)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument(
-        "--finetune-method",
-        default="lora",
-        choices=["lora", "full"],
-    )
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument(
-        "--max-grad-norm",
-        type=float,
-        default=1.0,
-        help="Clip trainable parameter gradients to this norm; use 0 to disable.",
-    )
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--device", default=_default_device())
-    parser.add_argument(
-        "--device-map",
-        default="auto",
-        choices=["auto", "balanced", "balanced_low_0", "sequential", "none"],
-        help=(
-            "Optional Transformers/Accelerate model-parallel device map. "
-            "Use none for ordinary single-device loading."
-        ),
-    )
-    parser.add_argument("--quiet", action="store_true", help="Disable progress bars.")
 
 
 def load_system_prompt() -> str:
@@ -753,7 +756,7 @@ def decode_generated_completion(
     ).strip()
 
 
-def _apply_lora(model: Any, args: argparse.Namespace) -> Any:
+def _apply_lora(model: Any, args: Any) -> Any:
     if args.finetune_method != "lora":
         raise ValueError(f"Unsupported finetune method: {args.finetune_method}")
     from peft import LoraConfig, get_peft_model

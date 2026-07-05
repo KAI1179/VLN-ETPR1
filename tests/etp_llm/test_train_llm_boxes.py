@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -78,31 +79,28 @@ class _EpisodeSource:
         yield _Episode()
 
 
-class _SceneBoxes:
-    calls = []
-
-    @staticmethod
-    def from_scene_id(scene_id):
-        _SceneBoxes.calls.append(scene_id)
-        assert scene_id == "scene-a"
-        return _SceneBoxes()
-
-    def relevant_to(self, instruction, ground_truth_trajectory, start_direction_vector):
-        assert instruction == "Go to the chair."
-        assert ground_truth_trajectory == [(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)]
-        assert start_direction_vector == (0.0, 1.0)
-        return _relevant_with_chair(instruction)
-
-
 def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     _EpisodeSource.calls = []
-    _SceneBoxes.calls = []
+    cache_calls = []
+
+    def fake_cache_path(scene_id, cache_id, namespace):
+        cache_calls.append((scene_id, cache_id, namespace))
+        return Path(f"/cache/{namespace}/{scene_id}/{cache_id}.npz")
+
+    def fake_load(path):
+        assert path == Path("/cache/bbox_r1p5/scene-a/R2R_train_42.npz")
+        return _relevant_with_chair()
+
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(
+        train_llm_boxes, "cognitive_map_boxes_cache_path", fake_cache_path
+    )
+    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", fake_load)
 
     examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert _EpisodeSource.calls == [("R2R", ("train",))]
+    assert cache_calls == [("scene-a", "R2R_train_42", "bbox_r1p5")]
     assert len(examples) == 1
     example = examples[0]
     assert example.example_id == "R2R_train_42"
@@ -159,32 +157,29 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
 
 def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
     _EpisodeSource.calls = []
-    _SceneBoxes.calls = []
+    cache_calls = []
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "cognitive_map_boxes_cache_path",
+        lambda *args, **kwargs: cache_calls.append((args, kwargs)),
+    )
 
     examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=0)
 
     assert examples == []
-    assert _SceneBoxes.calls == []
+    assert cache_calls == []
 
 
 def test_load_llm_boxes_examples_warns_and_skips_invalid_generation_entry(
     monkeypatch,
     capsys,
 ):
-    class RejectingSceneBoxes:
-        @staticmethod
-        def from_scene_id(scene_id):
-            return RejectingSceneBoxes()
-
-        def relevant_to(self, instruction, trajectory, start_direction):
-            raise InsufficientTrajectoryPointsError("too short")
+    def rejecting_load(path):
+        raise InsufficientTrajectoryPointsError("too short")
 
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(
-        train_llm_boxes, "SceneSemanticBoxes", RejectingSceneBoxes
-    )
+    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", rejecting_load)
 
     with pytest.warns(RuntimeWarning, match="R2R_train_42"):
         examples = train_llm_boxes.load_llm_boxes_examples(
@@ -206,9 +201,21 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
             yield _EpisodeSameSceneA()
             yield _EpisodeSameSceneB()
 
-    _SceneBoxes.calls = []
+    cache_calls = []
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", TwoEpisodeSource)
-    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "cognitive_map_boxes_cache_path",
+        lambda scene_id, cache_id, namespace: cache_calls.append(
+            (scene_id, cache_id, namespace)
+        )
+        or Path(f"/cache/{cache_id}.npz"),
+    )
+    monkeypatch.setattr(
+        train_llm_boxes.RelevantSemanticBoxes,
+        "load",
+        lambda path: _relevant_with_chair(),
+    )
 
     examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"])
 
@@ -216,7 +223,10 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
         "R2R_train_43",
         "R2R_train_44",
     ]
-    assert _SceneBoxes.calls == ["scene-a", "scene-a"]
+    assert cache_calls == [
+        ("scene-a", "R2R_train_43", "bbox_r1p5"),
+        ("scene-a", "R2R_train_44", "bbox_r1p5"),
+    ]
 
 
 def test_load_llm_boxes_examples_wraps_episode_iterator_with_progress(monkeypatch):
@@ -226,9 +236,12 @@ def test_load_llm_boxes_examples_wraps_episode_iterator_with_progress(monkeypatc
         progress_calls.append(kwargs)
         return iterable
 
-    _SceneBoxes.calls = []
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(
+        train_llm_boxes.RelevantSemanticBoxes,
+        "load",
+        lambda path: _relevant_with_chair(),
+    )
     monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
 
     train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
@@ -250,9 +263,12 @@ def test_load_llm_boxes_examples_disables_progress_when_quiet(monkeypatch):
         progress_calls.append(kwargs)
         return iterable
 
-    _SceneBoxes.calls = []
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(
+        train_llm_boxes.RelevantSemanticBoxes,
+        "load",
+        lambda path: _relevant_with_chair(),
+    )
     monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
 
     train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1, quiet=True)
@@ -904,9 +920,18 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         limit=None,
         quiet=False,
         skip_invalid_trajectory=False,
+        cognitive_map_namespace="bbox_r1p5",
     ):
         calls.append(
-            ("load", dataset, list(splits), limit, quiet, skip_invalid_trajectory)
+            (
+                "load",
+                dataset,
+                list(splits),
+                limit,
+                quiet,
+                skip_invalid_trajectory,
+                cognitive_map_namespace,
+            )
         )
         return ["example"]
 
@@ -934,7 +959,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
     assert metrics == {"examples": 1.0}
     assert calls == [
         ("load_model", LLAMA_3_1_8B_INSTRUCT_MODEL, "auto"),
-        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True),
+        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True, "bbox_r1p5"),
         ("eval", str(tmp_path), ["example"]),
     ]
     assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
@@ -970,6 +995,8 @@ def test_cli_parser_supports_train_and_eval_modes():
             "cpu",
             "--device-map",
             "auto",
+            "--cognitive-map-namespace",
+            "legacy_r1p5",
             "--quiet",
         ]
     )
@@ -992,6 +1019,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.limit == 5
     assert train_args.device == "cpu"
     assert train_args.device_map == "auto"
+    assert train_args.cognitive_map_namespace == "legacy_r1p5"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
@@ -999,6 +1027,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.max_new_tokens == 1024
     assert eval_args.max_grad_norm == 1.0
     assert eval_args.device_map == "none"
+    assert eval_args.cognitive_map_namespace == "bbox_r1p5"
     assert eval_args.quiet is False
 
 
