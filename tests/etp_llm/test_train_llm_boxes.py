@@ -8,7 +8,6 @@ import torch
 
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 import prior.bbox as bbox
-from prior.trajectory import InsufficientTrajectoryPointsError
 from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
     RegionBoxSpec,
@@ -171,27 +170,50 @@ def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
     assert cache_calls == []
 
 
-def test_load_llm_boxes_examples_warns_and_skips_invalid_generation_entry(
+def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
     monkeypatch,
     capsys,
 ):
-    def rejecting_load(path):
-        raise InsufficientTrajectoryPointsError("too short")
+    missing_path = Path("/cache/bbox_r2p5/boxes/scene-a/R2R_train_42.npz")
+
+    def missing_load(path):
+        raise FileNotFoundError(2, "No such file or directory", path)
 
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", rejecting_load)
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "cognitive_map_boxes_cache_path",
+        lambda scene_id, cache_id, namespace: missing_path,
+    )
+    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
 
-    with pytest.warns(RuntimeWarning, match="R2R_train_42"):
+    with pytest.warns(RuntimeWarning, match="missing cached boxes"):
         examples = train_llm_boxes.load_llm_boxes_examples(
             "R2R",
             ["train"],
-            skip_invalid_trajectory=True,
+            skip_missing_cache=True,
+            cognitive_map_namespace="bbox_r2p5",
         )
 
     assert examples == []
     output = capsys.readouterr().out
-    assert "skipped_invalid_trajectory=1" in output
-    assert "R2R_train_42: too short" in output
+    assert "skipped_missing_cache=1" in output
+    assert f"R2R_train_42: {missing_path}" in output
+
+
+def test_load_llm_boxes_examples_raises_missing_cached_boxes_by_default(monkeypatch):
+    def missing_load(path):
+        raise FileNotFoundError(2, "No such file or directory", path)
+
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
+
+    with pytest.raises(FileNotFoundError):
+        train_llm_boxes.load_llm_boxes_examples(
+            "R2R",
+            ["train"],
+            cognitive_map_namespace="bbox_r2p5",
+        )
 
 
 def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
@@ -921,7 +943,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         splits,
         limit=None,
         quiet=False,
-        skip_invalid_trajectory=False,
+        skip_missing_cache=False,
         cognitive_map_namespace="bbox_r1p5",
     ):
         calls.append(
@@ -931,7 +953,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
                 list(splits),
                 limit,
                 quiet,
-                skip_invalid_trajectory,
+                skip_missing_cache,
                 cognitive_map_namespace,
             )
         )

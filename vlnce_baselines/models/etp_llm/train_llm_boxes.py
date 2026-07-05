@@ -29,7 +29,7 @@ from tqdm.auto import tqdm
 import prior.bbox as bbox
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 from prior.bbox import RelevantSemanticBoxes
-from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
+from prior.trajectory import WorldTrajectory3D
 from prior.vlnce import VLNCEEpisodeEntry
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DEFAULT_COGNITIVE_MAP_NAMESPACE,
@@ -101,7 +101,7 @@ def load_llm_boxes_examples(
     splits: Iterable[str],
     limit: Optional[int] = None,
     quiet: bool = False,
-    skip_invalid_trajectory: bool = False,
+    skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> List[LLMBoxesExample]:
     """Load VLN-CE episodes and attach cached target relevant semantic boxes."""
@@ -109,7 +109,7 @@ def load_llm_boxes_examples(
         return []
 
     examples: List[LLMBoxesExample] = []
-    skipped_invalid: List[Tuple[str, str]] = []
+    skipped_missing_cache: List[Tuple[str, str]] = []
     episodes = _progress(
         VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
         desc="load LLM-Boxes examples",
@@ -125,15 +125,15 @@ def load_llm_boxes_examples(
                     namespace=cognitive_map_namespace,
                 )
             )
-        except InsufficientTrajectoryPointsError as error:
-            if not skip_invalid_trajectory:
+        except FileNotFoundError as error:
+            if not skip_missing_cache:
                 raise
             warnings.warn(
-                f"skipping {episode.unique_id}: {error}",
+                f"skipping {episode.unique_id}: missing cached boxes: {error.filename}",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            skipped_invalid.append((episode.unique_id, str(error)))
+            skipped_missing_cache.append((episode.unique_id, str(error.filename)))
             continue
         examples.append(
             LLMBoxesExample(
@@ -151,10 +151,10 @@ def load_llm_boxes_examples(
         )
         if limit is not None and len(examples) >= limit:
             break
-    if skipped_invalid:
-        print(f"skipped_invalid_trajectory={len(skipped_invalid)}")
-        for example_id, reason in skipped_invalid:
-            print(f"  {example_id}: {reason}")
+    if skipped_missing_cache:
+        print(f"skipped_missing_cache={len(skipped_missing_cache)}")
+        for example_id, path in skipped_missing_cache:
+            print(f"  {example_id}: {path}")
     return examples
 
 
@@ -282,7 +282,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         TRAIN_SPLITS,
         limit=args.limit,
         quiet=quiet,
-        skip_invalid_trajectory=True,
+        skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     if not examples:
@@ -600,10 +600,14 @@ class LLMBoxesArgs(Tap):
         self.add_argument("mode")
 
 
+def _default_device() -> str:
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
     args = LLMBoxesArgs(underscores_to_dashes=True).parse_args(argv)
     if not args.device:
-        args.device = "cuda" if torch.cuda.is_available() else "cpu"
+        args.device = _default_device()
     return args
 
 
@@ -621,7 +625,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
         EVAL_SPLITS,
         limit=args.limit,
         quiet=args.quiet,
-        skip_invalid_trajectory=True,
+        skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
