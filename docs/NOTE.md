@@ -947,6 +947,9 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - [GoLLIE: Annotation Guidelines improve Zero-Shot Information-Extraction](https://arxiv.org/abs/2310.03668): Prompt 中包含清楚的定义/规则很重要（角度、坐标、STOP...）
     - [PICARD: Parsing Incrementally for Constrained Auto-Regressive Decoding from Language Models](https://arxiv.org/abs/2109.05093): 渐进式解析输出，拒绝让输出无效的 token (SQL)
     - [Grammar-Constrained Decoding for Structured NLP Tasks without Finetuning](https://arxiv.org/abs/2305.13971): 约束输出的格式，格式可根据输入的不同动态调整（输入依赖型语法）
+- 想法：让预测结果与 try5 类型的认知地图相匹配
+    - 预测 bbox 后根据路径点切出来（仅保留路径点附近格子）
+    - 问题：要不要在关键路径点之间采样模拟连续轨迹
 
 # 实验
 
