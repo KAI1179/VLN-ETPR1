@@ -292,6 +292,7 @@ Main reading:
 - Nav 1: Try 8 + LLM 5
     - 未完整运行 - 检查点丢失
 - Nav 2: Try 9 + LLM 5
+    - 未完整运行 - 中断，运行 try5-r1p5
 
 ## 阶段
 
@@ -957,6 +958,6 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - ~~Nav 1: Try 8 + LLM 5~~
 - [x] Try 9: 简易的认知地图 Decoder @ VIPL
 - [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
-- [ ] ~~Nav 2: Try 9 + LLM 5 @ 超算~~
-- [ ] ~~Try 10: DETR-style decoder @ VIPL~~
+- ~~Nav 2: Try 9 + LLM 5 @ 超算~~
+- ~~Try 10: DETR-style decoder @ VIPL~~
 - [ ] Try 5 repro (半径 1.5, on-the-fly)
