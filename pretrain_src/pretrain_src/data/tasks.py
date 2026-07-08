@@ -131,6 +131,9 @@ def mlm_collate(inputs):
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
         batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
+        batch["map_trajectory_metadata"] = torch.stack(
+            batch["map_trajectory_metadata"]
+        )
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 
@@ -264,6 +267,9 @@ def sap_collate(inputs):
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
         batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
+        batch["map_trajectory_metadata"] = torch.stack(
+            batch["map_trajectory_metadata"]
+        )
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 

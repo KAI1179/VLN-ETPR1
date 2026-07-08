@@ -163,6 +163,7 @@ class ReverieTextPathData(object):
         use_prior_gt=False,
         use_llm=False,
         cognitive_map_namespace=None,
+        cognitive_map_metadata_schema="path5",
         random_rotation_augmentation=False,
     ):
         self.use_prior_gt = use_prior_gt
@@ -172,6 +173,7 @@ class ReverieTextPathData(object):
             if cognitive_map_namespace is None
             else cognitive_map_namespace
         )
+        self.cognitive_map_metadata_schema = cognitive_map_metadata_schema
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -250,6 +252,7 @@ class ReverieTextPathData(object):
             random_rotation_augmentation=getattr(
                 self, "random_rotation_augmentation", False
             ),
+            metadata_schema=getattr(self, "cognitive_map_metadata_schema", "path5"),
         )
         boxes_path = cognitive_map_boxes_cache_path(
             item["scan"],
@@ -262,9 +265,14 @@ class ReverieTextPathData(object):
             ),
         )
         relevant = RelevantSemanticBoxes.load(boxes_path)
+        map_trajectory_metadata = tensors["map_trajectory_metadata"]
         return {
             "cognitive_maps": tensors["grid"],
-            "trajectory_keypoints": tensors["trajectory_keypoints"],
+            "trajectory_keypoints": tensors.get(
+                "trajectory_keypoints",
+                map_trajectory_metadata,
+            ),
+            "map_trajectory_metadata": map_trajectory_metadata,
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
             "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
@@ -299,6 +307,7 @@ class ReverieTextPathData(object):
         return {
             "cognitive_maps": tensors["grid"],
             "trajectory_keypoints": tensors["trajectory_keypoints"],
+            "map_trajectory_metadata": tensors["map_trajectory_metadata"],
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
             "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
@@ -713,6 +722,7 @@ class R2RTextPathData(ReverieTextPathData):
         use_prior_gt=False,
         use_llm=False,
         cognitive_map_namespace=None,
+        cognitive_map_metadata_schema="path5",
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -736,6 +746,7 @@ class R2RTextPathData(ReverieTextPathData):
             use_prior_gt=use_prior_gt,
             use_llm=use_llm,
             cognitive_map_namespace=cognitive_map_namespace,
+            cognitive_map_metadata_schema=cognitive_map_metadata_schema,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 

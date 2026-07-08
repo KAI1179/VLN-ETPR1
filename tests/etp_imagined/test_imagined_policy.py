@@ -101,7 +101,7 @@ def _load_imagined_policy(monkeypatch):
         "vlnce_baselines.models.etp_prior_gt",
         "vlnce_baselines.models.etp_imagined",
     ]:
-        module = sys.modules.get(name, types.ModuleType(name))
+        module = types.ModuleType(name)
         module.__path__ = []
         monkeypatch.setitem(sys.modules, name, module)
 

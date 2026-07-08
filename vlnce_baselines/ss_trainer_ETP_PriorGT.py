@@ -1071,9 +1071,9 @@ class RLTrainer(BaseVLNCETrainer):
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
-        trajectory_keypoints = torch.stack(
+        map_trajectory_metadata = torch.stack(
             [
-                cognitive_map["trajectory_keypoints"]
+                cognitive_map["map_trajectory_metadata"]
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
@@ -1092,7 +1092,7 @@ class RLTrainer(BaseVLNCETrainer):
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=cognitive_crops,
-            trajectory_keypoints=trajectory_keypoints,
+            trajectory_keypoints=map_trajectory_metadata,
             start_direction_vectors=start_direction_vectors,
             start_positions=start_positions,
         )
@@ -1116,6 +1116,7 @@ class RLTrainer(BaseVLNCETrainer):
                 self._cognitive_map_cache_id(ep),
                 namespace=self.config.MODEL.MAP_ENCODER.cache_namespace,
                 random_rotation_augmentation=random_rotation_augmentation,
+                metadata_schema=self.config.MODEL.MAP_ENCODER.metadata_schema,
             )
             for ep in self.envs.current_episodes()
         ]

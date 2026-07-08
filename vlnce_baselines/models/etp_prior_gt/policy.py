@@ -86,6 +86,7 @@ class PriorGTTry5Policy(PriorGTPolicy):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
         config.MODEL.MAP_ENCODER.fusion = "try5"
+        config.MODEL.MAP_ENCODER.metadata_schema = "direction5"
         config.freeze()
 
         return cls(

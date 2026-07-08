@@ -17,6 +17,7 @@ def test_priorgt_try5_policy_forces_try5_fusion(monkeypatch):
         def __init__(self, observation_space, model_config, num_actions, dropout_rate):
             super().__init__()
             captured["fusion"] = model_config.MAP_ENCODER.fusion
+            captured["metadata_schema"] = model_config.MAP_ENCODER.metadata_schema
 
     monkeypatch.setattr(policy_module, "ETP_PriorGT", FakeETP)
 
@@ -34,6 +35,7 @@ def test_priorgt_try5_policy_forces_try5_fusion(monkeypatch):
     )
 
     assert captured["fusion"] == "try5"
+    assert captured["metadata_schema"] == "direction5"
 
 
 def test_main_server_exposes_priorgt_try5_candidate_modes():
@@ -42,7 +44,8 @@ def test_main_server_exposes_priorgt_try5_candidate_modes():
     assert "GT_MAP_FUSION" not in script
     assert "PRIORGT_TRY5_MODEL_ARGS" in script
     assert "MODEL.policy_name PriorGTTry5Policy" in script
-    assert "MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.path5.v1" in script
+    assert "MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1" in script
+    assert "MODEL.MAP_ENCODER.metadata_schema direction5" in script
     assert "priorgt_try5_dagger)" in script
     assert "priorgt_try5_grpo)" in script
     assert "priorgt_try5_eval_ss)" in script

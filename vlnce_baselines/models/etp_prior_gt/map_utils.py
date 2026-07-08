@@ -5,6 +5,7 @@ import random
 from pathlib import Path
 from typing import Dict, Literal, Optional
 
+import numpy as np
 import torch
 from prior import DATA_DIR
 from prior.cognitive_map_generation import DEFAULT_RADIUS_M, map_cache_namespace
@@ -28,6 +29,7 @@ DEFAULT_COGNITIVE_MAP_NAMESPACE = map_cache_namespace("bbox", DEFAULT_RADIUS_M)
 MAP_TOKEN_GRID_SIZE = 10
 MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
 MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
+MapMetadataSchema = Literal["path5", "direction5"]
 
 SIZE = ROWS
 """Number of rows and cols in the grid map."""
@@ -76,6 +78,32 @@ def _start_position_tensor(cognitive_map: CognitiveGridMap) -> torch.Tensor:
     )
 
 
+def _validate_metadata_points(name: str, points) -> torch.Tensor:
+    tensor = torch.as_tensor(points, dtype=torch.float32)
+    expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
+    if tuple(tensor.shape) != expected_shape:
+        raise ValueError(
+            f"{name} must have shape {expected_shape}, got {tuple(tensor.shape)}"
+        )
+    return tensor
+
+
+def direction5_cognitive_map_file_to_tensors(cache_path: Path) -> Dict[str, torch.Tensor]:
+    data = np.load(cache_path, allow_pickle=True)
+    return {
+        "grid": torch.from_numpy(data["grid"]),
+        "map_trajectory_metadata": _validate_metadata_points(
+            "direction_vectors",
+            data["direction_vectors"],
+        ),
+        "start_direction_vector": torch.as_tensor(
+            data["start_direction_vector"],
+            dtype=torch.float32,
+        ),
+        "start_position": torch.as_tensor(data["start_position"], dtype=torch.float32),
+    }
+
+
 def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
     # The cached grid is category-first: (27 object + 10 region, 100, 100).
     # Keypoints and start_position are converted from level-local meters to
@@ -83,6 +111,7 @@ def cognitive_map_to_tensors(cognitive_map: CognitiveGridMap):
     return {
         "grid": torch.from_numpy(cognitive_map.grid),
         "trajectory_keypoints": _trajectory_keypoints_to_grid_tensor(cognitive_map),
+        "map_trajectory_metadata": _trajectory_keypoints_to_grid_tensor(cognitive_map),
         "start_direction_vector": torch.tensor(
             cognitive_map.start_direction_vector, dtype=torch.float32
         ),
@@ -177,10 +206,16 @@ def load_cached_cognitive_map(
 def cognitive_map_file_to_tensors(
     cache_path: Path,
     random_rotation_augmentation: bool = False,
+    metadata_schema: MapMetadataSchema = "path5",
 ) -> Dict[str, torch.Tensor]:
     if not cache_path.is_file():
         raise FileNotFoundError(f"Missing cached cognitive map: {cache_path}")
-    tensors = cognitive_map_to_tensors(CognitiveGridMap.load(cache_path))
+    if metadata_schema == "path5":
+        tensors = cognitive_map_to_tensors(CognitiveGridMap.load(cache_path))
+    elif metadata_schema == "direction5":
+        tensors = direction5_cognitive_map_file_to_tensors(cache_path)
+    else:
+        raise ValueError(f"Unsupported cognitive-map metadata_schema: {metadata_schema}")
     if random_rotation_augmentation:
         tensors = rotate_cognitive_map_tensors_by_right_angle(
             tensors,
@@ -195,14 +230,18 @@ def cached_cognitive_map_to_tensors(
     cache_dir: Optional[Path] = None,
     namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
     random_rotation_augmentation: bool = False,
+    metadata_schema: MapMetadataSchema = "path5",
 ) -> Dict[str, torch.Tensor]:
-    tensors = cognitive_map_to_tensors(
-        load_cached_cognitive_map(
-            scene_id,
-            cache_id,
-            cache_dir=cache_dir,
-            namespace=namespace,
-        )
+    cache_path = cognitive_map_cache_path(
+        scene_id,
+        cache_id,
+        cache_dir=cache_dir,
+        namespace=namespace,
+    )
+    tensors = cognitive_map_file_to_tensors(
+        cache_path,
+        random_rotation_augmentation=False,
+        metadata_schema=metadata_schema,
     )
     if random_rotation_augmentation:
         tensors = rotate_cognitive_map_tensors_by_right_angle(
@@ -268,6 +307,12 @@ def _rotate_direction_by_right_angle(vector: torch.Tensor, turns: int) -> torch.
     return torch.stack((-cos_value, sin_value), dim=-1)
 
 
+def _rotate_direction_vectors_by_right_angle(
+    vectors: torch.Tensor, turns: int
+) -> torch.Tensor:
+    return _rotate_direction_by_right_angle(vectors, turns)
+
+
 def rotate_cognitive_map_tensors_by_right_angle(
     tensors: Dict[str, torch.Tensor], turns: int
 ) -> Dict[str, torch.Tensor]:
@@ -280,9 +325,16 @@ def rotate_cognitive_map_tensors_by_right_angle(
     cols = int(tensors["grid"].shape[-1])
     rotated = dict(tensors)
     rotated["grid"] = grid
-    rotated["trajectory_keypoints"] = _rotate_trajectory_keypoints_by_right_angle(
-        tensors["trajectory_keypoints"], turns, rows, cols
-    )
+    if "trajectory_keypoints" in tensors:
+        rotated["trajectory_keypoints"] = _rotate_trajectory_keypoints_by_right_angle(
+            tensors["trajectory_keypoints"], turns, rows, cols
+        )
+    if "map_trajectory_metadata" in tensors and "trajectory_keypoints" in tensors:
+        rotated["map_trajectory_metadata"] = rotated["trajectory_keypoints"]
+    elif "map_trajectory_metadata" in tensors:
+        rotated["map_trajectory_metadata"] = _rotate_direction_vectors_by_right_angle(
+            tensors["map_trajectory_metadata"], turns
+        )
     rotated["start_position"] = _rotate_grid_points_by_right_angle(
         tensors["start_position"], turns, rows, cols
     )

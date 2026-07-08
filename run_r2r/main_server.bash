@@ -106,13 +106,15 @@ GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
 PRIORGT_TRY5_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.path5.v1
+      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
+      MODEL.MAP_ENCODER.metadata_schema direction5
       MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
 
 PRIORGT_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.path5.v1
+      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
+      MODEL.MAP_ENCODER.metadata_schema direction5
       MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
 
 IMAGINED_PREDICTOR_ARG=""

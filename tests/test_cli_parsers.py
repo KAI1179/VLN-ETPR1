@@ -143,6 +143,7 @@ def test_default_config_exposes_llm_navigation_cache_settings():
     config = get_config()
 
     assert config.MODEL.MAP_ENCODER.cache_namespace == "gt.bbox.r1p5.path5.v1"
+    assert config.MODEL.MAP_ENCODER.metadata_schema == "path5"
     assert config.MODEL.MAP_ENCODER.fusion == "bidirectional"
     assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
     assert config.MODEL.MAP_ENCODER.llm_cache_model_key == "llama-3.1-8b-instruct"
@@ -213,15 +214,18 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         cache_dir,
         namespace,
         random_rotation_augmentation,
+        metadata_schema,
     ):
         captured["scene_id"] = scene_id
         captured["cache_id"] = cache_id
         captured["cache_dir"] = cache_dir
         captured["namespace"] = namespace
         captured["random_rotation_augmentation"] = random_rotation_augmentation
+        captured["metadata_schema"] = metadata_schema
         return {
             "grid": "loaded-grid",
             "trajectory_keypoints": "trajectory_keypoints",
+            "map_trajectory_metadata": "map-trajectory-metadata",
             "start_direction_vector": "direction",
             "start_position": "position",
         }
@@ -264,10 +268,12 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         "cache_dir": tmp_path,
         "namespace": "gt.legacy.r1p5.path5.v1",
         "random_rotation_augmentation": False,
+        "metadata_schema": "path5",
     }
     assert outputs == {
         "cognitive_maps": "loaded-grid",
         "trajectory_keypoints": "trajectory_keypoints",
+        "map_trajectory_metadata": "map-trajectory-metadata",
         "start_direction_vectors": "direction",
         "start_positions": "position",
         "cognitive_map_box_targets": "target:relevant-boxes",
@@ -301,6 +307,7 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         return {
             "grid": "llm-grid",
             "trajectory_keypoints": "llm-trajectory-keypoints",
+            "map_trajectory_metadata": "llm-map-trajectory-metadata",
             "start_direction_vector": "llm-direction",
             "start_position": "llm-start",
         }
@@ -339,6 +346,7 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
     assert outputs == {
         "cognitive_maps": "llm-grid",
         "trajectory_keypoints": "llm-trajectory-keypoints",
+        "map_trajectory_metadata": "llm-map-trajectory-metadata",
         "start_direction_vectors": "llm-direction",
         "start_positions": "llm-start",
         "cognitive_map_box_targets": "target:llm-relevant-boxes",

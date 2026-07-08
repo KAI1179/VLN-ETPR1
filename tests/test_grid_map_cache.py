@@ -155,8 +155,48 @@ def test_cached_cognitive_map_to_tensors_loads_by_scene_and_cache_id(
     )
     assert tensors["grid"][0, 2, 3] == 1.0
     assert torch.equal(tensors["trajectory_keypoints"][0], torch.tensor([2.0, 4.0]))
+    assert torch.equal(
+        tensors["map_trajectory_metadata"],
+        tensors["trajectory_keypoints"],
+    )
     assert torch.equal(tensors["start_position"], torch.tensor([2.0, 4.0]))
     assert torch.equal(tensors["start_direction_vector"], torch.tensor([0.0, 1.0]))
+
+
+def test_cached_cognitive_map_to_tensors_loads_direction5_metadata(
+    tmp_path, monkeypatch
+):
+    cache_dir = tmp_path / "cognitive_maps"
+    scene_dir = cache_dir / "gt.legacy.r1p5.direction5.v1" / "raster" / "scene"
+    scene_dir.mkdir(parents=True)
+    np.savez_compressed(
+        scene_dir / "R2R_train_1.npz",
+        grid=CognitiveGridMap().grid,
+        range_y=np.asarray([None, None], dtype=object),
+        direction_vectors=np.asarray(
+            [[0.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        ),
+        start_direction_vector=np.asarray((0.0, 1.0), dtype=np.float32),
+        start_position=np.asarray((4.0, 5.0), dtype=np.float32),
+    )
+    monkeypatch.setattr(map_utils, "VLNCE_COGNITIVE_MAP_DIR", cache_dir)
+
+    tensors = map_utils.cached_cognitive_map_to_tensors(
+        "scene.glb",
+        "R2R_train_1",
+        namespace="gt.legacy.r1p5.direction5.v1",
+        metadata_schema="direction5",
+    )
+
+    assert "trajectory_keypoints" not in tensors
+    assert torch.equal(
+        tensors["map_trajectory_metadata"],
+        torch.tensor(
+            [[0.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+        ),
+    )
+    assert torch.equal(tensors["start_position"], torch.tensor([4.0, 5.0]))
 
 
 def test_cached_cognitive_map_to_tensors_fails_for_missing_cache(tmp_path, monkeypatch):

@@ -105,7 +105,7 @@ class CognitiveMapPredictorDataset(Dataset):
         tensors = cached_cognitive_map_to_tensors(
             example.scene_id,
             example.cache_id,
-            random_rotation_augmentation=False,
+            random_rotation_augmentation=True,
         )
         grid = tensors["grid"].float()
         trajectory_keypoints = tensors["trajectory_keypoints"].float()

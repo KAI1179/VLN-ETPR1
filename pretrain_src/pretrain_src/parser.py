@@ -61,6 +61,12 @@ def load_parser():
         type=str,
         help="PriorGT cognitive-map cache namespace under data/cognitive_maps_etp_r1",
     )
+    parser.add_argument(
+        "--cognitive_map_metadata_schema",
+        default="path5",
+        choices=["path5", "direction5"],
+        help="PriorGT cognitive-map metadata schema consumed by the map encoder",
+    )
     # training parameters
     parser.add_argument(
         "--train_batch_size",
