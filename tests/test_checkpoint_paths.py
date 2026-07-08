@@ -25,6 +25,6 @@ def test_launchers_reference_existing_baseline_store2_checkpoint():
 
     assert BASELINE_STORE2_CKPT in launcher
 
-    submit_path = ROOT / "scripts" / "submit" / "try5-r1p5-pretrain.sh"
+    submit_path = ROOT / "scripts" / "submit" / "try5-r1p5-blurred-pretrain.sh"
     if submit_path.exists():
         assert BASELINE_STORE2_CKPT in submit_path.read_text()

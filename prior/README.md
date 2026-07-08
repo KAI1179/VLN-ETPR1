@@ -4,6 +4,8 @@ Following modules could be run with `python -m`:
 
 - `prior`: Generate cognitive maps for all VLNCE entries (R2R + RxR)
 - `prior.bbox`: Show / export bounding box info for given scene or episode
+- `prior.blur_cognitive_maps`: Derive blurred cache namespaces from existing
+  cognitive-map caches
 - `prior.etp_r1`: Generate cognitive maps for all ETP-R1 entries
 - `prior.grid_map`: Visualizes given cognitive map (`.npz`)
 
@@ -72,6 +74,28 @@ python -m prior.etp_r1 --map-source bbox --radius-m 2.5 42_0
 
 The optional positional arguments to `prior.etp_r1` are sampled instruction IDs.
 When provided, only those instructions are regenerated and visualized.
+
+## Blurred Cache Transform
+
+`prior.blur_cognitive_maps` derives a blurred cache namespace from an existing
+cache namespace. It processes existing maps instead of regenerating from
+semantic scenes: each raster grid is max-pooled from 100x100 to 50x50 and then
+nearest-neighbor upsampled back to 100x100, while all non-grid metadata and the
+paired `boxes/` sidecar are preserved.
+
+Examples:
+
+```bash
+python -m prior.blur_cognitive_maps \
+  --cache-root data/cognitive_maps \
+  --source-namespace gt.legacy.r1p5.direction5.v1 \
+  --target-namespace gt.legacy.r1p5.direction5.blurred.v1
+
+python -m prior.blur_cognitive_maps \
+  --cache-root data/cognitive_maps_etp_r1 \
+  --source-namespace gt.legacy.r1p5.direction5.v1 \
+  --target-namespace gt.legacy.r1p5.direction5.blurred.v1
+```
 
 Level selection is shared by `bbox` and `legacy`: the first semantic level
 touched by the ground-truth trajectory is selected. If that level has fewer

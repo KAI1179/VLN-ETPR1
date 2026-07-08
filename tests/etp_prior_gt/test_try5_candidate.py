@@ -42,11 +42,11 @@ def test_main_server_exposes_priorgt_try5_candidate_modes():
     script = (ROOT / "run_r2r" / "main_server.bash").read_text()
 
     assert "GT_MAP_FUSION" not in script
-    assert "PRIORGT_TRY5_MODEL_ARGS" in script
+    assert "PRIORGT_TRY5_BLURRED_MODEL_ARGS" in script
     assert "MODEL.policy_name PriorGTTry5Policy" in script
-    assert "MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1" in script
+    assert "gt.legacy.r1p5.direction5.blurred.v1" in script
     assert "MODEL.MAP_ENCODER.metadata_schema direction5" in script
-    assert "priorgt_try5_dagger)" in script
-    assert "priorgt_try5_grpo)" in script
-    assert "priorgt_try5_eval_ss)" in script
-    assert "priorgt_try5_eval_grpo)" in script
+    assert "priorgt_try5_blurred_dagger)" in script
+    assert "priorgt_try5_blurred_grpo)" in script
+    assert "priorgt_try5_blurred_eval_ss)" in script
+    assert "priorgt_try5_blurred_eval_grpo)" in script

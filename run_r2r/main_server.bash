@@ -37,9 +37,10 @@ GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.i
 GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
 GT_COGNITIVE_MAP_NAMESPACE="${GT_COGNITIVE_MAP_NAMESPACE:-gt.bbox.r1p5.path5.v1}"
 
-PRIORGT_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt"
-PRIORGT_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try-5-vlnce.iter27800.pth"
-PRIORGT_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.iter350.pth"
+PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE="gt.legacy.r1p5.direction5.blurred.v1"
+PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try5-r1p5-blurred_step_462500.pt"
+PRIORGT_TRY5_BLURRED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_dagger/store/ckpt.iter27800.pth"
+PRIORGT_TRY5_BLURRED_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_grpo/store/ckpt.iter350.pth"
 
 IMAGINED_PREDICTOR_CKPT="${IMAGINED_PREDICTOR_CKPT:-}"
 IMAGINED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000.pt"
@@ -103,19 +104,19 @@ GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.MAP_ENCODER.cache_namespace ${GT_COGNITIVE_MAP_NAMESPACE}
       MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
 
-PRIORGT_TRY5_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
+PRIORGT_TRY5_BLURRED_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
+      MODEL.MAP_ENCODER.cache_namespace ${PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE}
       MODEL.MAP_ENCODER.metadata_schema direction5
-      MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
+      MODEL.pretrained_path ${PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT}"
 
-PRIORGT_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
+PRIORGT_TRY5_BLURRED_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
+      MODEL.MAP_ENCODER.cache_namespace ${PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE}
       MODEL.MAP_ENCODER.metadata_schema direction5
-      MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
+      MODEL.pretrained_path ${PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT}"
 
 IMAGINED_PREDICTOR_ARG=""
 if [ -n "${IMAGINED_PREDICTOR_CKPT}" ]; then
@@ -187,21 +188,21 @@ case $mode in
       echo "###### priorgt eval mode (GRPO ckpt) ######"
       launch "--exp_name release_r2r_priorgt_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_GRPO_CKPT} IL.back_algo control"
       ;;
-      priorgt_try5_dagger)
-      echo "###### priorgt try5 dagger train mode ######"
-      launch "--exp_name release_r2r_priorgt_try5_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_MODEL_ARGS} ${DAGGER_ARGS}"
+      priorgt_try5_blurred_dagger)
+      echo "###### priorgt try5 blurred dagger train mode ######"
+      launch "--exp_name release_r2r_priorgt_try5_blurred_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
-      priorgt_try5_grpo)
-      echo "###### priorgt try5 grpo train mode ######"
-      launch "--exp_name release_r2r_priorgt_try5_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${PRIORGT_TRY5_DAGGER_CKPT}"
+      priorgt_try5_blurred_grpo)
+      echo "###### priorgt try5 blurred grpo train mode ######"
+      launch "--exp_name release_r2r_priorgt_try5_blurred_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT}"
       ;;
-      priorgt_try5_eval_ss)
-      echo "###### priorgt try5 eval mode (SS ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_try5_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_DAGGER_CKPT} IL.back_algo control"
+      priorgt_try5_blurred_eval_ss)
+      echo "###### priorgt try5 blurred eval mode (SS ckpt) ######"
+      launch "--exp_name release_r2r_priorgt_try5_blurred_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT} IL.back_algo control"
       ;;
-      priorgt_try5_eval_grpo)
-      echo "###### priorgt try5 eval mode (GRPO ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_try5_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_GRPO_CKPT} IL.back_algo control"
+      priorgt_try5_blurred_eval_grpo)
+      echo "###### priorgt try5 blurred eval mode (GRPO ckpt) ######"
+      launch "--exp_name release_r2r_priorgt_try5_blurred_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_GRPO_CKPT} IL.back_algo control"
       ;;
       priorgt_probe)
       echo "###### priorgt probe: freeze base, train map encoder only ######"
@@ -247,7 +248,7 @@ case $mode in
       warn_unimplemented "inference path for imagined cognitive maps"
       ;;
       *)
-      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_try5_dagger|priorgt_try5_grpo|priorgt_try5_eval_ss|priorgt_try5_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer|llm_dagger|llm_eval_ss|llm_grpo|llm_eval_grpo} [master_port]" >&2
+      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_try5_blurred_dagger|priorgt_try5_blurred_grpo|priorgt_try5_blurred_eval_ss|priorgt_try5_blurred_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer|llm_dagger|llm_eval_ss|llm_grpo|llm_eval_grpo} [master_port]" >&2
       exit 1
       ;;
 esac
@@ -262,10 +263,10 @@ esac
 # bash run_r2r/main_server.bash priorgt_grpo 2333
 # bash run_r2r/main_server.bash priorgt_eval_ss 2333
 # bash run_r2r/main_server.bash priorgt_eval_grpo 2333
-# bash run_r2r/main_server.bash priorgt_try5_dagger 2333
-# bash run_r2r/main_server.bash priorgt_try5_grpo 2333
-# bash run_r2r/main_server.bash priorgt_try5_eval_ss 2333
-# bash run_r2r/main_server.bash priorgt_try5_eval_grpo 2333
+# bash run_r2r/main_server.bash priorgt_try5_blurred_dagger 2333
+# bash run_r2r/main_server.bash priorgt_try5_blurred_grpo 2333
+# bash run_r2r/main_server.bash priorgt_try5_blurred_eval_ss 2333
+# bash run_r2r/main_server.bash priorgt_try5_blurred_eval_grpo 2333
 # bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
 # bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
 # bash run_r2r/main_server.bash imagined_dagger 2333
