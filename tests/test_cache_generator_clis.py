@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import ClassVar, List
 
 import pytest
+import numpy as np
 
 from prior import __main__ as prior_main
 from prior import bbox as box
 from prior import cognitive_map_generation
+from prior.grid_map import CognitiveGridMap
 from prior.etp_r1 import __main__ as etp_r1_main
 from prior.trajectory import InsufficientTrajectoryPointsError, WorldTrajectory3D
 
@@ -52,8 +54,10 @@ def test_vlnce_generator_parser_accepts_source_radius_and_namespace():
             "legacy",
             "--radius-m",
             "2.5",
+            "--metadata-schema",
+            "direction5",
             "--namespace",
-            "legacy_r2p5",
+            "gt.legacy.r2p5.direction5.v1",
             "--output-dir",
             "data/cognitive_maps",
         ]
@@ -61,21 +65,75 @@ def test_vlnce_generator_parser_accepts_source_radius_and_namespace():
 
     assert args.map_source == "legacy"
     assert args.radius_m == 2.5
-    assert args.namespace == "legacy_r2p5"
+    assert args.metadata_schema == "direction5"
+    assert args.namespace == "gt.legacy.r2p5.direction5.v1"
     assert args.output_dir == Path("data/cognitive_maps")
 
 
 @pytest.mark.parametrize(
     ("map_source", "radius_m", "expected"),
     [
-        ("legacy", 1.5, "legacy_r1p5"),
-        ("legacy", 2.5, "legacy_r2p5"),
-        ("bbox", 1.5, "bbox_r1p5"),
-        ("bbox", 2.5, "bbox_r2p5"),
+        ("legacy", 1.5, "gt.legacy.r1p5.path5.v1"),
+        ("legacy", 2.5, "gt.legacy.r2p5.path5.v1"),
+        ("bbox", 1.5, "gt.bbox.r1p5.path5.v1"),
+        ("bbox", 2.5, "gt.bbox.r2p5.path5.v1"),
     ],
 )
 def test_map_cache_namespace_uses_source_and_radius_label(map_source, radius_m, expected):
     assert cognitive_map_generation.map_cache_namespace(map_source, radius_m) == expected
+
+
+def test_map_cache_namespace_includes_direction5_schema():
+    assert (
+        cognitive_map_generation.map_cache_namespace("legacy", 1.5, "direction5")
+        == "gt.legacy.r1p5.direction5.v1"
+    )
+
+
+def test_save_cognitive_map_writes_direction5_metadata(tmp_path):
+    cognitive_map = CognitiveGridMap()
+    cognitive_map.grid[3, 1, 2] = 1.0
+    cognitive_map.range_y = [None, 3.0]
+    cognitive_map.start_direction_vector = (0.0, 1.0)
+    path = tmp_path / "map.npz"
+
+    cognitive_map_generation.save_cognitive_map(
+        cognitive_map,
+        path,
+        "direction5",
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (2.0, 0.0, 1.0),
+        ],
+    )
+
+    data = np.load(path, allow_pickle=True)
+    assert set(data.files) == {
+        "grid",
+        "range_y",
+        "direction_vectors",
+        "start_direction_vector",
+        "start_position",
+    }
+    np.testing.assert_array_equal(data["grid"], cognitive_map.grid)
+    assert data["direction_vectors"].shape == (5, 2)
+    assert data["direction_vectors"][0].tolist() == [0.0, -1.0]
+    assert data["direction_vectors"][1].tolist() == [-1.0, 0.0]
+    assert data["direction_vectors"][2:].tolist() == [[0.0, 0.0]] * 3
+    assert data["start_direction_vector"].tolist() == [0.0, 1.0]
+    assert data["start_position"].tolist() == [0.0, 0.0]
+
+
+def test_vlnce_generator_rejects_direction5_for_bbox(tmp_path):
+    with pytest.raises(ValueError, match="direction5 metadata is only supported"):
+        prior_main.generate_cognitive_maps(
+            [],
+            tmp_path,
+            map_source="bbox",
+            metadata_schema="direction5",
+        )
 
 
 def test_vlnce_bbox_generator_passes_radius_and_namespace(monkeypatch, tmp_path):
@@ -115,7 +173,7 @@ def test_vlnce_bbox_generator_passes_radius_and_namespace(monkeypatch, tmp_path)
         tmp_path,
         map_source="bbox",
         radius_m=2.5,
-        namespace="bbox_r2p5",
+        namespace="gt.bbox.r2p5.path5.v1",
     )
 
     assert (generated, skipped) == (1, 0)
@@ -127,10 +185,10 @@ def test_vlnce_bbox_generator_passes_radius_and_namespace(monkeypatch, tmp_path)
         "max_distance": 2.5,
     }
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "bbox_r2p5" / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r2p5.path5.v1" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "bbox_r2p5" / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r2p5.path5.v1" / "raster" / "scene" / "R2R_train_2.npz"
     ]
 
 
@@ -189,7 +247,7 @@ def test_vlnce_legacy_generator_writes_legacy_raster_and_compat_boxes(
         tmp_path,
         map_source="legacy",
         radius_m=1.5,
-        namespace="legacy_r1p5",
+        namespace="gt.legacy.r1p5.path5.v1",
     )
 
     assert (generated, skipped) == (1, 0)
@@ -202,10 +260,10 @@ def test_vlnce_legacy_generator_writes_legacy_raster_and_compat_boxes(
         "legacy_radius_m": 1.5,
     }
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "legacy_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.legacy.r1p5.path5.v1" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "legacy_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.legacy.r1p5.path5.v1" / "raster" / "scene" / "R2R_train_2.npz"
     ]
 
 
@@ -299,10 +357,10 @@ def test_vlnce_cache_generator_warns_skips_bad_entry_and_continues(
     ]
     assert (generated, skipped) == (1, 1)
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "bbox_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "raster" / "scene" / "R2R_train_2.npz"
     ]
     assert "WARNING" in caplog.text
     assert "R2R_train_1" in caplog.text
@@ -362,10 +420,10 @@ def test_vlnce_cache_generator_main_allows_invalid_trajectory_skips(
     assert "generated=1 skipped=1" in output
     assert "skipped_invalid_trajectory=1" in output
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "boxes" / "scene" / "R2R_train_2.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "bbox_r1p5" / "raster" / "scene" / "R2R_train_2.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "raster" / "scene" / "R2R_train_2.npz"
     ]
 
 
@@ -432,10 +490,10 @@ def test_etp_r1_cache_generator_uses_positions_warns_and_continues(
     ]
     assert exc_info.value.code == 1
     assert FakeRelevantBoxes.saved_paths == [
-        tmp_path / "bbox_r1p5" / "boxes" / "scene" / "good.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "boxes" / "scene" / "good.npz"
     ]
     assert FakeCognitiveMap.saved_paths == [
-        tmp_path / "bbox_r1p5" / "raster" / "scene" / "good.npz"
+        tmp_path / "gt.bbox.r1p5.path5.v1" / "raster" / "scene" / "good.npz"
     ]
     assert "WARNING" in caplog.text
     assert "bad" in caplog.text
@@ -449,8 +507,10 @@ def test_etp_r1_generator_parser_accepts_source_radius_namespace_and_samples():
             "legacy",
             "--radius-m",
             "2.5",
+            "--metadata-schema",
+            "direction5",
             "--namespace",
-            "legacy_r2p5",
+            "gt.legacy.r2p5.direction5.v1",
             "--output-dir",
             "data/cognitive_maps_etp_r1",
             "42_0",
@@ -459,6 +519,7 @@ def test_etp_r1_generator_parser_accepts_source_radius_namespace_and_samples():
 
     assert args.map_source == "legacy"
     assert args.radius_m == 2.5
-    assert args.namespace == "legacy_r2p5"
+    assert args.metadata_schema == "direction5"
+    assert args.namespace == "gt.legacy.r2p5.direction5.v1"
     assert args.output_dir == Path("data/cognitive_maps_etp_r1")
     assert args.sampled_instr_ids == ["42_0"]

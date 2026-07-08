@@ -57,7 +57,7 @@ def load_parser():
     )
     parser.add_argument(
         "--cognitive_map_namespace",
-        default="bbox_r1p5",
+        default="gt.bbox.r1p5.path5.v1",
         type=str,
         help="PriorGT cognitive-map cache namespace under data/cognitive_maps_etp_r1",
     )

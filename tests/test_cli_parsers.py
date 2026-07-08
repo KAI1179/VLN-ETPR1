@@ -142,7 +142,7 @@ def test_default_config_exposes_llm_navigation_cache_settings():
 
     config = get_config()
 
-    assert config.MODEL.MAP_ENCODER.cache_namespace == "bbox_r1p5"
+    assert config.MODEL.MAP_ENCODER.cache_namespace == "gt.bbox.r1p5.path5.v1"
     assert config.MODEL.MAP_ENCODER.fusion == "bidirectional"
     assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
     assert config.MODEL.MAP_ENCODER.llm_cache_model_key == "llama-3.1-8b-instruct"
@@ -230,7 +230,7 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pretrain_dataset,
         "PRETRAIN_COGNITIVE_MAP_NAMESPACE",
-        "legacy_r1p5",
+        "gt.legacy.r1p5.path5.v1",
     )
     monkeypatch.setattr(
         pretrain_dataset,
@@ -262,7 +262,7 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
         "scene_id": "scene",
         "cache_id": "42_0",
         "cache_dir": tmp_path,
-        "namespace": "legacy_r1p5",
+        "namespace": "gt.legacy.r1p5.path5.v1",
         "random_rotation_augmentation": False,
     }
     assert outputs == {
@@ -425,7 +425,7 @@ def test_pretrain_prior_map_filter_skips_missing_entries(
 
     pretrain_dataset = importlib.import_module("data.dataset")
     monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
-    namespace = "bbox_r1p5"
+    namespace = "gt.bbox.r1p5.path5.v1"
     raster_dir = tmp_path / namespace / "raster" / "scene"
     boxes_dir = tmp_path / namespace / "boxes" / "scene"
     raster_dir.mkdir(parents=True)

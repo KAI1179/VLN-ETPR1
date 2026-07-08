@@ -35,7 +35,7 @@ GT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try9_step_345000.pt"
 GT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try9.iter28800.pth"
 GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.iter350.pth"
 GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
-GT_COGNITIVE_MAP_NAMESPACE="${GT_COGNITIVE_MAP_NAMESPACE:-bbox_r1p5}"
+GT_COGNITIVE_MAP_NAMESPACE="${GT_COGNITIVE_MAP_NAMESPACE:-gt.bbox.r1p5.path5.v1}"
 
 PRIORGT_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try-5-vlnce_step_462500.pt"
 PRIORGT_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try-5-vlnce.iter27800.pth"
@@ -106,13 +106,13 @@ GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
 PRIORGT_TRY5_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace legacy_r1p5
+      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.path5.v1
       MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
 
 PRIORGT_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace legacy_r1p5
+      MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.path5.v1
       MODEL.pretrained_path ${PRIORGT_TRY5_PRETRAINED_CKPT}"
 
 IMAGINED_PREDICTOR_ARG=""

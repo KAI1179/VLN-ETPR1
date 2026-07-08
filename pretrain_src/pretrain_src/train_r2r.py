@@ -106,7 +106,7 @@ def main(opts):
         opts, "map_predictor_checkpoint", ""
     )
     model_config.cognitive_map_namespace = getattr(
-        opts, "cognitive_map_namespace", "bbox_r1p5"
+        opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
     )
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
@@ -215,7 +215,7 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "bbox_r1p5"),
+        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
         random_rotation_augmentation=False,
     )
     val_r2r_nav_db = R2RTextPathData(
@@ -234,7 +234,7 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "bbox_r1p5"),
+        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files,
@@ -252,7 +252,7 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "bbox_r1p5"),
+        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
     )
 
     train_dataloaders = create_dataloaders(

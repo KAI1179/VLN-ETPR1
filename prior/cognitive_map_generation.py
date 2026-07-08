@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import math
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 
@@ -20,21 +20,31 @@ from prior.constants import (
     REGION_CATEGORIES,
     ROWS,
 )
-from prior.directions import DirectionVector
+from prior.directions import DirectionVector, world_delta_to_direction_vector
 from prior.grid_map import CognitiveGridMap
 from prior.grid_map._cognitive import extract_categories
-from prior.trajectory import WorldTrajectory3D, select_trajectory_keypoints
+from prior.trajectory import (
+    TRAJECTORY_KEYPOINT_COUNT,
+    TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD,
+    WorldTrajectory3D,
+    select_trajectory_keypoints,
+)
 
 DEFAULT_RADIUS_M = MAX_DISTANCE_CELLS * CELL_SIZE
 MapSource = Literal["bbox", "legacy"]
+MetadataSchema = Literal["path5", "direction5"]
 
 
 def _radius_label(radius_m: float) -> str:
     return f"{radius_m:g}".replace(".", "p")
 
 
-def map_cache_namespace(map_source: MapSource, radius_m: float) -> str:
-    return f"{map_source}_r{_radius_label(radius_m)}"
+def map_cache_namespace(
+    map_source: MapSource,
+    radius_m: float,
+    metadata_schema: MetadataSchema = "path5",
+) -> str:
+    return f"gt.{map_source}.r{_radius_label(radius_m)}.{metadata_schema}.v1"
 
 
 def cache_root(output_dir: Path, namespace: str) -> Path:
@@ -78,6 +88,66 @@ def build_cognitive_map(
             ground_truth_trajectory,
             start_direction_vector,
             radius_m,
+        ),
+    )
+
+
+def _direction_vector_between(
+    prev_position: tuple[float, float, float],
+    next_position: tuple[float, float, float],
+) -> Optional[DirectionVector]:
+    dx = float(next_position[0]) - float(prev_position[0])
+    dz = float(next_position[2]) - float(prev_position[2])
+    if dx == 0.0 and dz == 0.0:
+        return None
+    return world_delta_to_direction_vector(dx, dz)
+
+
+def trajectory_direction_vectors(
+    positions: WorldTrajectory3D,
+) -> list[DirectionVector]:
+    directions: list[DirectionVector] = []
+    for index in range(len(positions) - 1):
+        direction = _direction_vector_between(positions[index], positions[index + 1])
+        if direction is None:
+            continue
+        if directions:
+            prev = directions[-1]
+            similarity = direction[0] * prev[0] + direction[1] * prev[1]
+            if similarity >= TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD:
+                continue
+        directions.append(direction)
+        if len(directions) >= TRAJECTORY_KEYPOINT_COUNT:
+            break
+    return directions + [(0.0, 0.0)] * (TRAJECTORY_KEYPOINT_COUNT - len(directions))
+
+
+def save_cognitive_map(
+    cognitive_map: CognitiveGridMap,
+    save_path: Path,
+    metadata_schema: MetadataSchema,
+    ground_truth_trajectory: WorldTrajectory3D,
+) -> None:
+    if metadata_schema == "path5":
+        cognitive_map.save(save_path)
+        return
+    if not ground_truth_trajectory:
+        raise ValueError("ground_truth_trajectory is required for direction5 metadata")
+    np.savez_compressed(
+        save_path,
+        grid=cognitive_map.grid,
+        range_y=np.asarray(cognitive_map.range_y, dtype=object),
+        direction_vectors=np.asarray(
+            trajectory_direction_vectors(ground_truth_trajectory),
+            dtype=np.float32,
+        ),
+        start_direction_vector=np.asarray(
+            cognitive_map.start_direction_vector,
+            dtype=np.float32,
+        ),
+        start_position=np.asarray(
+            (float(ground_truth_trajectory[0][0]), float(ground_truth_trajectory[0][2])),
+            dtype=np.float32,
         ),
     )
 

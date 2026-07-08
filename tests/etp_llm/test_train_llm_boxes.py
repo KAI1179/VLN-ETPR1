@@ -87,7 +87,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
         return Path(f"/cache/{namespace}/{scene_id}/{cache_id}.npz")
 
     def fake_load(path):
-        assert path == Path("/cache/bbox_r1p5/scene-a/R2R_train_42.npz")
+        assert path == Path("/cache/gt.bbox.r1p5.path5.v1/scene-a/R2R_train_42.npz")
         return _relevant_with_chair()
 
     monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
@@ -99,7 +99,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert _EpisodeSource.calls == [("R2R", ("train",))]
-    assert cache_calls == [("scene-a", "R2R_train_42", "bbox_r1p5")]
+    assert cache_calls == [("scene-a", "R2R_train_42", "gt.bbox.r1p5.path5.v1")]
     assert len(examples) == 1
     example = examples[0]
     assert example.example_id == "R2R_train_42"
@@ -174,7 +174,7 @@ def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
     monkeypatch,
     capsys,
 ):
-    missing_path = Path("/cache/bbox_r2p5/boxes/scene-a/R2R_train_42.npz")
+    missing_path = Path("/cache/gt.bbox.r2p5.path5.v1/boxes/scene-a/R2R_train_42.npz")
 
     def missing_load(path):
         raise FileNotFoundError(2, "No such file or directory", path)
@@ -192,7 +192,7 @@ def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
             "R2R",
             ["train"],
             skip_missing_cache=True,
-            cognitive_map_namespace="bbox_r2p5",
+            cognitive_map_namespace="gt.bbox.r2p5.path5.v1",
         )
 
     assert examples == []
@@ -212,7 +212,7 @@ def test_load_llm_boxes_examples_raises_missing_cached_boxes_by_default(monkeypa
         train_llm_boxes.load_llm_boxes_examples(
             "R2R",
             ["train"],
-            cognitive_map_namespace="bbox_r2p5",
+            cognitive_map_namespace="gt.bbox.r2p5.path5.v1",
         )
 
 
@@ -246,8 +246,8 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
         "R2R_train_44",
     ]
     assert cache_calls == [
-        ("scene-a", "R2R_train_43", "bbox_r1p5"),
-        ("scene-a", "R2R_train_44", "bbox_r1p5"),
+        ("scene-a", "R2R_train_43", "gt.bbox.r1p5.path5.v1"),
+        ("scene-a", "R2R_train_44", "gt.bbox.r1p5.path5.v1"),
     ]
 
 
@@ -944,7 +944,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         limit=None,
         quiet=False,
         skip_missing_cache=False,
-        cognitive_map_namespace="bbox_r1p5",
+        cognitive_map_namespace="gt.bbox.r1p5.path5.v1",
     ):
         calls.append(
             (
@@ -983,7 +983,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
     assert metrics == {"examples": 1.0}
     assert calls == [
         ("load_model", LLAMA_3_1_8B_INSTRUCT_MODEL, "auto"),
-        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True, "bbox_r1p5"),
+        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True, "gt.bbox.r1p5.path5.v1"),
         ("eval", str(tmp_path), ["example"]),
     ]
     assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
@@ -1020,7 +1020,7 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--device-map",
             "auto",
             "--cognitive-map-namespace",
-            "legacy_r1p5",
+            "gt.legacy.r1p5.path5.v1",
             "--quiet",
         ]
     )
@@ -1043,7 +1043,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.limit == 5
     assert train_args.device == "cpu"
     assert train_args.device_map == "auto"
-    assert train_args.cognitive_map_namespace == "legacy_r1p5"
+    assert train_args.cognitive_map_namespace == "gt.legacy.r1p5.path5.v1"
     assert train_args.quiet is True
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
@@ -1051,7 +1051,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.max_new_tokens == 1024
     assert eval_args.max_grad_norm == 1.0
     assert eval_args.device_map == "none"
-    assert eval_args.cognitive_map_namespace == "bbox_r1p5"
+    assert eval_args.cognitive_map_namespace == "gt.bbox.r1p5.path5.v1"
     assert eval_args.quiet is False
 
 

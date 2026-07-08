@@ -12,10 +12,12 @@ from prior.bbox import SceneSemanticBoxes
 from prior.cognitive_map_generation import (
     DEFAULT_RADIUS_M,
     MapSource,
+    MetadataSchema,
     build_cognitive_map,
     cache_paths,
     cache_root,
     map_cache_namespace,
+    save_cognitive_map,
 )
 from prior.trajectory import InsufficientTrajectoryPointsError
 
@@ -52,8 +54,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Optional cache namespace under output-dir. Defaults to "
-            "<map-source>_r<radius>, such as legacy_r2p5."
+            "gt.<map-source>.r<radius>.<metadata-schema>.v1."
         ),
+    )
+    parser.add_argument(
+        "--metadata-schema",
+        choices=("path5", "direction5"),
+        default="path5",
+        help="Map metadata contract to write.",
     )
     parser.add_argument("sampled_instr_ids", nargs="*")
     return parser.parse_args(argv)
@@ -65,10 +73,15 @@ def generate_cognitive_maps(
     output_dir: Path = OUTPUT_DIR,
     map_source: MapSource = "bbox",
     radius_m: float = DEFAULT_RADIUS_M,
+    metadata_schema: MetadataSchema = "path5",
     namespace: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Generate cognitive maps for one ETP-R1 annotation file."""
-    cache_namespace = namespace or map_cache_namespace(map_source, radius_m)
+    if map_source != "legacy" and metadata_schema == "direction5":
+        raise ValueError("direction5 metadata is only supported for legacy maps")
+    cache_namespace = namespace or map_cache_namespace(
+        map_source, radius_m, metadata_schema
+    )
     cache_root(output_dir, cache_namespace).mkdir(parents=True, exist_ok=True)
     generated = 0
     skipped = 0
@@ -109,7 +122,12 @@ def generate_cognitive_maps(
             boxes_path.parent.mkdir(parents=True, exist_ok=True)
             raster_path.parent.mkdir(parents=True, exist_ok=True)
             relevant_boxes.save(boxes_path)
-            cognitive_map.save(raster_path)
+            save_cognitive_map(
+                cognitive_map,
+                raster_path,
+                metadata_schema,
+                ground_truth_trajectory,
+            )
         except InsufficientTrajectoryPointsError as error:
             LOGGER.warning("skipping %s: %s", instr_id, error)
             skipped += 1
@@ -141,7 +159,9 @@ def generate_cognitive_maps(
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
-    namespace = args.namespace or map_cache_namespace(args.map_source, args.radius_m)
+    namespace = args.namespace or map_cache_namespace(
+        args.map_source, args.radius_m, args.metadata_schema
+    )
     cache_root(args.output_dir, namespace).mkdir(parents=True, exist_ok=True)
     generated = 0
     skipped = 0
@@ -153,6 +173,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             args.output_dir,
             map_source=args.map_source,
             radius_m=args.radius_m,
+            metadata_schema=args.metadata_schema,
             namespace=namespace,
         )
         generated += file_generated

@@ -124,8 +124,8 @@ def test_cached_cognitive_map_to_tensors_loads_by_scene_and_cache_id(
     tmp_path, monkeypatch
 ):
     cache_dir = tmp_path / "cognitive_maps"
-    scene_dir = cache_dir / "bbox_r1p5" / "raster" / "scene"
-    boxes_scene_dir = cache_dir / "bbox_r1p5" / "boxes" / "scene"
+    scene_dir = cache_dir / "gt.bbox.r1p5.path5.v1" / "raster" / "scene"
+    boxes_scene_dir = cache_dir / "gt.bbox.r1p5.path5.v1" / "boxes" / "scene"
     scene_dir.mkdir(parents=True)
     boxes_scene_dir.mkdir(parents=True)
     grid_map = CognitiveGridMap()
@@ -185,7 +185,7 @@ def test_cached_cognitive_map_to_tensors_ignores_flat_legacy_cache_root(
 
     with pytest.raises(
         FileNotFoundError,
-        match=r"bbox_r1p5/raster/scene/R2R_train_1\.npz",
+        match=r"gt.bbox.r1p5.path5.v1/raster/scene/R2R_train_1\.npz",
     ):
         map_utils.cached_cognitive_map_to_tensors("scene.glb", "R2R_train_1")
 
@@ -218,8 +218,8 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
         "iter_from",
         staticmethod(lambda dataset, splits: iter(entries)),
     )
-    raster_scene_dir = tmp_path / "legacy_r2p5" / "raster" / "scene"
-    boxes_scene_dir = tmp_path / "legacy_r2p5" / "boxes" / "scene"
+    raster_scene_dir = tmp_path / "gt.legacy.r2p5.path5.v1" / "raster" / "scene"
+    boxes_scene_dir = tmp_path / "gt.legacy.r2p5.path5.v1" / "boxes" / "scene"
     raster_scene_dir.mkdir(parents=True)
     boxes_scene_dir.mkdir(parents=True)
     (raster_scene_dir / "R2R_train_2.npz").touch()
@@ -229,7 +229,7 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
         "R2R",
         "train",
         tmp_path,
-        namespace="legacy_r2p5",
+        namespace="gt.legacy.r2p5.path5.v1",
     )
 
     assert allowed == ["2"]

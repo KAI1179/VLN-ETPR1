@@ -29,8 +29,13 @@ Shared generator options:
   full-level semantic grid.
 - `--radius-m FLOAT`: Path-neighborhood radius in meters. Default is `1.5`.
 - `--namespace NAME`: Cache namespace under `--output-dir`. If omitted, the
-  namespace is derived as `<map-source>_r<radius>`, such as `bbox_r1p5` or
-  `legacy_r2p5`.
+  namespace is derived as
+  `gt.<map-source>.r<radius>.<metadata-schema>.v1`, such as
+  `gt.bbox.r1p5.path5.v1` or `gt.legacy.r2p5.path5.v1`.
+- `--metadata-schema {path5,direction5}`: `path5` writes the current
+  trajectory-keypoint metadata. `direction5` writes the Try5-era
+  `direction_vectors`, `start_direction_vector`, and `start_position` metadata
+  and is only valid for `--map-source legacy`.
 - `--output-dir PATH`: Cache root. Defaults to `data/cognitive_maps` for
   VLN-CE and `data/cognitive_maps_etp_r1` for ETP-R1.
 
@@ -38,9 +43,11 @@ Examples:
 
 ```bash
 python -m prior --map-source legacy --radius-m 1.5
+python -m prior --map-source legacy --radius-m 1.5 --metadata-schema direction5
 python -m prior --map-source legacy --radius-m 2.5
 python -m prior --map-source bbox --radius-m 2.5
 python -m prior.etp_r1 --map-source legacy --radius-m 1.5
+python -m prior.etp_r1 --map-source legacy --radius-m 1.5 --metadata-schema direction5
 python -m prior.etp_r1 --map-source bbox --radius-m 2.5 42_0
 ```
 
@@ -72,6 +79,12 @@ Each raster npz file contains:
 - `trajectory_keypoints`: Five level-local trajectory keypoints as `[x, z]`,
   zero-padded when needed.
 - `start_direction_vector`: Direction vector of the start position.
+
+Raster files with `direction5` metadata instead contain:
+
+- `direction_vectors`: Five Try5-era trajectory direction vectors.
+- `start_direction_vector`: Direction vector of the start position.
+- `start_position`: Level-local start position as `[x, z]`.
 
 Together they showcase navigation trajectory and semantic surroundings for a
 navigation instruction. The covered path neighborhood is controlled by
