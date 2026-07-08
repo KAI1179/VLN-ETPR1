@@ -65,8 +65,12 @@ The predictor-only milestone for evaluating whether an LLM can generate useful o
 _Avoid_: LLM candidate when navigation integration is not included, T5-Boxes
 
 **LLM-Grid**:
-The predictor-only milestone for evaluating whether an LLM can generate a grid-native cognitive map compatible with Try5-style map consumption.
+The non-cheating LLM candidate for generating a grid-native cognitive map compatible with Try5-style map consumption, including the non-observation map metadata needed by that consumption path.
 _Avoid_: LLM-Boxes when the target is not object and region boxes
+
+**LLM-Grid-Probe**:
+The predictor-only milestone for evaluating whether an LLM can generate the grid portion of a grid-native cognitive map while non-grid metadata is held outside the candidate comparison.
+_Avoid_: LLM-Grid when the experiment does not predict all candidate map inputs
 
 **Mentioned-only LLM-Boxes target**:
 The LLM-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.
@@ -169,6 +173,10 @@ Domain expert: "No. Mention status should be derived after generation from the i
 Developer: "Should LLM-Grid reuse the LLM-Boxes target format?"
 
 Domain expert: "No. LLM-Grid predicts a grid-native cognitive-map target, while LLM-Boxes predicts structured object and region boxes before rasterization."
+
+Developer: "Can we call a grid-only prediction experiment LLM-Grid?"
+
+Domain expert: "No. A grid-only predictor is LLM-Grid-Probe; LLM-Grid is reserved for the non-cheating candidate that predicts the needed map inputs rather than borrowing ground-truth metadata."
 
 Developer: "Should LLM-Boxes generate confidence scores?"
 
