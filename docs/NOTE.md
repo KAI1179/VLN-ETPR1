@@ -924,7 +924,9 @@ For VLN this is stronger than instruction-only because partial observation ancho
     3. ~~GT 认知地图生成：Try 5（1.5m 半径+按路径切）~~ -> on-the-fly
     4. GT 认知地图生成：bbox, 2.5m 半径
 
-## Q - 改进 LLM 预测
+## 07/08
+
+### 改进 LLM 预测？
 
 > https://chatgpt.com/g/g-6a3dee67d7d88191b59bb4ccb82063b7-paper-chat/c/6a48f3a4-1f58-83ec-bc7f-32748234dfe7
 
@@ -950,6 +952,16 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - 想法：让预测结果与 try5 类型的认知地图相匹配
     - 预测 bbox 后根据路径点切出来（仅保留路径点附近格子）
     - 问题：要不要在关键路径点之间采样模拟连续轨迹
+
+### 讨论
+
+- keypoints 不输出？改提示词？
+- 考虑调大 rank，影响不会特别大
+- 查看 GT 是否有终止符
+- Try5 GT 让 LLM 预测网格物体种类+占用位置，顺序：
+    1. 找 20 个 GT 网格（注意别同一个场景+不同指令，跨场景比较好），不压缩直接生成 GT 文本，看长度和琐碎程度（比如一般有几个物体，平均每个物体有多少网格、整个GT文本Tokenizer‌之后长度）
+    2. 2 倍压缩之后，还是查看上述信息，然后决定要不要继续压缩
+    3. 然后进行非压缩 or 2x 压缩的 LLM 微调实验 和 VLN+GT 上限实验（其中非压缩的 VLN+GT 实验已经做过了）
 
 # 实验
 
