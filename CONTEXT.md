@@ -64,6 +64,10 @@ _Avoid_: T5 candidate, Llama candidate, Tell2Design model
 The predictor-only milestone for evaluating whether an LLM can generate useful object and region boxes.
 _Avoid_: LLM candidate when navigation integration is not included, T5-Boxes
 
+**LLM-Grid**:
+The predictor-only milestone for evaluating whether an LLM can generate a grid-native cognitive map compatible with Try5-style map consumption.
+_Avoid_: LLM-Boxes when the target is not object and region boxes
+
 **Mentioned-only LLM-Boxes target**:
 The LLM-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.
 _Avoid_: full relevant boxes when unmentioned context entities are excluded
@@ -161,6 +165,10 @@ Domain expert: "No. The structured cognitive-map specification should keep separ
 Developer: "Should LLM-Boxes generate whether an entity was mentioned?"
 
 Domain expert: "No. Mention status should be derived after generation from the instruction and generated categories."
+
+Developer: "Should LLM-Grid reuse the LLM-Boxes target format?"
+
+Domain expert: "No. LLM-Grid predicts a grid-native cognitive-map target, while LLM-Boxes predicts structured object and region boxes before rasterization."
 
 Developer: "Should LLM-Boxes generate confidence scores?"
 

@@ -292,6 +292,7 @@ Main reading:
 - Nav 1: Try 8 + LLM 5
     - 未完整运行 - 检查点丢失
 - Nav 2: Try 9 + LLM 5
+    - 未完整运行 - 中断，运行 try5-r1p5
 
 ## 阶段
 
@@ -923,7 +924,9 @@ For VLN this is stronger than instruction-only because partial observation ancho
     3. ~~GT 认知地图生成：Try 5（1.5m 半径+按路径切）~~ -> on-the-fly
     4. GT 认知地图生成：bbox, 2.5m 半径
 
-## Q - 改进 LLM 预测
+## 07/08
+
+### 改进 LLM 预测？
 
 > https://chatgpt.com/g/g-6a3dee67d7d88191b59bb4ccb82063b7-paper-chat/c/6a48f3a4-1f58-83ec-bc7f-32748234dfe7
 
@@ -946,6 +949,33 @@ For VLN this is stronger than instruction-only because partial observation ancho
     - [GoLLIE: Annotation Guidelines improve Zero-Shot Information-Extraction](https://arxiv.org/abs/2310.03668): Prompt 中包含清楚的定义/规则很重要（角度、坐标、STOP...）
     - [PICARD: Parsing Incrementally for Constrained Auto-Regressive Decoding from Language Models](https://arxiv.org/abs/2109.05093): 渐进式解析输出，拒绝让输出无效的 token (SQL)
     - [Grammar-Constrained Decoding for Structured NLP Tasks without Finetuning](https://arxiv.org/abs/2305.13971): 约束输出的格式，格式可根据输入的不同动态调整（输入依赖型语法）
+- 想法：让预测结果与 try5 类型的认知地图相匹配
+    - 预测 bbox 后根据路径点切出来（仅保留路径点附近格子）
+    - 问题：要不要在关键路径点之间采样模拟连续轨迹
+
+### 讨论
+
+- keypoints 不输出？改提示词？
+- 考虑调大 rank，影响不会特别大
+- 查看 GT 是否有终止符
+- Try5 GT 让 LLM 预测网格物体种类+占用位置，顺序：
+    1. 找 20 个 GT 网格（注意别同一个场景+不同指令，跨场景比较好），不压缩直接生成 GT 文本，看长度和琐碎程度（比如一般有几个物体，平均每个物体有多少网格、整个GT文本Tokenizer‌之后长度）
+    2. 2 倍压缩之后，还是查看上述信息，然后决定要不要继续压缩
+    3. 然后进行非压缩 or 2x 压缩的 LLM 微调实验 和 VLN+GT 上限实验（其中非压缩的 VLN+GT 实验已经做过了）
+
+### 跟进 `a467f7e`
+
+- 格式：`g 4 18 38 0.6` (grid category axis1 axis2 <confidence>)
+- 分析结果
+    - Scale 1 output: outputs/llm_grid_samples/20260708-053628-818288-gt.legacy.r1p5.direction5.v1-n20-s1
+        - mean target tokens: 6029.4
+        - max target tokens: 10347
+    - Scale 2 output: outputs/llm_grid_samples/20260708-053628-924893-gt.legacy.r1p5.direction5.v1-n20-s2
+        - mean target tokens: 2441.2
+        - max target tokens: 3455
+- 是否保留置信度？（未提及但是在附近的物体）
+- 是否提升 max_tokens？
+- Downsample 必要性？不如直接降低 VLN 模型的期望分辨率，而非预测低分辨率的然后缩放？
 
 # 实验
 
@@ -957,6 +987,6 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - ~~Nav 1: Try 8 + LLM 5~~
 - [x] Try 9: 简易的认知地图 Decoder @ VIPL
 - [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
-- [ ] ~~Nav 2: Try 9 + LLM 5 @ 超算~~
-- [ ] ~~Try 10: DETR-style decoder @ VIPL~~
+- ~~Nav 2: Try 9 + LLM 5 @ 超算~~
+- ~~Try 10: DETR-style decoder @ VIPL~~
 - [ ] Try 5 repro (半径 1.5, on-the-fly)
