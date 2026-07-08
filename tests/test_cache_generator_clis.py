@@ -95,6 +95,13 @@ def test_save_cognitive_map_writes_direction5_metadata(tmp_path):
     cognitive_map.grid[3, 1, 2] = 1.0
     cognitive_map.range_y = [None, 3.0]
     cognitive_map.start_direction_vector = (0.0, 1.0)
+    cognitive_map.trajectory_keypoints = [
+        (4.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 6.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
     path = tmp_path / "map.npz"
 
     cognitive_map_generation.save_cognitive_map(
@@ -102,10 +109,10 @@ def test_save_cognitive_map_writes_direction5_metadata(tmp_path):
         path,
         "direction5",
         [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (2.0, 0.0, 0.0),
-            (2.0, 0.0, 1.0),
+            (10.0, 0.0, 20.0),
+            (11.0, 0.0, 20.0),
+            (12.0, 0.0, 20.0),
+            (12.0, 0.0, 21.0),
         ],
     )
 
@@ -123,7 +130,7 @@ def test_save_cognitive_map_writes_direction5_metadata(tmp_path):
     assert data["direction_vectors"][1].tolist() == [-1.0, 0.0]
     assert data["direction_vectors"][2:].tolist() == [[0.0, 0.0]] * 3
     assert data["start_direction_vector"].tolist() == [0.0, 1.0]
-    assert data["start_position"].tolist() == [0.0, 0.0]
+    assert data["start_position"].tolist() == [4.0, 5.0]
 
 
 def test_vlnce_generator_rejects_direction5_for_bbox(tmp_path):

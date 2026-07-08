@@ -133,6 +133,8 @@ def save_cognitive_map(
         return
     if not ground_truth_trajectory:
         raise ValueError("ground_truth_trajectory is required for direction5 metadata")
+    if not cognitive_map.trajectory_keypoints:
+        raise ValueError("trajectory_keypoints are required for direction5 metadata")
     np.savez_compressed(
         save_path,
         grid=cognitive_map.grid,
@@ -146,7 +148,7 @@ def save_cognitive_map(
             dtype=np.float32,
         ),
         start_position=np.asarray(
-            (float(ground_truth_trajectory[0][0]), float(ground_truth_trajectory[0][2])),
+            cognitive_map.trajectory_keypoints[0],
             dtype=np.float32,
         ),
     )
