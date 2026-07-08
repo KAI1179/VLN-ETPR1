@@ -963,6 +963,20 @@ For VLN this is stronger than instruction-only because partial observation ancho
     2. 2 倍压缩之后，还是查看上述信息，然后决定要不要继续压缩
     3. 然后进行非压缩 or 2x 压缩的 LLM 微调实验 和 VLN+GT 上限实验（其中非压缩的 VLN+GT 实验已经做过了）
 
+### 跟进 `a467f7e`
+
+- 格式：`g 4 18 38 0.6` (grid category axis1 axis2 <confidence>)
+- 分析结果
+    - Scale 1 output: outputs/llm_grid_samples/20260708-053628-818288-gt.legacy.r1p5.direction5.v1-n20-s1
+        - mean target tokens: 6029.4
+        - max target tokens: 10347
+    - Scale 2 output: outputs/llm_grid_samples/20260708-053628-924893-gt.legacy.r1p5.direction5.v1-n20-s2
+        - mean target tokens: 2441.2
+        - max target tokens: 3455
+- 是否保留置信度？（未提及但是在附近的物体）
+- 是否提升 max_tokens？
+- Downsample 必要性？不如直接降低 VLN 模型的期望分辨率，而非预测低分辨率的然后缩放？
+
 # 实验
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)

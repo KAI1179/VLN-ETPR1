@@ -90,7 +90,7 @@ in per-entry `status` JSON files, and aggregate failure rates are written to
 Generate all LLM-Navigation caches with one command:
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --batch-size 8
@@ -105,7 +105,7 @@ skipped independently during resume.
 Use a smaller per-worker batch size when a single model copy nearly fills a GPU:
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --batch-size 1
@@ -114,7 +114,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.generate_n
 Force single-process generation when debugging or when only one model copy fits:
 
 ```shell
-CUDA_VISIBLE_DEVICES=4 python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --parallel-workers 1
