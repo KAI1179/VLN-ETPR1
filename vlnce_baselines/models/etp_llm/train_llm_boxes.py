@@ -232,8 +232,8 @@ def collate_llm_boxes_batch(
     # causal LM loss only trains on compact LLM-Boxes completion tokens.
     encoded["labels"] = _causal_lm_labels(
         encoded["input_ids"],
+        encoded["attention_mask"],
         prompt_lengths,
-        tokenizer.pad_token_id,
     )
     _validate_supervised_labels(
         encoded["labels"],
@@ -447,8 +447,7 @@ def evaluate_model(
             model_inputs = _model_batch(batch, args.device, include_labels=False)
             generated = model.generate(
                 **model_inputs,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=False,
+                **_generation_kwargs(tokenizer, args.max_new_tokens),
             )
             decoded = [
                 decode_generated_completion(tokenizer, sequence, prompt_length)
@@ -687,22 +686,21 @@ def _render_chat_completion(
 
 def _causal_lm_labels(
     input_ids: Any,
+    attention_mask: Any,
     prompt_lengths: Sequence[int],
-    pad_token_id: Optional[int],
 ) -> Any:
     if hasattr(input_ids, "clone"):
         labels = input_ids.clone()
         for row_idx, prompt_length in enumerate(prompt_lengths):
             labels[row_idx, :prompt_length] = -100
-        if pad_token_id is not None:
-            labels = labels.masked_fill(input_ids == pad_token_id, -100)
+        labels = labels.masked_fill(attention_mask == 0, -100)
         return labels
 
     labels = []
-    for row, prompt_length in zip(input_ids, prompt_lengths):
+    for row, mask, prompt_length in zip(input_ids, attention_mask, prompt_lengths):
         labels.append(
             [
-                -100 if idx < prompt_length or token == pad_token_id else token
+                -100 if idx < prompt_length or mask[idx] == 0 else token
                 for idx, token in enumerate(row)
             ]
         )
@@ -750,6 +748,20 @@ def decode_generated_completion(
     return str(
         tokenizer.batch_decode([completion_ids], skip_special_tokens=True)[0]
     ).strip()
+
+
+def _generation_kwargs(tokenizer: Any, max_new_tokens: int) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+    }
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is not None:
+        kwargs["eos_token_id"] = eos_token_id
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is not None:
+        kwargs["pad_token_id"] = pad_token_id
+    return kwargs
 
 
 def _apply_lora(model: Any, args: Any) -> Any:

@@ -85,6 +85,8 @@ class _CacheGenerationModel:
 
     def generate(self, **kwargs):
         self.generate_calls += 1
+        assert kwargs["eos_token_id"] == 9
+        assert kwargs["pad_token_id"] == 0
         suffix = [ord(char) for char in self.text]
         return [[*row, *suffix] for row in kwargs["input_ids"]]
 

@@ -9,6 +9,25 @@ Following modules could be run with `python -m`:
 
 For analyzing, see `./analyze/README.md`.
 
+# LLM-Grid Samples
+
+`prior.llm_grid_samples` samples raster caches and writes compact JSON
+LLM-Grid targets:
+
+```json
+{"grid":[[category,row,col],[category,row,col,value]]}
+```
+
+The `value` element is omitted when the cell value is `1.0`. The default
+candidate generation budget is `--max-new-tokens 6144`; summaries report the
+sampled target truncation rate against that budget.
+
+Example:
+
+```bash
+python -m prior.llm_grid_samples --namespace gt.legacy.r1p5.direction5.v1 --count 100 --scale 2 --tokenizer-path data/models/Llama-3.1-8B-Instruct
+```
+
 # Cognitive Map Generators
 
 Both `prior` and `prior.etp_r1` generate paired cache files:

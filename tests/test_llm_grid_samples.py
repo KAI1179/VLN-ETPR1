@@ -31,7 +31,10 @@ def test_serialize_grid_target_orders_nonzero_cells_and_keeps_soft_values() -> N
 
     text = serialize_grid_target(grid)
 
-    assert text == "g 0 1 2 0.5 ; g 0 3 2 ; g 2 1 0 0.25"
+    assert json.loads(text) == {
+        "grid": [[0, 1, 2, 0.5], [0, 3, 2], [2, 1, 0, 0.25]]
+    }
+    assert " " not in text
 
 
 def test_serialize_grid_target_downsamples_by_max_pooling() -> None:
@@ -41,7 +44,7 @@ def test_serialize_grid_target_downsamples_by_max_pooling() -> None:
 
     text = serialize_grid_target(grid, scale=2)
 
-    assert text == "g 0 0 0 0.5 ; g 0 1 1"
+    assert json.loads(text) == {"grid": [[0, 0, 0, 0.5], [0, 1, 1]]}
 
 
 def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path) -> None:
@@ -53,10 +56,12 @@ def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path
 
     sample = analyze_grid_sample(path, scale=1)
 
-    assert sample["target_text"] == "g 0 0 0 ; g 1 3 3 0.25"
+    assert json.loads(sample["target_text"]) == {
+        "grid": [[0, 0, 0], [1, 3, 3, 0.25]]
+    }
     assert sample["stats"] == {
-        "text_length": 22,
-        "token_count": 10,
+        "text_length": len('{"grid":[[0,0,0],[1,3,3,0.25]]}'),
+        "token_count": 1,
         "positive_cell_count": 2,
         "category_count": 2,
     }
@@ -88,6 +93,7 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
                 "scale": 1,
                 "seed": 0,
                 "tokenizer_path": None,
+                "max_new_tokens": 6144,
             }
         ),
     )
@@ -104,7 +110,10 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
 
     assert manifest["namespace"] == "gt.bbox.r1p5.path5.v1"
     assert manifest["scale"] == 1
+    assert manifest["max_new_tokens"] == 6144
     assert samples[0]["sample_id"] in {"a", "b"}
-    assert samples[0]["target_text"] == "g 0 0 0"
+    assert samples[0]["target_text"] == '{"grid":[[0,0,0]]}'
     assert summary["sample_count"] == 1
+    assert summary["target_truncation_count"] == 0
+    assert summary["target_truncation_rate"] == 0.0
     assert summary["stats"]["positive_cell_count"]["max"] == 1

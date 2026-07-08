@@ -7,7 +7,7 @@ import random
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,6 +31,8 @@ class SampleArgs(Tap):
     """Random seed for deterministic sampling."""
     tokenizer_path: Optional[Path] = None
     """Optional local Hugging Face tokenizer path for token counts."""
+    max_new_tokens: int = 6144
+    """Candidate LLM-Grid generation budget used for truncation reporting."""
 
 
 def _downsample_grid(
@@ -65,20 +67,20 @@ def _format_value(value: float) -> str:
 
 
 def serialize_grid_target(grid: NDArray[np.float32], scale: int = 1) -> str:
-    """Serialize nonzero category cells as sorted compact LLM-Grid text."""
+    """Serialize nonzero category cells as compact JSON LLM-Grid text."""
     sampled = _downsample_grid(grid, scale)
-    entities: List[str] = []
+    cells: List[List[Union[int, float]]] = []
 
     for category in range(sampled.shape[0]):
         row_cols = np.argwhere(sampled[category] > 0)
         for row, col in row_cols:
             value = float(sampled[category, row, col])
-            entity = f"g {category} {int(row)} {int(col)}"
+            cell: List[Union[int, float]] = [category, int(row), int(col)]
             if not np.isclose(value, 1.0):
-                entity = f"{entity} {_format_value(value)}"
-            entities.append(entity)
+                cell.append(float(_format_value(value)))
+            cells.append(cell)
 
-    return " ; ".join(entities) if entities else "none"
+    return json.dumps({"grid": cells}, separators=(",", ":"))
 
 
 def _grid_stats(
@@ -145,7 +147,10 @@ def _sample_paths(paths: Sequence[Path], count: int, seed: int) -> List[Path]:
     return sorted(sampled[:count])
 
 
-def _summarize(samples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+def _summarize(
+    samples: Iterable[Dict[str, Any]],
+    max_new_tokens: int,
+) -> Dict[str, Any]:
     rows = list(samples)
     stat_names = ("text_length", "token_count", "positive_cell_count", "category_count")
     stats: Dict[str, Dict[str, float]] = {}
@@ -156,7 +161,17 @@ def _summarize(samples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "max": max(values) if values else 0,
             "mean": mean(values) if values else 0.0,
         }
-    return {"sample_count": len(rows), "stats": stats}
+    truncated = [
+        row for row in rows
+        if row["stats"]["token_count"] > max_new_tokens
+    ]
+    return {
+        "sample_count": len(rows),
+        "max_new_tokens": max_new_tokens,
+        "target_truncation_count": len(truncated),
+        "target_truncation_rate": len(truncated) / len(rows) if rows else 0.0,
+        "stats": stats,
+    }
 
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
@@ -171,6 +186,7 @@ def write_sample_run(
     scale: int = 1,
     seed: int = 0,
     tokenizer_path: Optional[Path] = None,
+    max_new_tokens: int = 6144,
 ) -> Path:
     token_counter = _load_token_counter(tokenizer_path)
     paths = _sample_paths(_raster_paths(cache_root, namespace), count, seed)
@@ -191,13 +207,14 @@ def write_sample_run(
         "seed": seed,
         "tokenizer_path": str(tokenizer_path) if tokenizer_path is not None else None,
         "token_count_mode": "hf" if tokenizer_path is not None else "whitespace",
+        "max_new_tokens": max_new_tokens,
     }
 
     _write_json(output_dir / "manifest.json", manifest)
     with (output_dir / "samples.jsonl").open("w", encoding="utf-8") as file:
         for sample in samples:
             file.write(json.dumps(sample, sort_keys=True) + "\n")
-    _write_json(output_dir / "summary.json", _summarize(samples))
+    _write_json(output_dir / "summary.json", _summarize(samples, max_new_tokens))
     return output_dir
 
 
@@ -211,6 +228,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         scale=args.scale,
         seed=args.seed,
         tokenizer_path=args.tokenizer_path,
+        max_new_tokens=args.max_new_tokens,
     )
     print(f"wrote {output_dir}")
 

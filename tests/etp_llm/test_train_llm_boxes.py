@@ -426,6 +426,30 @@ class _TruncatingChatTokenizer(_ChatTokenizer):
         return encoded
 
 
+class _EosAsPadChatTokenizer(_ChatTokenizer):
+    pad_token_id = 9
+    eos_token_id = 9
+    eos_token = "<eos>"
+    pad_token = "<eos>"
+
+    def __call__(self, texts, **kwargs):
+        self.calls.append((list(texts), kwargs))
+        rows = [[ord(char) for char in text] + [self.eos_token_id] for text in texts]
+        max_len = max(len(row) for row in rows)
+        padded = [
+            row + [self.pad_token_id] * (max_len - len(row))
+            for row in rows
+        ]
+        masks = [
+            [1] * len(row) + [0] * (max_len - len(row))
+            for row in rows
+        ]
+        return _BatchEncoding({"input_ids": padded, "attention_mask": masks})
+
+    def encode(self, text, add_special_tokens=False):
+        return [ord(char) for char in text]
+
+
 def test_load_system_prompt_reads_package_prompt():
     prompt = train_llm_boxes.load_system_prompt()
 
@@ -466,6 +490,35 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
         "input_ids"
     ][0][collated["prompt_lengths"][0] :]
     assert collated["example_ids"] == ["ex"]
+
+
+def test_collate_supervises_eos_when_eos_is_also_pad_token():
+    tokenizer = _EosAsPadChatTokenizer()
+
+    collated = train_llm_boxes.collate_llm_boxes_batch(
+        [
+            {"input_text": "input", "target_text": "x", "example_id": "short"},
+            {"input_text": "input", "target_text": "long target", "example_id": "long"},
+        ],
+        tokenizer,
+        system_prompt="system prompt",
+        max_input_length=64,
+        max_new_tokens=64,
+    )
+
+    short_labels = collated["labels"][0]
+    short_mask = collated["attention_mask"][0]
+    supervised = [
+        label for label, mask in zip(short_labels, short_mask)
+        if label != -100 and mask == 1
+    ]
+    padding_labels = [
+        label for label, mask in zip(short_labels, short_mask)
+        if mask == 0
+    ]
+    assert tokenizer.eos_token_id in supervised
+    assert padding_labels
+    assert set(padding_labels) == {-100}
 
 
 def test_collate_rejects_batches_with_no_supervised_target_tokens():
@@ -622,6 +675,8 @@ class _EvalModel:
     def generate(self, **kwargs):
         assert kwargs["max_new_tokens"] == 64
         assert kwargs["do_sample"] is False
+        assert kwargs["eos_token_id"] == 9
+        assert kwargs["pad_token_id"] == 0
         return [[10], [11]]
 
 

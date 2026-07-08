@@ -45,6 +45,7 @@ from .train_llm_boxes import (
     load_system_prompt,
     _batch_count,
     _default_device,
+    _generation_kwargs,
     _iter_collated_batches,
     _load_causal_lm_model_and_tokenizer,
     _model_batch,
@@ -136,8 +137,7 @@ def generate_navigation_cache(
             # generated_sequences: (B, T_prompt + T_generated).
             generated_sequences = model.generate(
                 **model_inputs,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=False,
+                **_generation_kwargs(tokenizer, args.max_new_tokens),
             )
             decoded = [
                 decode_generated_completion(tokenizer, sequence, prompt_length)
