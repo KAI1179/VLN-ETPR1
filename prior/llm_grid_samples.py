@@ -13,8 +13,6 @@ import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
 
-from prior.grid_map import CognitiveGridMap
-
 TokenCounter = Callable[[str], int]
 
 
@@ -117,7 +115,8 @@ def analyze_grid_sample(
     scale: int = 1,
     token_counter: TokenCounter = whitespace_token_count,
 ) -> Dict[str, Any]:
-    grid = CognitiveGridMap.load(npz_path).grid
+    with np.load(npz_path, allow_pickle=True) as data:
+        grid = data["grid"]
     sampled = _downsample_grid(grid, scale)
     target_text = serialize_grid_target(grid, scale=scale)
     return {
