@@ -504,28 +504,22 @@ def _read_entity_cells(
         raise LLMGridProbeValidationError(f"{name}.cells must be a list")
     duplicates = 0
     for index, raw_cell in enumerate(cells):
-        if not isinstance(raw_cell, list) or len(raw_cell) not in (2, 3):
+        if not isinstance(raw_cell, list) or len(raw_cell) != 2:
             raise LLMGridProbeValidationError(
-                f"{name}.cells[{index}] must be [row,col] or [row,col,value]"
+                f"{name}.cells[{index}] must be [row,col]"
             )
-        row, col = raw_cell[:2]
-        if not all(type(item) is int for item in (row, col)):
+        raw_row, raw_col = raw_cell
+        if type(raw_row) is not int or type(raw_col) is not int:
             raise LLMGridProbeValidationError(f"{name}.cells[{index}] row,col must be ints")
+        row = raw_row
+        col = raw_col
         if not (0 <= row < rows and 0 <= col < cols):
             raise LLMGridProbeValidationError(f"{name}.cells[{index}] index out of bounds")
-        value = 1.0
-        if len(raw_cell) == 3:
-            raw_value = raw_cell[2]
-            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-                raise LLMGridProbeValidationError(f"{name}.cells[{index}] value must be numeric")
-            value = float(raw_value)
-        if not (0.0 <= value <= 1.0):
-            raise LLMGridProbeValidationError(f"{name}.cells[{index}] value out of range")
         key = (category, row, col)
         if key in seen:
             duplicates += 1
         seen.add(key)
-        grid[category, row, col] = max(float(grid[category, row, col]), value)
+        grid[category, row, col] = 1.0
     return len(cells), duplicates
 
 

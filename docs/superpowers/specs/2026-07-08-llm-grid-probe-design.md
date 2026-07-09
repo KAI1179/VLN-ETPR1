@@ -60,12 +60,12 @@ Follow the LLM-Boxes convention:
 The target is compact JSON at `scale=2`:
 
 ```json
-{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3,0.5]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
+{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
 ```
 
 Candidate lists come first and match the region/object keys. Entity cells are
-`[row,col]` for value `1.0` or `[row,col,value]` for soft cells. Other values
-are emitted as compact floats, matching `prior.llm_grid_samples.serialize_grid_target`.
+binary `[row,col]` entries; per-cell confidence is not generated. Mention
+status is carried by each entity's `mentioned` field.
 
 Full-resolution grid targets are retained for GT upper-bound and later
 navigation comparison, but they are not the first LLM generation target. The
@@ -98,11 +98,11 @@ for predictor metrics.
 Report:
 
 - JSON parse validity.
-- Schema validity: `grid` is a list of `[category,row,col]` or
-  `[category,row,col,value]` records.
+- Schema validity: candidate lists match keyed `regions` / `objects`, and
+  every cell is a binary `[row,col]` record.
 - Cell precision, recall, and F1.
 - Category-aware raster IoU and recall.
-- Token length, target truncation rate, and generated completion length.
+- Token length, target over-budget rate, and generated completion length.
 - Repetition diagnostics sufficient to detect tail loops.
 
 Invalid JSON or invalid records should be counted explicitly rather than

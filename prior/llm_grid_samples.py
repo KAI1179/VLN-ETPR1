@@ -7,7 +7,7 @@ import random
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,19 +60,8 @@ def downsample_grid(
     ).max(axis=(2, 4))
 
 
-def _format_value(value: float) -> str:
-    return np.format_float_positional(
-        np.float32(value),
-        trim="-",
-        fractional=False,
-    )
-
-
-def _cell_record(row: int, col: int, value: float) -> List[Union[int, float]]:
-    cell: List[Union[int, float]] = [int(row), int(col)]
-    if not np.isclose(value, 1.0):
-        cell.append(float(_format_value(value)))
-    return cell
+def _cell_record(row: int, col: int) -> List[int]:
+    return [int(row), int(col)]
 
 
 def serialize_grid_target(
@@ -93,7 +82,7 @@ def serialize_grid_target(
         if len(row_cols) == 0:
             continue
         cells = [
-            _cell_record(int(row), int(col), float(sampled[category, row, col]))
+            _cell_record(int(row), int(col))
             for row, col in row_cols
         ]
         if category < OBJECT_CATEGORIES:

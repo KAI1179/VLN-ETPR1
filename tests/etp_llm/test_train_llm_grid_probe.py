@@ -226,7 +226,7 @@ def test_downsample_grid_scale_2_max_pools_cells():
     assert int(np.count_nonzero(sampled)) == 2
 
 
-def test_serialize_grid_target_uses_compact_json_and_omits_unit_values():
+def test_serialize_grid_target_uses_keyed_binary_cells():
     grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[1, 0, 0] = 1.0
     grid[28, 2, 2] = 0.6
@@ -237,7 +237,7 @@ def test_serialize_grid_target_uses_compact_json_and_omits_unit_values():
         "region_candidates": ["living/social space"],
         "object_candidates": ["chair"],
         "regions": {
-            "living/social space": {"cells": [[1, 1, 0.6]], "mentioned": False}
+            "living/social space": {"cells": [[1, 1]], "mentioned": False}
         },
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": False}},
     }
@@ -248,9 +248,9 @@ def test_parse_grid_probe_text_accepts_keyed_records_and_max_merges_duplicates()
         (
             '{"region_candidates":["living/social space"],'
             '"object_candidates":["chair"],'
-            '"regions":{"living/social space":{"cells":[[1,2,0.6]],'
+            '"regions":{"living/social space":{"cells":[[1,2]],'
             '"mentioned":false}},'
-            '"objects":{"chair":{"cells":[[0,0],[0,0,0.4]],'
+            '"objects":{"chair":{"cells":[[0,0],[0,0]],'
             '"mentioned":true}}}'
         ),
         shape=(37, 50, 50),
@@ -258,7 +258,7 @@ def test_parse_grid_probe_text_accepts_keyed_records_and_max_merges_duplicates()
 
     assert result.grid.shape == (37, 50, 50)
     assert result.grid[1, 0, 0] == pytest.approx(1.0)
-    assert result.grid[28, 1, 2] == pytest.approx(0.6)
+    assert result.grid[28, 1, 2] == pytest.approx(1.0)
     assert result.record_count == 3
     assert result.duplicate_record_count == 1
 
@@ -272,7 +272,7 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
         train_llm_grid_probe.parse_grid_probe_text(
             (
                 '{"region_candidates":[],"object_candidates":["chair"],'
-                '"regions":{},"objects":{"chair":{"cells":[[0,0,1.2]],'
+                '"regions":{},"objects":{"chair":{"cells":[[0,0,1]],'
                 '"mentioned":true}}}'
             )
         )
@@ -293,7 +293,7 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
         ),
         (
             '{"region_candidates":[],"object_candidates":["chair"],'
-            '"regions":{},"objects":{"chair":{"cells":[[0,0,true]],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
             '"mentioned":false}}}'
         ),
     ],
@@ -422,7 +422,7 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         "region_candidates": ["living/social space"],
         "object_candidates": ["chair"],
         "regions": {
-            "living/social space": {"cells": [[1, 1, 0.6]], "mentioned": True}
+            "living/social space": {"cells": [[1, 1]], "mentioned": True}
         },
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
     }

@@ -23,7 +23,7 @@ def _save_cognitive_map(path: Path, grid: np.ndarray) -> None:
     grid_map.save(path)
 
 
-def test_serialize_grid_target_orders_nonzero_cells_and_keeps_soft_values() -> None:
+def test_serialize_grid_target_orders_nonzero_binary_cells() -> None:
     grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[2, 1, 0] = 0.25
     grid[0, 3, 2] = 1.0
@@ -43,8 +43,8 @@ def test_serialize_grid_target_orders_nonzero_cells_and_keeps_soft_values() -> N
             "living/social space": {"cells": [[2, 3]], "mentioned": True}
         },
         "objects": {
-            "void": {"cells": [[1, 2, 0.5], [3, 2]], "mentioned": False},
-            "door": {"cells": [[1, 0, 0.25]], "mentioned": True},
+            "void": {"cells": [[1, 2], [3, 2]], "mentioned": False},
+            "door": {"cells": [[1, 0]], "mentioned": True},
         },
     }
     assert ": " not in text
@@ -62,7 +62,7 @@ def test_serialize_grid_target_downsamples_by_max_pooling() -> None:
         "object_candidates": ["void"],
         "regions": {},
         "objects": {
-            "void": {"cells": [[0, 0, 0.5], [1, 1]], "mentioned": False}
+            "void": {"cells": [[0, 0], [1, 1]], "mentioned": False}
         },
     }
 
@@ -80,7 +80,7 @@ def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path
         "region_candidates": ["living/social space"],
         "object_candidates": ["void"],
         "regions": {
-            "living/social space": {"cells": [[3, 3, 0.25]], "mentioned": False}
+            "living/social space": {"cells": [[3, 3]], "mentioned": False}
         },
         "objects": {"void": {"cells": [[0, 0]], "mentioned": False}},
     }
