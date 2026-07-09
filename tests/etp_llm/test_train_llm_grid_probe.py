@@ -54,6 +54,20 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
         train_llm_grid_probe.parse_grid_probe_text('{"grid":[[1,0,0,1.2]]}')
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"grid":[[true,0,0]]}',
+        '{"grid":[[1,true,0]]}',
+        '{"grid":[[1,0,true]]}',
+        '{"grid":[[1,0,0,true]]}',
+    ],
+)
+def test_parse_grid_probe_text_rejects_boolean_fields(text):
+    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
+        train_llm_grid_probe.parse_grid_probe_text(text)
+
+
 def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     target = np.zeros((37, 50, 50), dtype=np.float32)
     target[1, 0, 0] = 1.0
@@ -81,3 +95,15 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     assert invalid["schema_valid"] == 0.0
     assert invalid["cell_precision"] == 0.0
     assert invalid["cell_recall"] == 0.0
+
+
+def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
+    target = np.zeros((37, 50, 50), dtype=np.float32)
+
+    result = train_llm_grid_probe.evaluate_grid_probe_prediction(
+        '{"grid":"not a list"}',
+        target,
+    )
+
+    assert result["json_valid"] == 1.0
+    assert result["schema_valid"] == 0.0

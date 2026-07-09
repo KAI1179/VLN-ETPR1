@@ -21,6 +21,10 @@ class LLMGridProbeValidationError(ValueError):
     """Raised when generated LLM-Grid-Probe JSON fails validation."""
 
 
+class _LLMGridProbeJSONError(LLMGridProbeValidationError):
+    """Raised when generated text is not valid JSON."""
+
+
 @dataclass(frozen=True)
 class ParsedGridProbe:
     grid: NDArray[np.float32]
@@ -35,7 +39,7 @@ def parse_grid_probe_text(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as error:
-        raise LLMGridProbeValidationError(f"invalid JSON: {error}") from error
+        raise _LLMGridProbeJSONError(f"invalid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise LLMGridProbeValidationError("top-level JSON value must be an object")
     if set(payload) != {"grid"}:
@@ -54,14 +58,14 @@ def parse_grid_probe_text(
                 f"grid[{index}] must be [category,row,col] or [category,row,col,value]"
             )
         category, row, col = raw_record[:3]
-        if not all(isinstance(value, int) for value in (category, row, col)):
+        if not all(type(item) is int for item in (category, row, col)):
             raise LLMGridProbeValidationError(f"grid[{index}] category,row,col must be ints")
         if not (0 <= category < channels and 0 <= row < rows and 0 <= col < cols):
             raise LLMGridProbeValidationError(f"grid[{index}] index out of bounds")
         value = 1.0
         if len(raw_record) == 4:
             raw_value = raw_record[3]
-            if not isinstance(raw_value, (int, float)):
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
                 raise LLMGridProbeValidationError(f"grid[{index}] value must be numeric")
             value = float(raw_value)
         if not (0.0 <= value <= 1.0):
@@ -118,9 +122,9 @@ def evaluate_grid_probe_prediction(
     try:
         shape = cast(Tuple[int, int, int], target_grid.shape)
         parsed = parse_grid_probe_text(generated_text, shape=shape)
-    except LLMGridProbeValidationError:
+    except LLMGridProbeValidationError as error:
         return {
-            "json_valid": 0.0,
+            "json_valid": float(not isinstance(error, _LLMGridProbeJSONError)),
             "schema_valid": 0.0,
             "record_count": 0.0,
             "duplicate_record_count": 0.0,
