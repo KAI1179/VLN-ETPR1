@@ -300,8 +300,8 @@ def test_parse_grid_probe_text_accepts_candidate_records_and_direction_vectors()
             '"mentioned":false}},'
             '"objects":{"chair":{"cells":[[0,0],[0,0]],'
             '"mentioned":true}},'
-            '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.5,-0.5],'
-            '[2,3],[4.25,5.5]]}'
+            '"direction_vectors":[[1.0,0.0],[0.0,1.0],[-1.0,0.0],'
+            '[0.0,-1.0],[0.0,0.0]]}'
         ),
         shape=(37, 50, 50),
     )
@@ -315,9 +315,9 @@ def test_parse_grid_probe_text_accepts_candidate_records_and_direction_vectors()
             [
                 [1.0, 0.0],
                 [0.0, 1.0],
-                [0.5, -0.5],
-                [2.0, 3.0],
-                [4.25, 5.5],
+                [-1.0, 0.0],
+                [0.0, -1.0],
+                [0.0, 0.0],
             ],
             dtype=np.float32,
         ),
@@ -410,6 +410,21 @@ def test_parse_grid_probe_text_rejects_invalid_direction_vector_components(compo
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
                 '"mentioned":false}},'
                 f'"direction_vectors":[[{component},0.0],[0.0,0.0],[0.0,0.0],'
+                '[0.0,0.0],[0.0,0.0]]}'
+            )
+        )
+
+
+def test_parse_grid_probe_text_rejects_non_unit_direction_vectors():
+    with pytest.raises(
+        train_llm_grid_probe.LLMGridProbeValidationError,
+        match="unit length or zero padding",
+    ):
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
+                '"objects":{},'
+                '"direction_vectors":[[0.5,0.5],[0.0,0.0],[0.0,0.0],'
                 '[0.0,0.0],[0.0,0.0]]}'
             )
         )

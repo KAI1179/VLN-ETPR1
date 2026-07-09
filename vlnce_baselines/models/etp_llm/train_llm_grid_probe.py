@@ -59,6 +59,7 @@ GRID_SHAPE = (GRID_CHANNELS, 50, 50)
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_probe_system.md"
+VECTOR_NORM_TOLERANCE = 1e-3
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")
 OBJECT_CATEGORY_TO_ID = {
@@ -518,6 +519,11 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
                     f"direction_vectors[{index}][{component_index}] must be finite"
                 )
             row.append(float(numeric_component))
+        norm = float(np.linalg.norm(row))
+        if norm > VECTOR_NORM_TOLERANCE and abs(norm - 1.0) > VECTOR_NORM_TOLERANCE:
+            raise LLMGridProbeValidationError(
+                f"direction_vectors[{index}] must be unit length or zero padding"
+            )
         rows.append(row)
     return np.asarray(rows, dtype=np.float32)
 
