@@ -25,3 +25,10 @@ Sub-agents are allowed explicitly for the main agent.
 - Prefer `tap.Tap` instead of bare `argparse`, which would provide decent typing. You can see example at `prior/bbox/__main__.py`.
 - Use Chinese in `docs/NOTE.md`, and English in all other places.
 - Some APIs for `prior` are already cached, so do not cache again. Examples include `SceneSemanticBoxes.from_scene_id` and `ConnectivityEntry.map_for`.
+
+## Environment Context
+
+- You're inside a dev container (docker).
+- I typically develops in this env, and then use git to sync code, scp to sync data to another machine (login node). Jobs that require GPU (like training) will be submitted to slurm on login node via `sbatch`.
+- Sometimes I may use this env's GPU to run training as well.
+
