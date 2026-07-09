@@ -35,7 +35,7 @@ class SampleArgs(Tap):
     """Candidate LLM-Grid generation budget used for truncation reporting."""
 
 
-def _downsample_grid(
+def downsample_grid(
     grid: NDArray[np.float32],
     scale: int,
 ) -> NDArray[np.float32]:
@@ -68,7 +68,7 @@ def _format_value(value: float) -> str:
 
 def serialize_grid_target(grid: NDArray[np.float32], scale: int = 1) -> str:
     """Serialize nonzero category cells as compact JSON LLM-Grid text."""
-    sampled = _downsample_grid(grid, scale)
+    sampled = downsample_grid(grid, scale)
     cells: List[List[Union[int, float]]] = []
 
     for category in range(sampled.shape[0]):
@@ -119,7 +119,7 @@ def analyze_grid_sample(
 ) -> Dict[str, Any]:
     with np.load(npz_path, allow_pickle=True) as data:
         grid = data["grid"]
-    sampled = _downsample_grid(grid, scale)
+    sampled = downsample_grid(grid, scale)
     target_text = serialize_grid_target(grid, scale=scale)
     return {
         "sample_id": npz_path.stem,
