@@ -60,6 +60,13 @@ DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_probe_system.md"
 VECTOR_NORM_TOLERANCE = 1e-3
+GRID_TARGET_KEYS = (
+    "predicted_regions",
+    "predicted_objects",
+    "regions",
+    "objects",
+    "direction_vectors",
+)
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")
 OBJECT_CATEGORY_TO_ID = {
@@ -416,17 +423,10 @@ def parse_grid_probe_text(
         raise _LLMGridProbeJSONError(f"invalid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise LLMGridProbeValidationError("top-level JSON value must be an object")
-    expected_keys = {
-        "predicted_regions",
-        "predicted_objects",
-        "regions",
-        "objects",
-        "direction_vectors",
-    }
-    if set(payload) != expected_keys:
+    if tuple(payload) != GRID_TARGET_KEYS:
         raise LLMGridProbeValidationError(
-            "top-level JSON object must contain only predicted_regions, "
-            "predicted_objects, regions, objects, and direction_vectors"
+            "top-level JSON object keys must be ordered as predicted_regions, "
+            "predicted_objects, regions, objects, direction_vectors"
         )
     predicted_objects = _parse_candidate_list(
         payload["predicted_objects"],
@@ -623,7 +623,9 @@ def _zero_direction_vector_metrics() -> Dict[str, float]:
     return {
         "direction_vector_valid_rate": 0.0,
         "direction_vector_l2": 0.0,
+        "direction_vector_l2_support": 0.0,
         "direction_vector_cosine": 0.0,
+        "direction_vector_cosine_support": 0.0,
         "direction_vector_padding_accuracy": 0.0,
     }
 
@@ -638,7 +640,7 @@ def _direction_vector_metrics(
     target_nonzero = target_norms > 0.0
     non_padding_count = int(np.count_nonzero(target_nonzero))
     if non_padding_count == 0:
-        cosine = 1.0
+        cosine = 0.0
     else:
         dot_products = np.sum(
             pred_vectors[target_nonzero] * target_vectors[target_nonzero],
@@ -657,7 +659,9 @@ def _direction_vector_metrics(
         "direction_vector_l2": float(
             np.mean(np.linalg.norm(pred_vectors - target_vectors, axis=1))
         ),
+        "direction_vector_l2_support": 1.0,
         "direction_vector_cosine": cosine,
+        "direction_vector_cosine_support": float(non_padding_count > 0),
         "direction_vector_padding_accuracy": float(
             np.mean(pred_nonzero == target_nonzero)
         ),
@@ -717,7 +721,7 @@ class LLMGridProbeArgs(Tap):
     mode: Literal["train", "eval"]
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     checkpoint_path: Optional[str] = None
-    output_dir: str = "outputs/llm_grid_probe"
+    output_dir: str = "outputs/llm_grid"
     dataset: Literal["R2R", "RxR"] = "R2R"
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
@@ -794,10 +798,23 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     if not rows:
         return {}
     keys = sorted({key for row in rows for key in row})
-    return {
-        key: float(sum(row.get(key, 0.0) for row in rows) / len(rows))
-        for key in keys
+    weighted_keys = {
+        "direction_vector_l2": "direction_vector_l2_support",
+        "direction_vector_cosine": "direction_vector_cosine_support",
     }
+    metrics: Dict[str, float] = {}
+    for key in keys:
+        support_key = weighted_keys.get(key)
+        if support_key is None:
+            metrics[key] = float(sum(row.get(key, 0.0) for row in rows) / len(rows))
+            continue
+        support = sum(row.get(support_key, 0.0) for row in rows)
+        metrics[key] = (
+            float(sum(row.get(key, 0.0) * row.get(support_key, 0.0) for row in rows) / support)
+            if support
+            else 0.0
+        )
+    return metrics
 
 
 def _text_diagnostics(

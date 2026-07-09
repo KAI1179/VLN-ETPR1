@@ -341,6 +341,21 @@ def test_parse_grid_probe_text_rejects_old_candidate_keys():
         )
 
 
+def test_parse_grid_probe_text_rejects_wrong_top_level_key_order():
+    with pytest.raises(
+        train_llm_grid_probe.LLMGridProbeValidationError,
+        match="keys must be ordered",
+    ):
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"predicted_objects":[],"predicted_regions":[],"regions":{},'
+                '"objects":{},'
+                '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+                '[0.0,0.0],[0.0,0.0]]}'
+            )
+        )
+
+
 def test_parse_grid_probe_text_rejects_bad_direction_vector_shape():
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
         train_llm_grid_probe.parse_grid_probe_text(
@@ -473,7 +488,9 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     assert invalid["cell_recall"] == 0.0
     assert invalid["direction_vector_valid_rate"] == 0.0
     assert invalid["direction_vector_l2"] == 0.0
+    assert invalid["direction_vector_l2_support"] == 0.0
     assert invalid["direction_vector_cosine"] == 0.0
+    assert invalid["direction_vector_cosine_support"] == 0.0
     assert invalid["direction_vector_padding_accuracy"] == 0.0
 
 
@@ -517,8 +534,46 @@ def test_evaluate_grid_probe_prediction_scores_matching_direction_vectors():
 
     assert result["direction_vector_valid_rate"] == 1.0
     assert result["direction_vector_l2"] == pytest.approx(0.0)
+    assert result["direction_vector_l2_support"] == pytest.approx(1.0)
     assert result["direction_vector_cosine"] == pytest.approx(1.0)
+    assert result["direction_vector_cosine_support"] == pytest.approx(1.0)
     assert result["direction_vector_padding_accuracy"] == pytest.approx(1.0)
+
+
+def test_aggregate_metrics_weights_direction_vector_support():
+    metrics = train_llm_grid_probe._aggregate_metrics(
+        [
+            {
+                "json_valid": 0.0,
+                "direction_vector_valid_rate": 0.0,
+                "direction_vector_l2": 0.0,
+                "direction_vector_l2_support": 0.0,
+                "direction_vector_cosine": 0.0,
+                "direction_vector_cosine_support": 0.0,
+            },
+            {
+                "json_valid": 1.0,
+                "direction_vector_valid_rate": 1.0,
+                "direction_vector_l2": 2.0,
+                "direction_vector_l2_support": 1.0,
+                "direction_vector_cosine": 0.25,
+                "direction_vector_cosine_support": 1.0,
+            },
+            {
+                "json_valid": 1.0,
+                "direction_vector_valid_rate": 1.0,
+                "direction_vector_l2": 4.0,
+                "direction_vector_l2_support": 1.0,
+                "direction_vector_cosine": 0.0,
+                "direction_vector_cosine_support": 0.0,
+            },
+        ]
+    )
+
+    assert metrics["json_valid"] == pytest.approx(2 / 3)
+    assert metrics["direction_vector_valid_rate"] == pytest.approx(2 / 3)
+    assert metrics["direction_vector_l2"] == pytest.approx(3.0)
+    assert metrics["direction_vector_cosine"] == pytest.approx(0.25)
 
 
 def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
@@ -860,6 +915,7 @@ def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
     assert args.lora_dropout == 0.05
     assert args.gradient_accumulation_steps == 1
     assert args.gradient_checkpointing is False
+    assert args.output_dir == "outputs/llm_grid"
 
 
 def test_train_model_rejects_full_finetuning():
@@ -881,7 +937,10 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         grid=full_grid,
         start_position=np.asarray([1.2, 3.4], dtype=np.float32),
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
-        direction_vectors=np.zeros((5, 2), dtype=np.float32),
+        direction_vectors=np.asarray(
+            [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        ),
     )
     _save_box_payload(
         tmp_path / "boxes" / "scene-a" / "grid.npz",
@@ -914,6 +973,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
 
     class FakeTokenizer(_ChatTokenizer):
         padding_side_during_call = None
+        decoded_rows = None
 
         def __call__(
             self,
@@ -933,12 +993,14 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             )
 
         def batch_decode(self, rows, skip_special_tokens=True):
+            self.decoded_rows = [list(row) for row in rows]
+            assert self.decoded_rows == [[91, 97, 93]]
             return [
                 (
                     '{"predicted_regions":[],"predicted_objects":["chair"],'
                     '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
                     '"mentioned":true}},'
-                    '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+                    '"direction_vectors":[[0.0,1.0],[0.0,0.0],[0.0,0.0],'
                     '[0.0,0.0],[0.0,0.0]]}'
                 )
                 for _row in rows
@@ -975,6 +1037,9 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
 
     assert metrics["json_valid"] == pytest.approx(1.0)
     assert metrics["cell_recall"] == pytest.approx(1.0)
+    assert metrics["direction_vector_l2"] == pytest.approx(2**0.5 / 5)
+    assert metrics["direction_vector_cosine"] == pytest.approx(0.0)
+    assert metrics["direction_vector_cosine_support"] == pytest.approx(1.0)
     assert metrics["target_over_budget_rate"] == pytest.approx(0.0)
     assert metrics["generated_token_count"] > 0.0
     assert model.generation_kwargs is not None
@@ -992,7 +1057,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         "regions": {},
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
         "direction_vectors": [
-            [0.0, 0.0],
+            [0.0, 1.0],
             [0.0, 0.0],
             [0.0, 0.0],
             [0.0, 0.0],
