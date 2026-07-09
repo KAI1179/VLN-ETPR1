@@ -17,13 +17,15 @@ For analyzing, see `./analyze/README.md`.
 LLM-Grid targets:
 
 ```json
-{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
+{"predicted_regions":["living/social space"],"predicted_objects":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}},"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]]}
 ```
 
 LLM-Grid text cells are binary `[row,col]`; confidence is represented by the
-entity-level `mentioned` field instead of per-cell values. The default
-candidate generation budget is `--max-new-tokens 4096`; summaries report the
-sampled target over-budget rate against that budget.
+entity-level `mentioned` field instead of per-cell values. `direction_vectors`
+is exactly five `[dx,dz]` vectors. The candidate schema does not accept the old
+`region_candidates` or `object_candidates` keys. The default candidate
+generation budget is `--max-new-tokens 4096`; summaries report the sampled
+target over-budget rate against that budget.
 
 Example:
 
