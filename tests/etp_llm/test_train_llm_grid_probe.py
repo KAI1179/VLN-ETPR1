@@ -399,7 +399,7 @@ def test_parse_grid_probe_text_rejects_boolean_fields(text):
         train_llm_grid_probe.parse_grid_probe_text(text)
 
 
-@pytest.mark.parametrize("component", ['"bad"', "1e39"])
+@pytest.mark.parametrize("component", ['"bad"', "1e39", "1" + "0" * 400])
 def test_parse_grid_probe_text_rejects_invalid_direction_vector_components(component):
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
         train_llm_grid_probe.parse_grid_probe_text(

@@ -500,8 +500,13 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
         row: List[float] = []
         for component_index, component in enumerate(raw_vector):
             if type(component) is int or type(component) is float:
-                with np.errstate(over="ignore", invalid="ignore"):
-                    numeric_component = np.float32(component)
+                try:
+                    with np.errstate(over="ignore", invalid="ignore"):
+                        numeric_component = np.float32(component)
+                except (OverflowError, ValueError) as error:
+                    raise LLMGridProbeValidationError(
+                        f"direction_vectors[{index}][{component_index}] must be finite"
+                    ) from error
             else:
                 raise LLMGridProbeValidationError(
                     f"direction_vectors[{index}][{component_index}] must be numeric"
