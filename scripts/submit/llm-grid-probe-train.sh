@@ -18,4 +18,4 @@ python -m vlnce_baselines.models.etp_llm.train_llm_grid_probe train \
   --lora-alpha 64 \
   --lora-dropout 0.05 \
   --cognitive-map-namespace gt.legacy.r1p5.direction5.v1 \
-  --output-dir outputs/llm_grid_probe/r2r-legacy-r1p5-direction5-scale2
+  --output-dir outputs/llm_grid/r2r-legacy-r1p5-direction5-scale2

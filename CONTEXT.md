@@ -69,8 +69,8 @@ The non-cheating LLM candidate for generating a grid-native cognitive map compat
 _Avoid_: LLM-Boxes when the target is not object and region boxes
 
 **LLM-Grid-Probe**:
-The predictor-only milestone for evaluating whether an LLM can generate the grid portion of a grid-native cognitive map while non-grid metadata is held outside the candidate comparison.
-_Avoid_: LLM-Grid when the experiment does not predict all candidate map inputs
+The earlier predictor-only milestone for evaluating whether an LLM can generate only the grid portion of a grid-native cognitive map while non-grid metadata is held outside the candidate comparison.
+_Avoid_: LLM-Grid when `direction_vectors` and other required candidate map inputs are predicted by the model
 
 **Mentioned-only LLM-Boxes target**:
 The LLM-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.
@@ -177,6 +177,10 @@ Domain expert: "No. LLM-Grid predicts a grid-native cognitive-map target, while 
 Developer: "Can we call a grid-only prediction experiment LLM-Grid?"
 
 Domain expert: "No. A grid-only predictor is LLM-Grid-Probe; LLM-Grid is reserved for the non-cheating candidate that predicts the needed map inputs rather than borrowing ground-truth metadata."
+
+Developer: "Can a predictor path become LLM-Grid once it predicts `direction_vectors`?"
+
+Domain expert: "Yes. Predicting sparse grid anchors plus Try5-style `direction_vectors` removes the main ground-truth metadata leak, so the experiment should be reported as LLM-Grid even if the implementation still reuses the probe module name."
 
 Developer: "Should LLM-Boxes generate confidence scores?"
 
