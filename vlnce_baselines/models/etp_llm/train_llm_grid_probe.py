@@ -73,6 +73,7 @@ class LLMGridProbeItem(TypedDict):
     input_text: str
     target_text: str
     target_grid: NDArray[np.float32]
+    target_direction_vectors: NDArray[np.float32]
     example_id: str
     instruction: str
     start_position: Sequence[float]
@@ -246,6 +247,7 @@ class LLMGridProbeDataset(Dataset):
                 mentioned_regions=mentioned_regions,
             ),
             "target_grid": target_grid,
+            "target_direction_vectors": direction_vectors,
             "example_id": example.example_id,
             "instruction": example.instruction,
             "start_position": start_position,
@@ -611,9 +613,55 @@ def _grid_metrics(
     }
 
 
+def _zero_direction_vector_metrics() -> Dict[str, float]:
+    return {
+        "direction_vector_valid_rate": 0.0,
+        "direction_vector_l2": 0.0,
+        "direction_vector_cosine": 0.0,
+        "direction_vector_padding_accuracy": 0.0,
+    }
+
+
+def _direction_vector_metrics(
+    pred_vectors: NDArray[np.float32],
+    target_vectors: NDArray[np.float32],
+) -> Dict[str, float]:
+    pred_norms = np.linalg.norm(pred_vectors, axis=1)
+    target_norms = np.linalg.norm(target_vectors, axis=1)
+    pred_nonzero = pred_norms > 0.0
+    target_nonzero = target_norms > 0.0
+    non_padding_count = int(np.count_nonzero(target_nonzero))
+    if non_padding_count == 0:
+        cosine = 1.0
+    else:
+        dot_products = np.sum(
+            pred_vectors[target_nonzero] * target_vectors[target_nonzero],
+            axis=1,
+        )
+        denominators = pred_norms[target_nonzero] * target_norms[target_nonzero]
+        row_cosines = np.divide(
+            dot_products,
+            denominators,
+            out=np.zeros_like(dot_products, dtype=np.float32),
+            where=denominators > 0.0,
+        )
+        cosine = float(np.mean(row_cosines))
+    return {
+        "direction_vector_valid_rate": 1.0,
+        "direction_vector_l2": float(
+            np.mean(np.linalg.norm(pred_vectors - target_vectors, axis=1))
+        ),
+        "direction_vector_cosine": cosine,
+        "direction_vector_padding_accuracy": float(
+            np.mean(pred_nonzero == target_nonzero)
+        ),
+    }
+
+
 def evaluate_grid_probe_prediction(
     generated_text: str,
     target_grid: NDArray[np.float32],
+    target_direction_vectors: NDArray[np.float32],
 ) -> Dict[str, float]:
     try:
         shape = cast(Tuple[int, int, int], target_grid.shape)
@@ -635,8 +683,15 @@ def evaluate_grid_probe_prediction(
             ),
             "predicted_cell_count": 0.0,
             "target_cell_count": float(np.count_nonzero(target_grid > 0)),
+            **_zero_direction_vector_metrics(),
         }
     metrics = _grid_metrics(parsed.grid, target_grid)
+    metrics.update(
+        _direction_vector_metrics(
+            parsed.direction_vectors,
+            target_direction_vectors,
+        )
+    )
     metrics.update(
         {
             "json_valid": 1.0,
@@ -1012,6 +1067,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
                 metrics = evaluate_grid_probe_prediction(
                     generated_text,
                     item["target_grid"],
+                    item["target_direction_vectors"],
                 )
                 metrics.update(
                     _text_diagnostics(

@@ -12,6 +12,7 @@ EMPTY_GRID_TEXT = (
     '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],[0.0,0.0],'
     '[0.0,0.0]]}'
 )
+ZERO_DIRECTION_VECTORS = np.zeros((5, 2), dtype=np.float32)
 
 
 class _Episode:
@@ -179,6 +180,7 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "train-example",
         "instruction": "short",
         "start_position": (1.2, 3.4),
@@ -417,6 +419,10 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     target = np.zeros((37, 50, 50), dtype=np.float32)
     target[1, 0, 0] = 1.0
     target[28, 1, 2] = 0.6
+    target_direction_vectors = np.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
 
     valid = train_llm_grid_probe.evaluate_grid_probe_prediction(
         (
@@ -429,10 +435,12 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
             '[0.0,0.0],[0.0,0.0]]}'
         ),
         target,
+        target_direction_vectors,
     )
     invalid = train_llm_grid_probe.evaluate_grid_probe_prediction(
         "not json",
         target,
+        target_direction_vectors,
     )
 
     assert valid["json_valid"] == 1.0
@@ -448,6 +456,10 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     assert invalid["schema_valid"] == 0.0
     assert invalid["cell_precision"] == 0.0
     assert invalid["cell_recall"] == 0.0
+    assert invalid["direction_vector_valid_rate"] == 0.0
+    assert invalid["direction_vector_l2"] == 0.0
+    assert invalid["direction_vector_cosine"] == 0.0
+    assert invalid["direction_vector_padding_accuracy"] == 0.0
 
 
 def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
@@ -462,10 +474,36 @@ def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
             '[0.0,0.0],[0.0,0.0]]}'
         ),
         target,
+        ZERO_DIRECTION_VECTORS,
     )
 
     assert result["json_valid"] == 1.0
     assert result["schema_valid"] == 0.0
+    assert result["direction_vector_valid_rate"] == 0.0
+
+
+def test_evaluate_grid_probe_prediction_scores_matching_direction_vectors():
+    target = np.zeros((37, 50, 50), dtype=np.float32)
+    target_direction_vectors = np.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    result = train_llm_grid_probe.evaluate_grid_probe_prediction(
+        (
+            '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
+            '"objects":{},'
+            '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
+        ),
+        target,
+        target_direction_vectors,
+    )
+
+    assert result["direction_vector_valid_rate"] == 1.0
+    assert result["direction_vector_l2"] == pytest.approx(0.0)
+    assert result["direction_vector_cosine"] == pytest.approx(1.0)
+    assert result["direction_vector_padding_accuracy"] == pytest.approx(1.0)
 
 
 def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
@@ -558,6 +596,19 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         ],
     }
     assert item["target_grid"].shape == (37, 50, 50)
+    np.testing.assert_array_equal(
+        item["target_direction_vectors"],
+        np.asarray(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
     assert tuple(item["start_position"]) == pytest.approx((1.2, 3.4))
     assert tuple(item["start_direction"]) == pytest.approx((0.0, 1.0))
 
@@ -600,6 +651,7 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
             '[0.0,0.0],[0.0,0.0]]}'
         ),
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "R2R_train_42",
         "instruction": "Go to the chair.",
         "start_position": (1.2, 3.4),
@@ -627,6 +679,7 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
         "input_text": "dataset R2R | instruction Go to the chair.",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "oversized-prompt",
         "instruction": "Go to the chair.",
         "start_position": (1.2, 3.4),
@@ -665,6 +718,7 @@ def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
         "input_text": "short",
         "target_text": target_text,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "completion-budget",
         "instruction": "short",
         "start_position": (1.2, 3.4),
@@ -703,6 +757,7 @@ def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": target_grid,
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "short",
         "instruction": "short",
         "start_position": (1.2, 3.4),
@@ -732,6 +787,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
         "example_id": "short",
         "instruction": "short",
         "start_position": (1.2, 3.4),
