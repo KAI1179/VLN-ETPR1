@@ -1078,6 +1078,32 @@ def _enable_gradient_checkpointing(model: Any) -> None:
     config = getattr(model, "config", None)
     if config is not None and hasattr(config, "use_cache"):
         config.use_cache = False
+    enable_input_require_grads = getattr(
+        model,
+        "enable_input_require_grads",
+        None,
+    )
+    if enable_input_require_grads is not None:
+        enable_input_require_grads()
+    else:
+        get_input_embeddings = getattr(model, "get_input_embeddings", None)
+        if get_input_embeddings is None:
+            raise AttributeError(
+                "Model does not expose enable_input_require_grads or "
+                "get_input_embeddings; rerun without --gradient-checkpointing"
+            )
+        input_embeddings = get_input_embeddings()
+        if input_embeddings is None:
+            raise AttributeError(
+                "Model returned no input embeddings; rerun without "
+                "--gradient-checkpointing"
+            )
+
+        def make_inputs_require_grad(module: Any, inputs: Any, output: Any) -> None:
+            del module, inputs
+            output.requires_grad_(True)
+
+        input_embeddings.register_forward_hook(make_inputs_require_grad)
     gradient_checkpointing_enable()
 
 

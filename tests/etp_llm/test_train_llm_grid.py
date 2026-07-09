@@ -140,6 +140,7 @@ class _TrainingModel(torch.nn.Module):
         self.loss_value = loss_value
         self.config = type("Config", (), {"use_cache": True})()
         self.gradient_checkpointing_enabled = False
+        self.input_require_grads_enabled = False
 
     def forward(self, **kwargs):
         loss = self.adapter * 0 + torch.tensor(self.loss_value)
@@ -147,6 +148,9 @@ class _TrainingModel(torch.nn.Module):
 
     def gradient_checkpointing_enable(self):
         self.gradient_checkpointing_enabled = True
+
+    def enable_input_require_grads(self):
+        self.input_require_grads_enabled = True
 
     def save_pretrained(self, output_dir):
         return None
@@ -1314,6 +1318,7 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
     train_llm_grid.train_model(args)
 
     assert model.gradient_checkpointing_enabled is True
+    assert model.input_require_grads_enabled is True
     assert model.config.use_cache is False
 
 
