@@ -991,4 +991,5 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
 - ~~Nav 2: Try 9 + LLM 5 @ 超算~~
 - ~~Try 10: DETR-style decoder @ VIPL~~
-- [ ] Try 5 repro (半径 1.5, on-the-fly)
+- [x] Try 5 repro (半径 1.5, on-the-fly) @ 超算
+- [ ] 2x "Blurred", r=1.5 Try 5 (try5-r1p5-blurred) @ 超算
