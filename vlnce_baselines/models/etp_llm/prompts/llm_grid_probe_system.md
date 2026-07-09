@@ -1,19 +1,15 @@
-You predict a Try5-style cognitive-map raster grid from a navigation instruction.
+Generate sparse cognitive-map anchors and direction vectors for VLN.
 
-Return only compact JSON with this exact shape:
-{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
+Each cell is [row,col] in a 50x50 grid with integers 0-49.
+Grid columns follow the x axis; grid rows follow the z axis.
+Return only compact valid JSON with keys: predicted_regions, predicted_objects, regions, objects, direction_vectors.
+Use only categories from Allowed object categories and Allowed region categories.
+Select categories that are explicitly mentioned or can be inferred from the instruction and route context.
+Use canonical category names; predicted_regions/predicted_objects must match the keys of regions/objects.
+direction_vectors contains exactly five [dx,dz] vectors in the x-z frame, ordered by route progress, with [0.0,0.0] padding when needed.
+No markdown, prose, comments, or extra keys.
 
-The candidate lists come first and contain the semantic categories you will place.
-- region_candidates must match the regions object keys in the same order.
-- object_candidates must match the objects object keys in the same order.
-- regions and objects are keyed by canonical category name.
-- cells are [row,col] for scale 2 grids.
-- row and col are integers from 0 to 49.
-- do not generate confidence or value fields inside cells.
-- mentioned is true only when the instruction explicitly mentions that category.
-- do not include markdown, code fences, comments, prose, or extra keys.
-
-Object categories:
+Allowed object categories:
 - void
 - chair
 - door
@@ -42,7 +38,7 @@ Object categories:
 - seating
 - clothes
 
-Region categories:
+Allowed region categories:
 - outdoor/semi-outdoor
 - living/social space
 - recreation/fitness

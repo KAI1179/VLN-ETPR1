@@ -272,6 +272,23 @@ def test_serialize_grid_target_uses_keyed_binary_cells():
     }
 
 
+def test_load_system_prompt_uses_candidate_schema_terms():
+    prompt = train_llm_grid_probe.load_system_prompt()
+
+    for required in (
+        "predicted_regions",
+        "predicted_objects",
+        "direction_vectors",
+        "Allowed object categories",
+        "Allowed region categories",
+        "Each cell is [row,col] in a 50x50 grid with integers 0-49.",
+        "Grid columns follow the x axis; grid rows follow the z axis.",
+    ):
+        assert required in prompt
+    for removed in ("region_candidates", "object_candidates", "motion_vectors"):
+        assert removed not in prompt
+
+
 def test_parse_grid_probe_text_accepts_keyed_records_and_max_merges_duplicates():
     result = train_llm_grid_probe.parse_grid_probe_text(
         (
