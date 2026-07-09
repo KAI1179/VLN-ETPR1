@@ -33,6 +33,14 @@ Example:
 python -m prior.llm_grid_samples --namespace gt.legacy.r1p5.direction5.v1 --count 100 --scale 2 --tokenizer-path data/models/Llama-3.1-8B-Instruct
 ```
 
+LLM-Grid training defaults to `gt.legacy.r1p5.direction5.v1`, not the blurred
+namespace, because its current target is a binary `scale=2` grid. The blurred
+namespace is derived by max-pooling to `50x50` and upsampling back to `100x100`,
+so serializing either namespace with `scale=2` produces the same JSON target.
+Use `gt.legacy.r1p5.direction5.blurred.v1` for Try5-style GT policy runs that
+consume the full `100x100` raster, or revisit this default if LLM-Grid moves to
+`scale=1` or a soft/subcell target.
+
 # Cognitive Map Generators
 
 Both `prior` and `prior.etp_r1` generate paired cache files:
