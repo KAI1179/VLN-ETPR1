@@ -180,7 +180,7 @@ Domain expert: "No. A grid-only predictor is LLM-Grid-Probe; LLM-Grid is reserve
 
 Developer: "Can a predictor path become LLM-Grid once it predicts `direction_vectors`?"
 
-Domain expert: "Yes. Predicting sparse grid anchors plus Try5-style `direction_vectors` removes the main ground-truth metadata leak, so the experiment should be reported as LLM-Grid even if the implementation still reuses the probe module name."
+Domain expert: "Yes. Predicting sparse grid anchors plus Try5-style `direction_vectors` removes the main ground-truth metadata leak, so the experiment should be reported as LLM-Grid."
 
 Developer: "Should LLM-Boxes generate confidence scores?"
 

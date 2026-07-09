@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
-from vlnce_baselines.models.etp_llm import train_llm_grid_probe
+from vlnce_baselines.models.etp_llm import train_llm_grid
 
 EMPTY_GRID_TEXT = (
     '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},'
@@ -176,7 +176,7 @@ def _save_box_payload(path, object_mentions=(), region_mentions=()):
 
 
 def _patch_training_dependencies(monkeypatch, model, batches=None):
-    item: train_llm_grid_probe.LLMGridProbeItem = {
+    item: train_llm_grid.LLMGridItem = {
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
@@ -196,28 +196,28 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
     if batches is None:
         batches = [batch]
     monkeypatch.setattr(
-        train_llm_grid_probe,
-        "load_llm_grid_probe_examples",
+        train_llm_grid,
+        "load_llm_grid_examples",
         lambda *args, **kwargs: [object()],
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
-        "LLMGridProbeDataset",
+        train_llm_grid,
+        "LLMGridDataset",
         lambda *args, **kwargs: [item],
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "_load_causal_lm_model_and_tokenizer",
         lambda *args, **kwargs: (model, _TrainingTokenizer()),
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
-        "_apply_grid_probe_lora",
+        train_llm_grid,
+        "_apply_grid_lora",
         lambda loaded_model, args: loaded_model,
         raising=False,
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "DataLoader",
         lambda *args, **kwargs: batches,
     )
@@ -275,7 +275,7 @@ def test_serialize_grid_target_uses_keyed_binary_cells():
 
 
 def test_load_system_prompt_uses_candidate_schema_terms():
-    prompt = train_llm_grid_probe.load_system_prompt()
+    prompt = train_llm_grid.load_system_prompt()
 
     for required in (
         "predicted_regions",
@@ -291,8 +291,8 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         assert removed not in prompt
 
 
-def test_parse_grid_probe_text_accepts_candidate_records_and_direction_vectors():
-    result = train_llm_grid_probe.parse_grid_probe_text(
+def test_parse_grid_text_accepts_candidate_records_and_direction_vectors():
+    result = train_llm_grid.parse_grid_text(
         (
             '{"predicted_regions":["living/social space"],'
             '"predicted_objects":["chair"],'
@@ -328,9 +328,9 @@ def test_parse_grid_probe_text_accepts_candidate_records_and_direction_vectors()
     assert result.duplicate_record_count == 1
 
 
-def test_parse_grid_probe_text_rejects_old_candidate_keys():
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text(
+def test_parse_grid_text_rejects_old_candidate_keys():
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text(
             (
                 '{"region_candidates":[],"object_candidates":["chair"],'
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
@@ -341,12 +341,12 @@ def test_parse_grid_probe_text_rejects_old_candidate_keys():
         )
 
 
-def test_parse_grid_probe_text_rejects_wrong_top_level_key_order():
+def test_parse_grid_text_rejects_wrong_top_level_key_order():
     with pytest.raises(
-        train_llm_grid_probe.LLMGridProbeValidationError,
+        train_llm_grid.LLMGridValidationError,
         match="keys must be ordered",
     ):
-        train_llm_grid_probe.parse_grid_probe_text(
+        train_llm_grid.parse_grid_text(
             (
                 '{"predicted_objects":[],"predicted_regions":[],"regions":{},'
                 '"objects":{},'
@@ -356,9 +356,9 @@ def test_parse_grid_probe_text_rejects_wrong_top_level_key_order():
         )
 
 
-def test_parse_grid_probe_text_rejects_bad_direction_vector_shape():
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text(
+def test_parse_grid_text_rejects_bad_direction_vector_shape():
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text(
             (
                 '{"predicted_regions":[],"predicted_objects":["chair"],'
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
@@ -368,13 +368,13 @@ def test_parse_grid_probe_text_rejects_bad_direction_vector_shape():
         )
 
 
-def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text("not json")
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text('{"grid":[[1,0,0]]}')
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text(
+def test_parse_grid_text_rejects_invalid_json_and_bad_records():
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text("not json")
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text('{"grid":[[1,0,0]]}')
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text(
             (
                 '{"predicted_regions":[],"predicted_objects":["chair"],'
                 '"regions":{},"objects":{"chair":{"cells":[[0,0,1]],'
@@ -411,15 +411,15 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
         ),
     ],
 )
-def test_parse_grid_probe_text_rejects_boolean_fields(text):
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text(text)
+def test_parse_grid_text_rejects_boolean_fields(text):
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text(text)
 
 
 @pytest.mark.parametrize("component", ['"bad"', "1e39", "1" + "0" * 400])
-def test_parse_grid_probe_text_rejects_invalid_direction_vector_components(component):
-    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text(
+def test_parse_grid_text_rejects_invalid_direction_vector_components(component):
+    with pytest.raises(train_llm_grid.LLMGridValidationError):
+        train_llm_grid.parse_grid_text(
             (
                 '{"predicted_regions":[],"predicted_objects":["chair"],'
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
@@ -430,12 +430,12 @@ def test_parse_grid_probe_text_rejects_invalid_direction_vector_components(compo
         )
 
 
-def test_parse_grid_probe_text_rejects_non_unit_direction_vectors():
+def test_parse_grid_text_rejects_non_unit_direction_vectors():
     with pytest.raises(
-        train_llm_grid_probe.LLMGridProbeValidationError,
+        train_llm_grid.LLMGridValidationError,
         match="unit length or zero padding",
     ):
-        train_llm_grid_probe.parse_grid_probe_text(
+        train_llm_grid.parse_grid_text(
             (
                 '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
                 '"objects":{},'
@@ -445,7 +445,7 @@ def test_parse_grid_probe_text_rejects_non_unit_direction_vectors():
         )
 
 
-def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
+def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
     target = np.zeros((37, 50, 50), dtype=np.float32)
     target[1, 0, 0] = 1.0
     target[28, 1, 2] = 0.6
@@ -454,7 +454,7 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
         dtype=np.float32,
     )
 
-    valid = train_llm_grid_probe.evaluate_grid_probe_prediction(
+    valid = train_llm_grid.evaluate_grid_prediction(
         (
             '{"predicted_regions":["living/social space"],'
             '"predicted_objects":["chair"],'
@@ -467,7 +467,7 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
         target,
         target_direction_vectors,
     )
-    invalid = train_llm_grid_probe.evaluate_grid_probe_prediction(
+    invalid = train_llm_grid.evaluate_grid_prediction(
         "not json",
         target,
         target_direction_vectors,
@@ -494,10 +494,10 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     assert invalid["direction_vector_padding_accuracy"] == 0.0
 
 
-def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
+def test_evaluate_grid_prediction_distinguishes_invalid_schema():
     target = np.zeros((37, 50, 50), dtype=np.float32)
 
-    result = train_llm_grid_probe.evaluate_grid_probe_prediction(
+    result = train_llm_grid.evaluate_grid_prediction(
         (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":"not a list",'
@@ -514,14 +514,14 @@ def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
     assert result["direction_vector_valid_rate"] == 0.0
 
 
-def test_evaluate_grid_probe_prediction_scores_matching_direction_vectors():
+def test_evaluate_grid_prediction_scores_matching_direction_vectors():
     target = np.zeros((37, 50, 50), dtype=np.float32)
     target_direction_vectors = np.asarray(
         [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
         dtype=np.float32,
     )
 
-    result = train_llm_grid_probe.evaluate_grid_probe_prediction(
+    result = train_llm_grid.evaluate_grid_prediction(
         (
             '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
             '"objects":{},'
@@ -541,7 +541,7 @@ def test_evaluate_grid_probe_prediction_scores_matching_direction_vectors():
 
 
 def test_aggregate_metrics_weights_direction_vector_support():
-    metrics = train_llm_grid_probe._aggregate_metrics(
+    metrics = train_llm_grid._aggregate_metrics(
         [
             {
                 "json_valid": 0.0,
@@ -576,7 +576,7 @@ def test_aggregate_metrics_weights_direction_vector_support():
     assert metrics["direction_vector_cosine"] == pytest.approx(0.25)
 
 
-def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
+def test_load_llm_grid_examples_loads_raster_paths(monkeypatch, tmp_path):
     _EpisodeSource.calls = []
     raster_path = tmp_path / "scene-a" / "R2R_train_42.npz"
     raster_path.parent.mkdir()
@@ -587,14 +587,14 @@ def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
     )
 
-    monkeypatch.setattr(train_llm_grid_probe, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(train_llm_grid, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "cognitive_map_cache_path",
         lambda scene_id, cache_id, namespace: raster_path,
     )
 
-    examples = train_llm_grid_probe.load_llm_grid_probe_examples(
+    examples = train_llm_grid.load_llm_grid_examples(
         "R2R",
         ["train"],
         limit=1,
@@ -607,7 +607,7 @@ def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
     assert examples[0].raster_path == raster_path
 
 
-def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
+def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
     raster_path.parent.mkdir(parents=True)
     grid = np.zeros((37, 100, 100), dtype=np.float32)
@@ -634,7 +634,7 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         object_mentions={1},
         region_mentions={1},
     )
-    example = train_llm_grid_probe.LLMGridProbeExample(
+    example = train_llm_grid.LLMGridExample(
         example_id="R2R_train_42",
         dataset_tag="R2R",
         split="train",
@@ -644,7 +644,7 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         raster_path=raster_path,
     )
 
-    item = train_llm_grid_probe.LLMGridProbeDataset([example])[0]
+    item = train_llm_grid.LLMGridDataset([example])[0]
 
     assert item["input_text"] == (
         "dataset R2R | start x = 1.2 | start z = 3.4 | "
@@ -683,7 +683,7 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     assert tuple(item["start_direction"]) == pytest.approx((0.0, 1.0))
 
 
-def test_llm_grid_probe_dataset_rejects_bad_direction_vector_shape(tmp_path):
+def test_llm_grid_dataset_rejects_bad_direction_vector_shape(tmp_path):
     raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
     raster_path.parent.mkdir(parents=True)
     np.savez_compressed(
@@ -693,7 +693,7 @@ def test_llm_grid_probe_dataset_rejects_bad_direction_vector_shape(tmp_path):
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
         direction_vectors=np.zeros((2, 2), dtype=np.float32),
     )
-    example = train_llm_grid_probe.LLMGridProbeExample(
+    example = train_llm_grid.LLMGridExample(
         example_id="R2R_train_42",
         dataset_tag="R2R",
         split="train",
@@ -707,11 +707,11 @@ def test_llm_grid_probe_dataset_rejects_bad_direction_vector_shape(tmp_path):
         ValueError,
         match=r"direction_vectors must have shape \(5, 2\), got \(2, 2\)",
     ):
-        train_llm_grid_probe.LLMGridProbeDataset([example])[0]
+        train_llm_grid.LLMGridDataset([example])[0]
 
 
-def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
-    item: train_llm_grid_probe.LLMGridProbeItem = {
+def test_collate_llm_grid_masks_prompt_and_padding_tokens():
+    item: train_llm_grid.LLMGridItem = {
         "input_text": "dataset R2R | instruction Go to the chair.",
         "target_text": (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
@@ -729,7 +729,7 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
         "scene_id": "scene-a",
     }
 
-    batch = train_llm_grid_probe.collate_llm_grid_probe_batch(
+    batch = train_llm_grid.collate_llm_grid_batch(
         [item],
         tokenizer=_ChatTokenizer(),
         system_prompt="system",
@@ -744,8 +744,8 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
     assert batch["example_ids"] == ["R2R_train_42"]
 
 
-def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
-    item: train_llm_grid_probe.LLMGridProbeItem = {
+def test_collate_llm_grid_rejects_prompt_over_input_budget():
+    item: train_llm_grid.LLMGridItem = {
         "input_text": "dataset R2R | instruction Go to the chair.",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
@@ -757,7 +757,7 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
         "scene_id": "scene-a",
     }
     tokenizer = _EosChatTokenizer()
-    prompt = train_llm_grid_probe._render_chat_prompt(
+    prompt = train_llm_grid._render_chat_prompt(
         tokenizer,
         "system",
         item["input_text"],
@@ -767,7 +767,7 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
         ValueError,
         match="oversized-prompt.*max_input_length",
     ):
-        train_llm_grid_probe.collate_llm_grid_probe_batch(
+        train_llm_grid.collate_llm_grid_batch(
             [item],
             tokenizer=tokenizer,
             system_prompt="system",
@@ -776,7 +776,7 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
         )
 
 
-def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
+def test_collate_llm_grid_rejects_target_over_completion_budget():
     target_text = (
         '{"predicted_regions":[],"predicted_objects":["chair"],'
         '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1]],'
@@ -784,7 +784,7 @@ def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
         '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
         '[0.0,0.0],[0.0,0.0]]}'
     )
-    item: train_llm_grid_probe.LLMGridProbeItem = {
+    item: train_llm_grid.LLMGridItem = {
         "input_text": "short",
         "target_text": target_text,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
@@ -796,12 +796,12 @@ def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
         "scene_id": "scene-a",
     }
     tokenizer = _EosChatTokenizer()
-    prompt = train_llm_grid_probe._render_chat_prompt(
+    prompt = train_llm_grid._render_chat_prompt(
         tokenizer,
         "system",
         item["input_text"],
     )
-    full_completion = train_llm_grid_probe._render_chat_completion(
+    full_completion = train_llm_grid._render_chat_completion(
         tokenizer,
         "system",
         item["input_text"],
@@ -812,7 +812,7 @@ def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
     )
 
     with pytest.raises(ValueError, match="completion-budget.*max_new_tokens"):
-        train_llm_grid_probe.collate_llm_grid_probe_batch(
+        train_llm_grid.collate_llm_grid_batch(
             [item],
             tokenizer=tokenizer,
             system_prompt="system",
@@ -821,9 +821,9 @@ def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
         )
 
 
-def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
+def test_collate_llm_grid_prompt_lengths_use_padded_width():
     target_grid = np.zeros((37, 50, 50), dtype=np.float32)
-    short: train_llm_grid_probe.LLMGridProbeItem = {
+    short: train_llm_grid.LLMGridItem = {
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": target_grid,
@@ -834,13 +834,13 @@ def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
     }
-    long: train_llm_grid_probe.LLMGridProbeItem = {
+    long: train_llm_grid.LLMGridItem = {
         **short,
         "input_text": "a much longer prompt",
         "example_id": "long",
     }
 
-    batch = train_llm_grid_probe.collate_llm_grid_probe_prompt_batch(
+    batch = train_llm_grid.collate_llm_grid_prompt_batch(
         [short, long],
         tokenizer=_ChatTokenizer(),
         system_prompt="system",
@@ -853,7 +853,7 @@ def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
 
 
 def test_filter_training_items_excludes_targets_over_completion_budget():
-    short: train_llm_grid_probe.LLMGridProbeItem = {
+    short: train_llm_grid.LLMGridItem = {
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
@@ -864,7 +864,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
     }
-    long: train_llm_grid_probe.LLMGridProbeItem = {
+    long: train_llm_grid.LLMGridItem = {
         **short,
         "target_text": (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
@@ -877,12 +877,12 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
     }
     assert len(long["target_text"]) > len(EMPTY_GRID_TEXT)
     tokenizer = _EosChatTokenizer()
-    prompt = train_llm_grid_probe._render_chat_prompt(
+    prompt = train_llm_grid._render_chat_prompt(
         tokenizer,
         "system",
         short["input_text"],
     )
-    empty_completion = train_llm_grid_probe._render_chat_completion(
+    empty_completion = train_llm_grid._render_chat_completion(
         tokenizer,
         "system",
         short["input_text"],
@@ -892,7 +892,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
         tokenizer.encode(prompt)
     )
 
-    filtered, skipped = train_llm_grid_probe.filter_grid_probe_training_items(
+    filtered, skipped = train_llm_grid.filter_grid_training_items(
         [short, long],
         tokenizer=tokenizer,
         system_prompt="system",
@@ -904,7 +904,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
 
 
 def test_length_grouped_batch_sampler_batches_similar_lengths():
-    sampler = train_llm_grid_probe.LengthGroupedBatchSampler(
+    sampler = train_llm_grid.LengthGroupedBatchSampler(
         lengths=[100, 10, 20, 105],
         batch_size=2,
         generator=torch.Generator().manual_seed(0),
@@ -930,8 +930,8 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
             }
         ]
 
-    monkeypatch.setattr(train_llm_grid_probe, "DataLoader", fake_data_loader)
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    monkeypatch.setattr(train_llm_grid, "DataLoader", fake_data_loader)
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -944,18 +944,18 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         ]
     )
 
-    train_llm_grid_probe.train_model(args)
+    train_llm_grid.train_model(args)
 
     assert isinstance(
         captured["batch_sampler"],
-        train_llm_grid_probe.LengthGroupedBatchSampler,
+        train_llm_grid.LengthGroupedBatchSampler,
     )
     assert "batch_size" not in captured
     assert "shuffle" not in captured
 
 
-def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(["train"])
+def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
+    args = train_llm_grid.LLMGridArgs().parse_args(["train"])
 
     assert args.mode == "train"
     assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
@@ -970,12 +970,12 @@ def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
 
 
 def test_train_model_rejects_full_finetuning():
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         ["train", "--finetune-method", "full"]
     )
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
-        train_llm_grid_probe.train_model(args)
+        train_llm_grid.train_model(args)
 
 
 def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_path):
@@ -997,7 +997,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         tmp_path / "boxes" / "scene-a" / "grid.npz",
         object_mentions={1},
     )
-    example = train_llm_grid_probe.LLMGridProbeExample(
+    example = train_llm_grid.LLMGridExample(
         example_id="R2R_val_seen_42",
         dataset_tag="R2R",
         split="val_seen",
@@ -1060,18 +1060,18 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     model = FakeModel()
     tokenizer = FakeTokenizer()
     monkeypatch.setattr(
-        train_llm_grid_probe,
-        "load_llm_grid_probe_examples",
+        train_llm_grid,
+        "load_llm_grid_examples",
         lambda *args, **kwargs: [example],
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "_load_causal_lm_model_and_tokenizer",
         lambda *args, **kwargs: (model, tokenizer),
         raising=False,
     )
 
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "eval",
             "--output-dir",
@@ -1084,7 +1084,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             "none",
         ]
     )
-    metrics = train_llm_grid_probe.evaluate_model(args)
+    metrics = train_llm_grid.evaluate_model(args)
 
     assert metrics["json_valid"] == pytest.approx(1.0)
     assert metrics["cell_recall"] == pytest.approx(1.0)
@@ -1128,21 +1128,21 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
             raise AssertionError("device-mapped model must not be moved")
 
     monkeypatch.setattr(
-        train_llm_grid_probe,
-        "load_llm_grid_probe_examples",
+        train_llm_grid,
+        "load_llm_grid_examples",
         lambda *args, **kwargs: [object()],
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "_load_causal_lm_model_and_tokenizer",
         lambda *args, **kwargs: (DeviceMappedModel(), _ChatTokenizer()),
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "DataLoader",
         lambda *args, **kwargs: [],
     )
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "eval",
             "--output-dir",
@@ -1152,14 +1152,14 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
         ]
     )
 
-    metrics = train_llm_grid_probe.evaluate_model(args)
+    metrics = train_llm_grid.evaluate_model(args)
 
     assert metrics == {"example_count": 0.0}
 
 
 def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):
     _patch_training_dependencies(monkeypatch, _TrainingModel(float("nan")))
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -1173,7 +1173,7 @@ def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):
     )
 
     with pytest.raises(FloatingPointError, match="training loss"):
-        train_llm_grid_probe.train_model(args)
+        train_llm_grid.train_model(args)
 
 
 def test_train_model_rejects_non_finite_clipped_gradient_norm(
@@ -1190,7 +1190,7 @@ def test_train_model_rejects_non_finite_clipped_gradient_norm(
         return torch.tensor(float("inf"))
 
     monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", fake_clip)
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -1204,7 +1204,7 @@ def test_train_model_rejects_non_finite_clipped_gradient_norm(
     )
 
     with pytest.raises(FloatingPointError, match="training gradient norm"):
-        train_llm_grid_probe.train_model(args)
+        train_llm_grid.train_model(args)
 
     assert clip_call["max_norm"] == 1.0
     assert clip_call["error_if_nonfinite"] is False
@@ -1215,13 +1215,13 @@ def test_train_model_validates_parameters_and_writes_outputs(monkeypatch, tmp_pa
     _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
     validation_contexts = []
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "_validate_trainable_parameters_finite",
         lambda model, context: validation_contexts.append(context),
         raising=False,
     )
     output_dir = tmp_path / "run"
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -1234,7 +1234,7 @@ def test_train_model_validates_parameters_and_writes_outputs(monkeypatch, tmp_pa
         ]
     )
 
-    metrics = train_llm_grid_probe.train_model(args)
+    metrics = train_llm_grid.train_model(args)
 
     assert metrics["train_loss"] == pytest.approx(1.0)
     assert validation_contexts
@@ -1272,7 +1272,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             calls["zero_grad"] += 1
 
     monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -1287,7 +1287,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
         ]
     )
 
-    metrics = train_llm_grid_probe.train_model(args)
+    metrics = train_llm_grid.train_model(args)
 
     assert calls == {"step": 2, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
@@ -1297,7 +1297,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
 def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
     model = _TrainingModel(1.0)
     _patch_training_dependencies(monkeypatch, model)
-    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+    args = train_llm_grid.LLMGridArgs().parse_args(
         [
             "train",
             "--output-dir",
@@ -1311,7 +1311,7 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
         ]
     )
 
-    train_llm_grid_probe.train_model(args)
+    train_llm_grid.train_model(args)
 
     assert model.gradient_checkpointing_enabled is True
     assert model.config.use_cache is False
@@ -1320,20 +1320,20 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
 def test_main_dispatches_train_and_eval(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "train_model",
         lambda args: calls.append(("train", args.device)) or {"train_loss": 1.0},
     )
     monkeypatch.setattr(
-        train_llm_grid_probe,
+        train_llm_grid,
         "evaluate_model",
         lambda args: calls.append(("eval", args.device)) or {"json_valid": 1.0},
     )
 
-    assert train_llm_grid_probe.main(["train", "--device", "cpu"]) == {
+    assert train_llm_grid.main(["train", "--device", "cpu"]) == {
         "train_loss": 1.0
     }
-    assert train_llm_grid_probe.main(["eval", "--device", "cpu"]) == {
+    assert train_llm_grid.main(["eval", "--device", "cpu"]) == {
         "json_valid": 1.0
     }
     assert calls == [("train", "cpu"), ("eval", "cpu")]

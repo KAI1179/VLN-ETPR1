@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llm-grid-probe
+#SBATCH --job-name=llm-grid
 #SBATCH --gpus=6
 #SBATCH -p vip_gpu_scze096
 set -eo pipefail
@@ -9,7 +9,7 @@ conda activate etpr1-uv
 
 set -u
 
-python -m vlnce_baselines.models.etp_llm.train_llm_grid_probe train \
+python -m vlnce_baselines.models.etp_llm.train_llm_grid train \
   --batch-size 1 \
   --gradient-accumulation-steps 2 \
   --gradient-checkpointing \

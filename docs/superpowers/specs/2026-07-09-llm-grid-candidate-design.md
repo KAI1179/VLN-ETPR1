@@ -67,8 +67,8 @@ indices.
 
 ## Candidate Integration
 
-Training and evaluation should start from the existing LLM-Grid-Probe code path
-but produce a distinct LLM-Grid candidate contract:
+Training and evaluation use the `train_llm_grid` code path and produce the
+LLM-Grid candidate contract:
 
 - The serializer reads `grid` and `direction_vectors` from each raster cache.
 - The parser validates all five top-level keys and rejects old Probe keys.

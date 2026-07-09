@@ -1,4 +1,4 @@
-"""Dataset, training, and evaluation CLI for the LLM-Grid-Probe milestone."""
+"""Dataset, training, and evaluation CLI for the LLM-Grid milestone."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ GRID_SCALE = 2
 GRID_SHAPE = (GRID_CHANNELS, 50, 50)
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
-DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_probe_system.md"
+DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_system.md"
 VECTOR_NORM_TOLERANCE = 1e-3
 GRID_TARGET_KEYS = (
     "predicted_regions",
@@ -77,7 +77,7 @@ REGION_CATEGORY_TO_ID = {
 }
 
 
-class LLMGridProbeItem(TypedDict):
+class LLMGridItem(TypedDict):
     input_text: str
     target_text: str
     target_grid: NDArray[np.float32]
@@ -89,16 +89,16 @@ class LLMGridProbeItem(TypedDict):
     scene_id: str
 
 
-class LLMGridProbeValidationError(ValueError):
-    """Raised when generated LLM-Grid-Probe JSON fails validation."""
+class LLMGridValidationError(ValueError):
+    """Raised when generated LLM-Grid JSON fails validation."""
 
 
-class _LLMGridProbeJSONError(LLMGridProbeValidationError):
+class _LLMGridJSONError(LLMGridValidationError):
     """Raised when generated text is not valid JSON."""
 
 
 @dataclass(frozen=True)
-class ParsedGridProbe:
+class ParsedGrid:
     grid: NDArray[np.float32]
     direction_vectors: NDArray[np.float32]
     record_count: int
@@ -106,7 +106,7 @@ class ParsedGridProbe:
 
 
 @dataclass(frozen=True)
-class LLMGridProbeExample:
+class LLMGridExample:
     example_id: str
     dataset_tag: str
     split: str
@@ -116,17 +116,17 @@ class LLMGridProbeExample:
     raster_path: Path
 
 
-def load_llm_grid_probe_examples(
+def load_llm_grid_examples(
     dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
     limit: Optional[int] = None,
     quiet: bool = False,
     skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE,
-) -> List[LLMGridProbeExample]:
+) -> List[LLMGridExample]:
     if limit == 0:
         return []
-    examples: List[LLMGridProbeExample] = []
+    examples: List[LLMGridExample] = []
     skipped_missing_cache: List[Tuple[str, str]] = []
     for episode in VLNCEEpisodeEntry.iter_from(dataset, splits=splits):
         raster_path = cognitive_map_cache_path(
@@ -145,7 +145,7 @@ def load_llm_grid_probe_examples(
             skipped_missing_cache.append((episode.unique_id, str(raster_path)))
             continue
         examples.append(
-            LLMGridProbeExample(
+            LLMGridExample(
                 example_id=episode.unique_id,
                 dataset_tag=episode.dataset,
                 split=episode.split,
@@ -216,10 +216,10 @@ def _load_grid_mentions(raster_path: Path) -> Tuple[set[int], set[int]]:
     return objects, regions
 
 
-class LLMGridProbeDataset(Dataset):
+class LLMGridDataset(Dataset):
     def __init__(
         self,
-        examples: Sequence[LLMGridProbeExample],
+        examples: Sequence[LLMGridExample],
         scale: int = GRID_SCALE,
     ) -> None:
         self.examples = list(examples)
@@ -228,7 +228,7 @@ class LLMGridProbeDataset(Dataset):
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, index: int) -> LLMGridProbeItem:
+    def __getitem__(self, index: int) -> LLMGridItem:
         example = self.examples[index]
         (
             full_grid,
@@ -263,19 +263,19 @@ class LLMGridProbeDataset(Dataset):
             "scene_id": example.scene_id,
         }
 
-    def __iter__(self) -> Iterator[LLMGridProbeItem]:
+    def __iter__(self) -> Iterator[LLMGridItem]:
         for index in range(len(self)):
             yield self[index]
 
 
-class LLMGridProbeItemsDataset(Dataset):
-    def __init__(self, items: Sequence[LLMGridProbeItem]) -> None:
+class LLMGridItemsDataset(Dataset):
+    def __init__(self, items: Sequence[LLMGridItem]) -> None:
         self.items = list(items)
 
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, index: int) -> LLMGridProbeItem:
+    def __getitem__(self, index: int) -> LLMGridItem:
         return self.items[index]
 
 
@@ -311,7 +311,7 @@ class LengthGroupedBatchSampler(BatchSampler):
 
 
 def _completion_token_count(
-    item: LLMGridProbeItem,
+    item: LLMGridItem,
     tokenizer: Any,
     system_prompt: str,
     prompt_length: int,
@@ -325,13 +325,13 @@ def _completion_token_count(
     return _token_count(tokenizer, completion) - prompt_length
 
 
-def filter_grid_probe_training_items(
-    items: Sequence[LLMGridProbeItem],
+def filter_grid_training_items(
+    items: Sequence[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
     max_new_tokens: int,
-) -> Tuple[List[LLMGridProbeItem], List[str]]:
-    filtered: List[LLMGridProbeItem] = []
+) -> Tuple[List[LLMGridItem], List[str]]:
+    filtered: List[LLMGridItem] = []
     skipped: List[str] = []
     for item in items:
         prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
@@ -349,7 +349,7 @@ def filter_grid_probe_training_items(
 
 
 def _training_sequence_lengths(
-    items: Sequence[LLMGridProbeItem],
+    items: Sequence[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
 ) -> List[int]:
@@ -367,8 +367,8 @@ def _training_sequence_lengths(
     ]
 
 
-def collate_llm_grid_probe_batch(
-    batch: Sequence[LLMGridProbeItem],
+def collate_llm_grid_batch(
+    batch: Sequence[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
     max_input_length: int,
@@ -439,8 +439,8 @@ def collate_llm_grid_probe_batch(
     return encoded
 
 
-def collate_llm_grid_probe_prompt_batch(
-    batch: Sequence[LLMGridProbeItem],
+def collate_llm_grid_prompt_batch(
+    batch: Sequence[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
     max_input_length: int,
@@ -463,18 +463,18 @@ def collate_llm_grid_probe_prompt_batch(
     return encoded
 
 
-def parse_grid_probe_text(
+def parse_grid_text(
     text: str,
     shape: Tuple[int, int, int] = GRID_SHAPE,
-) -> ParsedGridProbe:
+) -> ParsedGrid:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as error:
-        raise _LLMGridProbeJSONError(f"invalid JSON: {error}") from error
+        raise _LLMGridJSONError(f"invalid JSON: {error}") from error
     if not isinstance(payload, dict):
-        raise LLMGridProbeValidationError("top-level JSON value must be an object")
+        raise LLMGridValidationError("top-level JSON value must be an object")
     if tuple(payload) != GRID_TARGET_KEYS:
-        raise LLMGridProbeValidationError(
+        raise LLMGridValidationError(
             "top-level JSON object keys must be ordered as predicted_regions, "
             "predicted_objects, regions, objects, direction_vectors"
         )
@@ -492,13 +492,13 @@ def parse_grid_probe_text(
     object_section = payload["objects"]
     region_section = payload["regions"]
     if not isinstance(object_section, dict):
-        raise LLMGridProbeValidationError("objects must be an object")
+        raise LLMGridValidationError("objects must be an object")
     if not isinstance(region_section, dict):
-        raise LLMGridProbeValidationError("regions must be an object")
+        raise LLMGridValidationError("regions must be an object")
     if list(object_section) != predicted_objects:
-        raise LLMGridProbeValidationError("predicted_objects must match objects keys")
+        raise LLMGridValidationError("predicted_objects must match objects keys")
     if list(region_section) != predicted_regions:
-        raise LLMGridProbeValidationError("predicted_regions must match regions keys")
+        raise LLMGridValidationError("predicted_regions must match regions keys")
 
     channels, rows, cols = shape
     grid = np.zeros(shape, dtype=np.float32)
@@ -521,7 +521,7 @@ def parse_grid_probe_text(
     for name in predicted_regions:
         category = OBJECT_CATEGORIES + REGION_CATEGORY_TO_ID[name]
         if category >= channels:
-            raise LLMGridProbeValidationError(f"regions.{name} index out of bounds")
+            raise LLMGridValidationError(f"regions.{name} index out of bounds")
         count, duplicate_count = _read_entity_cells(
             region_section[name],
             f"regions.{name}",
@@ -533,7 +533,7 @@ def parse_grid_probe_text(
         )
         record_count += count
         duplicates += duplicate_count
-    return ParsedGridProbe(
+    return ParsedGrid(
         grid=grid,
         direction_vectors=direction_vectors,
         record_count=record_count,
@@ -543,11 +543,11 @@ def parse_grid_probe_text(
 
 def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
     if not isinstance(value, list) or len(value) != 5:
-        raise LLMGridProbeValidationError("direction_vectors must be five [dx,dz] vectors")
+        raise LLMGridValidationError("direction_vectors must be five [dx,dz] vectors")
     rows: List[List[float]] = []
     for index, raw_vector in enumerate(value):
         if not isinstance(raw_vector, list) or len(raw_vector) != 2:
-            raise LLMGridProbeValidationError(
+            raise LLMGridValidationError(
                 f"direction_vectors[{index}] must be [dx,dz]"
             )
         row: List[float] = []
@@ -557,21 +557,21 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
                     with np.errstate(over="ignore", invalid="ignore"):
                         numeric_component = np.float32(component)
                 except (OverflowError, ValueError) as error:
-                    raise LLMGridProbeValidationError(
+                    raise LLMGridValidationError(
                         f"direction_vectors[{index}][{component_index}] must be finite"
                     ) from error
             else:
-                raise LLMGridProbeValidationError(
+                raise LLMGridValidationError(
                     f"direction_vectors[{index}][{component_index}] must be numeric"
                 )
             if not np.isfinite(numeric_component):
-                raise LLMGridProbeValidationError(
+                raise LLMGridValidationError(
                     f"direction_vectors[{index}][{component_index}] must be finite"
                 )
             row.append(float(numeric_component))
         norm = float(np.linalg.norm(row))
         if norm > VECTOR_NORM_TOLERANCE and abs(norm - 1.0) > VECTOR_NORM_TOLERANCE:
-            raise LLMGridProbeValidationError(
+            raise LLMGridValidationError(
                 f"direction_vectors[{index}] must be unit length or zero padding"
             )
         rows.append(row)
@@ -584,15 +584,15 @@ def _parse_candidate_list(
     category_to_id: Dict[str, int],
 ) -> List[str]:
     if not isinstance(raw_candidates, list):
-        raise LLMGridProbeValidationError(f"{name} must be a list")
+        raise LLMGridValidationError(f"{name} must be a list")
     candidates: List[str] = []
     for index, item in enumerate(raw_candidates):
         if not isinstance(item, str):
-            raise LLMGridProbeValidationError(f"{name}[{index}] must be a string")
+            raise LLMGridValidationError(f"{name}[{index}] must be a string")
         if item not in category_to_id:
-            raise LLMGridProbeValidationError(f"{name}[{index}] is unknown: {item}")
+            raise LLMGridValidationError(f"{name}[{index}] is unknown: {item}")
         if item in candidates:
-            raise LLMGridProbeValidationError(f"{name}[{index}] is duplicated: {item}")
+            raise LLMGridValidationError(f"{name}[{index}] is duplicated: {item}")
         candidates.append(item)
     return candidates
 
@@ -607,27 +607,27 @@ def _read_entity_cells(
     seen: set[tuple[int, int, int]],
 ) -> Tuple[int, int]:
     if not isinstance(raw_entity, dict):
-        raise LLMGridProbeValidationError(f"{name} must be an object")
+        raise LLMGridValidationError(f"{name} must be an object")
     if set(raw_entity) != {"cells", "mentioned"}:
-        raise LLMGridProbeValidationError(f"{name} must contain only cells and mentioned")
+        raise LLMGridValidationError(f"{name} must contain only cells and mentioned")
     if type(raw_entity["mentioned"]) is not bool:
-        raise LLMGridProbeValidationError(f"{name}.mentioned must be boolean")
+        raise LLMGridValidationError(f"{name}.mentioned must be boolean")
     cells = raw_entity["cells"]
     if not isinstance(cells, list):
-        raise LLMGridProbeValidationError(f"{name}.cells must be a list")
+        raise LLMGridValidationError(f"{name}.cells must be a list")
     duplicates = 0
     for index, raw_cell in enumerate(cells):
         if not isinstance(raw_cell, list) or len(raw_cell) != 2:
-            raise LLMGridProbeValidationError(
+            raise LLMGridValidationError(
                 f"{name}.cells[{index}] must be [row,col]"
             )
         raw_row, raw_col = raw_cell
         if type(raw_row) is not int or type(raw_col) is not int:
-            raise LLMGridProbeValidationError(f"{name}.cells[{index}] row,col must be ints")
+            raise LLMGridValidationError(f"{name}.cells[{index}] row,col must be ints")
         row = raw_row
         col = raw_col
         if not (0 <= row < rows and 0 <= col < cols):
-            raise LLMGridProbeValidationError(f"{name}.cells[{index}] index out of bounds")
+            raise LLMGridValidationError(f"{name}.cells[{index}] index out of bounds")
         key = (category, row, col)
         if key in seen:
             duplicates += 1
@@ -718,17 +718,17 @@ def _direction_vector_metrics(
     }
 
 
-def evaluate_grid_probe_prediction(
+def evaluate_grid_prediction(
     generated_text: str,
     target_grid: NDArray[np.float32],
     target_direction_vectors: NDArray[np.float32],
 ) -> Dict[str, float]:
     try:
         shape = cast(Tuple[int, int, int], target_grid.shape)
-        parsed = parse_grid_probe_text(generated_text, shape=shape)
-    except LLMGridProbeValidationError as error:
+        parsed = parse_grid_text(generated_text, shape=shape)
+    except LLMGridValidationError as error:
         return {
-            "json_valid": float(not isinstance(error, _LLMGridProbeJSONError)),
+            "json_valid": float(not isinstance(error, _LLMGridJSONError)),
             "schema_valid": 0.0,
             "record_count": 0.0,
             "duplicate_record_count": 0.0,
@@ -767,7 +767,7 @@ def evaluate_grid_probe_prediction(
     return metrics
 
 
-class LLMGridProbeArgs(Tap):
+class LLMGridArgs(Tap):
     mode: Literal["train", "eval"]
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     checkpoint_path: Optional[str] = None
@@ -818,7 +818,7 @@ class LLMGridProbeArgs(Tap):
         if not self.device:
             self.device = _default_device()
         if self.scale != GRID_SCALE:
-            raise ValueError("LLM-Grid-Probe v1 only supports --scale 2")
+            raise ValueError("LLM-Grid v1 only supports --scale 2")
         if self.gradient_accumulation_steps < 1:
             raise ValueError("--gradient-accumulation-steps must be >= 1")
 
@@ -870,7 +870,7 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 def _text_diagnostics(
     tokenizer: Any,
     system_prompt: str,
-    item: LLMGridProbeItem,
+    item: LLMGridItem,
     generated_text: str,
     max_new_tokens: int,
 ) -> Dict[str, float]:
@@ -894,12 +894,12 @@ def _text_diagnostics(
     }
 
 
-def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
+def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if args.finetune_method == "full":
         raise NotImplementedError(
-            "full fine-tuning is not implemented for LLM-Grid-Probe"
+            "full fine-tuning is not implemented for LLM-Grid"
         )
-    examples = load_llm_grid_probe_examples(
+    examples = load_llm_grid_examples(
         args.dataset,
         TRAIN_SPLITS,
         limit=args.limit,
@@ -908,7 +908,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     if not examples:
-        raise ValueError("No LLM-Grid-Probe training examples were loaded")
+        raise ValueError("No LLM-Grid training examples were loaded")
 
     system_prompt = load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)
@@ -916,7 +916,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         args.model_name_or_path,
         device_map=_normalize_device_map(args.device_map),
     )
-    model = _apply_grid_probe_lora(model, args)
+    model = _apply_grid_lora(model, args)
     _cast_trainable_parameters_to_float32(model)
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
@@ -924,18 +924,18 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    train_items = list(LLMGridProbeDataset(examples, scale=args.scale))
-    train_items, skipped_over_budget = filter_grid_probe_training_items(
+    train_items = list(LLMGridDataset(examples, scale=args.scale))
+    train_items, skipped_over_budget = filter_grid_training_items(
         train_items,
         tokenizer=tokenizer,
         system_prompt=system_prompt,
         max_new_tokens=args.max_new_tokens,
     )
     if not train_items:
-        raise ValueError("No LLM-Grid-Probe training examples fit max_new_tokens")
+        raise ValueError("No LLM-Grid training examples fit max_new_tokens")
     if skipped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(skipped_over_budget)}")
-    dataset = LLMGridProbeItemsDataset(train_items)
+    dataset = LLMGridItemsDataset(train_items)
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(train_items, tokenizer, system_prompt),
         batch_size=args.batch_size,
@@ -943,7 +943,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     loader = DataLoader(
         dataset,
         batch_sampler=batch_sampler,
-        collate_fn=lambda batch: collate_llm_grid_probe_batch(
+        collate_fn=lambda batch: collate_llm_grid_batch(
             batch,
             tokenizer,
             system_prompt,
@@ -968,7 +968,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         for batch_index, batch in enumerate(
             _progress(
                 loader,
-                desc="train LLM-Grid-Probe",
+                desc="train LLM-Grid",
                 quiet=args.quiet,
             ),
             start=1,
@@ -1048,7 +1048,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     return metrics
 
 
-def _apply_grid_probe_lora(model: Any, args: LLMGridProbeArgs) -> Any:
+def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
     if args.finetune_method != "lora":
         raise ValueError(f"Unsupported finetune method: {args.finetune_method}")
     from peft import LoraConfig, get_peft_model
@@ -1081,8 +1081,8 @@ def _enable_gradient_checkpointing(model: Any) -> None:
     gradient_checkpointing_enable()
 
 
-def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
-    examples = load_llm_grid_probe_examples(
+def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
+    examples = load_llm_grid_examples(
         args.dataset,
         EVAL_SPLITS,
         limit=args.limit,
@@ -1091,7 +1091,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     if not examples:
-        raise ValueError("No LLM-Grid-Probe eval examples were loaded")
+        raise ValueError("No LLM-Grid eval examples were loaded")
 
     system_prompt = load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)
@@ -1106,12 +1106,12 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         model.to(device)
     model.eval()
 
-    dataset = LLMGridProbeDataset(examples, scale=args.scale)
+    dataset = LLMGridDataset(examples, scale=args.scale)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=lambda batch: collate_llm_grid_probe_prompt_batch(
+        collate_fn=lambda batch: collate_llm_grid_prompt_batch(
             batch,
             tokenizer,
             system_prompt,
@@ -1124,7 +1124,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     with torch.no_grad():
         for batch in _progress(
             loader,
-            desc="eval LLM-Grid-Probe",
+            desc="eval LLM-Grid",
             quiet=args.quiet,
         ):
             model_batch = _model_batch(batch, device, include_labels=False)
@@ -1140,7 +1140,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
                 )
             ]
             for item, generated_text in zip(batch["items"], completions):
-                metrics = evaluate_grid_probe_prediction(
+                metrics = evaluate_grid_prediction(
                     generated_text,
                     item["target_grid"],
                     item["target_direction_vectors"],
@@ -1172,7 +1172,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
 
 
 def main(argv: Optional[List[str]] = None) -> Dict[str, float]:
-    args = LLMGridProbeArgs().parse_args(argv)
+    args = LLMGridArgs().parse_args(argv)
     if args.mode == "train":
         return train_model(args)
     return evaluate_model(args)
