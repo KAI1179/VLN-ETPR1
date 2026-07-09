@@ -24,7 +24,7 @@ LLM-Grid text cells are binary `[row,col]`; confidence is represented by the
 entity-level `mentioned` field instead of per-cell values. `direction_vectors`
 is exactly five `[dx,dz]` vectors. The candidate schema does not accept the old
 `region_candidates` or `object_candidates` keys. The default candidate
-generation budget is `--max-new-tokens 4096`; summaries report the sampled
+generation budget is `--max-new-tokens 2048`; summaries report the sampled
 target over-budget rate against that budget.
 
 Example:

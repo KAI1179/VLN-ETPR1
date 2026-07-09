@@ -177,7 +177,7 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
                 "scale": 1,
                 "seed": 0,
                 "tokenizer_path": None,
-                "max_new_tokens": 4096,
+                "max_new_tokens": 2048,
             }
         ),
     )
@@ -194,7 +194,7 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
 
     assert manifest["namespace"] == "gt.bbox.r1p5.path5.v1"
     assert manifest["scale"] == 1
-    assert manifest["max_new_tokens"] == 4096
+    assert manifest["max_new_tokens"] == 2048
     assert samples[0]["sample_id"] in {"a", "b"}
     assert json.loads(samples[0]["target_text"]) == {
         "predicted_regions": [],

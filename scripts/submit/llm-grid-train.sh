@@ -10,10 +10,10 @@ conda activate etpr1-uv
 set -u
 
 python -m vlnce_baselines.models.etp_llm.train_llm_grid train \
-  --batch-size 1 \
-  --gradient-accumulation-steps 2 \
+  --batch-size 2 \
+  --gradient-accumulation-steps 1 \
   --gradient-checkpointing \
-  --max-new-tokens 4096 \
+  --max-new-tokens 2048 \
   --lora-r 32 \
   --lora-alpha 64 \
   --lora-dropout 0.05 \

@@ -960,7 +960,7 @@ def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     assert args.mode == "train"
     assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
     assert args.scale == 2
-    assert args.max_new_tokens == 4096
+    assert args.max_new_tokens == 2048
     assert args.lora_r == 32
     assert args.lora_alpha == 64
     assert args.lora_dropout == 0.05

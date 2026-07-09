@@ -9,4 +9,4 @@ python -m prior.llm_grid_samples \
   --scale 2 \
   --seed 708 \
   --tokenizer-path data/models/Llama-3.1-8B-Instruct \
-  --max-new-tokens 4096
+  --max-new-tokens 2048

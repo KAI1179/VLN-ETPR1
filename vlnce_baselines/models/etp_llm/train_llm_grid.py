@@ -776,7 +776,7 @@ class LLMGridArgs(Tap):
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
     max_input_length: int = 1024
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 2048
     finetune_method: Literal["lora", "full"] = "lora"
     batch_size: int = 2
     gradient_accumulation_steps: int = 1

@@ -33,7 +33,7 @@ class SampleArgs(Tap):
     """Random seed for deterministic sampling."""
     tokenizer_path: Optional[Path] = None
     """Optional local Hugging Face tokenizer path for token counts."""
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 2048
     """Candidate LLM-Grid generation budget used for over-budget reporting."""
 
 
@@ -227,7 +227,7 @@ def write_sample_run(
     scale: int = 1,
     seed: int = 0,
     tokenizer_path: Optional[Path] = None,
-    max_new_tokens: int = 4096,
+    max_new_tokens: int = 2048,
 ) -> Path:
     token_counter = _load_token_counter(tokenizer_path)
     paths = _sample_paths(_raster_paths(cache_root, namespace), count, seed)
