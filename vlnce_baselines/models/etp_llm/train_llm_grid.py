@@ -56,6 +56,7 @@ from .train_llm_boxes import (
 GRID_CHANNELS = 37
 GRID_SCALE = 2
 GRID_SHAPE = (GRID_CHANNELS, 50, 50)
+GRID_SIZE_BY_SCALE = {1: 100, 2: 50}
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_system.md"
@@ -817,14 +818,28 @@ class LLMGridArgs(Tap):
     def process_args(self) -> None:
         if not self.device:
             self.device = _default_device()
-        if self.scale != GRID_SCALE:
-            raise ValueError("LLM-Grid v1 only supports --scale 2")
+        if self.scale not in GRID_SIZE_BY_SCALE:
+            raise ValueError("LLM-Grid v1 only supports --scale 1 or 2")
         if self.gradient_accumulation_steps < 1:
             raise ValueError("--gradient-accumulation-steps must be >= 1")
 
 
-def load_system_prompt(path: Path = DEFAULT_SYSTEM_PROMPT_PATH) -> str:
-    return path.read_text(encoding="utf-8").strip()
+def _grid_size_for_scale(scale: int) -> int:
+    try:
+        return GRID_SIZE_BY_SCALE[scale]
+    except KeyError as error:
+        raise ValueError(f"scale must be 1 or 2, got {scale}") from error
+
+
+def load_system_prompt(
+    path: Path = DEFAULT_SYSTEM_PROMPT_PATH,
+    scale: int = GRID_SCALE,
+) -> str:
+    grid_size = _grid_size_for_scale(scale)
+    return path.read_text(encoding="utf-8").format(
+        grid_size=grid_size,
+        max_grid_index=grid_size - 1,
+    ).strip()
 
 
 def _write_run_system_prompt(output_dir: str, system_prompt: str) -> None:
@@ -910,7 +925,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if not examples:
         raise ValueError("No LLM-Grid training examples were loaded")
 
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt(scale=args.scale)
     _write_run_system_prompt(args.output_dir, system_prompt)
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
@@ -1119,7 +1134,7 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
     if not examples:
         raise ValueError("No LLM-Grid eval examples were loaded")
 
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt(scale=args.scale)
     _write_run_system_prompt(args.output_dir, system_prompt)
     model_path = args.checkpoint_path or args.model_name_or_path
     model, tokenizer = _load_causal_lm_model_and_tokenizer(

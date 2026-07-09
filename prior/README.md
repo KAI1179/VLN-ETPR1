@@ -33,13 +33,21 @@ Example:
 python -m prior.llm_grid_samples --namespace gt.legacy.r1p5.direction5.v1 --count 100 --scale 2 --tokenizer-path data/models/Llama-3.1-8B-Instruct
 ```
 
+Scale-1 LLM-Grid uses the same unblurred namespace and serializes the full
+`100x100` grid. On the cached R2R train set, target-only Llama-3.1-8B-Instruct
+token counts are mean `2458`, median `2390`, P95 `4006`, P99 `4899`, max
+`6301`. A `--max-new-tokens 5120` budget drops `51/10786` examples (`0.47%`);
+`6144` drops `6/10786` but increases context length for little extra data.
+
 LLM-Grid training defaults to `gt.legacy.r1p5.direction5.v1`, not the blurred
 namespace, because its current target is a binary `scale=2` grid. The blurred
 namespace is derived by max-pooling to `50x50` and upsampling back to `100x100`,
 so serializing either namespace with `scale=2` produces the same JSON target.
+The scale-1 LLM-Grid variant also uses the unblurred namespace because a blurred
+scale-1 target would ask the LLM to predict a deterministic post-processing
+artifact that can be produced from the scale-2 prediction.
 Use `gt.legacy.r1p5.direction5.blurred.v1` for Try5-style GT policy runs that
-consume the full `100x100` raster, or revisit this default if LLM-Grid moves to
-`scale=1` or a soft/subcell target.
+consume the full `100x100` raster.
 
 # Cognitive Map Generators
 

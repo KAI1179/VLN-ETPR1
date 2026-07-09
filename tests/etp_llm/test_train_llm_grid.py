@@ -280,6 +280,7 @@ def test_serialize_grid_target_uses_keyed_binary_cells():
 
 def test_load_system_prompt_uses_candidate_schema_terms():
     prompt = train_llm_grid.load_system_prompt()
+    scale_1_prompt = train_llm_grid.load_system_prompt(scale=1)
 
     for required in (
         "predicted_regions",
@@ -293,6 +294,9 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         assert required in prompt
     for removed in ("region_candidates", "object_candidates", "motion_vectors"):
         assert removed not in prompt
+    assert "Each cell is [row,col] in a 100x100 grid with integers 0-99." in scale_1_prompt
+    assert "{grid_size}" not in prompt
+    assert "{max_grid_index}" not in prompt
 
 
 def test_parse_grid_text_accepts_candidate_records_and_direction_vectors():
@@ -971,6 +975,14 @@ def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     assert args.gradient_accumulation_steps == 1
     assert args.gradient_checkpointing is False
     assert args.output_dir == "outputs/llm_grid"
+
+
+def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
+    scale_1 = train_llm_grid.LLMGridArgs().parse_args(["train", "--scale", "1"])
+
+    assert scale_1.scale == 1
+    with pytest.raises(ValueError, match="--scale 1 or 2"):
+        train_llm_grid.LLMGridArgs().parse_args(["train", "--scale", "3"])
 
 
 def test_train_model_rejects_full_finetuning():

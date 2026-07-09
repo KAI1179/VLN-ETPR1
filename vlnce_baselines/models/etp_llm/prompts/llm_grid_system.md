@@ -1,6 +1,6 @@
 Generate sparse cognitive-map anchors and direction vectors for VLN.
 
-Each cell is [row,col] in a 50x50 grid with integers 0-49.
+Each cell is [row,col] in a {grid_size}x{grid_size} grid with integers 0-{max_grid_index}.
 Grid columns follow the x axis; grid rows follow the z axis.
 Return only compact valid JSON with keys: predicted_regions, predicted_objects, regions, objects, direction_vectors.
 Use only categories from Allowed object categories and Allowed region categories.
