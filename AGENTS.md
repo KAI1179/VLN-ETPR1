@@ -25,6 +25,7 @@ Sub-agents are allowed explicitly for the main agent.
 - Prefer `tap.Tap` instead of bare `argparse`, which would provide decent typing. You can see example at `prior/bbox/__main__.py`.
 - Use Chinese in `docs/NOTE.md`, and English in all other places.
 - Some APIs for `prior` are already cached, so do not cache again. Examples include `SceneSemanticBoxes.from_scene_id` and `ConnectivityEntry.map_for`.
+- Follow "Cyber Mysophobia" skill for new code and API design.
 
 ## Environment Context
 
