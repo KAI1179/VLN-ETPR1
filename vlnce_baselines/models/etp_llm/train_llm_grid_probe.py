@@ -158,14 +158,22 @@ def _load_raster_target(
     path: Path,
 ) -> Tuple[
     NDArray[np.float32],
+    NDArray[np.float32],
     Tuple[float, float],
     Tuple[float, float],
 ]:
     with np.load(path, allow_pickle=True) as data:
+        direction_vectors = np.asarray(data["direction_vectors"], dtype=np.float32)
+        if direction_vectors.shape != (5, 2):
+            raise ValueError(
+                "direction_vectors must have shape "
+                f"(5, 2), got {direction_vectors.shape}"
+            )
         start_position = data["start_position"]
         start_direction = data["start_direction_vector"]
         return (
             np.asarray(data["grid"], dtype=np.float32),
+            direction_vectors,
             (float(start_position[0]), float(start_position[1])),
             (float(start_direction[0]), float(start_direction[1])),
         )
@@ -212,8 +220,13 @@ class LLMGridProbeDataset(Dataset):
 
     def __getitem__(self, index: int) -> LLMGridProbeItem:
         example = self.examples[index]
-        full_grid, start_position, start_direction = _load_raster_target(
-            example.raster_path
+        (
+            full_grid,
+            direction_vectors,
+            start_position,
+            start_direction,
+        ) = _load_raster_target(
+            example.raster_path,
         )
         mentioned_objects, mentioned_regions = _load_grid_mentions(example.raster_path)
         target_grid = downsample_grid(full_grid, self.scale)
@@ -226,6 +239,7 @@ class LLMGridProbeDataset(Dataset):
             ),
             "target_text": serialize_grid_target(
                 full_grid,
+                direction_vectors=direction_vectors,
                 scale=self.scale,
                 mentioned_objects=mentioned_objects,
                 mentioned_regions=mentioned_regions,

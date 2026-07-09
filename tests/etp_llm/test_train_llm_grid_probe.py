@@ -425,6 +425,16 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         grid=grid,
         start_position=np.asarray([1.2, 3.4], dtype=np.float32),
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        direction_vectors=np.asarray(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
     )
     _save_box_payload(
         tmp_path / "boxes" / "scene-a" / "grid.npz",
@@ -448,16 +458,50 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         "direction x = 0.0 | direction z = 1.0 | instruction Go to the chair."
     )
     assert json.loads(item["target_text"]) == {
-        "region_candidates": ["living/social space"],
-        "object_candidates": ["chair"],
+        "predicted_regions": ["living/social space"],
+        "predicted_objects": ["chair"],
         "regions": {
             "living/social space": {"cells": [[1, 1]], "mentioned": True}
         },
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
+        "direction_vectors": [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+        ],
     }
     assert item["target_grid"].shape == (37, 50, 50)
     assert tuple(item["start_position"]) == pytest.approx((1.2, 3.4))
     assert tuple(item["start_direction"]) == pytest.approx((0.0, 1.0))
+
+
+def test_llm_grid_probe_dataset_rejects_bad_direction_vector_shape(tmp_path):
+    raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
+    raster_path.parent.mkdir(parents=True)
+    np.savez_compressed(
+        raster_path,
+        grid=np.zeros((37, 100, 100), dtype=np.float32),
+        start_position=np.asarray([1.2, 3.4], dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        direction_vectors=np.zeros((2, 2), dtype=np.float32),
+    )
+    example = train_llm_grid_probe.LLMGridProbeExample(
+        example_id="R2R_train_42",
+        dataset_tag="R2R",
+        split="train",
+        scene_id="scene-a",
+        episode_id=42,
+        instruction="Go to the chair.",
+        raster_path=raster_path,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"direction_vectors must have shape \(5, 2\), got \(2, 2\)",
+    ):
+        train_llm_grid_probe.LLMGridProbeDataset([example])[0]
 
 
 def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
@@ -608,12 +652,15 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
     long: train_llm_grid_probe.LLMGridProbeItem = {
         **short,
         "target_text": (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1],'
-            '[2,2]],"mentioned":true}}}'
+            '[2,2]],"mentioned":true}},'
+            '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         "example_id": "long",
     }
+    assert len(long["target_text"]) > len(EMPTY_GRID_TEXT)
     tokenizer = _EosChatTokenizer()
     prompt = train_llm_grid_probe._render_chat_prompt(
         tokenizer,
@@ -674,6 +721,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         grid=full_grid,
         start_position=np.asarray([1.2, 3.4], dtype=np.float32),
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        direction_vectors=np.zeros((5, 2), dtype=np.float32),
     )
     _save_box_payload(
         tmp_path / "boxes" / "scene-a" / "grid.npz",
