@@ -2,10 +2,12 @@
 #SBATCH --job-name=llm-grid-probe
 #SBATCH --gpus=6
 #SBATCH -p vip_gpu_scze096
-set -euo pipefail
+set -eo pipefail
 
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
+
+set -u
 
 python -m vlnce_baselines.models.etp_llm.train_llm_grid_probe train \
   --batch-size 2 \
