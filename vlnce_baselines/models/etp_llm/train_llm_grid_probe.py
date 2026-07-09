@@ -91,6 +91,7 @@ class _LLMGridProbeJSONError(LLMGridProbeValidationError):
 @dataclass(frozen=True)
 class ParsedGridProbe:
     grid: NDArray[np.float32]
+    direction_vectors: NDArray[np.float32]
     record_count: int
     duplicate_record_count: int
 
@@ -412,39 +413,46 @@ def parse_grid_probe_text(
         raise _LLMGridProbeJSONError(f"invalid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise LLMGridProbeValidationError("top-level JSON value must be an object")
-    expected_keys = {"region_candidates", "object_candidates", "regions", "objects"}
+    expected_keys = {
+        "predicted_regions",
+        "predicted_objects",
+        "regions",
+        "objects",
+        "direction_vectors",
+    }
     if set(payload) != expected_keys:
         raise LLMGridProbeValidationError(
-            "top-level JSON object must contain only region_candidates, "
-            "object_candidates, regions, and objects"
+            "top-level JSON object must contain only predicted_regions, "
+            "predicted_objects, regions, objects, and direction_vectors"
         )
-    object_candidates = _parse_candidate_list(
-        payload["object_candidates"],
-        "object_candidates",
+    predicted_objects = _parse_candidate_list(
+        payload["predicted_objects"],
+        "predicted_objects",
         OBJECT_CATEGORY_TO_ID,
     )
-    region_candidates = _parse_candidate_list(
-        payload["region_candidates"],
-        "region_candidates",
+    predicted_regions = _parse_candidate_list(
+        payload["predicted_regions"],
+        "predicted_regions",
         REGION_CATEGORY_TO_ID,
     )
+    direction_vectors = _parse_direction_vectors(payload["direction_vectors"])
     object_section = payload["objects"]
     region_section = payload["regions"]
     if not isinstance(object_section, dict):
         raise LLMGridProbeValidationError("objects must be an object")
     if not isinstance(region_section, dict):
         raise LLMGridProbeValidationError("regions must be an object")
-    if list(object_section) != object_candidates:
-        raise LLMGridProbeValidationError("object_candidates must match objects keys")
-    if list(region_section) != region_candidates:
-        raise LLMGridProbeValidationError("region_candidates must match regions keys")
+    if list(object_section) != predicted_objects:
+        raise LLMGridProbeValidationError("predicted_objects must match objects keys")
+    if list(region_section) != predicted_regions:
+        raise LLMGridProbeValidationError("predicted_regions must match regions keys")
 
     channels, rows, cols = shape
     grid = np.zeros(shape, dtype=np.float32)
     seen: set[tuple[int, int, int]] = set()
     duplicates = 0
     record_count = 0
-    for name in object_candidates:
+    for name in predicted_objects:
         category = OBJECT_CATEGORY_TO_ID[name]
         count, duplicate_count = _read_entity_cells(
             object_section[name],
@@ -457,7 +465,7 @@ def parse_grid_probe_text(
         )
         record_count += count
         duplicates += duplicate_count
-    for name in region_candidates:
+    for name in predicted_regions:
         category = OBJECT_CATEGORIES + REGION_CATEGORY_TO_ID[name]
         if category >= channels:
             raise LLMGridProbeValidationError(f"regions.{name} index out of bounds")
@@ -474,9 +482,38 @@ def parse_grid_probe_text(
         duplicates += duplicate_count
     return ParsedGridProbe(
         grid=grid,
+        direction_vectors=direction_vectors,
         record_count=record_count,
         duplicate_record_count=duplicates,
     )
+
+
+def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
+    if not isinstance(value, list) or len(value) != 5:
+        raise LLMGridProbeValidationError("direction_vectors must be five [dx,dz] vectors")
+    rows: List[List[float]] = []
+    for index, raw_vector in enumerate(value):
+        if not isinstance(raw_vector, list) or len(raw_vector) != 2:
+            raise LLMGridProbeValidationError(
+                f"direction_vectors[{index}] must be [dx,dz]"
+            )
+        row: List[float] = []
+        for component_index, component in enumerate(raw_vector):
+            if type(component) is int:
+                numeric_component = float(component)
+            elif type(component) is float:
+                numeric_component = component
+            else:
+                raise LLMGridProbeValidationError(
+                    f"direction_vectors[{index}][{component_index}] must be numeric"
+                )
+            if not np.isfinite(numeric_component):
+                raise LLMGridProbeValidationError(
+                    f"direction_vectors[{index}][{component_index}] must be finite"
+                )
+            row.append(numeric_component)
+        rows.append(row)
+    return np.asarray(rows, dtype=np.float32)
 
 
 def _parse_candidate_list(

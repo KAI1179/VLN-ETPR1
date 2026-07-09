@@ -289,24 +289,66 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         assert removed not in prompt
 
 
-def test_parse_grid_probe_text_accepts_keyed_records_and_max_merges_duplicates():
+def test_parse_grid_probe_text_accepts_candidate_records_and_direction_vectors():
     result = train_llm_grid_probe.parse_grid_probe_text(
         (
-            '{"region_candidates":["living/social space"],'
-            '"object_candidates":["chair"],'
+            '{"predicted_regions":["living/social space"],'
+            '"predicted_objects":["chair"],'
             '"regions":{"living/social space":{"cells":[[1,2]],'
             '"mentioned":false}},'
             '"objects":{"chair":{"cells":[[0,0],[0,0]],'
-            '"mentioned":true}}}'
+            '"mentioned":true}},'
+            '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.5,-0.5],'
+            '[2,3],[4.25,5.5]]}'
         ),
         shape=(37, 50, 50),
     )
 
     assert result.grid.shape == (37, 50, 50)
+    assert result.direction_vectors.dtype == np.float32
+    assert result.direction_vectors.shape == (5, 2)
+    np.testing.assert_allclose(
+        result.direction_vectors,
+        np.asarray(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.5, -0.5],
+                [2.0, 3.0],
+                [4.25, 5.5],
+            ],
+            dtype=np.float32,
+        ),
+    )
     assert result.grid[1, 0, 0] == pytest.approx(1.0)
     assert result.grid[28, 1, 2] == pytest.approx(1.0)
     assert result.record_count == 3
     assert result.duplicate_record_count == 1
+
+
+def test_parse_grid_probe_text_rejects_old_candidate_keys():
+    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"region_candidates":[],"object_candidates":["chair"],'
+                '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
+                '"mentioned":true}},'
+                '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+                '[0.0,0.0],[0.0,0.0]]}'
+            )
+        )
+
+
+def test_parse_grid_probe_text_rejects_bad_direction_vector_shape():
+    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"predicted_regions":[],"predicted_objects":["chair"],'
+                '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
+                '"mentioned":true}},'
+                '"direction_vectors":[[0.0,0.0],[0.0,0.0]]}'
+            )
+        )
 
 
 def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
@@ -317,9 +359,11 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
         train_llm_grid_probe.parse_grid_probe_text(
             (
-                '{"region_candidates":[],"object_candidates":["chair"],'
+                '{"predicted_regions":[],"predicted_objects":["chair"],'
                 '"regions":{},"objects":{"chair":{"cells":[[0,0,1]],'
-                '"mentioned":true}}}'
+                '"mentioned":true}},'
+                '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+                '[0.0,0.0],[0.0,0.0]]}'
             )
         )
 
@@ -328,19 +372,25 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
     "text",
     [
         (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[true,0]],'
-            '"mentioned":false}}}'
+            '"mentioned":false}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
-            '"mentioned":false}}}'
+            '"mentioned":false}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
-            '"mentioned":false}}}'
+            '"mentioned":false}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
     ],
 )
@@ -356,11 +406,13 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
 
     valid = train_llm_grid_probe.evaluate_grid_probe_prediction(
         (
-            '{"region_candidates":["living/social space"],'
-            '"object_candidates":["chair"],'
+            '{"predicted_regions":["living/social space"],'
+            '"predicted_objects":["chair"],'
             '"regions":{"living/social space":{"cells":[[9,9]],'
             '"mentioned":false}},'
-            '"objects":{"chair":{"cells":[[0,0]],"mentioned":true}}}'
+            '"objects":{"chair":{"cells":[[0,0]],"mentioned":true}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         target,
     )
@@ -389,9 +441,11 @@ def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
 
     result = train_llm_grid_probe.evaluate_grid_probe_prediction(
         (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":"not a list",'
-            '"mentioned":false}}}'
+            '"mentioned":false}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         target,
     )
@@ -525,9 +579,11 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "dataset R2R | instruction Go to the chair.",
         "target_text": (
-            '{"region_candidates":[],"object_candidates":["chair"],'
+            '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
-            '"mentioned":true}}}'
+            '"mentioned":true}},'
+            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '[0.0,0.0],[0.0,0.0]]}'
         ),
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "example_id": "R2R_train_42",
@@ -585,9 +641,11 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
 
 def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
     target_text = (
-        '{"region_candidates":[],"object_candidates":["chair"],'
+        '{"predicted_regions":[],"predicted_objects":["chair"],'
         '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1]],'
-        '"mentioned":true}}}'
+        '"mentioned":true}},'
+        '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+        '[0.0,0.0],[0.0,0.0]]}'
     )
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "short",
@@ -792,9 +850,11 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         def batch_decode(self, rows, skip_special_tokens=True):
             return [
                 (
-                    '{"region_candidates":[],"object_candidates":["chair"],'
+                    '{"predicted_regions":[],"predicted_objects":["chair"],'
                     '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
-                    '"mentioned":true}}}'
+                    '"mentioned":true}},'
+                    '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+                    '[0.0,0.0],[0.0,0.0]]}'
                 )
                 for _row in rows
             ]
@@ -842,10 +902,17 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     assert artifact_path.exists()
     artifact = json.loads(artifact_path.read_text())
     assert json.loads(artifact["generated_text"]) == {
-        "region_candidates": [],
-        "object_candidates": ["chair"],
+        "predicted_regions": [],
+        "predicted_objects": ["chair"],
         "regions": {},
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
+        "direction_vectors": [
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+        ],
     }
 
 
