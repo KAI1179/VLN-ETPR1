@@ -10,7 +10,7 @@ from statistics import mean
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from tap import Tap
 
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_CATEGORIES
@@ -66,12 +66,20 @@ def _cell_record(row: int, col: int) -> List[int]:
 
 def serialize_grid_target(
     grid: NDArray[np.float32],
+    *,
+    direction_vectors: ArrayLike,
     scale: int = 1,
     mentioned_objects: Optional[set[int]] = None,
     mentioned_regions: Optional[set[int]] = None,
 ) -> str:
     """Serialize nonzero category cells as keyed compact JSON LLM-Grid text."""
     sampled = downsample_grid(grid, scale)
+    direction_array = np.asarray(direction_vectors, dtype=np.float32)
+    if direction_array.shape != (5, 2):
+        raise ValueError(
+            "direction_vectors must have shape "
+            f"(5, 2), got {direction_array.shape}"
+        )
     mentioned_objects = mentioned_objects or set()
     mentioned_regions = mentioned_regions or set()
     objects: Dict[str, Dict[str, Any]] = {}
@@ -101,10 +109,11 @@ def serialize_grid_target(
 
     return json.dumps(
         {
-            "region_candidates": list(regions),
-            "object_candidates": list(objects),
+            "predicted_regions": list(regions),
+            "predicted_objects": list(objects),
             "regions": regions,
             "objects": objects,
+            "direction_vectors": direction_array.tolist(),
         },
         separators=(",", ":"),
     )
@@ -146,8 +155,13 @@ def analyze_grid_sample(
 ) -> Dict[str, Any]:
     with np.load(npz_path, allow_pickle=True) as data:
         grid = data["grid"]
+        direction_vectors = data["direction_vectors"]
     sampled = downsample_grid(grid, scale)
-    target_text = serialize_grid_target(grid, scale=scale)
+    target_text = serialize_grid_target(
+        grid,
+        direction_vectors=direction_vectors,
+        scale=scale,
+    )
     return {
         "sample_id": npz_path.stem,
         "path": str(npz_path),

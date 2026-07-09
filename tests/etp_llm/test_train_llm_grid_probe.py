@@ -8,7 +8,9 @@ from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import train_llm_grid_probe
 
 EMPTY_GRID_TEXT = (
-    '{"region_candidates":[],"object_candidates":[],"regions":{},"objects":{}}'
+    '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},'
+    '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+    '[0.0,0.0]]}'
 )
 
 
@@ -235,18 +237,38 @@ def test_downsample_grid_scale_2_max_pools_cells():
 
 def test_serialize_grid_target_uses_keyed_binary_cells():
     grid = np.zeros((37, 4, 4), dtype=np.float32)
-    grid[1, 0, 0] = 1.0
-    grid[28, 2, 2] = 0.6
+    grid[1, 0, 1] = 1.0
+    grid[28, 3, 2] = 0.6
 
-    text = serialize_grid_target(grid, scale=2)
+    text = serialize_grid_target(
+        grid,
+        direction_vectors=np.asarray(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        scale=1,
+    )
 
     assert json.loads(text) == {
-        "region_candidates": ["living/social space"],
-        "object_candidates": ["chair"],
+        "predicted_regions": ["living/social space"],
+        "predicted_objects": ["chair"],
         "regions": {
-            "living/social space": {"cells": [[1, 1]], "mentioned": False}
+            "living/social space": {"cells": [[3, 2]], "mentioned": False}
         },
-        "objects": {"chair": {"cells": [[0, 0]], "mentioned": False}},
+        "objects": {"chair": {"cells": [[0, 1]], "mentioned": False}},
+        "direction_vectors": [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+        ],
     }
 
 
