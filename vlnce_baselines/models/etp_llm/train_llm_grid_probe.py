@@ -499,10 +499,9 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
             )
         row: List[float] = []
         for component_index, component in enumerate(raw_vector):
-            if type(component) is int:
-                numeric_component = float(component)
-            elif type(component) is float:
-                numeric_component = component
+            if type(component) is int or type(component) is float:
+                with np.errstate(over="ignore", invalid="ignore"):
+                    numeric_component = np.float32(component)
             else:
                 raise LLMGridProbeValidationError(
                     f"direction_vectors[{index}][{component_index}] must be numeric"
@@ -511,7 +510,7 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
                 raise LLMGridProbeValidationError(
                     f"direction_vectors[{index}][{component_index}] must be finite"
                 )
-            row.append(numeric_component)
+            row.append(float(numeric_component))
         rows.append(row)
     return np.asarray(rows, dtype=np.float32)
 

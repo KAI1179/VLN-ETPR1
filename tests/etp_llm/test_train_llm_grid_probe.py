@@ -387,9 +387,9 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
         ),
         (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
-            '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
             '"mentioned":false}},'
-            '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
+            '"direction_vectors":[[true,0.0],[0.0,0.0],[0.0,0.0],'
             '[0.0,0.0],[0.0,0.0]]}'
         ),
     ],
@@ -397,6 +397,20 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
 def test_parse_grid_probe_text_rejects_boolean_fields(text):
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
         train_llm_grid_probe.parse_grid_probe_text(text)
+
+
+@pytest.mark.parametrize("component", ['"bad"', "1e39"])
+def test_parse_grid_probe_text_rejects_invalid_direction_vector_components(component):
+    with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"predicted_regions":[],"predicted_objects":["chair"],'
+                '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
+                '"mentioned":false}},'
+                f'"direction_vectors":[[{component},0.0],[0.0,0.0],[0.0,0.0],'
+                '[0.0,0.0],[0.0,0.0]]}'
+            )
+        )
 
 
 def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
