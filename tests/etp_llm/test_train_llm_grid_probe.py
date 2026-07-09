@@ -75,6 +75,55 @@ class _ChatTokenizer:
         return [ord(char) % 97 + 3 for char in text]
 
 
+class _TrainingTokenizer:
+    def save_pretrained(self, output_dir):
+        return None
+
+
+class _TrainingModel(torch.nn.Module):
+    def __init__(self, loss_value):
+        super().__init__()
+        self.adapter = torch.nn.Parameter(torch.ones(()))
+        self.loss_value = loss_value
+
+    def forward(self, **kwargs):
+        loss = self.adapter * 0 + torch.tensor(self.loss_value)
+        return type("Outputs", (), {"loss": loss})()
+
+    def save_pretrained(self, output_dir):
+        return None
+
+
+def _patch_training_dependencies(monkeypatch, model):
+    batch = {
+        "input_ids": torch.ones((1, 2), dtype=torch.long),
+        "attention_mask": torch.ones((1, 2), dtype=torch.long),
+        "labels": torch.ones((1, 2), dtype=torch.long),
+        "example_ids": ["train-example"],
+    }
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "load_llm_grid_probe_examples",
+        lambda *args, **kwargs: [object()],
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *args, **kwargs: (model, _TrainingTokenizer()),
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "_apply_grid_probe_lora",
+        lambda loaded_model, args: loaded_model,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "DataLoader",
+        lambda *args, **kwargs: [batch],
+    )
+
+
 def test_downsample_grid_scale_2_max_pools_cells():
     grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[1, 0, 1] = 0.25
@@ -296,3 +345,215 @@ def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
     padded_width = int(batch["input_ids"].shape[-1])
     assert batch["prompt_lengths"] == [padded_width, padded_width]
     assert int(batch["attention_mask"][0].sum()) < padded_width
+
+
+def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(["train"])
+
+    assert args.mode == "train"
+    assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
+    assert args.scale == 2
+    assert args.max_new_tokens == 6144
+    assert args.lora_r == 32
+    assert args.lora_alpha == 64
+    assert args.lora_dropout == 0.05
+
+
+def test_train_model_rejects_full_finetuning():
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        ["train", "--finetune-method", "full"]
+    )
+
+    with pytest.raises(NotImplementedError, match="full fine-tuning"):
+        train_llm_grid_probe.train_model(args)
+
+
+def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_path):
+    raster_path = tmp_path / "grid.npz"
+    full_grid = np.zeros((37, 100, 100), dtype=np.float32)
+    full_grid[1, 0, 0] = 1.0
+    np.savez_compressed(
+        raster_path,
+        grid=full_grid,
+        start_position=np.asarray([1.2, 3.4], dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+    )
+    example = train_llm_grid_probe.LLMGridProbeExample(
+        example_id="R2R_val_seen_42",
+        dataset_tag="R2R",
+        split="val_seen",
+        scene_id="scene-a",
+        episode_id=42,
+        instruction="Go to the chair.",
+        raster_path=raster_path,
+    )
+
+    class FakeModel:
+        generation_kwargs = None
+
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def generate(self, **kwargs):
+            self.generation_kwargs = kwargs
+            input_ids = kwargs["input_ids"]
+            suffix = torch.tensor([[91, 97, 93]], dtype=torch.long)
+            return torch.cat([input_ids, suffix], dim=1)
+
+    class FakeTokenizer(_ChatTokenizer):
+        def batch_decode(self, rows, skip_special_tokens=True):
+            return ['{"grid":[[1,0,0]]}' for _row in rows]
+
+    model = FakeModel()
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "load_llm_grid_probe_examples",
+        lambda *args, **kwargs: [example],
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *args, **kwargs: (model, FakeTokenizer()),
+        raising=False,
+    )
+
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "eval",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--limit",
+            "1",
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+        ]
+    )
+    metrics = train_llm_grid_probe.evaluate_model(args)
+
+    assert metrics["json_valid"] == pytest.approx(1.0)
+    assert metrics["cell_recall"] == pytest.approx(1.0)
+    assert metrics["target_truncation_rate"] == pytest.approx(0.0)
+    assert metrics["generated_token_count"] > 0.0
+    assert model.generation_kwargs is not None
+    assert model.generation_kwargs["eos_token_id"] == 2
+    assert model.generation_kwargs["pad_token_id"] == 0
+    metrics_path = tmp_path / "run" / "metrics.json"
+    artifact_path = tmp_path / "run" / "artifacts" / "R2R_val_seen_42.json"
+    assert metrics_path.exists()
+    assert artifact_path.exists()
+    artifact = json.loads(artifact_path.read_text())
+    assert artifact["generated_text"] == '{"grid":[[1,0,0]]}'
+
+
+def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(float("nan")))
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
+    )
+
+    with pytest.raises(FloatingPointError, match="training loss"):
+        train_llm_grid_probe.train_model(args)
+
+
+def test_train_model_rejects_non_finite_clipped_gradient_norm(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    clip_call = {}
+
+    def fake_clip(parameters, max_norm, error_if_nonfinite):
+        clip_call["parameters"] = list(parameters)
+        clip_call["max_norm"] = max_norm
+        clip_call["error_if_nonfinite"] = error_if_nonfinite
+        return torch.tensor(float("inf"))
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", fake_clip)
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
+    )
+
+    with pytest.raises(FloatingPointError, match="training gradient norm"):
+        train_llm_grid_probe.train_model(args)
+
+    assert clip_call["max_norm"] == 1.0
+    assert clip_call["error_if_nonfinite"] is False
+    assert len(clip_call["parameters"]) == 1
+
+
+def test_train_model_validates_parameters_and_writes_outputs(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    validation_contexts = []
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "_validate_trainable_parameters_finite",
+        lambda model, context: validation_contexts.append(context),
+        raising=False,
+    )
+    output_dir = tmp_path / "run"
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(output_dir),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
+    )
+
+    metrics = train_llm_grid_probe.train_model(args)
+
+    assert metrics["train_loss"] == pytest.approx(1.0)
+    assert validation_contexts
+    assert "training trainable parameter" in validation_contexts[0]
+    assert (output_dir / "checkpoints" / "epoch-1").is_dir()
+    assert (output_dir / "checkpoints" / "final").is_dir()
+    assert json.loads((output_dir / "metrics.json").read_text()) == metrics
+
+
+def test_main_dispatches_train_and_eval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "train_model",
+        lambda args: calls.append(("train", args.device)) or {"train_loss": 1.0},
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "evaluate_model",
+        lambda args: calls.append(("eval", args.device)) or {"json_valid": 1.0},
+    )
+
+    assert train_llm_grid_probe.main(["train", "--device", "cpu"]) == {
+        "train_loss": 1.0
+    }
+    assert train_llm_grid_probe.main(["eval", "--device", "cpu"]) == {
+        "json_valid": 1.0
+    }
+    assert calls == [("train", "cpu"), ("eval", "cpu")]

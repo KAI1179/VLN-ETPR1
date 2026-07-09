@@ -21,9 +21,12 @@ from typing import (
 )
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
-from torch.utils.data import Dataset
+from tap import Tap
+from torch.utils.data import DataLoader, Dataset
 
+from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from prior.vlnce import VLNCEEpisodeEntry
 from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_path
@@ -31,16 +34,28 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_pa
 from .boxes_schema import build_llm_boxes_input
 from .train_llm_boxes import (
     _causal_lm_labels,
+    _cast_trainable_parameters_to_float32,
+    _default_device,
     _encoded_width,
+    _generation_kwargs,
+    _load_causal_lm_model_and_tokenizer,
+    _model_batch,
+    _model_uses_device_map,
+    _non_finite_step_message,
+    _normalize_device_map,
+    _progress,
     _render_chat_completion,
     _render_chat_prompt,
     _token_count,
+    _validate_trainable_parameters_finite,
     _validate_supervised_labels,
+    decode_generated_completion,
 )
 
 GRID_CHANNELS = 37
 GRID_SCALE = 2
 GRID_SHAPE = (GRID_CHANNELS, 50, 50)
+DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_probe_system.md"
 TRAIN_SPLITS = ("train",)
@@ -378,3 +393,339 @@ def evaluate_grid_probe_prediction(
         }
     )
     return metrics
+
+
+class LLMGridProbeArgs(Tap):
+    mode: Literal["train", "eval"]
+    model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
+    checkpoint_path: Optional[str] = None
+    output_dir: str = "outputs/llm_grid_probe"
+    dataset: Literal["R2R", "RxR"] = "R2R"
+    cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
+    scale: int = GRID_SCALE
+    max_input_length: int = 1024
+    max_new_tokens: int = 6144
+    finetune_method: Literal["lora", "full"] = "lora"
+    batch_size: int = 2
+    epochs: int = 1
+    learning_rate: float = 2e-4
+    max_grad_norm: float = 1.0
+    lora_r: int = 32
+    lora_alpha: int = 64
+    lora_dropout: float = 0.05
+    lora_target_modules: Tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
+    limit: Optional[int] = None
+    device: str = ""
+    device_map: Literal[
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+        "none",
+    ] = "auto"
+    quiet: bool = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("underscores_to_dashes", True)
+        super().__init__(*args, **kwargs)
+
+    def configure(self) -> None:
+        self.add_argument("mode")
+
+    def process_args(self) -> None:
+        if not self.device:
+            self.device = _default_device()
+        if self.scale != GRID_SCALE:
+            raise ValueError("LLM-Grid-Probe v1 only supports --scale 2")
+
+
+def load_system_prompt(path: Path = DEFAULT_SYSTEM_PROMPT_PATH) -> str:
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _write_run_system_prompt(output_dir: str, system_prompt: str) -> None:
+    artifact_dir = Path(output_dir) / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "system_prompt.md").write_text(
+        system_prompt + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
+    if not rows:
+        return {}
+    keys = sorted({key for row in rows for key in row})
+    return {
+        key: float(sum(row.get(key, 0.0) for row in rows) / len(rows))
+        for key in keys
+    }
+
+
+def _text_diagnostics(
+    tokenizer: Any,
+    target_text: str,
+    generated_text: str,
+    max_new_tokens: int,
+) -> Dict[str, float]:
+    target_tokens = _token_count(tokenizer, target_text)
+    generated_tokens = _token_count(tokenizer, generated_text)
+    return {
+        "target_token_count": float(target_tokens),
+        "target_truncation_rate": 1.0 if target_tokens > max_new_tokens else 0.0,
+        "generated_token_count": float(generated_tokens),
+        "generated_char_count": float(len(generated_text)),
+    }
+
+
+def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
+    if args.finetune_method == "full":
+        raise NotImplementedError(
+            "full fine-tuning is not implemented for LLM-Grid-Probe"
+        )
+    examples = load_llm_grid_probe_examples(
+        args.dataset,
+        TRAIN_SPLITS,
+        limit=args.limit,
+        quiet=args.quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    if not examples:
+        raise ValueError("No LLM-Grid-Probe training examples were loaded")
+
+    system_prompt = load_system_prompt()
+    _write_run_system_prompt(args.output_dir, system_prompt)
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        args.model_name_or_path,
+        device_map=_normalize_device_map(args.device_map),
+    )
+    model = _apply_grid_probe_lora(model, args)
+    _cast_trainable_parameters_to_float32(model)
+    device = torch.device(args.device)
+    if not _model_uses_device_map(model):
+        model.to(device)
+
+    dataset = LLMGridProbeDataset(examples, scale=args.scale)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=lambda batch: collate_llm_grid_probe_batch(
+            batch,
+            tokenizer,
+            system_prompt,
+            args.max_input_length,
+            args.max_new_tokens,
+        ),
+    )
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    optimizer = torch.optim.AdamW(
+        trainable_parameters,
+        lr=args.learning_rate,
+    )
+    model.train()
+    total_loss = 0.0
+    steps = 0
+    for epoch_index in range(args.epochs):
+        for batch in _progress(
+            loader,
+            desc="train LLM-Grid-Probe",
+            quiet=args.quiet,
+        ):
+            outputs = model(**_model_batch(batch, device))
+            loss = outputs.loss
+            if not torch.isfinite(loss.detach()):
+                raise FloatingPointError(
+                    _non_finite_step_message(
+                        "loss",
+                        epoch_index + 1,
+                        steps + 1,
+                        batch,
+                    )
+                )
+            loss.backward()
+            grad_norm = None
+            if args.max_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trainable_parameters,
+                    args.max_grad_norm,
+                    error_if_nonfinite=False,
+                )
+                if not torch.isfinite(grad_norm.detach()):
+                    raise FloatingPointError(
+                        _non_finite_step_message(
+                            "gradient norm",
+                            epoch_index + 1,
+                            steps + 1,
+                            batch,
+                            value=float(grad_norm.detach().cpu()),
+                        )
+                    )
+            optimizer.step()
+            optimizer.zero_grad()
+            _validate_trainable_parameters_finite(
+                model,
+                context=_non_finite_step_message(
+                    "trainable parameter",
+                    epoch_index + 1,
+                    steps + 1,
+                    batch,
+                    value=(
+                        float(grad_norm.detach().cpu())
+                        if grad_norm is not None
+                        else None
+                    ),
+                ),
+            )
+            total_loss += float(loss.detach().cpu())
+            steps += 1
+        epoch_dir = (
+            Path(args.output_dir) / "checkpoints" / f"epoch-{epoch_index + 1}"
+        )
+        epoch_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(epoch_dir)
+        tokenizer.save_pretrained(epoch_dir)
+
+    checkpoint_dir = Path(args.output_dir) / "checkpoints" / "final"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(checkpoint_dir)
+    tokenizer.save_pretrained(checkpoint_dir)
+    metrics = {
+        "train_loss": total_loss / steps if steps else 0.0,
+        "steps": float(steps),
+    }
+    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    return metrics
+
+
+def _apply_grid_probe_lora(model: Any, args: LLMGridProbeArgs) -> Any:
+    if args.finetune_method != "lora":
+        raise ValueError(f"Unsupported finetune method: {args.finetune_method}")
+    from peft import LoraConfig, get_peft_model
+
+    config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=list(args.lora_target_modules),
+    )
+    return get_peft_model(model, config)
+
+
+def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
+    examples = load_llm_grid_probe_examples(
+        args.dataset,
+        EVAL_SPLITS,
+        limit=args.limit,
+        quiet=args.quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    if not examples:
+        raise ValueError("No LLM-Grid-Probe eval examples were loaded")
+
+    system_prompt = load_system_prompt()
+    _write_run_system_prompt(args.output_dir, system_prompt)
+    model_path = args.checkpoint_path or args.model_name_or_path
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        model_path,
+        device_map=_normalize_device_map(args.device_map),
+    )
+    device = torch.device(args.device)
+    if not _model_uses_device_map(model):
+        model.to(device)
+    model.eval()
+
+    dataset = LLMGridProbeDataset(examples, scale=args.scale)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=lambda batch: collate_llm_grid_probe_prompt_batch(
+            batch,
+            tokenizer,
+            system_prompt,
+            args.max_input_length,
+        ),
+    )
+    rows: List[Dict[str, float]] = []
+    artifact_dir = Path(args.output_dir) / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        for batch in _progress(
+            loader,
+            desc="eval LLM-Grid-Probe",
+            quiet=args.quiet,
+        ):
+            model_batch = _model_batch(batch, device, include_labels=False)
+            generated = model.generate(
+                **model_batch,
+                **_generation_kwargs(tokenizer, args.max_new_tokens),
+            )
+            completions = [
+                decode_generated_completion(tokenizer, sequence, prompt_length)
+                for sequence, prompt_length in zip(
+                    generated,
+                    batch["prompt_lengths"],
+                )
+            ]
+            for item, generated_text in zip(batch["items"], completions):
+                metrics = evaluate_grid_probe_prediction(
+                    generated_text,
+                    item["target_grid"],
+                )
+                metrics.update(
+                    _text_diagnostics(
+                        tokenizer,
+                        item["target_text"],
+                        generated_text,
+                        args.max_new_tokens,
+                    )
+                )
+                rows.append(metrics)
+                _write_json(
+                    artifact_dir / f"{item['example_id']}.json",
+                    {
+                        "example_id": item["example_id"],
+                        "input_text": item["input_text"],
+                        "target_text": item["target_text"],
+                        "generated_text": generated_text,
+                        "metrics": metrics,
+                    },
+                )
+    metrics = _aggregate_metrics(rows)
+    metrics["example_count"] = float(len(rows))
+    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    return metrics
+
+
+def main(argv: Optional[List[str]] = None) -> Dict[str, float]:
+    args = LLMGridProbeArgs().parse_args(argv)
+    if args.mode == "train":
+        return train_model(args)
+    return evaluate_model(args)
+
+
+if __name__ == "__main__":
+    main()
