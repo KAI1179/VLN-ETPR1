@@ -135,10 +135,15 @@ class _TrainingModel(torch.nn.Module):
         super().__init__()
         self.adapter = torch.nn.Parameter(torch.ones(()))
         self.loss_value = loss_value
+        self.config = type("Config", (), {"use_cache": True})()
+        self.gradient_checkpointing_enabled = False
 
     def forward(self, **kwargs):
         loss = self.adapter * 0 + torch.tensor(self.loss_value)
         return type("Outputs", (), {"loss": loss})()
+
+    def gradient_checkpointing_enable(self):
+        self.gradient_checkpointing_enabled = True
 
     def save_pretrained(self, output_dir):
         return None
@@ -167,7 +172,7 @@ def _save_box_payload(path, object_mentions=(), region_mentions=()):
     )
 
 
-def _patch_training_dependencies(monkeypatch, model):
+def _patch_training_dependencies(monkeypatch, model, batches=None):
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "short",
         "target_text": EMPTY_GRID_TEXT,
@@ -184,6 +189,8 @@ def _patch_training_dependencies(monkeypatch, model):
         "labels": torch.ones((1, 2), dtype=torch.long),
         "example_ids": ["train-example"],
     }
+    if batches is None:
+        batches = [batch]
     monkeypatch.setattr(
         train_llm_grid_probe,
         "load_llm_grid_probe_examples",
@@ -208,7 +215,7 @@ def _patch_training_dependencies(monkeypatch, model):
     monkeypatch.setattr(
         train_llm_grid_probe,
         "DataLoader",
-        lambda *args, **kwargs: [batch],
+        lambda *args, **kwargs: batches,
     )
 
 
@@ -622,6 +629,8 @@ def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
     assert args.lora_r == 32
     assert args.lora_alpha == 64
     assert args.lora_dropout == 0.05
+    assert args.gradient_accumulation_steps == 1
+    assert args.gradient_checkpointing is False
 
 
 def test_train_model_rejects_full_finetuning():
@@ -878,6 +887,79 @@ def test_train_model_validates_parameters_and_writes_outputs(monkeypatch, tmp_pa
     assert (output_dir / "checkpoints" / "epoch-1").is_dir()
     assert (output_dir / "checkpoints" / "final").is_dir()
     assert json.loads((output_dir / "metrics.json").read_text()) == metrics
+
+
+def test_train_model_accumulates_gradients_before_optimizer_step(
+    monkeypatch,
+    tmp_path,
+):
+    batches = [
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+            "labels": torch.ones((1, 2), dtype=torch.long),
+            "example_ids": [f"train-example-{index}"],
+        }
+        for index in range(3)
+    ]
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0), batches=batches)
+    calls = {"step": 0, "zero_grad": 0}
+
+    class FakeOptimizer:
+        def __init__(self, parameters, lr):
+            self.parameters = list(parameters)
+            self.lr = lr
+
+        def step(self):
+            calls["step"] += 1
+
+        def zero_grad(self):
+            calls["zero_grad"] += 1
+
+    monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+            "--gradient-accumulation-steps",
+            "2",
+        ]
+    )
+
+    metrics = train_llm_grid_probe.train_model(args)
+
+    assert calls == {"step": 2, "zero_grad": 3}
+    assert metrics["steps"] == pytest.approx(3.0)
+    assert metrics["optimizer_steps"] == pytest.approx(2.0)
+
+
+def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
+    model = _TrainingModel(1.0)
+    _patch_training_dependencies(monkeypatch, model)
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    train_llm_grid_probe.train_model(args)
+
+    assert model.gradient_checkpointing_enabled is True
+    assert model.config.use_cache is False
 
 
 def test_main_dispatches_train_and_eval(monkeypatch):

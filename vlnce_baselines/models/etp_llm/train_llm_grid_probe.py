@@ -609,6 +609,8 @@ class LLMGridProbeArgs(Tap):
     max_new_tokens: int = 4096
     finetune_method: Literal["lora", "full"] = "lora"
     batch_size: int = 2
+    gradient_accumulation_steps: int = 1
+    gradient_checkpointing: bool = False
     epochs: int = 1
     learning_rate: float = 2e-4
     max_grad_norm: float = 1.0
@@ -647,6 +649,8 @@ class LLMGridProbeArgs(Tap):
             self.device = _default_device()
         if self.scale != GRID_SCALE:
             raise ValueError("LLM-Grid-Probe v1 only supports --scale 2")
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError("--gradient-accumulation-steps must be >= 1")
 
 
 def load_system_prompt(path: Path = DEFAULT_SYSTEM_PROMPT_PATH) -> str:
@@ -731,6 +735,8 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     )
     model = _apply_grid_probe_lora(model, args)
     _cast_trainable_parameters_to_float32(model)
+    if args.gradient_checkpointing:
+        _enable_gradient_checkpointing(model)
     device = torch.device(args.device)
     if not _model_uses_device_map(model):
         model.to(device)
@@ -769,11 +775,17 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
     steps = 0
+    optimizer_steps = 0
+    optimizer.zero_grad()
     for epoch_index in range(args.epochs):
-        for batch in _progress(
-            loader,
-            desc="train LLM-Grid-Probe",
-            quiet=args.quiet,
+        batch_count = len(loader)
+        for batch_index, batch in enumerate(
+            _progress(
+                loader,
+                desc="train LLM-Grid-Probe",
+                quiet=args.quiet,
+            ),
+            start=1,
         ):
             outputs = model(**_model_batch(batch, device))
             loss = outputs.loss
@@ -786,40 +798,46 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
                         batch,
                     )
                 )
-            loss.backward()
-            grad_norm = None
-            if args.max_grad_norm > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    trainable_parameters,
-                    args.max_grad_norm,
-                    error_if_nonfinite=False,
-                )
-                if not torch.isfinite(grad_norm.detach()):
-                    raise FloatingPointError(
-                        _non_finite_step_message(
-                            "gradient norm",
-                            epoch_index + 1,
-                            steps + 1,
-                            batch,
-                            value=float(grad_norm.detach().cpu()),
-                        )
-                    )
-            optimizer.step()
-            optimizer.zero_grad()
-            _validate_trainable_parameters_finite(
-                model,
-                context=_non_finite_step_message(
-                    "trainable parameter",
-                    epoch_index + 1,
-                    steps + 1,
-                    batch,
-                    value=(
-                        float(grad_norm.detach().cpu())
-                        if grad_norm is not None
-                        else None
-                    ),
-                ),
+            (loss / args.gradient_accumulation_steps).backward()
+            should_step_optimizer = (
+                batch_index % args.gradient_accumulation_steps == 0
+                or batch_index == batch_count
             )
+            if should_step_optimizer:
+                grad_norm = None
+                if args.max_grad_norm > 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters,
+                        args.max_grad_norm,
+                        error_if_nonfinite=False,
+                    )
+                    if not torch.isfinite(grad_norm.detach()):
+                        raise FloatingPointError(
+                            _non_finite_step_message(
+                                "gradient norm",
+                                epoch_index + 1,
+                                steps + 1,
+                                batch,
+                                value=float(grad_norm.detach().cpu()),
+                            )
+                        )
+                optimizer.step()
+                optimizer_steps += 1
+                optimizer.zero_grad()
+                _validate_trainable_parameters_finite(
+                    model,
+                    context=_non_finite_step_message(
+                        "trainable parameter",
+                        epoch_index + 1,
+                        steps + 1,
+                        batch,
+                        value=(
+                            float(grad_norm.detach().cpu())
+                            if grad_norm is not None
+                            else None
+                        ),
+                    ),
+                )
             total_loss += float(loss.detach().cpu())
             steps += 1
         epoch_dir = (
@@ -836,6 +854,7 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     metrics = {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
+        "optimizer_steps": float(optimizer_steps),
         "training_example_count": float(len(train_items)),
         "skipped_over_budget_count": float(len(skipped_over_budget)),
     }
@@ -857,6 +876,23 @@ def _apply_grid_probe_lora(model: Any, args: LLMGridProbeArgs) -> Any:
         target_modules=list(args.lora_target_modules),
     )
     return get_peft_model(model, config)
+
+
+def _enable_gradient_checkpointing(model: Any) -> None:
+    gradient_checkpointing_enable = getattr(
+        model,
+        "gradient_checkpointing_enable",
+        None,
+    )
+    if gradient_checkpointing_enable is None:
+        raise AttributeError(
+            "Model does not support gradient checkpointing; rerun without "
+            "--gradient-checkpointing"
+        )
+    config = getattr(model, "config", None)
+    if config is not None and hasattr(config, "use_cache"):
+        config.use_cache = False
+    gradient_checkpointing_enable()
 
 
 def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
