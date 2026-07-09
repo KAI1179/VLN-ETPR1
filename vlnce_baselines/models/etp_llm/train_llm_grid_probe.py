@@ -24,7 +24,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 from tap import Tap
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset
 
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_CATEGORIES
@@ -279,6 +279,37 @@ class LLMGridProbeItemsDataset(Dataset):
         return self.items[index]
 
 
+class LengthGroupedBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        lengths: Sequence[int],
+        batch_size: int,
+        generator: Optional[torch.Generator] = None,
+    ) -> None:
+        super().__init__(range(len(lengths)), batch_size=batch_size, drop_last=False)
+        self.generator = generator
+        self.sorted_indices = sorted(range(len(lengths)), key=lambda index: lengths[index])
+
+    def __iter__(self) -> Iterator[List[int]]:
+        batches = [
+            self.sorted_indices[start : start + self.batch_size]
+            for start in range(0, len(self.sorted_indices), self.batch_size)
+        ]
+        full_batches = [batch for batch in batches if len(batch) == self.batch_size]
+        tail_batches = [batch for batch in batches if len(batch) != self.batch_size]
+        order = torch.randperm(
+            len(full_batches),
+            generator=self.generator,
+        ).tolist()
+        for batch_index in order:
+            yield full_batches[batch_index]
+        for batch in tail_batches:
+            yield batch
+
+    def __len__(self) -> int:
+        return (len(self.sorted_indices) + self.batch_size - 1) // self.batch_size
+
+
 def _completion_token_count(
     item: LLMGridProbeItem,
     tokenizer: Any,
@@ -315,6 +346,25 @@ def filter_grid_probe_training_items(
             continue
         filtered.append(item)
     return filtered, skipped
+
+
+def _training_sequence_lengths(
+    items: Sequence[LLMGridProbeItem],
+    tokenizer: Any,
+    system_prompt: str,
+) -> List[int]:
+    return [
+        _token_count(
+            tokenizer,
+            _render_chat_completion(
+                tokenizer,
+                system_prompt,
+                item["input_text"],
+                item["target_text"],
+            ),
+        )
+        for item in items
+    ]
 
 
 def collate_llm_grid_probe_batch(
@@ -886,10 +936,13 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     if skipped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(skipped_over_budget)}")
     dataset = LLMGridProbeItemsDataset(train_items)
+    batch_sampler = LengthGroupedBatchSampler(
+        _training_sequence_lengths(train_items, tokenizer, system_prompt),
+        batch_size=args.batch_size,
+    )
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_sampler=batch_sampler,
         collate_fn=lambda batch: collate_llm_grid_probe_batch(
             batch,
             tokenizer,

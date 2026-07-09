@@ -903,6 +903,57 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
     assert skipped == ["long"]
 
 
+def test_length_grouped_batch_sampler_batches_similar_lengths():
+    sampler = train_llm_grid_probe.LengthGroupedBatchSampler(
+        lengths=[100, 10, 20, 105],
+        batch_size=2,
+        generator=torch.Generator().manual_seed(0),
+    )
+
+    batches = [sorted(batch) for batch in sampler]
+
+    assert sorted(batches) == [[0, 3], [1, 2]]
+
+
+def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    captured = {}
+
+    def fake_data_loader(*args, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "input_ids": torch.ones((1, 2), dtype=torch.long),
+                "attention_mask": torch.ones((1, 2), dtype=torch.long),
+                "labels": torch.ones((1, 2), dtype=torch.long),
+                "example_ids": ["train-example"],
+            }
+        ]
+
+    monkeypatch.setattr(train_llm_grid_probe, "DataLoader", fake_data_loader)
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
+    )
+
+    train_llm_grid_probe.train_model(args)
+
+    assert isinstance(
+        captured["batch_sampler"],
+        train_llm_grid_probe.LengthGroupedBatchSampler,
+    )
+    assert "batch_size" not in captured
+    assert "shuffle" not in captured
+
+
 def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
     args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(["train"])
 
