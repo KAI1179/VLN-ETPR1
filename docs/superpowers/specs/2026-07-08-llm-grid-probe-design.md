@@ -49,8 +49,8 @@ pretraining caches under `data/cognitive_maps_etp_r1` are out of scope for v1.
 
 Follow the LLM-Boxes convention:
 
-- The system prompt defines the compact JSON schema and the full 37-category
-  index mapping.
+- The system prompt defines the keyed compact JSON schema and the canonical
+  object/region category names.
 - The user prompt contains only per-example inputs: dataset tag, instruction,
   level-local start position, and start direction.
 - Scene id and per-example scene inventories are excluded.
@@ -60,16 +60,18 @@ Follow the LLM-Boxes convention:
 The target is compact JSON at `scale=2`:
 
 ```json
-{"grid":[[category,row,col],[category,row,col,value]]}
+{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
 ```
 
-Values equal to `1.0` omit the `value` field. Other values are emitted as
-compact floats, matching `prior.llm_grid_samples.serialize_grid_target`.
+Candidate lists come first and match the region/object keys. Entity cells are
+binary `[row,col]` entries; per-cell confidence is not generated. Mention
+status is carried by each entity's `mentioned` field.
 
 Full-resolution grid targets are retained for GT upper-bound and later
 navigation comparison, but they are not the first LLM generation target. The
 sample study showed `scale=2` is the practical v1 target: 100 sampled VLN-CE
-targets averaged about 2099 tokens, with 1% above `max_new_tokens=6144`.
+targets averaged about 1831 tokens for keyed JSON, with 9/500 above
+`max_new_tokens=4096`.
 
 ## Training
 
@@ -78,7 +80,8 @@ Reuse the LLM-Boxes trainer mechanics:
 - Causal LM fine-tuning with LoRA.
 - LoRA rank `r=32`, alpha `64`, dropout `0.05`.
 - Target modules: q/k/v/o projections plus MLP projections.
-- `max_new_tokens=6144`.
+- `max_new_tokens=4096`; train-time examples over this target budget are
+  excluded and counted.
 - EOS-safe causal labels that mask prompt and padding positions.
 - Generation config passes EOS and pad token ids.
 - Batch size starts at 1 or 2 depending on GPU memory.
@@ -95,11 +98,11 @@ for predictor metrics.
 Report:
 
 - JSON parse validity.
-- Schema validity: `grid` is a list of `[category,row,col]` or
-  `[category,row,col,value]` records.
+- Schema validity: candidate lists match keyed `regions` / `objects`, and
+  every cell is a binary `[row,col]` record.
 - Cell precision, recall, and F1.
 - Category-aware raster IoU and recall.
-- Token length, target truncation rate, and generated completion length.
+- Token length, target over-budget rate, and generated completion length.
 - Repetition diagnostics sufficient to detect tail loops.
 
 Invalid JSON or invalid records should be counted explicitly rather than

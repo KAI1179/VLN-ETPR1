@@ -11,7 +11,7 @@ set -u
 
 python -m vlnce_baselines.models.etp_llm.train_llm_grid_probe train \
   --batch-size 2 \
-  --max-new-tokens 6144 \
+  --max-new-tokens 4096 \
   --lora-r 32 \
   --lora-alpha 64 \
   --lora-dropout 0.05 \

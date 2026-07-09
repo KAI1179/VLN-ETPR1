@@ -7,6 +7,10 @@ import torch
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import train_llm_grid_probe
 
+EMPTY_GRID_TEXT = (
+    '{"region_candidates":[],"object_candidates":[],"regions":{},"objects":{}}'
+)
+
 
 class _Episode:
     dataset = "R2R"
@@ -121,7 +125,7 @@ class _EosChatTokenizer(_ChatTokenizer):
         return super().encode(text, add_special_tokens=add_special_tokens)
 
 
-class _TrainingTokenizer:
+class _TrainingTokenizer(_EosChatTokenizer):
     def save_pretrained(self, output_dir):
         return None
 
@@ -140,7 +144,40 @@ class _TrainingModel(torch.nn.Module):
         return None
 
 
+def _save_box_payload(path, object_mentions=(), region_mentions=()):
+    objects = [[] for _ in range(27)]
+    regions = [[] for _ in range(10)]
+    for category_id in object_mentions:
+        objects[category_id].append(
+            {
+                "center": [0.0, 0.0],
+                "half_extents": [0.5, 0.5],
+                "rotation": 0.0,
+                "mentioned": True,
+            }
+        )
+    for category_id in region_mentions:
+        regions[category_id].append(
+            {"min": [0.0, 0.0], "max": [1.0, 1.0], "mentioned": True}
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        payload=json.dumps({"level": {"objects": objects, "regions": regions}}),
+    )
+
+
 def _patch_training_dependencies(monkeypatch, model):
+    item: train_llm_grid_probe.LLMGridProbeItem = {
+        "input_text": "short",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "example_id": "train-example",
+        "instruction": "short",
+        "start_position": (1.2, 3.4),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+    }
     batch = {
         "input_ids": torch.ones((1, 2), dtype=torch.long),
         "attention_mask": torch.ones((1, 2), dtype=torch.long),
@@ -151,6 +188,11 @@ def _patch_training_dependencies(monkeypatch, model):
         train_llm_grid_probe,
         "load_llm_grid_probe_examples",
         lambda *args, **kwargs: [object()],
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "LLMGridProbeDataset",
+        lambda *args, **kwargs: [item],
     )
     monkeypatch.setattr(
         train_llm_grid_probe,
@@ -184,26 +226,39 @@ def test_downsample_grid_scale_2_max_pools_cells():
     assert int(np.count_nonzero(sampled)) == 2
 
 
-def test_serialize_grid_target_uses_compact_json_and_omits_unit_values():
+def test_serialize_grid_target_uses_keyed_binary_cells():
     grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[1, 0, 0] = 1.0
     grid[28, 2, 2] = 0.6
 
     text = serialize_grid_target(grid, scale=2)
 
-    assert text == '{"grid":[[1,0,0],[28,1,1,0.6]]}'
-    assert json.loads(text) == {"grid": [[1, 0, 0], [28, 1, 1, 0.6]]}
+    assert json.loads(text) == {
+        "region_candidates": ["living/social space"],
+        "object_candidates": ["chair"],
+        "regions": {
+            "living/social space": {"cells": [[1, 1]], "mentioned": False}
+        },
+        "objects": {"chair": {"cells": [[0, 0]], "mentioned": False}},
+    }
 
 
-def test_parse_grid_probe_text_accepts_compact_records_and_max_merges_duplicates():
+def test_parse_grid_probe_text_accepts_keyed_records_and_max_merges_duplicates():
     result = train_llm_grid_probe.parse_grid_probe_text(
-        '{"grid":[[1,0,0],[1,0,0,0.4],[28,1,2,0.6]]}',
+        (
+            '{"region_candidates":["living/social space"],'
+            '"object_candidates":["chair"],'
+            '"regions":{"living/social space":{"cells":[[1,2]],'
+            '"mentioned":false}},'
+            '"objects":{"chair":{"cells":[[0,0],[0,0]],'
+            '"mentioned":true}}}'
+        ),
         shape=(37, 50, 50),
     )
 
     assert result.grid.shape == (37, 50, 50)
     assert result.grid[1, 0, 0] == pytest.approx(1.0)
-    assert result.grid[28, 1, 2] == pytest.approx(0.6)
+    assert result.grid[28, 1, 2] == pytest.approx(1.0)
     assert result.record_count == 3
     assert result.duplicate_record_count == 1
 
@@ -212,18 +267,35 @@ def test_parse_grid_probe_text_rejects_invalid_json_and_bad_records():
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
         train_llm_grid_probe.parse_grid_probe_text("not json")
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text('{"grid":[[37,0,0]]}')
+        train_llm_grid_probe.parse_grid_probe_text('{"grid":[[1,0,0]]}')
     with pytest.raises(train_llm_grid_probe.LLMGridProbeValidationError):
-        train_llm_grid_probe.parse_grid_probe_text('{"grid":[[1,0,0,1.2]]}')
+        train_llm_grid_probe.parse_grid_probe_text(
+            (
+                '{"region_candidates":[],"object_candidates":["chair"],'
+                '"regions":{},"objects":{"chair":{"cells":[[0,0,1]],'
+                '"mentioned":true}}}'
+            )
+        )
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        '{"grid":[[true,0,0]]}',
-        '{"grid":[[1,true,0]]}',
-        '{"grid":[[1,0,true]]}',
-        '{"grid":[[1,0,0,true]]}',
+        (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":[[true,0]],'
+            '"mentioned":false}}}'
+        ),
+        (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
+            '"mentioned":false}}}'
+        ),
+        (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
+            '"mentioned":false}}}'
+        ),
     ],
 )
 def test_parse_grid_probe_text_rejects_boolean_fields(text):
@@ -237,7 +309,13 @@ def test_compute_grid_probe_metrics_counts_invalid_predictions_explicitly():
     target[28, 1, 2] = 0.6
 
     valid = train_llm_grid_probe.evaluate_grid_probe_prediction(
-        '{"grid":[[1,0,0],[28,9,9]]}',
+        (
+            '{"region_candidates":["living/social space"],'
+            '"object_candidates":["chair"],'
+            '"regions":{"living/social space":{"cells":[[9,9]],'
+            '"mentioned":false}},'
+            '"objects":{"chair":{"cells":[[0,0]],"mentioned":true}}}'
+        ),
         target,
     )
     invalid = train_llm_grid_probe.evaluate_grid_probe_prediction(
@@ -264,7 +342,11 @@ def test_evaluate_grid_probe_prediction_distinguishes_invalid_schema():
     target = np.zeros((37, 50, 50), dtype=np.float32)
 
     result = train_llm_grid_probe.evaluate_grid_probe_prediction(
-        '{"grid":"not a list"}',
+        (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":"not a list",'
+            '"mentioned":false}}}'
+        ),
         target,
     )
 
@@ -304,7 +386,8 @@ def test_load_llm_grid_probe_examples_loads_raster_paths(monkeypatch, tmp_path):
 
 
 def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
-    raster_path = tmp_path / "grid.npz"
+    raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
+    raster_path.parent.mkdir(parents=True)
     grid = np.zeros((37, 100, 100), dtype=np.float32)
     grid[1, 0, 0] = 1.0
     grid[28, 2, 2] = 0.6
@@ -313,6 +396,11 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         grid=grid,
         start_position=np.asarray([1.2, 3.4], dtype=np.float32),
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+    )
+    _save_box_payload(
+        tmp_path / "boxes" / "scene-a" / "grid.npz",
+        object_mentions={1},
+        region_mentions={1},
     )
     example = train_llm_grid_probe.LLMGridProbeExample(
         example_id="R2R_train_42",
@@ -330,7 +418,14 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
         "dataset R2R | start x = 1.2 | start z = 3.4 | "
         "direction x = 0.0 | direction z = 1.0 | instruction Go to the chair."
     )
-    assert item["target_text"] == '{"grid":[[1,0,0],[28,1,1,0.6]]}'
+    assert json.loads(item["target_text"]) == {
+        "region_candidates": ["living/social space"],
+        "object_candidates": ["chair"],
+        "regions": {
+            "living/social space": {"cells": [[1, 1]], "mentioned": True}
+        },
+        "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
+    }
     assert item["target_grid"].shape == (37, 50, 50)
     assert tuple(item["start_position"]) == pytest.approx((1.2, 3.4))
     assert tuple(item["start_direction"]) == pytest.approx((0.0, 1.0))
@@ -339,7 +434,11 @@ def test_llm_grid_probe_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
 def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "dataset R2R | instruction Go to the chair.",
-        "target_text": '{"grid":[[1,0,0]]}',
+        "target_text": (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
+            '"mentioned":true}}}'
+        ),
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "example_id": "R2R_train_42",
         "instruction": "Go to the chair.",
@@ -353,7 +452,7 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
         tokenizer=_ChatTokenizer(),
         system_prompt="system",
         max_input_length=512,
-        max_new_tokens=64,
+        max_new_tokens=256,
     )
 
     labels = batch["labels"][0]
@@ -366,7 +465,7 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
 def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "dataset R2R | instruction Go to the chair.",
-        "target_text": '{"grid":[]}',
+        "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "example_id": "oversized-prompt",
         "instruction": "Go to the chair.",
@@ -394,11 +493,15 @@ def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
         )
 
 
-def test_collate_llm_grid_probe_truncates_to_valid_json_with_eos_within_budget():
-    records = [[1, 0, 0], [2, 1, 1], [3, 2, 2]]
+def test_collate_llm_grid_probe_rejects_target_over_completion_budget():
+    target_text = (
+        '{"region_candidates":[],"object_candidates":["chair"],'
+        '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1]],'
+        '"mentioned":true}}}'
+    )
     item: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "short",
-        "target_text": json.dumps({"grid": records}, separators=(",", ":")),
+        "target_text": target_text,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "example_id": "completion-budget",
         "instruction": "short",
@@ -412,42 +515,31 @@ def test_collate_llm_grid_probe_truncates_to_valid_json_with_eos_within_budget()
         "system",
         item["input_text"],
     )
-    one_record_text = json.dumps({"grid": records[:1]}, separators=(",", ":"))
-    one_record_completion = train_llm_grid_probe._render_chat_completion(
+    full_completion = train_llm_grid_probe._render_chat_completion(
         tokenizer,
         "system",
         item["input_text"],
-        one_record_text,
+        target_text,
     )
-    max_new_tokens = len(tokenizer.encode(one_record_completion)) - len(
-        tokenizer.encode(prompt)
-    )
-
-    batch = train_llm_grid_probe.collate_llm_grid_probe_batch(
-        [item],
-        tokenizer=tokenizer,
-        system_prompt="system",
-        max_input_length=len(tokenizer.encode(prompt)) + 100,
-        max_new_tokens=max_new_tokens,
+    max_new_tokens = (
+        len(tokenizer.encode(full_completion)) - len(tokenizer.encode(prompt)) - 1
     )
 
-    rendered_completion = tokenizer.encoded_texts[0]
-    truncated_text = rendered_completion.split("<assistant>", 1)[1].split(
-        "</assistant>",
-        1,
-    )[0]
-    assert json.loads(truncated_text) == {"grid": records[:1]}
-    assert train_llm_grid_probe.parse_grid_probe_text(truncated_text).record_count == 1
-    supervised = batch["labels"][0][batch["labels"][0] != -100]
-    assert len(supervised) <= max_new_tokens
-    assert int(supervised[-1]) == tokenizer.eos_token_id
+    with pytest.raises(ValueError, match="completion-budget.*max_new_tokens"):
+        train_llm_grid_probe.collate_llm_grid_probe_batch(
+            [item],
+            tokenizer=tokenizer,
+            system_prompt="system",
+            max_input_length=len(tokenizer.encode(prompt)) + 100,
+            max_new_tokens=max_new_tokens,
+        )
 
 
 def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
     target_grid = np.zeros((37, 50, 50), dtype=np.float32)
     short: train_llm_grid_probe.LLMGridProbeItem = {
         "input_text": "short",
-        "target_text": '{"grid":[]}',
+        "target_text": EMPTY_GRID_TEXT,
         "target_grid": target_grid,
         "example_id": "short",
         "instruction": "short",
@@ -473,13 +565,60 @@ def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
     assert int(batch["attention_mask"][0].sum()) < padded_width
 
 
+def test_filter_training_items_excludes_targets_over_completion_budget():
+    short: train_llm_grid_probe.LLMGridProbeItem = {
+        "input_text": "short",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "example_id": "short",
+        "instruction": "short",
+        "start_position": (1.2, 3.4),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+    }
+    long: train_llm_grid_probe.LLMGridProbeItem = {
+        **short,
+        "target_text": (
+            '{"region_candidates":[],"object_candidates":["chair"],'
+            '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1],'
+            '[2,2]],"mentioned":true}}}'
+        ),
+        "example_id": "long",
+    }
+    tokenizer = _EosChatTokenizer()
+    prompt = train_llm_grid_probe._render_chat_prompt(
+        tokenizer,
+        "system",
+        short["input_text"],
+    )
+    empty_completion = train_llm_grid_probe._render_chat_completion(
+        tokenizer,
+        "system",
+        short["input_text"],
+        EMPTY_GRID_TEXT,
+    )
+    max_new_tokens = len(tokenizer.encode(empty_completion)) - len(
+        tokenizer.encode(prompt)
+    )
+
+    filtered, skipped = train_llm_grid_probe.filter_grid_probe_training_items(
+        [short, long],
+        tokenizer=tokenizer,
+        system_prompt="system",
+        max_new_tokens=max_new_tokens,
+    )
+
+    assert [item["example_id"] for item in filtered] == ["short"]
+    assert skipped == ["long"]
+
+
 def test_llm_grid_probe_args_defaults_to_grid_probe_namespace_and_scale():
     args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(["train"])
 
     assert args.mode == "train"
     assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
     assert args.scale == 2
-    assert args.max_new_tokens == 6144
+    assert args.max_new_tokens == 4096
     assert args.lora_r == 32
     assert args.lora_alpha == 64
     assert args.lora_dropout == 0.05
@@ -495,7 +634,8 @@ def test_train_model_rejects_full_finetuning():
 
 
 def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_path):
-    raster_path = tmp_path / "grid.npz"
+    raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
+    raster_path.parent.mkdir(parents=True)
     full_grid = np.zeros((37, 100, 100), dtype=np.float32)
     full_grid[1, 0, 0] = 1.0
     np.savez_compressed(
@@ -503,6 +643,10 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
         grid=full_grid,
         start_position=np.asarray([1.2, 3.4], dtype=np.float32),
         start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+    )
+    _save_box_payload(
+        tmp_path / "boxes" / "scene-a" / "grid.npz",
+        object_mentions={1},
     )
     example = train_llm_grid_probe.LLMGridProbeExample(
         example_id="R2R_val_seen_42",
@@ -550,7 +694,14 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             )
 
         def batch_decode(self, rows, skip_special_tokens=True):
-            return ['{"grid":[[1,0,0]]}' for _row in rows]
+            return [
+                (
+                    '{"region_candidates":[],"object_candidates":["chair"],'
+                    '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
+                    '"mentioned":true}}}'
+                )
+                for _row in rows
+            ]
 
     model = FakeModel()
     tokenizer = FakeTokenizer()
@@ -583,7 +734,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
 
     assert metrics["json_valid"] == pytest.approx(1.0)
     assert metrics["cell_recall"] == pytest.approx(1.0)
-    assert metrics["target_truncation_rate"] == pytest.approx(0.0)
+    assert metrics["target_over_budget_rate"] == pytest.approx(0.0)
     assert metrics["generated_token_count"] > 0.0
     assert model.generation_kwargs is not None
     assert model.generation_kwargs["eos_token_id"] == 2
@@ -594,7 +745,12 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     assert metrics_path.exists()
     assert artifact_path.exists()
     artifact = json.loads(artifact_path.read_text())
-    assert artifact["generated_text"] == '{"grid":[[1,0,0]]}'
+    assert json.loads(artifact["generated_text"]) == {
+        "region_candidates": [],
+        "object_candidates": ["chair"],
+        "regions": {},
+        "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
+    }
 
 
 def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path):

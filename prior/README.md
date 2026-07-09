@@ -17,12 +17,13 @@ For analyzing, see `./analyze/README.md`.
 LLM-Grid targets:
 
 ```json
-{"grid":[[category,row,col],[category,row,col,value]]}
+{"region_candidates":["living/social space"],"object_candidates":["chair"],"regions":{"living/social space":{"cells":[[1,2],[1,3]],"mentioned":false}},"objects":{"chair":{"cells":[[4,5]],"mentioned":true}}}
 ```
 
-The `value` element is omitted when the cell value is `1.0`. The default
-candidate generation budget is `--max-new-tokens 6144`; summaries report the
-sampled target truncation rate against that budget.
+LLM-Grid text cells are binary `[row,col]`; confidence is represented by the
+entity-level `mentioned` field instead of per-cell values. The default
+candidate generation budget is `--max-new-tokens 4096`; summaries report the
+sampled target over-budget rate against that budget.
 
 Example:
 

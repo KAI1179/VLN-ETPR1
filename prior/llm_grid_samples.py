@@ -7,11 +7,13 @@ import random
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
+
+from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_CATEGORIES
 
 TokenCounter = Callable[[str], int]
 
@@ -31,8 +33,8 @@ class SampleArgs(Tap):
     """Random seed for deterministic sampling."""
     tokenizer_path: Optional[Path] = None
     """Optional local Hugging Face tokenizer path for token counts."""
-    max_new_tokens: int = 6144
-    """Candidate LLM-Grid generation budget used for truncation reporting."""
+    max_new_tokens: int = 4096
+    """Candidate LLM-Grid generation budget used for over-budget reporting."""
 
 
 def downsample_grid(
@@ -58,29 +60,54 @@ def downsample_grid(
     ).max(axis=(2, 4))
 
 
-def _format_value(value: float) -> str:
-    return np.format_float_positional(
-        np.float32(value),
-        trim="-",
-        fractional=False,
-    )
+def _cell_record(row: int, col: int) -> List[int]:
+    return [int(row), int(col)]
 
 
-def serialize_grid_target(grid: NDArray[np.float32], scale: int = 1) -> str:
-    """Serialize nonzero category cells as compact JSON LLM-Grid text."""
+def serialize_grid_target(
+    grid: NDArray[np.float32],
+    scale: int = 1,
+    mentioned_objects: Optional[set[int]] = None,
+    mentioned_regions: Optional[set[int]] = None,
+) -> str:
+    """Serialize nonzero category cells as keyed compact JSON LLM-Grid text."""
     sampled = downsample_grid(grid, scale)
-    cells: List[List[Union[int, float]]] = []
+    mentioned_objects = mentioned_objects or set()
+    mentioned_regions = mentioned_regions or set()
+    objects: Dict[str, Dict[str, Any]] = {}
+    regions: Dict[str, Dict[str, Any]] = {}
 
     for category in range(sampled.shape[0]):
         row_cols = np.argwhere(sampled[category] > 0)
-        for row, col in row_cols:
-            value = float(sampled[category, row, col])
-            cell: List[Union[int, float]] = [category, int(row), int(col)]
-            if not np.isclose(value, 1.0):
-                cell.append(float(_format_value(value)))
-            cells.append(cell)
+        if len(row_cols) == 0:
+            continue
+        cells = [
+            _cell_record(int(row), int(col))
+            for row, col in row_cols
+        ]
+        if category < OBJECT_CATEGORIES:
+            name = MAPPED_OBJECT_NAMES[category]
+            objects[name] = {
+                "cells": cells,
+                "mentioned": category in mentioned_objects,
+            }
+        else:
+            region_id = category - OBJECT_CATEGORIES
+            name = MAPPED_REGION_NAMES[region_id]
+            regions[name] = {
+                "cells": cells,
+                "mentioned": region_id in mentioned_regions,
+            }
 
-    return json.dumps({"grid": cells}, separators=(",", ":"))
+    return json.dumps(
+        {
+            "region_candidates": list(regions),
+            "object_candidates": list(objects),
+            "regions": regions,
+            "objects": objects,
+        },
+        separators=(",", ":"),
+    )
 
 
 def _grid_stats(
@@ -161,15 +188,15 @@ def _summarize(
             "max": max(values) if values else 0,
             "mean": mean(values) if values else 0.0,
         }
-    truncated = [
+    over_budget = [
         row for row in rows
         if row["stats"]["token_count"] > max_new_tokens
     ]
     return {
         "sample_count": len(rows),
         "max_new_tokens": max_new_tokens,
-        "target_truncation_count": len(truncated),
-        "target_truncation_rate": len(truncated) / len(rows) if rows else 0.0,
+        "target_over_budget_count": len(over_budget),
+        "target_over_budget_rate": len(over_budget) / len(rows) if rows else 0.0,
         "stats": stats,
     }
 
@@ -186,7 +213,7 @@ def write_sample_run(
     scale: int = 1,
     seed: int = 0,
     tokenizer_path: Optional[Path] = None,
-    max_new_tokens: int = 6144,
+    max_new_tokens: int = 4096,
 ) -> Path:
     token_counter = _load_token_counter(tokenizer_path)
     paths = _sample_paths(_raster_paths(cache_root, namespace), count, seed)

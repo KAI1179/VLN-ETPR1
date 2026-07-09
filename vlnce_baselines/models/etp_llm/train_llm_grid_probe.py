@@ -27,6 +27,7 @@ from tap import Tap
 from torch.utils.data import DataLoader, Dataset
 
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
+from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_CATEGORIES
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from prior.vlnce import VLNCEEpisodeEntry
 from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_path
@@ -60,6 +61,12 @@ DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_probe_system.md"
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")
+OBJECT_CATEGORY_TO_ID = {
+    category: index for index, category in enumerate(MAPPED_OBJECT_NAMES)
+}
+REGION_CATEGORY_TO_ID = {
+    category: index for index, category in enumerate(MAPPED_REGION_NAMES)
+}
 
 
 class LLMGridProbeItem(TypedDict):
@@ -164,6 +171,33 @@ def _load_raster_target(
         )
 
 
+def _boxes_path_for_raster(raster_path: Path) -> Path:
+    parts = list(raster_path.parts)
+    try:
+        raster_index = parts.index("raster")
+    except ValueError as error:
+        raise ValueError(f"Raster path does not contain a raster directory: {raster_path}") from error
+    parts[raster_index] = "boxes"
+    return Path(*parts)
+
+
+def _load_grid_mentions(raster_path: Path) -> Tuple[set[int], set[int]]:
+    boxes_path = _boxes_path_for_raster(raster_path)
+    with np.load(boxes_path, allow_pickle=True) as data:
+        payload = json.loads(str(data["payload"]))
+    objects = {
+        category_id
+        for category_id, boxes in enumerate(payload["level"]["objects"])
+        if any(bool(box.get("mentioned", False)) for box in boxes)
+    }
+    regions = {
+        category_id
+        for category_id, boxes in enumerate(payload["level"]["regions"])
+        if any(bool(box.get("mentioned", False)) for box in boxes)
+    }
+    return objects, regions
+
+
 class LLMGridProbeDataset(Dataset):
     def __init__(
         self,
@@ -181,6 +215,7 @@ class LLMGridProbeDataset(Dataset):
         full_grid, start_position, start_direction = _load_raster_target(
             example.raster_path
         )
+        mentioned_objects, mentioned_regions = _load_grid_mentions(example.raster_path)
         target_grid = downsample_grid(full_grid, self.scale)
         return {
             "input_text": build_llm_boxes_input(
@@ -189,7 +224,12 @@ class LLMGridProbeDataset(Dataset):
                 start_position,
                 start_direction,
             ),
-            "target_text": serialize_grid_target(full_grid, scale=self.scale),
+            "target_text": serialize_grid_target(
+                full_grid,
+                scale=self.scale,
+                mentioned_objects=mentioned_objects,
+                mentioned_regions=mentioned_regions,
+            ),
             "target_grid": target_grid,
             "example_id": example.example_id,
             "instruction": example.instruction,
@@ -203,48 +243,53 @@ class LLMGridProbeDataset(Dataset):
             yield self[index]
 
 
-def _truncate_grid_target_to_completion_budget(
+class LLMGridProbeItemsDataset(Dataset):
+    def __init__(self, items: Sequence[LLMGridProbeItem]) -> None:
+        self.items = list(items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> LLMGridProbeItem:
+        return self.items[index]
+
+
+def _completion_token_count(
     item: LLMGridProbeItem,
     tokenizer: Any,
     system_prompt: str,
     prompt_length: int,
+) -> int:
+    completion = _render_chat_completion(
+        tokenizer,
+        system_prompt,
+        item["input_text"],
+        item["target_text"],
+    )
+    return _token_count(tokenizer, completion) - prompt_length
+
+
+def filter_grid_probe_training_items(
+    items: Sequence[LLMGridProbeItem],
+    tokenizer: Any,
+    system_prompt: str,
     max_new_tokens: int,
-) -> str:
-    payload = json.loads(item["target_text"])
-    records = payload["grid"]
-
-    def candidate(record_count: int) -> str:
-        return json.dumps(
-            {"grid": records[:record_count]},
-            separators=(",", ":"),
-        )
-
-    def fits(record_count: int) -> bool:
-        completion = _render_chat_completion(
+) -> Tuple[List[LLMGridProbeItem], List[str]]:
+    filtered: List[LLMGridProbeItem] = []
+    skipped: List[str] = []
+    for item in items:
+        prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        completion_tokens = _completion_token_count(
+            item,
             tokenizer,
             system_prompt,
-            item["input_text"],
-            candidate(record_count),
+            _token_count(tokenizer, prompt),
         )
-        return _token_count(tokenizer, completion) - prompt_length <= max_new_tokens
-
-    if fits(len(records)):
-        return candidate(len(records))
-    if not fits(0):
-        raise ValueError(
-            f"Empty grid completion for {item['example_id']} exceeds "
-            f"max_new_tokens={max_new_tokens}"
-        )
-
-    low = 0
-    high = len(records)
-    while low + 1 < high:
-        middle = (low + high) // 2
-        if fits(middle):
-            low = middle
-        else:
-            high = middle
-    return candidate(low)
+        if completion_tokens > max_new_tokens:
+            skipped.append(item["example_id"])
+            continue
+        filtered.append(item)
+    return filtered, skipped
 
 
 def collate_llm_grid_probe_batch(
@@ -269,24 +314,32 @@ def collate_llm_grid_probe_batch(
             f"Prompt for {', '.join(oversized_prompts)} exceeds "
             f"max_input_length={max_input_length}"
         )
-    target_texts = [
-        _truncate_grid_target_to_completion_budget(
-            item,
-            tokenizer,
-            system_prompt,
-            prompt_length,
-            max_new_tokens,
-        )
+    oversized_targets = [
+        f"{item['example_id']} ({completion_tokens} tokens)"
         for item, prompt_length in zip(batch, prompt_lengths)
+        for completion_tokens in [
+            _completion_token_count(
+                item,
+                tokenizer,
+                system_prompt,
+                prompt_length,
+            )
+        ]
+        if completion_tokens > max_new_tokens
     ]
+    if oversized_targets:
+        raise ValueError(
+            f"Target for {', '.join(oversized_targets)} exceeds "
+            f"max_new_tokens={max_new_tokens}"
+        )
     full_texts = [
         _render_chat_completion(
             tokenizer,
             system_prompt,
             item["input_text"],
-            target_text,
+            item["target_text"],
         )
-        for item, target_text in zip(batch, target_texts)
+        for item in batch
     ]
     encoded = tokenizer(
         full_texts,
@@ -345,44 +398,129 @@ def parse_grid_probe_text(
         raise _LLMGridProbeJSONError(f"invalid JSON: {error}") from error
     if not isinstance(payload, dict):
         raise LLMGridProbeValidationError("top-level JSON value must be an object")
-    if set(payload) != {"grid"}:
-        raise LLMGridProbeValidationError("top-level JSON object must contain only grid")
-    records = payload["grid"]
-    if not isinstance(records, list):
-        raise LLMGridProbeValidationError("grid must be a list")
+    expected_keys = {"region_candidates", "object_candidates", "regions", "objects"}
+    if set(payload) != expected_keys:
+        raise LLMGridProbeValidationError(
+            "top-level JSON object must contain only region_candidates, "
+            "object_candidates, regions, and objects"
+        )
+    object_candidates = _parse_candidate_list(
+        payload["object_candidates"],
+        "object_candidates",
+        OBJECT_CATEGORY_TO_ID,
+    )
+    region_candidates = _parse_candidate_list(
+        payload["region_candidates"],
+        "region_candidates",
+        REGION_CATEGORY_TO_ID,
+    )
+    object_section = payload["objects"]
+    region_section = payload["regions"]
+    if not isinstance(object_section, dict):
+        raise LLMGridProbeValidationError("objects must be an object")
+    if not isinstance(region_section, dict):
+        raise LLMGridProbeValidationError("regions must be an object")
+    if list(object_section) != object_candidates:
+        raise LLMGridProbeValidationError("object_candidates must match objects keys")
+    if list(region_section) != region_candidates:
+        raise LLMGridProbeValidationError("region_candidates must match regions keys")
 
     channels, rows, cols = shape
     grid = np.zeros(shape, dtype=np.float32)
     seen: set[tuple[int, int, int]] = set()
     duplicates = 0
-    for index, raw_record in enumerate(records):
-        if not isinstance(raw_record, list) or len(raw_record) not in (3, 4):
+    record_count = 0
+    for name in object_candidates:
+        category = OBJECT_CATEGORY_TO_ID[name]
+        count, duplicate_count = _read_entity_cells(
+            object_section[name],
+            f"objects.{name}",
+            category,
+            rows,
+            cols,
+            grid,
+            seen,
+        )
+        record_count += count
+        duplicates += duplicate_count
+    for name in region_candidates:
+        category = OBJECT_CATEGORIES + REGION_CATEGORY_TO_ID[name]
+        if category >= channels:
+            raise LLMGridProbeValidationError(f"regions.{name} index out of bounds")
+        count, duplicate_count = _read_entity_cells(
+            region_section[name],
+            f"regions.{name}",
+            category,
+            rows,
+            cols,
+            grid,
+            seen,
+        )
+        record_count += count
+        duplicates += duplicate_count
+    return ParsedGridProbe(
+        grid=grid,
+        record_count=record_count,
+        duplicate_record_count=duplicates,
+    )
+
+
+def _parse_candidate_list(
+    raw_candidates: Any,
+    name: str,
+    category_to_id: Dict[str, int],
+) -> List[str]:
+    if not isinstance(raw_candidates, list):
+        raise LLMGridProbeValidationError(f"{name} must be a list")
+    candidates: List[str] = []
+    for index, item in enumerate(raw_candidates):
+        if not isinstance(item, str):
+            raise LLMGridProbeValidationError(f"{name}[{index}] must be a string")
+        if item not in category_to_id:
+            raise LLMGridProbeValidationError(f"{name}[{index}] is unknown: {item}")
+        if item in candidates:
+            raise LLMGridProbeValidationError(f"{name}[{index}] is duplicated: {item}")
+        candidates.append(item)
+    return candidates
+
+
+def _read_entity_cells(
+    raw_entity: Any,
+    name: str,
+    category: int,
+    rows: int,
+    cols: int,
+    grid: NDArray[np.float32],
+    seen: set[tuple[int, int, int]],
+) -> Tuple[int, int]:
+    if not isinstance(raw_entity, dict):
+        raise LLMGridProbeValidationError(f"{name} must be an object")
+    if set(raw_entity) != {"cells", "mentioned"}:
+        raise LLMGridProbeValidationError(f"{name} must contain only cells and mentioned")
+    if type(raw_entity["mentioned"]) is not bool:
+        raise LLMGridProbeValidationError(f"{name}.mentioned must be boolean")
+    cells = raw_entity["cells"]
+    if not isinstance(cells, list):
+        raise LLMGridProbeValidationError(f"{name}.cells must be a list")
+    duplicates = 0
+    for index, raw_cell in enumerate(cells):
+        if not isinstance(raw_cell, list) or len(raw_cell) != 2:
             raise LLMGridProbeValidationError(
-                f"grid[{index}] must be [category,row,col] or [category,row,col,value]"
+                f"{name}.cells[{index}] must be [row,col]"
             )
-        category, row, col = raw_record[:3]
-        if not all(type(item) is int for item in (category, row, col)):
-            raise LLMGridProbeValidationError(f"grid[{index}] category,row,col must be ints")
-        if not (0 <= category < channels and 0 <= row < rows and 0 <= col < cols):
-            raise LLMGridProbeValidationError(f"grid[{index}] index out of bounds")
-        value = 1.0
-        if len(raw_record) == 4:
-            raw_value = raw_record[3]
-            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-                raise LLMGridProbeValidationError(f"grid[{index}] value must be numeric")
-            value = float(raw_value)
-        if not (0.0 <= value <= 1.0):
-            raise LLMGridProbeValidationError(f"grid[{index}] value out of range")
+        raw_row, raw_col = raw_cell
+        if type(raw_row) is not int or type(raw_col) is not int:
+            raise LLMGridProbeValidationError(f"{name}.cells[{index}] row,col must be ints")
+        row = raw_row
+        col = raw_col
+        if not (0 <= row < rows and 0 <= col < cols):
+            raise LLMGridProbeValidationError(f"{name}.cells[{index}] index out of bounds")
         key = (category, row, col)
         if key in seen:
             duplicates += 1
         seen.add(key)
-        grid[category, row, col] = max(float(grid[category, row, col]), value)
-    return ParsedGridProbe(
-        grid=grid,
-        record_count=len(records),
-        duplicate_record_count=duplicates,
-    )
+        grid[category, row, col] = 1.0
+    return len(cells), duplicates
 
 
 def _binary_grid(grid: NDArray[np.float32]) -> NDArray[np.bool_]:
@@ -468,7 +606,7 @@ class LLMGridProbeArgs(Tap):
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
     max_input_length: int = 1024
-    max_new_tokens: int = 6144
+    max_new_tokens: int = 4096
     finetune_method: Literal["lora", "full"] = "lora"
     batch_size: int = 2
     epochs: int = 1
@@ -544,15 +682,26 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 
 def _text_diagnostics(
     tokenizer: Any,
-    target_text: str,
+    system_prompt: str,
+    item: LLMGridProbeItem,
     generated_text: str,
     max_new_tokens: int,
 ) -> Dict[str, float]:
-    target_tokens = _token_count(tokenizer, target_text)
+    target_tokens = _token_count(tokenizer, item["target_text"])
+    prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+    target_completion_tokens = _completion_token_count(
+        item,
+        tokenizer,
+        system_prompt,
+        _token_count(tokenizer, prompt),
+    )
     generated_tokens = _token_count(tokenizer, generated_text)
     return {
         "target_token_count": float(target_tokens),
-        "target_truncation_rate": 1.0 if target_tokens > max_new_tokens else 0.0,
+        "target_completion_token_count": float(target_completion_tokens),
+        "target_over_budget_rate": (
+            1.0 if target_completion_tokens > max_new_tokens else 0.0
+        ),
         "generated_token_count": float(generated_tokens),
         "generated_char_count": float(len(generated_text)),
     }
@@ -586,7 +735,18 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    dataset = LLMGridProbeDataset(examples, scale=args.scale)
+    train_items = list(LLMGridProbeDataset(examples, scale=args.scale))
+    train_items, skipped_over_budget = filter_grid_probe_training_items(
+        train_items,
+        tokenizer=tokenizer,
+        system_prompt=system_prompt,
+        max_new_tokens=args.max_new_tokens,
+    )
+    if not train_items:
+        raise ValueError("No LLM-Grid-Probe training examples fit max_new_tokens")
+    if skipped_over_budget and not args.quiet:
+        print(f"skipped_over_budget={len(skipped_over_budget)}")
+    dataset = LLMGridProbeItemsDataset(train_items)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -676,6 +836,8 @@ def train_model(args: LLMGridProbeArgs) -> Dict[str, float]:
     metrics = {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
+        "training_example_count": float(len(train_items)),
+        "skipped_over_budget_count": float(len(skipped_over_budget)),
     }
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
@@ -763,7 +925,8 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
                 metrics.update(
                     _text_diagnostics(
                         tokenizer,
-                        item["target_text"],
+                        system_prompt,
+                        item,
                         generated_text,
                         args.max_new_tokens,
                     )

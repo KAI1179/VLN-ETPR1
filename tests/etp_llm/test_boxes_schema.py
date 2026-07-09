@@ -248,7 +248,7 @@ def test_relevant_semantic_boxes_to_mentioned_spec_filters_unmentioned_entities(
         level=level,
         instruction="Go to the chair in the living room.",
         ground_truth_trajectory=[(0.0, 0.0)],
-        trajectory_keypoints=KEYPOINTS,
+        trajectory_keypoints=list(KEYPOINTS),
         start_direction_vector=(0.0, 1.0),
     )
 

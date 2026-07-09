@@ -23,45 +23,70 @@ def _save_cognitive_map(path: Path, grid: np.ndarray) -> None:
     grid_map.save(path)
 
 
-def test_serialize_grid_target_orders_nonzero_cells_and_keeps_soft_values() -> None:
-    grid = np.zeros((3, 4, 4), dtype=np.float32)
+def test_serialize_grid_target_orders_nonzero_binary_cells() -> None:
+    grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[2, 1, 0] = 0.25
     grid[0, 3, 2] = 1.0
     grid[0, 1, 2] = 0.5
+    grid[28, 2, 3] = 1.0
 
-    text = serialize_grid_target(grid)
+    text = serialize_grid_target(
+        grid,
+        mentioned_objects={2},
+        mentioned_regions={1},
+    )
 
     assert json.loads(text) == {
-        "grid": [[0, 1, 2, 0.5], [0, 3, 2], [2, 1, 0, 0.25]]
+        "region_candidates": ["living/social space"],
+        "object_candidates": ["void", "door"],
+        "regions": {
+            "living/social space": {"cells": [[2, 3]], "mentioned": True}
+        },
+        "objects": {
+            "void": {"cells": [[1, 2], [3, 2]], "mentioned": False},
+            "door": {"cells": [[1, 0]], "mentioned": True},
+        },
     }
-    assert " " not in text
+    assert ": " not in text
 
 
 def test_serialize_grid_target_downsamples_by_max_pooling() -> None:
-    grid = np.zeros((1, 4, 4), dtype=np.float32)
+    grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[0, 1, 1] = 0.5
     grid[0, 2, 3] = 1.0
 
     text = serialize_grid_target(grid, scale=2)
 
-    assert json.loads(text) == {"grid": [[0, 0, 0, 0.5], [0, 1, 1]]}
+    assert json.loads(text) == {
+        "region_candidates": [],
+        "object_candidates": ["void"],
+        "regions": {},
+        "objects": {
+            "void": {"cells": [[0, 0], [1, 1]], "mentioned": False}
+        },
+    }
 
 
 def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path) -> None:
-    grid = np.zeros((2, 4, 4), dtype=np.float32)
+    grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[0, 0, 0] = 1.0
-    grid[1, 3, 3] = 0.25
+    grid[28, 3, 3] = 0.25
     path = tmp_path / "map.npz"
     _save_cognitive_map(path, grid)
 
     sample = analyze_grid_sample(path, scale=1)
 
     assert json.loads(sample["target_text"]) == {
-        "grid": [[0, 0, 0], [1, 3, 3, 0.25]]
+        "region_candidates": ["living/social space"],
+        "object_candidates": ["void"],
+        "regions": {
+            "living/social space": {"cells": [[3, 3]], "mentioned": False}
+        },
+        "objects": {"void": {"cells": [[0, 0]], "mentioned": False}},
     }
     assert sample["stats"] == {
-        "text_length": len('{"grid":[[0,0,0],[1,3,3,0.25]]}'),
-        "token_count": 1,
+        "text_length": len(sample["target_text"]),
+            "token_count": 3,
         "positive_cell_count": 2,
         "category_count": 2,
     }
@@ -93,7 +118,7 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
                 "scale": 1,
                 "seed": 0,
                 "tokenizer_path": None,
-                "max_new_tokens": 6144,
+                "max_new_tokens": 4096,
             }
         ),
     )
@@ -110,10 +135,15 @@ def test_cli_samples_namespace_and_writes_manifest_samples_summary(
 
     assert manifest["namespace"] == "gt.bbox.r1p5.path5.v1"
     assert manifest["scale"] == 1
-    assert manifest["max_new_tokens"] == 6144
+    assert manifest["max_new_tokens"] == 4096
     assert samples[0]["sample_id"] in {"a", "b"}
-    assert samples[0]["target_text"] == '{"grid":[[0,0,0]]}'
+    assert json.loads(samples[0]["target_text"]) == {
+        "region_candidates": [],
+        "object_candidates": ["void"],
+        "regions": {},
+        "objects": {"void": {"cells": [[0, 0]], "mentioned": False}},
+    }
     assert summary["sample_count"] == 1
-    assert summary["target_truncation_count"] == 0
-    assert summary["target_truncation_rate"] == 0.0
+    assert summary["target_over_budget_count"] == 0
+    assert summary["target_over_budget_rate"] == 0.0
     assert summary["stats"]["positive_cell_count"]["max"] == 1
