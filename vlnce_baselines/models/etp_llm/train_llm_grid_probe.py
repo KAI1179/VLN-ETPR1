@@ -203,6 +203,50 @@ class LLMGridProbeDataset(Dataset):
             yield self[index]
 
 
+def _truncate_grid_target_to_completion_budget(
+    item: LLMGridProbeItem,
+    tokenizer: Any,
+    system_prompt: str,
+    prompt_length: int,
+    max_new_tokens: int,
+) -> str:
+    payload = json.loads(item["target_text"])
+    records = payload["grid"]
+
+    def candidate(record_count: int) -> str:
+        return json.dumps(
+            {"grid": records[:record_count]},
+            separators=(",", ":"),
+        )
+
+    def fits(record_count: int) -> bool:
+        completion = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            candidate(record_count),
+        )
+        return _token_count(tokenizer, completion) - prompt_length <= max_new_tokens
+
+    if fits(len(records)):
+        return candidate(len(records))
+    if not fits(0):
+        raise ValueError(
+            f"Empty grid completion for {item['example_id']} exceeds "
+            f"max_new_tokens={max_new_tokens}"
+        )
+
+    low = 0
+    high = len(records)
+    while low + 1 < high:
+        middle = (low + high) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle
+    return candidate(low)
+
+
 def collate_llm_grid_probe_batch(
     batch: Sequence[LLMGridProbeItem],
     tokenizer: Any,
@@ -214,16 +258,36 @@ def collate_llm_grid_probe_batch(
         _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         for item in batch
     ]
+    prompt_lengths = [_token_count(tokenizer, text) for text in prompt_texts]
+    oversized_prompts = [
+        f"{item['example_id']} ({length} tokens)"
+        for item, length in zip(batch, prompt_lengths)
+        if length > max_input_length
+    ]
+    if oversized_prompts:
+        raise ValueError(
+            f"Prompt for {', '.join(oversized_prompts)} exceeds "
+            f"max_input_length={max_input_length}"
+        )
+    target_texts = [
+        _truncate_grid_target_to_completion_budget(
+            item,
+            tokenizer,
+            system_prompt,
+            prompt_length,
+            max_new_tokens,
+        )
+        for item, prompt_length in zip(batch, prompt_lengths)
+    ]
     full_texts = [
         _render_chat_completion(
             tokenizer,
             system_prompt,
             item["input_text"],
-            item["target_text"],
+            target_text,
         )
-        for item in batch
+        for item, target_text in zip(batch, target_texts)
     ]
-    prompt_lengths = [_token_count(tokenizer, text) for text in prompt_texts]
     encoded = tokenizer(
         full_texts,
         max_length=max_input_length + max_new_tokens,
@@ -652,6 +716,7 @@ def evaluate_model(args: LLMGridProbeArgs) -> Dict[str, float]:
         model_path,
         device_map=_normalize_device_map(args.device_map),
     )
+    tokenizer.padding_side = "left"
     device = torch.device(args.device)
     if not _model_uses_device_map(model):
         model.to(device)

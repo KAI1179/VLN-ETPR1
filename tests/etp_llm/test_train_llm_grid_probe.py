@@ -33,6 +33,7 @@ class _ChatTokenizer:
     eos_token_id = 2
     pad_token = "<pad>"
     eos_token = "</s>"
+    padding_side = "right"
 
     def apply_chat_template(
         self,
@@ -73,6 +74,51 @@ class _ChatTokenizer:
 
     def encode(self, text, add_special_tokens=False):
         return [ord(char) % 97 + 3 for char in text]
+
+
+class _EosChatTokenizer(_ChatTokenizer):
+    def __init__(self):
+        self.encoded_texts = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    ):
+        text = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+        )
+        if messages[-1]["role"] == "assistant":
+            text += self.eos_token
+        return text
+
+    def __call__(
+        self,
+        texts,
+        max_length,
+        padding,
+        truncation,
+        return_tensors,
+    ):
+        self.encoded_texts = list(texts)
+        return super().__call__(
+            texts,
+            max_length=max_length,
+            padding=padding,
+            truncation=truncation,
+            return_tensors=return_tensors,
+        )
+
+    def encode(self, text, add_special_tokens=False):
+        if text.endswith(self.eos_token):
+            return [
+                *super().encode(text[: -len(self.eos_token)], add_special_tokens=False),
+                self.eos_token_id,
+            ]
+        return super().encode(text, add_special_tokens=add_special_tokens)
 
 
 class _TrainingTokenizer:
@@ -317,6 +363,86 @@ def test_collate_llm_grid_probe_masks_prompt_and_padding_tokens():
     assert batch["example_ids"] == ["R2R_train_42"]
 
 
+def test_collate_llm_grid_probe_rejects_prompt_over_input_budget():
+    item: train_llm_grid_probe.LLMGridProbeItem = {
+        "input_text": "dataset R2R | instruction Go to the chair.",
+        "target_text": '{"grid":[]}',
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "example_id": "oversized-prompt",
+        "instruction": "Go to the chair.",
+        "start_position": (1.2, 3.4),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+    }
+    tokenizer = _EosChatTokenizer()
+    prompt = train_llm_grid_probe._render_chat_prompt(
+        tokenizer,
+        "system",
+        item["input_text"],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="oversized-prompt.*max_input_length",
+    ):
+        train_llm_grid_probe.collate_llm_grid_probe_batch(
+            [item],
+            tokenizer=tokenizer,
+            system_prompt="system",
+            max_input_length=len(tokenizer.encode(prompt)) - 1,
+            max_new_tokens=128,
+        )
+
+
+def test_collate_llm_grid_probe_truncates_to_valid_json_with_eos_within_budget():
+    records = [[1, 0, 0], [2, 1, 1], [3, 2, 2]]
+    item: train_llm_grid_probe.LLMGridProbeItem = {
+        "input_text": "short",
+        "target_text": json.dumps({"grid": records}, separators=(",", ":")),
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "example_id": "completion-budget",
+        "instruction": "short",
+        "start_position": (1.2, 3.4),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+    }
+    tokenizer = _EosChatTokenizer()
+    prompt = train_llm_grid_probe._render_chat_prompt(
+        tokenizer,
+        "system",
+        item["input_text"],
+    )
+    one_record_text = json.dumps({"grid": records[:1]}, separators=(",", ":"))
+    one_record_completion = train_llm_grid_probe._render_chat_completion(
+        tokenizer,
+        "system",
+        item["input_text"],
+        one_record_text,
+    )
+    max_new_tokens = len(tokenizer.encode(one_record_completion)) - len(
+        tokenizer.encode(prompt)
+    )
+
+    batch = train_llm_grid_probe.collate_llm_grid_probe_batch(
+        [item],
+        tokenizer=tokenizer,
+        system_prompt="system",
+        max_input_length=len(tokenizer.encode(prompt)) + 100,
+        max_new_tokens=max_new_tokens,
+    )
+
+    rendered_completion = tokenizer.encoded_texts[0]
+    truncated_text = rendered_completion.split("<assistant>", 1)[1].split(
+        "</assistant>",
+        1,
+    )[0]
+    assert json.loads(truncated_text) == {"grid": records[:1]}
+    assert train_llm_grid_probe.parse_grid_probe_text(truncated_text).record_count == 1
+    supervised = batch["labels"][0][batch["labels"][0] != -100]
+    assert len(supervised) <= max_new_tokens
+    assert int(supervised[-1]) == tokenizer.eos_token_id
+
+
 def test_collate_llm_grid_probe_prompt_lengths_use_padded_width():
     target_grid = np.zeros((37, 50, 50), dtype=np.float32)
     short: train_llm_grid_probe.LLMGridProbeItem = {
@@ -404,10 +530,30 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             return torch.cat([input_ids, suffix], dim=1)
 
     class FakeTokenizer(_ChatTokenizer):
+        padding_side_during_call = None
+
+        def __call__(
+            self,
+            texts,
+            max_length,
+            padding,
+            truncation,
+            return_tensors,
+        ):
+            self.padding_side_during_call = self.padding_side
+            return super().__call__(
+                texts,
+                max_length=max_length,
+                padding=padding,
+                truncation=truncation,
+                return_tensors=return_tensors,
+            )
+
         def batch_decode(self, rows, skip_special_tokens=True):
             return ['{"grid":[[1,0,0]]}' for _row in rows]
 
     model = FakeModel()
+    tokenizer = FakeTokenizer()
     monkeypatch.setattr(
         train_llm_grid_probe,
         "load_llm_grid_probe_examples",
@@ -416,7 +562,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     monkeypatch.setattr(
         train_llm_grid_probe,
         "_load_causal_lm_model_and_tokenizer",
-        lambda *args, **kwargs: (model, FakeTokenizer()),
+        lambda *args, **kwargs: (model, tokenizer),
         raising=False,
     )
 
@@ -442,12 +588,53 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     assert model.generation_kwargs is not None
     assert model.generation_kwargs["eos_token_id"] == 2
     assert model.generation_kwargs["pad_token_id"] == 0
+    assert tokenizer.padding_side_during_call == "left"
     metrics_path = tmp_path / "run" / "metrics.json"
     artifact_path = tmp_path / "run" / "artifacts" / "R2R_val_seen_42.json"
     assert metrics_path.exists()
     assert artifact_path.exists()
     artifact = json.loads(artifact_path.read_text())
     assert artifact["generated_text"] == '{"grid":[[1,0,0]]}'
+
+
+def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path):
+    class DeviceMappedModel:
+        hf_device_map = {"model": "cpu"}
+
+        def eval(self):
+            return self
+
+        def to(self, device):
+            raise AssertionError("device-mapped model must not be moved")
+
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "load_llm_grid_probe_examples",
+        lambda *args, **kwargs: [object()],
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *args, **kwargs: (DeviceMappedModel(), _ChatTokenizer()),
+    )
+    monkeypatch.setattr(
+        train_llm_grid_probe,
+        "DataLoader",
+        lambda *args, **kwargs: [],
+    )
+    args = train_llm_grid_probe.LLMGridProbeArgs().parse_args(
+        [
+            "eval",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cuda",
+        ]
+    )
+
+    metrics = train_llm_grid_probe.evaluate_model(args)
+
+    assert metrics == {"example_count": 0.0}
 
 
 def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):
