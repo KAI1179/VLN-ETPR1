@@ -1,3 +1,4 @@
+import json
 from typing import Any, cast
 
 import pytest
@@ -95,11 +96,20 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
     text = spec_to_llm_boxes_text(spec)
 
     assert text == (
-        "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
-        "obj chair 1.0 2.0 0.5 0.5 0.0 ; "
-        "obj table 3.0 4.1 0.5 0.7 0.25 ; "
-        "reg living/social space 0.0 0.0 5.0 6.0"
+        '{"keypoints":[[0.0,0.0],[1.2,3.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]],'
+        '"predicted_regions":["living/social space"],'
+        '"predicted_objects":["chair","table"],'
+        '"regions":{"living/social space":{"boxes":[{"min":[0.0,0.0],"max":[5.0,6.0]}]}},'
+        '"objects":{"chair":{"boxes":[{"center":[1.0,2.0],"half":[0.5,0.5],"rotation":0.0}]},'
+        '"table":{"boxes":[{"center":[3.0,4.1],"half":[0.5,0.7],"rotation":0.25}]}}}'
     )
+    assert list(json.loads(text).keys()) == [
+        "keypoints",
+        "predicted_regions",
+        "predicted_objects",
+        "regions",
+        "objects",
+    ]
     assert parse_llm_boxes_text(text) == LLMBoxesSpec(
         objects=(
             ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
@@ -113,7 +123,10 @@ def test_spec_to_llm_boxes_text_round_trips_objects_and_regions():
 def test_spec_to_llm_boxes_text_serializes_empty_spec_as_none():
     text = spec_to_llm_boxes_text(LLMBoxesSpec(objects=[], regions=[]))
 
-    assert text == "none"
+    assert text == (
+        '{"keypoints":[],"predicted_regions":[],"predicted_objects":[],'
+        '"regions":{},"objects":{}}'
+    )
     with pytest.raises(
         LLMBoxesValidationError, match="trajectory keypoints are required"
     ):
@@ -125,7 +138,10 @@ def test_spec_to_llm_boxes_text_serializes_trajectory_keypoints_without_boxes():
         LLMBoxesSpec(objects=[], regions=[], trajectory_keypoints=KEYPOINTS)
     )
 
-    assert text == "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0"
+    assert text == (
+        '{"keypoints":[[0.0,0.0],[1.2,3.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]],'
+        '"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{}}'
+    )
     assert parse_llm_boxes_text(text) == LLMBoxesSpec(
         objects=(),
         regions=(),
@@ -135,9 +151,11 @@ def test_spec_to_llm_boxes_text_serializes_trajectory_keypoints_without_boxes():
 
 def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested():
     text = (
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
-        "obj chair 1 2 0.5 0.5 0 ; "
-        "reg circulation 0 0 5 6 ; obj table 3 4 0.5"
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+        '"predicted_regions":["circulation"],"predicted_objects":["chair"],'
+        '"regions":{"circulation":{"boxes":[{"min":[0,0],"max":[5,6]}]}},'
+        '"objects":{"chair":{"boxes":[{"center":[1,2],"half":[0.5,0.5],"rotation":0}]}}}'
+        ' {"unfinished":'
     )
 
     parsed = parse_llm_boxes_text(text, allow_trailing_incomplete=True)
@@ -153,68 +171,56 @@ def test_parse_llm_boxes_text_ignores_trailing_incomplete_output_when_requested(
             (0.0, 0.0),
         ],
     )
-    with pytest.raises(LLMBoxesValidationError, match="trailing incomplete entity"):
+    with pytest.raises(
+        LLMBoxesValidationError, match="trailing text after JSON object"
+    ):
         parse_llm_boxes_text(text)
 
 
 def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
-    result = parse_llm_boxes_text_partial("obj chair 1 2 0.5 0.5 0 ; obj table 3 4")
+    result = parse_llm_boxes_text_partial(
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+        '"predicted_regions":[],"predicted_objects":["chair"],'
+        '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],"half":[0.5,0.5],"rotation":0}]}}}'
+        " trailing"
+    )
 
     assert result.spec == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(),
+        trajectory_keypoints=(
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ),
     )
-    assert result.dropped_text == "obj table 3 4"
+    assert result.dropped_text == "trailing"
     assert result.dropped_entity_count == 1
 
 
-def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines():
-    result = parse_llm_boxes_text_salvage(
-        "\n".join(
-            [
-                "keypoints 0 0 1 1 0 0 0 0 0 0",
-                "obj alien 1 2 0.5 0.5 0",
-                "obj chair 1 2 0.5 0.5 0",
-                "not parseable",
-                "reg circulation 0 0 2 3",
-            ]
-        )
-    )
+def test_parse_llm_boxes_text_salvage_drops_invalid_json_output():
+    result = parse_llm_boxes_text_salvage("not parseable")
 
-    assert result.spec.trajectory_keypoints == (
-        (0.0, 0.0),
-        (1.0, 1.0),
-        (0.0, 0.0),
-        (0.0, 0.0),
-        (0.0, 0.0),
-    )
-    assert result.spec.objects == (ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),)
-    assert result.spec.regions == (
-        RegionBoxSpec("circulation", (0.0, 0.0), (2.0, 3.0)),
-    )
-    assert result.dropped_entities == (
-        "obj alien 1 2 0.5 0.5 0",
-        "not parseable",
-    )
-    assert result.dropped_entity_count == 2
+    assert result.spec == LLMBoxesSpec(objects=(), regions=())
+    assert result.dropped_entities == ("not parseable",)
+    assert result.dropped_entity_count == 1
 
 
 @pytest.mark.parametrize(
     "text",
     [
         "not parseable",
-        "obj alien 1 2 1 1 0",
-        "obj chair 1 2 0 1 0",
-        "obj chair nope 2 1 1 0",
-        "obj chair 1 2 1 1",
-        "obj chair 1 2 1 1 0 1",
-        "reg circulation 0 0 0 1",
-        "reg unknown 0 0 1 1",
-        "reg circulation 0 0 1 1 1",
-        "path 0 0 1 1 0 0 0 0 0 0",
-        "keypoints 0",
-        "keypoints 0 0 1",
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; keypoints 1 1 0 0 0 0 0 0 0 0",
+        "obj chair 1 2 1 1 0",
+        '{"keypoints":[[0,0]],"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{}}',
+        '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},"keypoints":[]}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},"extra":1}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":["unknown"],"predicted_objects":[],"regions":{"unknown":{"boxes":[]}},"objects":{}}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":["circulation"],"predicted_objects":[],"regions":{},"objects":{}}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":[],"predicted_objects":["chair"],"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],"half_extents":[0.5,0.5],"rotation":0}]}}}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":[],"predicted_objects":["chair"],"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],"half":[0,0.5],"rotation":0}]}}}',
+        '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],"predicted_regions":[],"predicted_objects":["chair"],"regions":{},"objects":{"chair":{"boxes":[],"mentioned":true}}}',
     ],
 )
 def test_parse_llm_boxes_text_rejects_invalid_predictions(text):
@@ -374,7 +380,11 @@ def test_write_prediction_artifact_writes_llm_text_files(tmp_path):
     valid_text = (tmp_path / "valid-example.txt").read_text()
     invalid_text = (tmp_path / "invalid-example.txt").read_text()
 
-    assert valid_text == ("obj chair 1.0 2.0 0.5 0.5 0.0\n")
+    assert valid_text == (
+        '{"keypoints":[],"predicted_regions":[],"predicted_objects":["chair"],'
+        '"regions":{},"objects":{"chair":{"boxes":[{"center":[1.0,2.0],'
+        '"half":[0.5,0.5],"rotation":0.0}]}}}\n'
+    )
     assert invalid_text == ("obj alien\n\n# error: unknown object category: 'alien'\n")
     assert not (tmp_path / "valid-example.json").exists()
     assert not (tmp_path / "invalid-example.json").exists()
@@ -422,8 +432,10 @@ def test_llm_boxes_direction_and_rotation_follow_xz_convention():
     parsed = parse_llm_boxes_text(text)
 
     assert text == (
-        "keypoints 0.0 0.0 1.2 3.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
-        "obj chair 10.0 20.0 1.0 2.0 1.57"
+        '{"keypoints":[[0.0,0.0],[1.2,3.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]],'
+        '"predicted_regions":[],"predicted_objects":["chair"],'
+        '"regions":{},"objects":{"chair":{"boxes":[{"center":[10.0,20.0],'
+        '"half":[1.0,2.0],"rotation":1.57}]}}}'
     )
     assert parsed.objects[0].rotation == 1.57
     assert parsed.objects[0].half_extents == (1.0, 2.0)

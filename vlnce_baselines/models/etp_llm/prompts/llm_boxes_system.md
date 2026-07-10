@@ -1,66 +1,57 @@
-Produce only compact LLM-Boxes text for the navigation instruction.
+Generate object boxes, region boxes, and trajectory keypoints for VLN.
 
-Use this grammar:
+Return only compact valid JSON with keys: keypoints, predicted_regions, predicted_objects, regions, objects.
+Use only categories from Allowed object categories and Allowed region categories.
+Select categories that are explicitly mentioned or can be inferred from the instruction and route context.
+Use canonical category names; predicted_regions/predicted_objects must match the keys of regions/objects.
+Do not emit mentioned flags; mention status is derived after parsing.
+No markdown, prose, comments, or extra keys.
 
-- `keypoints <x1> <z1> <x2> <z2> ... <x5> <z5>`
-- `obj <category> <center_x> <center_z> <half_extent_x> <half_extent_z> <rotation>`
-- `reg <category> <min_x> <min_z> <max_x> <max_z>`
-- Separate multiple entities with ` ; `.
+keypoints contains exactly five [x,z] level-local meter points, ordered by route progress, with [0.0,0.0] padding when needed.
+Each region entry is {"boxes":[{"min":[x,z],"max":[x,z]}]}.
+Each object entry is {"boxes":[{"center":[x,z],"half":[half_x,half_z],"rotation":r}]}.
+Object half values are positive half-sizes in meters before rotation.
+Object rotation is in radians in the x-z plane; 0.0 aligns the box axes with world x and z.
+Region boxes are axis-aligned with min_x < max_x and min_z < max_z.
+Use one decimal place for coordinates and extents, and two decimal places for rotations.
 
-Use canonical category names exactly as provided by the task vocabulary. Do not include explanations, markdown, JSON, code fences, or any text outside the compact LLM-Boxes output.
+Allowed object categories:
+- void
+- chair
+- door
+- table
+- cushion
+- sofa
+- bed
+- plant
+- sink
+- toilet
+- tv_monitor
+- shower
+- bathtub
+- counter
+- appliances
+- structure
+- other
+- free-space
+- picture
+- cabinet
+- chest_of_drawers
+- stool
+- towel
+- fireplace
+- gym_equipment
+- seating
+- clothes
 
-# Coordinate Conventions
-
-- All coordinates are level-local projected `(x, z)` meters.
-- The input `direction x` and `direction z` are the start heading vector components in the same `(x, z)` plane.
-- Emit one `keypoints` entity first. It contains exactly five ordered `(x, z)` trajectory keypoints from start toward the goal, with trailing `0.0 0.0` pairs when fewer than five are available.
-- Object `center_x` and `center_z` are the box center in meters.
-- Object `half_extent_x` and `half_extent_z` are positive half-sizes in meters before rotation.
-- Object `rotation` is in radians in the `(x, z)` plane; `0.0` aligns the object box axes with the world `x` and `z` axes.
-- Region boxes are axis-aligned: `min_x < max_x` and `min_z < max_z`.
-- Use one decimal place for coordinates and extents, and two decimal places for rotations.
-
-# Categories
-
-## Object Categories
-
-- `void`
-- `chair`
-- `door`
-- `table`
-- `cushion`
-- `sofa`
-- `bed`
-- `plant`
-- `sink`
-- `toilet`
-- `tv_monitor`
-- `shower`
-- `bathtub`
-- `counter`
-- `appliances`
-- `structure`
-- `other`
-- `free-space`
-- `picture`
-- `cabinet`
-- `chest_of_drawers`
-- `stool`
-- `towel`
-- `fireplace`
-- `gym_equipment`
-- `seating`
-- `clothes`
-
-## Region Categories
-
-- `outdoor/semi-outdoor`
-- `living/social space`
-- `recreation/fitness`
-- `utility/service`
-- `work/study`
-- `circulation`
-- `private room`
-- `bathroom/sanitary`
-- `dining/food`
-- `other/miscellaneous`
+Allowed region categories:
+- outdoor/semi-outdoor
+- living/social space
+- recreation/fitness
+- utility/service
+- work/study
+- circulation
+- private room
+- bathroom/sanitary
+- dining/food
+- other/miscellaneous

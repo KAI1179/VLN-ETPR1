@@ -77,6 +77,12 @@ class LLMBoxesItem(TypedDict, total=False):
 
 
 @dataclass
+class LLMBoxesLengthFilterResult:
+    kept: Sequence[LLMBoxesItem]
+    dropped_example_ids: Sequence[str]
+
+
+@dataclass
 class LLMBoxesExample:
     example_id: str
     dataset_tag: str
@@ -191,6 +197,21 @@ class LLMBoxesDataset(Dataset):
             yield self[index]
 
 
+class LLMBoxesItemDataset(Dataset):
+    def __init__(self, items: Sequence[LLMBoxesItem]) -> None:
+        self.items = tuple(items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> LLMBoxesItem:
+        return self.items[index]
+
+    def __iter__(self) -> Iterator[LLMBoxesItem]:
+        for index in range(len(self)):
+            yield self[index]
+
+
 def collate_llm_boxes_batch(
     batch: Sequence[LLMBoxesItem],
     tokenizer: Any,
@@ -200,12 +221,7 @@ def collate_llm_boxes_batch(
 ) -> Dict[str, Any]:
     # Tokenizer output tensors use shape (B, T), where T is padded to the
     # longest prompt+completion sequence in this batch, capped by max_length.
-    target_texts = [
-        truncate_llm_boxes_text_at_entity_boundary(
-            _target_text(item), tokenizer, max_new_tokens
-        )
-        for item in batch
-    ]
+    target_texts = [_target_text(item) for item in batch]
     prompt_texts = [
         _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         for item in batch
@@ -301,14 +317,24 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         model.to(device)
 
     dataset = LLMBoxesDataset(examples)
-    text_stats = compute_llm_text_stats(
+    filtered = filter_llm_boxes_items_for_length(
         dataset,
+        tokenizer,
+        system_prompt,
+        max_input_length=args.max_input_length,
+        max_new_tokens=args.max_new_tokens,
+    )
+    if not filtered.kept:
+        raise ValueError("No LLM-Boxes training examples remain after length filtering")
+    filtered_dataset = LLMBoxesItemDataset(filtered.kept)
+    text_stats = compute_llm_text_stats(
+        filtered_dataset,
         tokenizer,
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
     loader = DataLoader(
-        dataset,
+        filtered_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=lambda batch: collate_llm_boxes_batch(
@@ -394,6 +420,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     return {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
+        "dropped_truncated_examples": float(len(filtered.dropped_example_ids)),
         **text_stats,
     }
 
@@ -882,24 +909,29 @@ def _target_text(item: LLMBoxesItem) -> str:
     return spec_to_llm_boxes_text(item["target_spec"])
 
 
-def truncate_llm_boxes_text_at_entity_boundary(
-    text: str,
+def filter_llm_boxes_items_for_length(
+    dataset: Iterable[LLMBoxesItem],
     tokenizer: Any,
-    max_tokens: int,
-) -> str:
-    """Truncate compact LLM-Boxes text without keeping a partial entity."""
-    if _token_count(tokenizer, text) <= max_tokens:
-        return text
-    if text.strip() == "none":
-        return text
-
-    kept_entities: List[str] = []
-    for entity in [item.strip() for item in text.split(";") if item.strip()]:
-        candidate = " ; ".join([*kept_entities, entity])
-        if _token_count(tokenizer, candidate) > max_tokens:
-            break
-        kept_entities.append(entity)
-    return " ; ".join(kept_entities) if kept_entities else "none"
+    system_prompt: str,
+    max_input_length: int,
+    max_new_tokens: int,
+) -> LLMBoxesLengthFilterResult:
+    """Drop items whose rendered prompt or target would be truncated."""
+    kept: List[LLMBoxesItem] = []
+    dropped: List[str] = []
+    for item in dataset:
+        prompt_text = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        target_text = _target_text(item)
+        if (
+            _token_count(tokenizer, prompt_text) > max_input_length
+            or _token_count(tokenizer, target_text) > max_new_tokens
+        ):
+            dropped.append(item["example_id"])
+            continue
+        kept.append(item)
+    return LLMBoxesLengthFilterResult(
+        kept=tuple(kept), dropped_example_ids=tuple(dropped)
+    )
 
 
 def compute_llm_text_stats(
@@ -991,48 +1023,12 @@ def _batch_count(dataset: Iterable[Any], batch_size: int) -> Optional[int]:
 
 
 def _entity_valid_stats(text: str) -> Tuple[float, int]:
-    stripped = text.strip()
-    if stripped == "none" or stripped == "":
-        try:
-            parse_llm_boxes_text(stripped)
-        except Exception:
-            return 0.0, 0
-        return 1.0, 0
-
     try:
-        result = parse_llm_boxes_text_partial(stripped)
+        spec = parse_llm_boxes_text(text)
     except Exception:
-        entities = [entity.strip() for entity in stripped.split(";") if entity.strip()]
-        entities = [
-            entity
-            for entity in entities
-            if entity.split() and entity.split()[0] in {"obj", "reg"}
-        ]
-        if not entities:
-            return 0.0, 0
-        valid_entities = sum(1 for entity in entities if _entity_is_valid(entity))
-        return float(valid_entities) / float(len(entities)), len(entities)
-
-    total_entities = (
-        len(result.spec.objects)
-        + len(result.spec.regions)
-        + result.dropped_entity_count
-    )
-    if total_entities == 0:
         return 0.0, 0
-    valid_entities = len(result.spec.objects) + len(result.spec.regions)
-    return float(valid_entities) / float(total_entities), total_entities
-
-
-def _entity_is_valid(text: str) -> bool:
-    try:
-        result = parse_llm_boxes_text_partial(text)
-    except Exception:
-        return False
-    return (
-        not result.dropped_text
-        and len(result.spec.objects) + len(result.spec.regions) == 1
-    )
+    entity_count = len(spec.objects) + len(spec.regions)
+    return (1.0 if entity_count else 0.0), entity_count
 
 
 def _token_count(tokenizer: Any, text: str) -> int:
@@ -1042,9 +1038,11 @@ def _token_count(tokenizer: Any, text: str) -> int:
 
 
 def _compact_entity_count(text: str) -> int:
-    if text.strip() == "none" or text.strip() == "":
+    try:
+        result = parse_llm_boxes_text_partial(text)
+    except Exception:
         return 0
-    return len([entity for entity in text.split(";") if entity.strip()])
+    return len(result.spec.objects) + len(result.spec.regions)
 
 
 def _percentile(values: Sequence[int], quantile: float) -> float:

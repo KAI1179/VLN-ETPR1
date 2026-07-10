@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import prior.bbox as bbox
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
@@ -20,6 +21,13 @@ OBJECT_CATEGORY_TO_ID = {
 REGION_CATEGORY_TO_ID = {
     category: idx for idx, category in enumerate(MAPPED_REGION_NAMES)
 }
+TOP_LEVEL_KEYS = (
+    "keypoints",
+    "predicted_regions",
+    "predicted_objects",
+    "regions",
+    "objects",
+)
 
 
 class LLMBoxesValidationError(ValueError):
@@ -80,10 +88,6 @@ class LLMBoxesSalvageParse:
     @property
     def dropped_entity_count(self) -> int:
         return len(self.dropped_entities)
-
-
-class _LLMBoxesIncompleteEntity(LLMBoxesValidationError):
-    pass
 
 
 def build_llm_boxes_input(
@@ -248,125 +252,77 @@ def spec_to_relevant_semantic_boxes(
 
 
 def spec_to_llm_boxes_text(spec: LLMBoxesSpec) -> str:
-    """Serialize a spec in the compact LLM-friendly linear grammar."""
+    """Serialize a spec as compact JSON."""
     normalized = _normalize_spec(spec)
-    parts: List[str] = []
-    if normalized.trajectory_keypoints:
-        keypoint_numbers = [
-            str(coord)
-            for point in normalized.trajectory_keypoints
-            for coord in (point[0], point[1])
-        ]
-        parts.append(f"keypoints {' '.join(keypoint_numbers)}")
-    for item in normalized.objects:
-        parts.append(
-            f"obj {item.category} {item.center[0]} {item.center[1]} "
-            f"{item.half_extents[0]} {item.half_extents[1]} {item.rotation}"
-        )
+
+    regions: Dict[str, Dict[str, Any]] = {}
     for item in normalized.regions:
-        parts.append(
-            f"reg {item.category} {item.min[0]} {item.min[1]} "
-            f"{item.max[0]} {item.max[1]}"
+        regions.setdefault(item.category, {"boxes": []})["boxes"].append(
+            {"min": list(item.min), "max": list(item.max)}
         )
-    return " ; ".join(parts) if parts else "none"
+
+    objects: Dict[str, Dict[str, Any]] = {}
+    for item in normalized.objects:
+        objects.setdefault(item.category, {"boxes": []})["boxes"].append(
+            {
+                "center": list(item.center),
+                "half": list(item.half_extents),
+                "rotation": item.rotation,
+            }
+        )
+
+    raw = {
+        "keypoints": [list(point) for point in normalized.trajectory_keypoints],
+        "predicted_regions": list(regions.keys()),
+        "predicted_objects": list(objects.keys()),
+        "regions": regions,
+        "objects": objects,
+    }
+    return json.dumps(raw, ensure_ascii=True, separators=(",", ":"))
 
 
 def parse_llm_boxes_text(
     text: str, allow_trailing_incomplete: bool = False
 ) -> LLMBoxesSpec:
-    """Parse and validate the compact LLM-friendly linear grammar."""
+    """Parse and validate compact LLM-Boxes JSON."""
     result = parse_llm_boxes_text_partial(text)
     if result.dropped_text and not allow_trailing_incomplete:
-        raise LLMBoxesValidationError("trailing incomplete entity")
+        raise LLMBoxesValidationError("trailing text after JSON object")
     if not result.spec.trajectory_keypoints:
         raise LLMBoxesValidationError("trajectory keypoints are required")
     return result.spec
 
 
 def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
-    """Parse complete entities and drop one trailing incomplete entity."""
+    """Parse the first complete JSON object and report trailing text."""
     stripped = text.strip()
-    if stripped == "none" or stripped == "":
-        return LLMBoxesPartialParse(
-            spec=LLMBoxesSpec(objects=(), regions=()),
-            dropped_text="",
-            dropped_entity_count=0,
-        )
-
-    objects: List[ObjectBoxSpec] = []
-    regions: List[RegionBoxSpec] = []
-    trajectory_keypoints: List[Point2D] = []
-    entities = [entity.strip() for entity in stripped.split(";")]
-    for idx, entity in enumerate(entities):
-        if not entity:
-            continue
-        try:
-            _parse_llm_boxes_entity(entity, idx, objects, regions, trajectory_keypoints)
-        except _LLMBoxesIncompleteEntity:
-            if idx == len(entities) - 1:
-                return LLMBoxesPartialParse(
-                    spec=LLMBoxesSpec(
-                        objects=tuple(objects),
-                        regions=tuple(regions),
-                        trajectory_keypoints=tuple(trajectory_keypoints),
-                    ),
-                    dropped_text=entity,
-                    dropped_entity_count=1,
-                )
-            raise LLMBoxesValidationError("incomplete entity before end of output")
+    raw, end = _decode_first_json_value(stripped)
+    dropped_text = stripped[end:].strip()
     return LLMBoxesPartialParse(
-        spec=LLMBoxesSpec(
-            objects=tuple(objects),
-            regions=tuple(regions),
-            trajectory_keypoints=tuple(trajectory_keypoints),
-        ),
-        dropped_text="",
-        dropped_entity_count=0,
+        spec=_parse_raw_llm_boxes_json(raw),
+        dropped_text=dropped_text,
+        dropped_entity_count=int(bool(dropped_text)),
     )
 
 
 def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
-    """Parse all valid compact entities while dropping invalid entities.
-
-    Generation-cache creation should warn and continue when one output line is
-    malformed. This parser treats semicolons and line breaks as entity
-    boundaries, keeps valid ``keypoints``, ``obj``, and ``reg`` entities, and records
-    every dropped entity for failure-rate accounting.
-    """
+    """Parse JSON output for cache generation, or drop the whole invalid output."""
     stripped = text.strip()
-    if stripped == "none" or stripped == "":
+    try:
+        result = parse_llm_boxes_text_partial(stripped)
+    except LLMBoxesValidationError as exc:
         return LLMBoxesSalvageParse(
             spec=LLMBoxesSpec(objects=(), regions=()),
-            dropped_entities=(),
-            errors=(),
+            dropped_entities=(stripped,),
+            errors=(str(exc),),
         )
 
-    objects: List[ObjectBoxSpec] = []
-    regions: List[RegionBoxSpec] = []
-    trajectory_keypoints: List[Point2D] = []
-    dropped_entities: List[str] = []
-    errors: List[str] = []
-    raw_entities = [
-        line.strip()
-        for chunk in stripped.split(";")
-        for line in chunk.splitlines()
-        if line.strip()
-    ]
-    for idx, entity in enumerate(raw_entities):
-        try:
-            _parse_llm_boxes_entity(entity, idx, objects, regions, trajectory_keypoints)
-        except LLMBoxesValidationError as exc:
-            dropped_entities.append(entity)
-            errors.append(str(exc))
-
+    dropped_entities = (result.dropped_text,) if result.dropped_text else ()
+    errors = ("trailing text after JSON object",) if result.dropped_text else ()
     return LLMBoxesSalvageParse(
-        spec=LLMBoxesSpec(
-            objects=tuple(objects),
-            regions=tuple(regions),
-            trajectory_keypoints=tuple(trajectory_keypoints),
-        ),
-        dropped_entities=tuple(dropped_entities),
-        errors=tuple(errors),
+        spec=result.spec,
+        dropped_entities=dropped_entities,
+        errors=errors,
     )
 
 
@@ -419,125 +375,167 @@ def write_prediction_artifact(
     artifact_path.write_text(f"{raw_text}\n\n# error: {error_text}\n", encoding="utf-8")
 
 
-def _parse_object(item: Any, idx: int) -> ObjectBoxSpec:
-    if not isinstance(item, dict):
-        raise LLMBoxesValidationError(f"objects[{idx}] must be an object")
-    if set(item.keys()) != {"category", "center", "half_extents", "rotation"}:
+def _decode_first_json_value(text: str) -> Tuple[Any, int]:
+    if not text:
+        raise LLMBoxesValidationError("LLM-Boxes output must be JSON")
+    try:
+        return json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError as exc:
+        raise LLMBoxesValidationError(f"invalid JSON: {exc.msg}") from exc
+
+
+def _parse_raw_llm_boxes_json(raw: Any) -> LLMBoxesSpec:
+    if not isinstance(raw, dict):
+        raise LLMBoxesValidationError("LLM-Boxes output must be a JSON object")
+    if tuple(raw.keys()) != TOP_LEVEL_KEYS:
         raise LLMBoxesValidationError(
-            f"objects[{idx}] must contain category, center, half_extents, rotation"
+            "LLM-Boxes JSON keys must be exactly "
+            "keypoints, predicted_regions, predicted_objects, regions, objects"
         )
 
-    category = item["category"]
-    _object_category_id(category)
-    center = _finite_point(item["center"], f"objects[{idx}].center")
-    half_extents = _finite_point(item["half_extents"], f"objects[{idx}].half_extents")
-    if half_extents[0] <= 0.0 or half_extents[1] <= 0.0:
-        raise LLMBoxesValidationError(f"objects[{idx}].half_extents must be positive")
-    rotation = _finite_number(item["rotation"], f"objects[{idx}].rotation")
-    return ObjectBoxSpec(
+    trajectory_keypoints = _parse_keypoints(raw["keypoints"])
+    predicted_regions = _parse_category_list(
+        raw["predicted_regions"],
+        "predicted_regions",
+        REGION_CATEGORY_TO_ID,
+    )
+    predicted_objects = _parse_category_list(
+        raw["predicted_objects"],
+        "predicted_objects",
+        OBJECT_CATEGORY_TO_ID,
+    )
+    regions = _parse_regions_by_category(raw["regions"], predicted_regions)
+    objects = _parse_objects_by_category(raw["objects"], predicted_objects)
+    return LLMBoxesSpec(
+        objects=tuple(objects),
+        regions=tuple(regions),
+        trajectory_keypoints=tuple(trajectory_keypoints),
+    )
+
+
+def _parse_keypoints(raw_keypoints: Any) -> Tuple[Point2D, ...]:
+    if not isinstance(raw_keypoints, list):
+        raise LLMBoxesValidationError("keypoints must be a list")
+    if len(raw_keypoints) != 5:
+        raise LLMBoxesValidationError("trajectory keypoints are required")
+    return tuple(
+        _round_point(_finite_point(point, f"keypoints[{idx}]"))
+        for idx, point in enumerate(raw_keypoints)
+    )
+
+
+def _parse_category_list(
+    raw_categories: Any,
+    name: str,
+    category_to_id: Dict[str, int],
+) -> List[str]:
+    if not isinstance(raw_categories, list):
+        raise LLMBoxesValidationError(f"{name} must be a list")
+    categories: List[str] = []
+    for idx, category in enumerate(raw_categories):
+        if not isinstance(category, str):
+            raise LLMBoxesValidationError(f"{name}[{idx}] must be a string")
+        if category not in category_to_id:
+            raise LLMBoxesValidationError(f"{name}[{idx}] is unknown: {category}")
+        if category in categories:
+            raise LLMBoxesValidationError(f"{name}[{idx}] is duplicated: {category}")
+        categories.append(category)
+    return categories
+
+
+def _parse_regions_by_category(
+    raw_regions: Any,
+    predicted_regions: Sequence[str],
+) -> Tuple[RegionBoxSpec, ...]:
+    if not isinstance(raw_regions, dict):
+        raise LLMBoxesValidationError("regions must be an object")
+    if list(raw_regions.keys()) != list(predicted_regions):
+        raise LLMBoxesValidationError("predicted_regions must match regions keys")
+
+    regions: List[RegionBoxSpec] = []
+    for category, raw_entity in raw_regions.items():
+        _region_category_id(category)
+        if not isinstance(raw_entity, dict):
+            raise LLMBoxesValidationError(f"regions.{category} must be an object")
+        if set(raw_entity) != {"boxes"}:
+            raise LLMBoxesValidationError(f"regions.{category} must contain only boxes")
+        raw_boxes = raw_entity["boxes"]
+        if not isinstance(raw_boxes, list):
+            raise LLMBoxesValidationError(f"regions.{category}.boxes must be a list")
+        if not raw_boxes:
+            raise LLMBoxesValidationError(f"regions.{category}.boxes must not be empty")
+        for idx, raw_box in enumerate(raw_boxes):
+            regions.append(_parse_region_box(category, raw_box, idx))
+    return tuple(sorted(regions, key=_region_sort_key))
+
+
+def _parse_objects_by_category(
+    raw_objects: Any,
+    predicted_objects: Sequence[str],
+) -> Tuple[ObjectBoxSpec, ...]:
+    if not isinstance(raw_objects, dict):
+        raise LLMBoxesValidationError("objects must be an object")
+    if list(raw_objects.keys()) != list(predicted_objects):
+        raise LLMBoxesValidationError("predicted_objects must match objects keys")
+
+    objects: List[ObjectBoxSpec] = []
+    for category, raw_entity in raw_objects.items():
+        _object_category_id(category)
+        if not isinstance(raw_entity, dict):
+            raise LLMBoxesValidationError(f"objects.{category} must be an object")
+        if set(raw_entity) != {"boxes"}:
+            raise LLMBoxesValidationError(f"objects.{category} must contain only boxes")
+        raw_boxes = raw_entity["boxes"]
+        if not isinstance(raw_boxes, list):
+            raise LLMBoxesValidationError(f"objects.{category}.boxes must be a list")
+        if not raw_boxes:
+            raise LLMBoxesValidationError(f"objects.{category}.boxes must not be empty")
+        for idx, raw_box in enumerate(raw_boxes):
+            objects.append(_parse_object_box(category, raw_box, idx))
+    return tuple(sorted(objects, key=_object_sort_key))
+
+
+def _parse_region_box(category: str, raw_box: Any, idx: int) -> RegionBoxSpec:
+    if not isinstance(raw_box, dict):
+        raise LLMBoxesValidationError(
+            f"regions.{category}.boxes[{idx}] must be an object"
+        )
+    if set(raw_box) != {"min", "max"}:
+        raise LLMBoxesValidationError(
+            f"regions.{category}.boxes[{idx}] must contain only min and max"
+        )
+    item = RegionBoxSpec(
         category=category,
-        center=center,
-        half_extents=half_extents,
-        rotation=rotation,
+        min=_finite_point(raw_box["min"], f"regions.{category}.boxes[{idx}].min"),
+        max=_finite_point(raw_box["max"], f"regions.{category}.boxes[{idx}].max"),
     )
+    return _normalize_region(item)
 
 
-def _parse_region(item: Any, idx: int) -> RegionBoxSpec:
-    if not isinstance(item, dict):
-        raise LLMBoxesValidationError(f"regions[{idx}] must be an object")
-    if set(item.keys()) != {"category", "min", "max"}:
-        raise LLMBoxesValidationError(f"regions[{idx}] must contain category, min, max")
-
-    category = item["category"]
-    _region_category_id(category)
-    min_point = _finite_point(item["min"], f"regions[{idx}].min")
-    max_point = _finite_point(item["max"], f"regions[{idx}].max")
-    if max_point[0] <= min_point[0] or max_point[1] <= min_point[1]:
+def _parse_object_box(category: str, raw_box: Any, idx: int) -> ObjectBoxSpec:
+    if not isinstance(raw_box, dict):
         raise LLMBoxesValidationError(
-            f"regions[{idx}].max must be greater than min on both axes"
+            f"objects.{category}.boxes[{idx}] must be an object"
         )
-    return RegionBoxSpec(category=category, min=min_point, max=max_point)
-
-
-def _parse_llm_boxes_entity(
-    raw_entity: str,
-    idx: int,
-    objects: List[ObjectBoxSpec],
-    regions: List[RegionBoxSpec],
-    trajectory_keypoints: List[Point2D],
-) -> None:
-    parts = raw_entity.split()
-    if not parts:
-        raise LLMBoxesValidationError(f"entity[{idx}] must not be empty")
-
-    entity_type = parts[0]
-    if entity_type == "keypoints":
-        if trajectory_keypoints:
-            raise LLMBoxesValidationError("trajectory keypoints must be emitted once")
-        if len(parts[1:]) != 10:
-            raise _LLMBoxesIncompleteEntity(
-                f"entity[{idx}] keypoints must contain five x-z pairs"
-            )
-        values = _parse_trailing_numbers(parts[1:], f"entity[{idx}]")
-        trajectory_keypoints.extend(
-            _round_point((values[pos], values[pos + 1]))
-            for pos in range(0, len(values), 2)
+    if set(raw_box) != {"center", "half", "rotation"}:
+        raise LLMBoxesValidationError(
+            f"objects.{category}.boxes[{idx}] must contain only center, half, rotation"
         )
-        return
-
-    if entity_type == "obj":
-        if len(parts) < 7:
-            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] object is incomplete")
-        category = " ".join(parts[1:-5])
-        if not category:
-            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] object category is missing")
-        center_x, center_z, half_x, half_z, rotation = _parse_trailing_numbers(
-            parts[-5:], f"entity[{idx}]"
-        )
-        item = ObjectBoxSpec(
-            category=category,
-            center=(center_x, center_z),
-            half_extents=(half_x, half_z),
-            rotation=rotation,
-        )
-        objects.append(_normalize_object(item))
-        return
-
-    if entity_type == "reg":
-        if len(parts) < 6:
-            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] region is incomplete")
-        category = " ".join(parts[1:-4])
-        if not category:
-            raise _LLMBoxesIncompleteEntity(f"entity[{idx}] region category is missing")
-        min_x, min_z, max_x, max_z = _parse_trailing_numbers(
-            parts[-4:], f"entity[{idx}]"
-        )
-        item = RegionBoxSpec(
-            category=category,
-            min=(min_x, min_z),
-            max=(max_x, max_z),
-        )
-        regions.append(_normalize_region(item))
-        return
-
-    raise LLMBoxesValidationError(
-        f"entity[{idx}] must start with keypoints, obj, or reg"
+    item = ObjectBoxSpec(
+        category=category,
+        center=_finite_point(
+            raw_box["center"], f"objects.{category}.boxes[{idx}].center"
+        ),
+        half_extents=_finite_point(
+            raw_box["half"],
+            f"objects.{category}.boxes[{idx}].half",
+        ),
+        rotation=_finite_number(
+            raw_box["rotation"],
+            f"objects.{category}.boxes[{idx}].rotation",
+        ),
     )
-
-
-def _parse_trailing_numbers(
-    tokens: Sequence[str], field_name: str
-) -> Tuple[float, ...]:
-    values: List[float] = []
-    for idx, token in enumerate(tokens):
-        try:
-            value = float(token)
-        except ValueError as exc:
-            raise _LLMBoxesIncompleteEntity(
-                f"{field_name}[{idx}] must be a finite number"
-            ) from exc
-        values.append(_finite_number(value, f"{field_name}[{idx}]"))
-    return tuple(values)
+    return _normalize_object(item)
 
 
 def _normalize_object(item: ObjectBoxSpec) -> ObjectBoxSpec:

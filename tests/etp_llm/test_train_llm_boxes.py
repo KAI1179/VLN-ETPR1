@@ -321,15 +321,17 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         "instruction Walk into the living room."
     )
     assert item["target_text"] == (
-        "keypoints 0.0 0.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 ; "
-        "obj chair 1.2 3.0 0.5 0.6 0.25"
+        '{"keypoints":[[0.0,0.0],[1.0,1.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]],'
+        '"predicted_regions":[],"predicted_objects":["chair"],'
+        '"regions":{},"objects":{"chair":{"boxes":[{"center":[1.2,3.0],'
+        '"half":[0.5,0.6],"rotation":0.25}]}}}'
     )
     assert parse_llm_boxes_text(item["target_text"]) == example.target_spec
     assert item["target_spec"] == example.target_spec
     assert item["target_relevant"] == example.target_relevant
     assert "scene" not in item["input_text"].lower()
     assert "{" not in item["input_text"]
-    assert "{" not in item["target_text"]
+    assert "mentioned" not in item["target_text"]
 
 
 def test_llm_boxes_dataset_item_uses_level_local_start_position():
@@ -447,7 +449,7 @@ class _EosAsPadChatTokenizer(_ChatTokenizer):
 def test_load_system_prompt_reads_package_prompt():
     prompt = train_llm_boxes.load_system_prompt()
 
-    assert "compact LLM-Boxes text" in prompt
+    assert "compact valid JSON" in prompt
     assert prompt.strip() == prompt
 
 
@@ -654,12 +656,20 @@ class _EvalTokenizer(_ChatTokenizer):
     def __init__(self):
         super().__init__()
         self._decoded = [
-            "keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0",
-            "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
-            "obj chair 1 2 0.5 0.5 0 ; obj alien 1 2 0.5 0.5 0",
+            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+            '"predicted_regions":[],"predicted_objects":["chair"],'
+            '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
+            '"half":[0.5,0.5],"rotation":0}]}}}',
+            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+            '"predicted_regions":[],"predicted_objects":["alien"],'
+            '"regions":{},"objects":{"alien":{"boxes":[{"center":[1,2],'
+            '"half":[0.5,0.5],"rotation":0}]}}}',
             "not parseable",
-            "none",
-            "reg circulation 0 0 0 1",
+            "[]",
+            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+            '"predicted_regions":["circulation"],"predicted_objects":[],'
+            '"regions":{"circulation":{"boxes":[{"min":[0,0],"max":[0,1]}]}},'
+            '"objects":{}}',
         ]
         self._decode_offset = 0
 
@@ -822,8 +832,8 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
     assert metrics["format_parse_rate"] == pytest.approx(1 / 5)
     assert metrics["schema_valid_rate"] == pytest.approx(1 / 5)
     assert metrics["partial_schema_valid_rate"] == pytest.approx(1 / 5)
-    assert metrics["entity_valid_rate"] == pytest.approx(0.3)
-    assert metrics["entity_valid_support_mean"] == pytest.approx(0.8)
+    assert metrics["entity_valid_rate"] == pytest.approx(0.2)
+    assert metrics["entity_valid_support_mean"] == pytest.approx(0.2)
     assert metrics["category_f1"] == pytest.approx(1 / 5)
     assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
     assert "json_parse_rate" not in metrics
@@ -836,15 +846,13 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
     array_artifact = (artifact_dir / "json_array_example.txt").read_text()
     string_artifact = (artifact_dir / "json_string_example.txt").read_text()
     assert not (tmp_path / "valid_example.txt").exists()
-    assert valid_artifact.startswith("keypoints ")
+    assert valid_artifact.startswith('{"keypoints":')
     assert valid_artifact.endswith("\n")
-    assert invalid_schema_artifact.startswith("keypoints ")
-    assert "# error: unknown object category" in invalid_schema_artifact
-    assert malformed_artifact == (
-        "not parseable\n\n# error: entity[0] must start with keypoints, obj, or reg\n"
-    )
-    assert array_artifact == ("none\n\n# error: trajectory keypoints are required\n")
-    assert string_artifact.startswith("reg circulation")
+    assert invalid_schema_artifact.startswith('{"keypoints":')
+    assert "# error: predicted_objects[0] is unknown: alien" in invalid_schema_artifact
+    assert "not parseable\n\n# error:" in malformed_artifact
+    assert array_artifact == ("[]\n\n# error: LLM-Boxes output must be a JSON object\n")
+    assert string_artifact.startswith('{"keypoints":')
     assert "# error: region.max must be greater than min" in string_artifact
 
 
@@ -929,34 +937,54 @@ def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
     )
 
 
-def test_truncate_llm_boxes_text_preserves_complete_entities():
-    text = (
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
-        "obj chair 1 2 0.5 0.5 0 ; "
-        "obj table 3 4 0.5 0.5 0 ; "
-        "reg circulation 0 0 5 6"
+def test_filter_llm_boxes_items_for_length_drops_examples_that_would_truncate():
+    tokenizer = _ChatTokenizer()
+    items: List[train_llm_boxes.LLMBoxesItem] = [
+        {"input_text": "short", "target_text": "short target", "example_id": "keep"},
+        {
+            "input_text": "short",
+            "target_text": "too many target tokens",
+            "example_id": "drop-target",
+        },
+        {
+            "input_text": "too many input tokens",
+            "target_text": "short target",
+            "example_id": "drop-input",
+        },
+    ]
+
+    filtered = train_llm_boxes.filter_llm_boxes_items_for_length(
+        items,
+        tokenizer,
+        system_prompt="system prompt",
+        max_input_length=4,
+        max_new_tokens=2,
     )
 
-    truncated = train_llm_boxes.truncate_llm_boxes_text_at_entity_boundary(
-        text,
-        _ChatTokenizer(),
-        max_tokens=19,
-    )
-
-    assert truncated == ("keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0")
-    assert parse_llm_boxes_text(truncated) == LLMBoxesSpec(
-        objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
-        regions=(),
-        trajectory_keypoints=KEYPOINTS,
-    )
+    assert [item["example_id"] for item in filtered.kept] == ["keep"]
+    assert filtered.dropped_example_ids == ("drop-target", "drop-input")
 
 
 def test_llm_text_stats_report_lengths_and_truncation():
     items: List[train_llm_boxes.LLMBoxesItem] = [
-        {"input_text": "input one", "target_text": "obj chair 1 2 0.5 0.5 0"},
+        {
+            "input_text": "input one",
+            "target_text": (
+                '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+                '"predicted_regions":[],"predicted_objects":["chair"],'
+                '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
+                '"half":[0.5,0.5],"rotation":0}]}}}'
+            ),
+        },
         {
             "input_text": "input two three",
-            "target_text": "obj chair 1 2 0.5 0.5 0 ; obj table 3 4 0.5 0.5 0",
+            "target_text": (
+                '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+                '"predicted_regions":[],"predicted_objects":["chair","table"],'
+                '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
+                '"half":[0.5,0.5],"rotation":0}]},"table":{"boxes":[{"center":[3,4],'
+                '"half":[0.5,0.5],"rotation":0}]}}}'
+            ),
         },
     ]
 
@@ -964,7 +992,7 @@ def test_llm_text_stats_report_lengths_and_truncation():
         items,
         _ChatTokenizer(),
         max_input_length=2,
-        max_new_tokens=10,
+        max_new_tokens=1,
     )
 
     assert stats == {
@@ -972,16 +1000,16 @@ def test_llm_text_stats_report_lengths_and_truncation():
         "input_token_p90": 3.0,
         "input_token_p95": 3.0,
         "input_token_max": 3.0,
-        "target_token_p50": 11.0,
-        "target_token_p90": 15.0,
-        "target_token_p95": 15.0,
-        "target_token_max": 15.0,
+        "target_token_p50": 1.0,
+        "target_token_p90": 1.0,
+        "target_token_p95": 1.0,
+        "target_token_max": 1.0,
         "target_entity_p50": 1.5,
         "target_entity_p90": 2.0,
         "target_entity_p95": 2.0,
         "target_entity_max": 2.0,
         "input_truncation_rate": 0.5,
-        "target_truncation_rate": 0.5,
+        "target_truncation_rate": 0.0,
     }
 
 

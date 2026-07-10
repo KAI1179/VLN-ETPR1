@@ -13,6 +13,16 @@ from vlnce_baselines.models.etp_llm.boxes_schema import LLMBoxesSpec
 from vlnce_baselines.models.etp_llm.train_llm_boxes import LLMBoxesItem
 
 KEYPOINTS = [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
+KEYPOINTS_ONLY_JSON = (
+    '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+    '"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{}}'
+)
+CHAIR_JSON = (
+    '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+    '"predicted_regions":[],"predicted_objects":["chair"],'
+    '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
+    '"half":[0.5,0.5],"rotation":0}]}}}'
+)
 
 
 def _empty_relevant(instruction="Go to the chair."):
@@ -154,14 +164,14 @@ class _SceneBoxes:
         return relevant
 
 
-def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_path):
+def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
             "example_id": "R2R_train_42",
             "scene_id": "scene-a",
             "input_text": "find the chair",
-            "target_text": "obj chair 1 2 0.5 0.5 0",
+            "target_text": CHAIR_JSON,
             "target_spec": LLMBoxesSpec(objects=(), regions=()),
             "target_relevant": target,
             "instruction": "Find the chair.",
@@ -182,20 +192,16 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
         quiet=True,
         system_prompt="system prompt",
     )
-    model = _CacheGenerationModel(
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
-        "obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0"
-    )
+    model = _CacheGenerationModel(CHAIR_JSON)
 
-    with pytest.warns(RuntimeWarning):
-        metrics = generate_navigation_cache.generate_navigation_cache(
-            model,
-            _CharChatTokenizer(),
-            dataset,
-            args,
-            dataset_key="R2R",
-            split="train",
-        )
+    metrics = generate_navigation_cache.generate_navigation_cache(
+        model,
+        _CharChatTokenizer(),
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="train",
+    )
 
     split_dir = tmp_path / "test-model" / "r2r" / "train"
     prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
@@ -206,12 +212,9 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     )
     status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
     assert metrics["examples"] == 1.0
-    assert metrics["strict_parse_failure_rate"] == 1.0
-    assert metrics["salvage_rate"] == 1.0
-    assert prediction_path.read_text() == (
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; "
-        "obj alien 1 2 0.5 0.5 0 ; obj chair 1 2 0.5 0.5 0\n"
-    )
+    assert metrics["strict_parse_failure_rate"] == 0.0
+    assert metrics["salvage_rate"] == 0.0
+    assert prediction_path.read_text() == f"{CHAIR_JSON}\n"
     assert not map_path.exists()
     assert boxes_path.exists()
     assert raster_path.exists()
@@ -220,21 +223,19 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     np.testing.assert_array_equal(boxes.to_cognitive_map().grid, raster.grid)
     status = json.loads(status_path.read_text())
     assert status["status"] == "complete"
-    assert status["strict_valid"] is False
-    assert status["salvaged"] is True
+    assert status["strict_valid"] is True
+    assert status["salvaged"] is False
     assert status["prediction_path"] == str(prediction_path)
     assert "cognitive_map_path" not in status
     assert status["cognitive_map_boxes_path"] == str(boxes_path)
     assert status["cognitive_map_raster_path"] == str(raster_path)
-    assert status["failures"][0]["stage"] == "strict_parse"
-    assert status["failures"][1]["stage"] == "salvage_parse"
-    assert status["failures"][1]["dropped_entities"] == ["obj alien 1 2 0.5 0.5 0"]
+    assert "failures" not in status
     assert not (split_dir / "failures.jsonl").exists()
     assert (
         json.loads((split_dir / "metrics.json").read_text())[
             "strict_parse_failure_rate"
         ]
-        == 1.0
+        == 0.0
     )
     assert (
         json.loads((split_dir / "manifest.json").read_text())["model_name_or_path"]
@@ -249,7 +250,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
             "example_id": "R2R_train_42",
             "scene_id": "scene-a",
             "input_text": "find the chair",
-            "target_text": "none",
+            "target_text": KEYPOINTS_ONLY_JSON,
             "target_spec": LLMBoxesSpec(objects=(), regions=()),
             "target_relevant": target,
             "instruction": "Find the chair.",
@@ -319,7 +320,7 @@ def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp
             "example_id": "R2R_train_42",
             "scene_id": "scene-a",
             "input_text": "find the chair",
-            "target_text": "none",
+            "target_text": KEYPOINTS_ONLY_JSON,
             "target_spec": LLMBoxesSpec(objects=(), regions=()),
             "target_relevant": target,
             "instruction": "Find the chair.",
@@ -347,7 +348,7 @@ def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp
     )
     boxes_path.parent.mkdir(parents=True)
     boxes_path.write_bytes(b"boxes-only")
-    model = _CacheGenerationModel("keypoints 0 0 1 1 0 0 0 0 0 0")
+    model = _CacheGenerationModel(KEYPOINTS_ONLY_JSON)
 
     metrics = generate_navigation_cache.generate_navigation_cache(
         model,
@@ -374,7 +375,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
             "example_id": "R2R_train_42",
             "scene_id": "scene-a",
             "input_text": "find the chair",
-            "target_text": "none",
+            "target_text": KEYPOINTS_ONLY_JSON,
             "target_spec": LLMBoxesSpec(objects=(), regions=()),
             "target_relevant": target,
             "instruction": "Find the chair.",
@@ -403,7 +404,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
     status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
-    model = _CacheGenerationModel("keypoints 0 0 1 1 0 0 0 0 0 0")
+    model = _CacheGenerationModel(KEYPOINTS_ONLY_JSON)
 
     def fail_conversion(*args, **kwargs):
         raise ValueError("bad geometry")
@@ -425,7 +426,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
         )
 
     assert model.generate_calls == 1
-    assert prediction_path.read_text() == "keypoints 0 0 1 1 0 0 0 0 0 0\n"
+    assert prediction_path.read_text() == f"{KEYPOINTS_ONLY_JSON}\n"
     assert not map_path.exists()
     assert not boxes_path.exists()
     assert not raster_path.exists()
