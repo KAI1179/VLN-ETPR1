@@ -195,7 +195,9 @@ def _boxes_path_for_raster(raster_path: Path) -> Path:
     try:
         raster_index = parts.index("raster")
     except ValueError as error:
-        raise ValueError(f"Raster path does not contain a raster directory: {raster_path}") from error
+        raise ValueError(
+            f"Raster path does not contain a raster directory: {raster_path}"
+        ) from error
     parts[raster_index] = "boxes"
     return Path(*parts)
 
@@ -289,7 +291,9 @@ class LengthGroupedBatchSampler(BatchSampler):
     ) -> None:
         super().__init__(range(len(lengths)), batch_size=batch_size, drop_last=False)
         self.generator = generator
-        self.sorted_indices = sorted(range(len(lengths)), key=lambda index: lengths[index])
+        self.sorted_indices = sorted(
+            range(len(lengths)), key=lambda index: lengths[index]
+        )
 
     def __iter__(self) -> Iterator[List[int]]:
         batches = [
@@ -548,9 +552,7 @@ def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
     rows: List[List[float]] = []
     for index, raw_vector in enumerate(value):
         if not isinstance(raw_vector, list) or len(raw_vector) != 2:
-            raise LLMGridValidationError(
-                f"direction_vectors[{index}] must be [dx,dz]"
-            )
+            raise LLMGridValidationError(f"direction_vectors[{index}] must be [dx,dz]")
         row: List[float] = []
         for component_index, component in enumerate(raw_vector):
             if type(component) is int or type(component) is float:
@@ -619,9 +621,7 @@ def _read_entity_cells(
     duplicates = 0
     for index, raw_cell in enumerate(cells):
         if not isinstance(raw_cell, list) or len(raw_cell) != 2:
-            raise LLMGridValidationError(
-                f"{name}.cells[{index}] must be [row,col]"
-            )
+            raise LLMGridValidationError(f"{name}.cells[{index}] must be [row,col]")
         raw_row, raw_col = raw_cell
         if type(raw_row) is not int or type(raw_col) is not int:
             raise LLMGridValidationError(f"{name}.cells[{index}] row,col must be ints")
@@ -739,9 +739,7 @@ def evaluate_grid_prediction(
             "cell_f1": 0.0,
             "category_aware_raster_iou": 0.0,
             "category_aware_raster_recall": 0.0,
-            "category_aware_raster_support": float(
-                np.count_nonzero(target_grid > 0)
-            ),
+            "category_aware_raster_support": float(np.count_nonzero(target_grid > 0)),
             "predicted_cell_count": 0.0,
             "target_cell_count": float(np.count_nonzero(target_grid > 0)),
             **_zero_direction_vector_metrics(),
@@ -782,7 +780,7 @@ class LLMGridArgs(Tap):
     batch_size: int = 2
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
-    epochs: int = 1
+    epochs: int = 10
     learning_rate: float = 2e-4
     max_grad_norm: float = 1.0
     lora_r: int = 32
@@ -836,10 +834,14 @@ def load_system_prompt(
     scale: int = GRID_SCALE,
 ) -> str:
     grid_size = _grid_size_for_scale(scale)
-    return path.read_text(encoding="utf-8").format(
-        grid_size=grid_size,
-        max_grid_index=grid_size - 1,
-    ).strip()
+    return (
+        path.read_text(encoding="utf-8")
+        .format(
+            grid_size=grid_size,
+            max_grid_index=grid_size - 1,
+        )
+        .strip()
+    )
 
 
 def _write_run_system_prompt(output_dir: str, system_prompt: str) -> None:
@@ -875,7 +877,10 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
             continue
         support = sum(row.get(support_key, 0.0) for row in rows)
         metrics[key] = (
-            float(sum(row.get(key, 0.0) * row.get(support_key, 0.0) for row in rows) / support)
+            float(
+                sum(row.get(key, 0.0) * row.get(support_key, 0.0) for row in rows)
+                / support
+            )
             if support
             else 0.0
         )
@@ -911,9 +916,7 @@ def _text_diagnostics(
 
 def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if args.finetune_method == "full":
-        raise NotImplementedError(
-            "full fine-tuning is not implemented for LLM-Grid"
-        )
+        raise NotImplementedError("full fine-tuning is not implemented for LLM-Grid")
     examples = load_llm_grid_examples(
         args.dataset,
         TRAIN_SPLITS,
@@ -1041,9 +1044,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
                 )
             total_loss += float(loss.detach().cpu())
             steps += 1
-        epoch_dir = (
-            Path(args.output_dir) / "checkpoints" / f"epoch-{epoch_index + 1}"
-        )
+        epoch_dir = Path(args.output_dir) / "checkpoints" / f"epoch-{epoch_index + 1}"
         epoch_dir.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(epoch_dir)
         tokenizer.save_pretrained(epoch_dir)
