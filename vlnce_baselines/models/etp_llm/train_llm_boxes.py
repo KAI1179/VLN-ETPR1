@@ -47,6 +47,10 @@ from .boxes_schema import (
     spec_to_relevant_semantic_boxes,
     write_prediction_artifact,
 )
+from .sft import (
+    LengthGroupedBatchSampler,
+    enable_gradient_checkpointing as _enable_gradient_checkpointing,
+)
 
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_boxes_system.md"
@@ -69,6 +73,7 @@ class LLMBoxesItem(TypedDict, total=False):
     target_spec: LLMBoxesSpec
     target_relevant: bbox.RelevantSemanticBoxes
     instruction: str
+    split: str
     level_idx: int
     trajectory_keypoints: Sequence[Sequence[float]]
     start_direction: Sequence[float]
@@ -185,6 +190,7 @@ class LLMBoxesDataset(Dataset):
             "target_spec": example.target_spec,
             "target_relevant": example.target_relevant,
             "instruction": example.instruction,
+            "split": example.split,
             "level_idx": example.target_relevant.level_idx,
             "trajectory_keypoints": example.target_relevant.trajectory_keypoints,
             "start_direction": example.start_direction,
@@ -312,6 +318,8 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     )
     model = _apply_lora(model, args)
     _cast_trainable_parameters_to_float32(model)
+    if args.gradient_checkpointing:
+        _enable_gradient_checkpointing(model)
     device = torch.device(args.device)
     if not _model_uses_device_map(model):
         model.to(device)
@@ -333,10 +341,13 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
+    batch_sampler = LengthGroupedBatchSampler(
+        _training_sequence_lengths(filtered.kept, tokenizer, system_prompt),
+        batch_size=args.batch_size,
+    )
     loader = DataLoader(
         filtered_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_sampler=batch_sampler,
         collate_fn=lambda batch: collate_llm_boxes_batch(
             batch,
             tokenizer,
@@ -353,14 +364,17 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
     steps = 0
+    optimizer_steps = 0
+    optimizer.zero_grad()
     for epoch in range(args.epochs):
+        batch_count = len(loader)
         progress_loader = _progress(
             loader,
             desc=f"train epoch {epoch + 1}/{args.epochs}",
             quiet=quiet,
             total=len(loader),
         )
-        for batch in progress_loader:
+        for batch_index, batch in enumerate(progress_loader, start=1):
             model_inputs = _model_batch(batch, device)
             outputs = model(**model_inputs)
             loss = outputs.loss
@@ -368,41 +382,47 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
                 raise FloatingPointError(
                     _non_finite_step_message("loss", epoch + 1, steps + 1, batch)
                 )
-            loss.backward()
-            max_grad_norm = float(getattr(args, "max_grad_norm", 1.0))
-            grad_norm = None
-            if max_grad_norm > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    trainable_parameters,
-                    max_grad_norm,
-                    error_if_nonfinite=False,
-                )
-                if not torch.isfinite(grad_norm.detach()):
-                    raise FloatingPointError(
-                        _non_finite_step_message(
-                            "gradient norm",
-                            epoch + 1,
-                            steps + 1,
-                            batch,
-                            value=float(grad_norm.detach().cpu()),
-                        )
-                    )
-            optimizer.step()
-            optimizer.zero_grad()
-            _validate_trainable_parameters_finite(
-                model,
-                context=_non_finite_step_message(
-                    "trainable parameter",
-                    epoch + 1,
-                    steps + 1,
-                    batch,
-                    value=(
-                        float(grad_norm.detach().cpu())
-                        if grad_norm is not None
-                        else None
-                    ),
-                ),
+            (loss / args.gradient_accumulation_steps).backward()
+            should_step_optimizer = (
+                batch_index % args.gradient_accumulation_steps == 0
+                or batch_index == batch_count
             )
+            if should_step_optimizer:
+                max_grad_norm = float(getattr(args, "max_grad_norm", 1.0))
+                grad_norm = None
+                if max_grad_norm > 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters,
+                        max_grad_norm,
+                        error_if_nonfinite=False,
+                    )
+                    if not torch.isfinite(grad_norm.detach()):
+                        raise FloatingPointError(
+                            _non_finite_step_message(
+                                "gradient norm",
+                                epoch + 1,
+                                steps + 1,
+                                batch,
+                                value=float(grad_norm.detach().cpu()),
+                            )
+                        )
+                optimizer.step()
+                optimizer_steps += 1
+                optimizer.zero_grad()
+                _validate_trainable_parameters_finite(
+                    model,
+                    context=_non_finite_step_message(
+                        "trainable parameter",
+                        epoch + 1,
+                        steps + 1,
+                        batch,
+                        value=(
+                            float(grad_norm.detach().cpu())
+                            if grad_norm is not None
+                            else None
+                        ),
+                    )
+                )
             total_loss += float(loss.detach().cpu())
             steps += 1
             set_postfix = getattr(progress_loader, "set_postfix", None)
@@ -420,6 +440,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     return {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
+        "optimizer_steps": float(optimizer_steps),
         "dropped_truncated_examples": float(len(filtered.dropped_example_ids)),
         **text_stats,
     }
@@ -604,9 +625,11 @@ class LLMBoxesArgs(Tap):
     output_dir: str = "./data/logs/llm/"
     dataset: Literal["R2R", "RxR"] = "R2R"
     max_input_length: int = 1024
-    max_new_tokens: int = 1024
+    max_new_tokens: int = 2048
     finetune_method: Literal["lora", "full"] = "lora"
     batch_size: int = 1
+    gradient_accumulation_steps: int = 1
+    gradient_checkpointing: bool = False
     epochs: int = 10
     learning_rate: float = 1e-4
     max_grad_norm: float = 1.0
@@ -634,6 +657,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
     args = LLMBoxesArgs(underscores_to_dashes=True).parse_args(argv)
     if not args.device:
         args.device = _default_device()
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("--gradient-accumulation-steps must be >= 1")
     return args
 
 
@@ -932,6 +957,25 @@ def filter_llm_boxes_items_for_length(
     return LLMBoxesLengthFilterResult(
         kept=tuple(kept), dropped_example_ids=tuple(dropped)
     )
+
+
+def _training_sequence_lengths(
+    items: Sequence[LLMBoxesItem],
+    tokenizer: Any,
+    system_prompt: str,
+) -> List[int]:
+    return [
+        _token_count(
+            tokenizer,
+            _render_chat_completion(
+                tokenizer,
+                system_prompt,
+                item["input_text"],
+                _target_text(item),
+            ),
+        )
+        for item in items
+    ]
 
 
 def compute_llm_text_stats(

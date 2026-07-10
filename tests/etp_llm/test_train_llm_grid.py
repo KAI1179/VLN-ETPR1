@@ -1295,6 +1295,8 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             "--device-map",
             "none",
             "--quiet",
+            "--epochs",
+            "1",
             "--gradient-accumulation-steps",
             "2",
         ]

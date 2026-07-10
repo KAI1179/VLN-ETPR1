@@ -446,6 +446,79 @@ class _EosAsPadChatTokenizer(_ChatTokenizer):
         return [ord(char) for char in text]
 
 
+class _TrainingTokenizer(_ChatTokenizer):
+    def save_pretrained(self, output_dir):
+        return None
+
+
+class _TrainingModel(torch.nn.Module):
+    def __init__(self, loss_value):
+        super().__init__()
+        self.adapter = torch.nn.Parameter(torch.ones(()))
+        self.loss_value = loss_value
+        self.config = type("Config", (), {"use_cache": True})()
+        self.gradient_checkpointing_enabled = False
+        self.input_require_grads_enabled = False
+
+    def forward(self, **kwargs):
+        loss = self.adapter * 0 + torch.tensor(self.loss_value)
+        return type("Outputs", (), {"loss": loss})()
+
+    def gradient_checkpointing_enable(self):
+        self.gradient_checkpointing_enabled = True
+
+    def enable_input_require_grads(self):
+        self.input_require_grads_enabled = True
+
+    def save_pretrained(self, output_dir):
+        return None
+
+
+def _patch_training_dependencies(monkeypatch, model, batches=None):
+    item = {
+        "input_text": "short",
+        "target_text": (
+            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
+            '"predicted_regions":[],"predicted_objects":[],"regions":{},'
+            '"objects":{}}'
+        ),
+        "example_id": "train-example",
+        "target_spec": LLMBoxesSpec(objects=(), regions=()),
+        "target_relevant": _empty_relevant(),
+        "instruction": "short",
+        "level_idx": 0,
+        "trajectory_keypoints": KEYPOINTS,
+        "start_direction": (0.0, 1.0),
+        "start_position": (0.0, 0.0),
+        "scene_id": "scene-a",
+    }
+    batch = {
+        "input_ids": torch.ones((1, 2), dtype=torch.long),
+        "attention_mask": torch.ones((1, 2), dtype=torch.long),
+        "labels": torch.ones((1, 2), dtype=torch.long),
+        "example_ids": ["train-example"],
+    }
+    if batches is None:
+        batches = [batch]
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "load_llm_boxes_examples",
+        lambda *args, **kwargs: [object()],
+    )
+    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: [item])
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *args, **kwargs: (model, _TrainingTokenizer()),
+    )
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "_apply_lora",
+        lambda loaded_model, args: loaded_model,
+    )
+    monkeypatch.setattr(train_llm_boxes, "DataLoader", lambda *args, **kwargs: batches)
+
+
 def test_load_system_prompt_reads_package_prompt():
     prompt = train_llm_boxes.load_system_prompt()
 
@@ -928,6 +1001,125 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
     assert list(calls[0][0][1]) == ["train"]
 
 
+def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    captured = {}
+
+    def fake_data_loader(*args, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "input_ids": torch.ones((1, 2), dtype=torch.long),
+                "attention_mask": torch.ones((1, 2), dtype=torch.long),
+                "labels": torch.ones((1, 2), dtype=torch.long),
+                "example_ids": ["train-example"],
+            }
+        ]
+
+    monkeypatch.setattr(train_llm_boxes, "DataLoader", fake_data_loader)
+    args = train_llm_boxes.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+        ]
+    )
+
+    train_llm_boxes.train_model(args)
+
+    assert isinstance(
+        captured["batch_sampler"],
+        train_llm_boxes.LengthGroupedBatchSampler,
+    )
+    assert "batch_size" not in captured
+    assert "shuffle" not in captured
+
+
+def test_train_model_accumulates_gradients_before_optimizer_step(
+    monkeypatch,
+    tmp_path,
+):
+    batches = [
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+            "labels": torch.ones((1, 2), dtype=torch.long),
+            "example_ids": [f"train-example-{index}"],
+        }
+        for index in range(3)
+    ]
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0), batches=batches)
+    calls = {"step": 0, "zero_grad": 0}
+
+    class FakeOptimizer:
+        def __init__(self, parameters, lr):
+            self.parameters = list(parameters)
+            self.lr = lr
+
+        def step(self):
+            calls["step"] += 1
+
+        def zero_grad(self):
+            calls["zero_grad"] += 1
+
+    monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
+    args = train_llm_boxes.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+            "--gradient-accumulation-steps",
+            "2",
+        ]
+    )
+
+    metrics = train_llm_boxes.train_model(args)
+
+    assert calls == {"step": 2, "zero_grad": 3}
+    assert metrics["steps"] == pytest.approx(3.0)
+    assert metrics["optimizer_steps"] == pytest.approx(2.0)
+
+
+def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
+    model = _TrainingModel(1.0)
+    _patch_training_dependencies(monkeypatch, model)
+    args = train_llm_boxes.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    train_llm_boxes.train_model(args)
+
+    assert model.gradient_checkpointing_enabled is True
+    assert model.input_require_grads_enabled is True
+    assert model.config.use_cache is False
+
+
 def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
     assert train_llm_boxes._checkpoint_dir(tmp_path, "epoch-1") == (
         tmp_path / "checkpoints" / "epoch-1"
@@ -1099,6 +1291,9 @@ def test_cli_parser_supports_train_and_eval_modes():
             "0.001",
             "--max-grad-norm",
             "0.5",
+            "--gradient-accumulation-steps",
+            "2",
+            "--gradient-checkpointing",
             "--limit",
             "5",
             "--device",
@@ -1126,6 +1321,8 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.epochs == 2
     assert train_args.learning_rate == 0.001
     assert train_args.max_grad_norm == 0.5
+    assert train_args.gradient_accumulation_steps == 2
+    assert train_args.gradient_checkpointing is True
     assert train_args.limit == 5
     assert train_args.device == "cpu"
     assert train_args.device_map == "auto"
@@ -1134,8 +1331,10 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.mode == "eval"
     assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
     assert eval_args.output_dir == "eval-out"
-    assert eval_args.max_new_tokens == 1024
+    assert eval_args.max_new_tokens == 2048
     assert eval_args.max_grad_norm == 1.0
+    assert eval_args.gradient_accumulation_steps == 1
+    assert eval_args.gradient_checkpointing is False
     assert eval_args.device_map == "none"
     assert eval_args.cognitive_map_namespace == "gt.bbox.r1p5.path5.v1"
     assert eval_args.quiet is False

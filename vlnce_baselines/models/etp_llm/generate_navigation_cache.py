@@ -578,7 +578,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Pretrained or checkpoint path for the causal language model.",
     )
     parser.add_argument("--max-input-length", type=int, default=1024)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=_default_device())
