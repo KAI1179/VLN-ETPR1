@@ -330,18 +330,18 @@ Main reading:
         ```python
         aabb = level.aabb
         # AABB.size() returns a Vector3 with (x, y, z) dimensions
-        size = aabb.size() # type: ignore
-        width = size.x   # x dimension
-        depth = size.y   # y dimension
+        size = aabb.size()  # type: ignore
+        width = size.x  # x dimension
+        depth = size.y  # y dimension
         height = size.z  # z dimension as vertical
         ```
     - Simulator, branch `use-sim`:
         ```python
         aabb = level.aabb
         # AABB.size() returns a Vector3 with (x, y, z) dimensions
-        size = aabb.size() # type: ignore
-        width = size.x   # x dimension
-        depth = size.z   # z dimension
+        size = aabb.size()  # type: ignore
+        width = size.x  # x dimension
+        depth = size.z  # z dimension
         height = size.y  # y dimension as vertical
         ```
     - 结果均为：
@@ -373,6 +373,7 @@ Main reading:
         # Usage:
         from habitat_sim.scene import SemanticScene
         from prior.constants import HABITAT_MP3D_ROTATION_VECTOR
+
         SemanticScene.load_mp3d_house(house_file, scene, HABITAT_MP3D_ROTATION_VECTOR)
         ```
     - 结果：
@@ -453,7 +454,7 @@ Main reading:
 - 指令 -> 草绘图 -> SkeNa/Coarse Map Navigator (角度/旋转的影响？距离不准确？)
 - 指令 -> 拓扑图 -> 草绘图 -> 导航
 
-# 讨论
+# 讨论与结果
 
 ## 04/30
 
@@ -624,10 +625,10 @@ Then:
 ```python
 pred_grid = torch.sigmoid(logits)
 map_tokens, map_masks = map_encoder(
-  pred_grid,
-  direction_vectors,
-  start_direction_vectors,
-  start_positions,
+    pred_grid,
+    direction_vectors,
+    start_direction_vectors,
+    start_positions,
 )
 ```
 
@@ -978,6 +979,42 @@ For VLN this is stronger than instruction-only because partial observation ancho
 - 是否保留置信度？（未提及但是在附近的物体）
 - 是否提升 max_tokens？
 - Downsample 必要性？不如直接降低 VLN 模型的期望分辨率，而非预测低分辨率的然后缩放？
+
+## 07/09
+
+LLM-Grid token stats (`d071fe5`, 2x maxpool):
+
+- Mean: 1084
+- Median: 1076
+- P95: 1637
+- P99: 1957
+- Max: 2536
+
+![llm_grid_token_distribution_blurred](images/llm_grid_token_distribution_blurred.png)
+
+## 07/10
+
+LLM-Boxes token stats:
+
+| split      | n      | mean | p50 | p90 | p95  | p98  | p99  | p99.5 | max  |
+| ---------- | ------ | ---- | --- | --- | ---- | ---- | ---- | ----- | ---- |
+| train      | 10,786 | 525  | 447 | 991 | 1218 | 1552 | 1764 | 1996  | 3090 |
+| val_seen   | 778    | 512  | 432 | 997 | 1170 | 1467 | 1645 | 1873  | 2380 |
+| val_unseen | 1,839  | 547  | 488 | 983 | 1178 | 1464 | 1618 | 1712  | 2689 |
+| all        | 13,403 | 527  | 453 | 991 | 1207 | 1530 | 1750 | 1981  | 3090 |
+
+Drop Rate By `max_new_tokens`:
+
+| max_new_tokens | dropped | rate  |
+| -------------- | ------- | ----- |
+| 1024           | 1203    | 8.98% |
+| 1280           | 546     | 4.07% |
+| 1536           | 262     | 1.95% |
+| 1792           | 110     | 0.82% |
+| 2048           | 46      | 0.34% |
+| 2304           | 20      | 0.15% |
+| 2560           | 7       | 0.05% |
+| 3072           | 1       | 0.01% |
 
 # 实验
 
