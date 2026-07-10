@@ -49,7 +49,9 @@ def blur_cognitive_map_grid(
     if scale <= 0:
         raise ValueError(f"scale must be positive, got {scale}")
     if grid.ndim != 3:
-        raise ValueError(f"grid must have shape (channels, rows, cols), got {grid.shape}")
+        raise ValueError(
+            f"grid must have shape (channels, rows, cols), got {grid.shape}"
+        )
     channels, rows, cols = grid.shape
     if rows % scale != 0 or cols % scale != 0:
         raise ValueError(
@@ -110,7 +112,9 @@ def transform_cognitive_map_namespace(
     source_raster_root = source_root / "raster"
     source_boxes_root = source_root / "boxes"
     if not source_raster_root.is_dir():
-        raise FileNotFoundError(f"Missing source raster namespace: {source_raster_root}")
+        raise FileNotFoundError(
+            f"Missing source raster namespace: {source_raster_root}"
+        )
 
     raster_written = 0
     raster_skipped = 0

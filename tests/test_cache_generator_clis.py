@@ -79,8 +79,12 @@ def test_vlnce_generator_parser_accepts_source_radius_and_namespace():
         ("bbox", 2.5, "gt.bbox.r2p5.path5.v1"),
     ],
 )
-def test_map_cache_namespace_uses_source_and_radius_label(map_source, radius_m, expected):
-    assert cognitive_map_generation.map_cache_namespace(map_source, radius_m) == expected
+def test_map_cache_namespace_uses_source_and_radius_label(
+    map_source, radius_m, expected
+):
+    assert (
+        cognitive_map_generation.map_cache_namespace(map_source, radius_m) == expected
+    )
 
 
 def test_map_cache_namespace_includes_direction5_schema():

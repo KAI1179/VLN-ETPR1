@@ -19,6 +19,7 @@ from habitat.utils.visualizations import maps as habitat_maps
 from habitat_extensions import maps
 from habitat_extensions.task import RxRVLNCEDatasetV1
 
+
 @registry.register_measure
 class Position(Measure):
     r"""Path Length (PL)
@@ -29,9 +30,7 @@ class Position(Measure):
 
     cls_uuid: str = "position"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
 
@@ -41,21 +40,22 @@ class Position(Measure):
         return self.cls_uuid
 
     def reset_metric(self, episode, *args: Any, **kwargs: Any):
-        self._metric = {'distance':[], 'position':[]}
+        self._metric = {"distance": [], "position": []}
         self.update_metric(episode)
 
     def update_metric(self, episode, *args: Any, **kwargs: Any):
         current_position = self._sim.get_agent_state().position
-        if len(self._metric['position']) > 0:
-            if (current_position == self._metric['position'][-1]).all():
+        if len(self._metric["position"]) > 0:
+            if (current_position == self._metric["position"][-1]).all():
                 return
         distance = self._sim.geodesic_distance(
             current_position,
             [goal.position for goal in episode.goals],
             episode,
         )
-        self._metric['position'].append(self._sim.get_agent_state().position)
-        self._metric['distance'].append(distance)
+        self._metric["position"].append(self._sim.get_agent_state().position)
+        self._metric["distance"].append(distance)
+
 
 @registry.register_measure
 class PositionTrain(Measure):
@@ -67,9 +67,7 @@ class PositionTrain(Measure):
 
     cls_uuid: str = "position_train"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
 
@@ -79,21 +77,22 @@ class PositionTrain(Measure):
         return self.cls_uuid
 
     def reset_metric(self, episode, *args: Any, **kwargs: Any):
-        self._metric = {'distance':[], 'position':[]}
+        self._metric = {"distance": [], "position": []}
         self.update_metric(episode)
 
     def update_metric(self, episode, *args: Any, **kwargs: Any):
         current_position = self._sim.get_agent_state().position
-        if len(self._metric['position']) > 0:
-            if (current_position == self._metric['position'][-1]).all():
+        if len(self._metric["position"]) > 0:
+            if (current_position == self._metric["position"][-1]).all():
                 return
         distance = self._sim.geodesic_distance(
             current_position,
             [episode.goals[-1].position],
             episode,
         )
-        self._metric['position'].append(self._sim.get_agent_state().position)
-        self._metric['distance'].append(distance)
+        self._metric["position"].append(self._sim.get_agent_state().position)
+        self._metric["distance"].append(distance)
+
 
 @registry.register_measure
 class PositionInfer(Measure):
@@ -105,9 +104,7 @@ class PositionInfer(Measure):
 
     cls_uuid: str = "position_infer"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
 
@@ -117,22 +114,22 @@ class PositionInfer(Measure):
         return self.cls_uuid
 
     def reset_metric(self, episode, *args: Any, **kwargs: Any):
-        self._metric = {'position':[], 'heading':[]}
+        self._metric = {"position": [], "heading": []}
         self.update_metric(episode)
 
     def update_metric(self, episode, *args: Any, **kwargs: Any):
         agent_state = self._sim.get_agent_state()
         current_position = agent_state.position
-        if len(self._metric['position']) > 0:
-            if (current_position == self._metric['position'][-1]).all():
+        if len(self._metric["position"]) > 0:
+            if (current_position == self._metric["position"][-1]).all():
                 return
         heading_vector = quaternion_rotate_vector(
             agent_state.rotation.inverse(), np.array([0, 0, -1])
         )
         heading = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
 
-        self._metric['position'].append(self._sim.get_agent_state().position.tolist())
-        self._metric['heading'].append(heading)
+        self._metric["position"].append(self._sim.get_agent_state().position.tolist())
+        self._metric["heading"].append(heading)
 
 
 @registry.register_measure
@@ -146,14 +143,10 @@ class PathLength(Measure):
     cls_uuid: str = "path_length"
 
     @staticmethod
-    def euclidean_distance(
-        position_a: np.ndarray, position_b: np.ndarray
-    ) -> float:
+    def euclidean_distance(position_a: np.ndarray, position_b: np.ndarray) -> float:
         return np.linalg.norm(position_b - position_a, ord=2)
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
 
@@ -184,9 +177,7 @@ class OracleNavigationError(Measure):
 
     cls_uuid: str = "oracle_navigation_error"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
         super().__init__()
@@ -194,9 +185,7 @@ class OracleNavigationError(Measure):
     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
         return self.cls_uuid
 
-    def reset_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
+    def reset_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
         task.measurements.check_measure_dependencies(
             self.uuid, [DistanceToGoal.cls_uuid]
         )
@@ -220,9 +209,7 @@ class OracleSuccess(Measure):
 
     cls_uuid: str = "oracle_success"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
         super().__init__()
@@ -230,18 +217,14 @@ class OracleSuccess(Measure):
     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
         return self.cls_uuid
 
-    def reset_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
+    def reset_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
         task.measurements.check_measure_dependencies(
             self.uuid, [DistanceToGoal.cls_uuid]
         )
         self._metric = 0
         self.update_metric(episode, task)
 
-    def update_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
+    def update_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
         d = task.measurements.measures[DistanceToGoal.cls_uuid].get_metric()
         self._metric = float(self._metric or d < self._config.SUCCESS_DISTANCE)
 
@@ -255,9 +238,7 @@ class OracleSPL(Measure):
 
     cls_uuid: str = "oracle_spl"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
         super().__init__()
@@ -265,15 +246,11 @@ class OracleSPL(Measure):
     def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
         return self.cls_uuid
 
-    def reset_metric(
-        self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any
-    ):
+    def reset_metric(self, *args: Any, episode, task: EmbodiedTask, **kwargs: Any):
         task.measurements.check_measure_dependencies(self.uuid, ["spl"])
         self._metric = 0.0
 
-    def update_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
+    def update_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
         spl = task.measurements.measures["spl"].get_metric()
         self._metric = max(self._metric, spl)
 
@@ -317,13 +294,9 @@ class NDTW(Measure):
         position_a: Union[List[float], np.ndarray],
         position_b: Union[List[float], np.ndarray],
     ) -> float:
-        return np.linalg.norm(
-            np.array(position_b) - np.array(position_a), ord=2
-        )
+        return np.linalg.norm(np.array(position_b) - np.array(position_a), ord=2)
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
         self.dtw_func = fastdtw if config.FDTW else dtw
@@ -336,9 +309,7 @@ class NDTW(Measure):
                 ) as f:
                     self.gt_json.update(json.load(f))
         else:
-            with gzip.open(
-                config.GT_PATH.format(split=config.SPLIT), "rt"
-            ) as f:
+            with gzip.open(config.GT_PATH.format(split=config.SPLIT), "rt") as f:
                 self.gt_json = json.load(f)
 
         super().__init__()
@@ -365,8 +336,7 @@ class NDTW(Measure):
         )[0]
 
         nDTW = np.exp(
-            -dtw_distance
-            / (len(self.gt_locations) * self._config.SUCCESS_DISTANCE)
+            -dtw_distance / (len(self.gt_locations) * self._config.SUCCESS_DISTANCE)
         )
         self._metric = nDTW
 
@@ -383,9 +353,7 @@ class SDTW(Measure):
 
     cls_uuid: str = "sdtw"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._config = config
 
@@ -400,9 +368,7 @@ class SDTW(Measure):
         )
         self.update_metric(episode, task)
 
-    def update_metric(
-        self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any
-    ):
+    def update_metric(self, episode, task: EmbodiedTask, *args: Any, **kwargs: Any):
         ep_success = task.measurements.measures[Success.cls_uuid].get_metric()
         nDTW = task.measurements.measures[NDTW.cls_uuid].get_metric()
         self._metric = ep_success * nDTW
@@ -416,9 +382,7 @@ class TopDownMapVLNCE(Measure):
 
     cls_uuid: str = "top_down_map_vlnce"
 
-    def __init__(
-        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
-    ):
+    def __init__(self, *args: Any, sim: Simulator, config: Config, **kwargs: Any):
         self._sim = sim
         self._config = config
         with open(self._config.GRAPHS_FILE, "rb") as f:
@@ -516,9 +480,9 @@ class TopDownMapVLNCE(Measure):
         self._nearest_node = maps.get_nearest_node(
             self._conn_graphs[scene_id], np.take(agent_position, (0, 2))
         )
-        nn_position = self._conn_graphs[self._scene_id].nodes[
-            self._nearest_node
-        ]["position"]
+        nn_position = self._conn_graphs[self._scene_id].nodes[self._nearest_node][
+            "position"
+        ]
         self.s_x, self.s_y = habitat_maps.to_grid(
             nn_position[2],
             nn_position[0],
@@ -581,9 +545,7 @@ class TopDownMapVLNCE(Measure):
                 (a_y, a_x),
                 gradient_color,
                 thickness=int(
-                    self._config.MAP_RESOLUTION
-                    * 0.6
-                    / maps.MAP_THICKNESS_SCALAR
+                    self._config.MAP_RESOLUTION * 0.6 / maps.MAP_THICKNESS_SCALAR
                 ),
                 style="filled",
             )
@@ -612,9 +574,9 @@ class TopDownMapVLNCE(Measure):
             self._nearest_node != prev_nearest_node
             and self._config.DRAW_MP3D_AGENT_PATH
         ):
-            nn_position = self._conn_graphs[self._scene_id].nodes[
-                self._nearest_node
-            ]["position"]
+            nn_position = self._conn_graphs[self._scene_id].nodes[self._nearest_node][
+                "position"
+            ]
             (prev_s_x, prev_s_y) = (self.s_x, self.s_y)
             self.s_x, self.s_y = habitat_maps.to_grid(
                 nn_position[2],
@@ -623,12 +585,10 @@ class TopDownMapVLNCE(Measure):
                 self._sim,
             )
             self._top_down_map[
-                self.s_x
-                - int(2.0 / 3.0 * point_padding) : self.s_x
+                self.s_x - int(2.0 / 3.0 * point_padding) : self.s_x
                 + int(2.0 / 3.0 * point_padding)
                 + 1,
-                self.s_y
-                - int(2.0 / 3.0 * point_padding) : self.s_y
+                self.s_y - int(2.0 / 3.0 * point_padding) : self.s_y
                 + int(2.0 / 3.0 * point_padding)
                 + 1,
             ] = gradient_color
@@ -641,9 +601,7 @@ class TopDownMapVLNCE(Measure):
                 thickness=int(
                     1.0
                     / 2.0
-                    * np.round(
-                        self._config.MAP_RESOLUTION / maps.MAP_THICKNESS_SCALAR
-                    )
+                    * np.round(self._config.MAP_RESOLUTION / maps.MAP_THICKNESS_SCALAR)
                 ),
             )
 

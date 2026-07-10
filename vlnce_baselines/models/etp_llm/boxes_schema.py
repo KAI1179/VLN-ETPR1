@@ -384,7 +384,9 @@ def _normalize_spec(spec: LLMBoxesSpec) -> LLMBoxesSpec:
                 key=_region_sort_key,
             )
         ),
-        trajectory_keypoints=tuple(_round_point(_point2(point)) for point in spec.trajectory_keypoints),
+        trajectory_keypoints=tuple(
+            _round_point(_point2(point)) for point in spec.trajectory_keypoints
+        ),
     )
 
 

@@ -157,12 +157,10 @@ def save_cognitive_map(
 def _all_mentioned_level(level: LevelSemanticBoxes) -> LevelSemanticBoxes:
     return LevelSemanticBoxes(
         objects=[
-            [replace(box, mentioned=True) for box in boxes]
-            for boxes in level.objects
+            [replace(box, mentioned=True) for box in boxes] for boxes in level.objects
         ],
         regions=[
-            [replace(box, mentioned=True) for box in boxes]
-            for boxes in level.regions
+            [replace(box, mentioned=True) for box in boxes] for boxes in level.regions
         ],
         range_y=list(level.range_y),
     )

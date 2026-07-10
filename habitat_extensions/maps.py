@@ -92,9 +92,9 @@ def colorize_topdown_map(
         # Only desaturate valid points as only valid points get revealed
         desat_mask = top_down_map != MAP_INVALID_POINT
 
-        _map[desat_mask] = (
-            _map * fog_of_war_desat_values[fog_of_war_mask]
-        ).astype(np.uint8)[desat_mask]
+        _map[desat_mask] = (_map * fog_of_war_desat_values[fog_of_war_mask]).astype(
+            np.uint8
+        )[desat_mask]
 
     return _map
 
@@ -210,7 +210,6 @@ def draw_reference_path(
 
     pt_from = None
     for i, pt_to in enumerate(shortest_path_points):
-
         if i != 0:
             drawline(
                 img,
@@ -298,7 +297,9 @@ def draw_waypoint(
 def draw_conn(img, p1, p2, bounds, color):
     p1_x, p1_y = static_to_grid(p1[1], p1[0], img.shape[0:2], bounds)
     p2_x, p2_y = static_to_grid(p2[1], p2[0], img.shape[0:2], bounds)
-    drawline(img, [p1_y,p1_x], [p2_y,p2_x], color, thickness=2, style="dotted", gap=10)
+    drawline(
+        img, [p1_y, p1_x], [p2_y, p2_x], color, thickness=2, style="dotted", gap=10
+    )
 
 
 def get_nearest_node(graph: nx.Graph, current_position: List[float]) -> str:
@@ -352,18 +353,14 @@ def draw_mp3d_nodes(
     graph: nx.Graph,
     meters_per_px: float,
 ) -> None:
-    n = get_nearest_node(
-        graph, (episode.start_position[0], episode.start_position[2])
-    )
+    n = get_nearest_node(graph, (episode.start_position[0], episode.start_position[2]))
     starting_height = graph.nodes[n]["position"][1]
     for node in graph:
         pos = graph.nodes[node]["position"]
 
         # no obvious way to differentiate between floors. Use this for now.
         if abs(pos[1] - starting_height) < 1.0:
-            r_x, r_y = habitat_maps.to_grid(
-                pos[2], pos[0], img.shape[0:2], sim
-            )
+            r_x, r_y = habitat_maps.to_grid(pos[2], pos[0], img.shape[0:2], sim)
 
             # only paint if over a valid point
             if img[r_x, r_y]:

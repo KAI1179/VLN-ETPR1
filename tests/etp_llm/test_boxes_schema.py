@@ -26,6 +26,7 @@ def _empty_level():
         range_y=[None, None],
     )
 
+
 KEYPOINTS = ((0.0, 0.0), (1.2, 3.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
 
 
@@ -187,9 +188,7 @@ def test_parse_llm_boxes_text_salvage_keeps_valid_entities_after_invalid_lines()
         (0.0, 0.0),
         (0.0, 0.0),
     )
-    assert result.spec.objects == (
-        ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),
-    )
+    assert result.spec.objects == (ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),)
     assert result.spec.regions == (
         RegionBoxSpec("circulation", (0.0, 0.0), (2.0, 3.0)),
     )

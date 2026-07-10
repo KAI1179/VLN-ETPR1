@@ -11,6 +11,7 @@ import torchvision
 import clip
 from model_paths import CLIP_VIT_B32_MODEL
 
+
 class VlnResnetDepthEncoder(nn.Module):
     def __init__(
         self,
@@ -72,7 +73,6 @@ class VlnResnetDepthEncoder(nn.Module):
             self.output_shape = list(self.visual_encoder.output_shape)
             self.output_shape[0] += self.spatial_embeddings.embedding_dim
             self.output_shape = tuple(self.output_shape)
-
 
     def forward(self, observations):
         """
@@ -162,11 +162,13 @@ class TorchVisionResNet50(nn.Module):
             # self.activation = nn.ReLU()
             None
         else:
+
             class SpatialAvgPool(nn.Module):
                 def forward(self, x):
                     x = F.adaptive_avg_pool2d(x, (4, 4))
 
                     return x
+
             self.cnn.avgpool = SpatialAvgPool()
             self.cnn.fc = nn.Sequential()
             self.spatial_embeddings = nn.Embedding(4 * 4, 64)
@@ -179,10 +181,11 @@ class TorchVisionResNet50(nn.Module):
         # self.layer_extract = self.cnn._modules.get("avgpool")
 
         from torchvision import transforms
+
         self.rgb_transform = torch.nn.Sequential(
             transforms.ConvertImageDtype(torch.float),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            )
+        )
 
     @property
     def is_blind(self):
@@ -234,7 +237,9 @@ class TorchVisionResNet50(nn.Module):
                 .expand(b, self.spatial_embeddings.embedding_dim, h, w)
             )
 
-            return torch.cat([resnet_output, spatial_features], dim=1)#.to(self.device)
+            return torch.cat(
+                [resnet_output, spatial_features], dim=1
+            )  # .to(self.device)
         else:
             # return self.activation(
             #     self.fc(torch.flatten(resnet_output, 1))
@@ -253,7 +258,8 @@ class CLIPEncoder(nn.Module):
     """
 
     def __init__(
-        self, device,
+        self,
+        device,
     ):
         super().__init__()
         self.model, _ = clip.load(CLIP_VIT_B32_MODEL, device=device)
@@ -262,10 +268,14 @@ class CLIPEncoder(nn.Module):
         self.model.eval()
 
         from torchvision import transforms
+
         self.rgb_transform = torch.nn.Sequential(
             transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711]),
-            )
+            transforms.Normalize(
+                [0.48145466, 0.4578275, 0.40821073],
+                [0.26862954, 0.26130258, 0.27577711],
+            ),
+        )
 
     def forward(self, observations):
         r"""Sends RGB observation through the TorchVision ResNet50 pre-trained
@@ -276,4 +286,4 @@ class CLIPEncoder(nn.Module):
         rgb_observations = self.rgb_transform(rgb_observations)
         output = self.model.encode_image(rgb_observations.contiguous())
 
-        return output.float() # to fp32
+        return output.float()  # to fp32

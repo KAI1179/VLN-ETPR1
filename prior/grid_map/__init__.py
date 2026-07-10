@@ -334,9 +334,7 @@ class CognitiveGridMap(BaseGridMap):
 
     def save(self, save_path: str | PathLike[str] | np._SupportsWrite[bytes]):
         """Save cognitive map data with trajectory keypoints."""
-        trajectory_keypoints = np.asarray(
-            self.trajectory_keypoints, dtype=np.float32
-        )
+        trajectory_keypoints = np.asarray(self.trajectory_keypoints, dtype=np.float32)
         expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
         if trajectory_keypoints.shape != expected_shape:
             raise ValueError(

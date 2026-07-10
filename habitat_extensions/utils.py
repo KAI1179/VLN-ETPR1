@@ -24,13 +24,11 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 cv2 = try_cv2_import()
 obs_trans_to_eq = baseline_registry.get_obs_transformer("CubeMap2Equirect")
-UUIDS_EQ = ['rgbback', 'rgbdown', 'rgbfront', 'rgbright', 'rgbleft', 'rgbup']
-CUBE2EQ = obs_trans_to_eq(UUIDS_EQ, (224,448))
+UUIDS_EQ = ["rgbback", "rgbdown", "rgbfront", "rgbright", "rgbleft", "rgbup"]
+CUBE2EQ = obs_trans_to_eq(UUIDS_EQ, (224, 448))
 
 
-def observations_to_image(
-    observation: Dict[str, Any], info: Dict[str, Any]
-) -> ndarray:
+def observations_to_image(observation: Dict[str, Any], info: Dict[str, Any]) -> ndarray:
     """Generate image of single frame from observation and info
     returned from a single environment step().
 
@@ -66,9 +64,7 @@ def observations_to_image(
         )
         egocentric_view.append(depth_map)
 
-    assert (
-        len(egocentric_view) > 0
-    ), "Expected at least one visual sensor enabled."
+    assert len(egocentric_view) > 0, "Expected at least one visual sensor enabled."
     egocentric_view = np.concatenate(egocentric_view, axis=1)
 
     frame = egocentric_view
@@ -125,9 +121,7 @@ def pano_observations_to_image(
     rgb = None
     if "rgb" in observation:
         cnt = observation["rgb"].shape[0]
-        rgb = observation["rgb"][
-            [*range(cnt // 2, cnt), *range(cnt // 2)], :, :, :
-        ]
+        rgb = observation["rgb"][[*range(cnt // 2, cnt), *range(cnt // 2)], :, :, :]
         channels = rgb.shape[3]
         vert_bar = np.ones((rgb.shape[1], 20, channels)) * 255
         rgb_frame = [rgb[0]]
@@ -143,9 +137,7 @@ def pano_observations_to_image(
         ]
         if len(pano_frame) > 0:
             assert observation["depth"].shape[0] == rgb.shape[0]
-            pano_frame.append(
-                np.ones((20, pano_frame[0].shape[1], channels)) * 255
-            )
+            pano_frame.append(np.ones((20, pano_frame[0].shape[1], channels)) * 255)
             observation_size = rgb.shape[1:3]
         else:
             observation_size = observation["depth"].shape[1:3]
@@ -156,9 +148,7 @@ def pano_observations_to_image(
         depth = np.stack([depth for _ in range(3)], axis=3)
 
         depth_frame = [
-            cv2.resize(
-                depth[0], dsize=observation_size, interpolation=cv2.INTER_CUBIC
-            )
+            cv2.resize(depth[0], dsize=observation_size, interpolation=cv2.INTER_CUBIC)
         ]
         for i in range(1, depth.shape[0]):
             depth_frame.append(vert_bar)
@@ -209,8 +199,7 @@ def pano_observations_to_image(
             interpolation=cv2.INTER_CUBIC,
         )
         white = (
-            np.ones((top_down_height, pano_frame.shape[1] - top_down_width, 3))
-            * 255
+            np.ones((top_down_height, pano_frame.shape[1] - top_down_width, 3)) * 255
         )
         top_down_map = np.concatenate((white, top_down_map), axis=1)
         pano_frame = np.concatenate((pano_frame, top_down_map), axis=0)
@@ -248,9 +237,7 @@ def add_instruction_on_img(img: ndarray, text: str) -> None:
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     char_size = cv2.getTextSize(" ", font, font_size, thickness)[0]
-    wrapped_text = textwrap.wrap(
-        text, width=int((img.shape[1] - 15) / char_size[0])
-    )
+    wrapped_text = textwrap.wrap(text, width=int((img.shape[1] - 15) / char_size[0]))
     if len(wrapped_text) < 8:
         wrapped_text.insert(0, "")
 
@@ -333,9 +320,7 @@ def add_step_stats_on_img(
     return np.concatenate(img, axis=0)
 
 
-def add_prob_on_img(
-    img: ndarray, probability: float, pano_selected: bool
-) -> ndarray:
+def add_prob_on_img(img: ndarray, probability: float, pano_selected: bool) -> ndarray:
     img_height = img.shape[0]
     img_width = img.shape[1]
     white = np.ones((20, img.shape[1], 3)) * 255
@@ -437,20 +422,14 @@ def waypoint_observations_to_image(
     if "rgb" in observation:
         rgb = [
             add_id_on_img(
-                observation["rgb"][i][
-                    :, 80 : (observation["rgb"][i].shape[1] - 80), :
-                ],
+                observation["rgb"][i][:, 80 : (observation["rgb"][i].shape[1] - 80), :],
                 str(i),
             )
             for i in range(observation["rgb"].shape[0])
         ]
         rgb = [
-            add_prob_on_img(
-                f, str(round(p, 2)), i == agent_action_elements["pano"]
-            )
-            for i, (f, p) in enumerate(
-                zip(rgb, pano_distribution[:-1].tolist())
-            )
+            add_prob_on_img(f, str(round(p, 2)), i == agent_action_elements["pano"])
+            for i, (f, p) in enumerate(zip(rgb, pano_distribution[:-1].tolist()))
         ][::-1]
         rgb = rgb[6:] + rgb[:6]
         vertical_bar = np.ones((rgb[0].shape[0], 1, 3)) * 255
@@ -492,9 +471,7 @@ def waypoint_observations_to_image(
         rotation = map_info["agent_angle"]
 
         if not agent_stop and agent_action_elements is not None:
-            maps.draw_waypoint_prediction(
-                top_down_map, waypoint, meters_per_px, bounds
-            )
+            maps.draw_waypoint_prediction(top_down_map, waypoint, meters_per_px, bounds)
         if oracle_waypoint is not None:
             maps.draw_oracle_waypoint(
                 top_down_map, oracle_waypoint, meters_per_px, bounds
@@ -546,8 +523,9 @@ def waypoint_observations_to_image(
 
     return frame.astype(np.uint8)
 
+
 def colorize_draw_agent_and_fit_to_height(
-    info: Dict[str, Any], 
+    info: Dict[str, Any],
     output_height: int,
     vis_info: Dict,
 ):
@@ -568,20 +546,36 @@ def colorize_draw_agent_and_fit_to_height(
     top_down_map = deepcopy(info["map"])
 
     if vis_info is not None:
-        if 'nodes' in vis_info:
-            for p in vis_info['nodes']:
-                maps.draw_waypoint(top_down_map, p[[0,2]], info["meters_per_px"], info["bounds"], maps.NODE)
-        if 'ghosts' in vis_info:
-            for p in vis_info['ghosts']:
-                maps.draw_waypoint(top_down_map, p[[0,2]], info["meters_per_px"], info["bounds"], maps.GHOST)
+        if "nodes" in vis_info:
+            for p in vis_info["nodes"]:
+                maps.draw_waypoint(
+                    top_down_map,
+                    p[[0, 2]],
+                    info["meters_per_px"],
+                    info["bounds"],
+                    maps.NODE,
+                )
+        if "ghosts" in vis_info:
+            for p in vis_info["ghosts"]:
+                maps.draw_waypoint(
+                    top_down_map,
+                    p[[0, 2]],
+                    info["meters_per_px"],
+                    info["bounds"],
+                    maps.GHOST,
+                )
         # if 'teacher_ghost' in vis_info and vis_info['teacher_ghost'] is not None:
         #     maps.draw_waypoint(top_down_map, vis_info['teacher_ghost'][[0,2]], info["meters_per_px"], info["bounds"], maps.TEACHER_GHOST)
-        if 'predict_ghost' in vis_info:
-            maps.draw_waypoint(top_down_map, vis_info['predict_ghost'][[0,2]], info["meters_per_px"], info["bounds"], maps.PREDICT_GHOST)
-        
-    top_down_map = maps.colorize_topdown_map(
-        top_down_map, info["fog_of_war_mask"]
-    )
+        if "predict_ghost" in vis_info:
+            maps.draw_waypoint(
+                top_down_map,
+                vis_info["predict_ghost"][[0, 2]],
+                info["meters_per_px"],
+                info["bounds"],
+                maps.PREDICT_GHOST,
+            )
+
+    top_down_map = maps.colorize_topdown_map(top_down_map, info["fog_of_war_mask"])
     map_agent_pos = info["agent_map_coord"]
     top_down_map = habitat_maps.draw_agent(
         image=top_down_map,
@@ -605,6 +599,7 @@ def colorize_draw_agent_and_fit_to_height(
     )
 
     return top_down_map
+
 
 def append_text_to_image(image: np.ndarray, text: str):
     r"""Appends text underneath an image of size (height, width, channels).
@@ -644,6 +639,7 @@ def append_text_to_image(image: np.ndarray, text: str):
     final = np.concatenate((image, text_image), axis=0)
     return final
 
+
 def planner_video_frame(
     observations,
     info,
@@ -651,21 +647,22 @@ def planner_video_frame(
     map_k="top_down_map_vlnce",
 ):
     cube = {uuid: observations.pop(uuid) for uuid in UUIDS_EQ}
-    cube = {k: torch.from_numpy(v).unsqueeze(0) for k,v in cube.items()}
+    cube = {k: torch.from_numpy(v).unsqueeze(0) for k, v in cube.items()}
     eq = CUBE2EQ(cube)
-    rgb = eq['rgbback'][0].numpy().copy()
+    rgb = eq["rgbback"][0].numpy().copy()
 
     top_down_map = colorize_draw_agent_and_fit_to_height(
-        info[map_k], 
-        rgb.shape[0], 
+        info[map_k],
+        rgb.shape[0],
         vis_info,
     )
     frame = np.concatenate([rgb, top_down_map], axis=1)
-    frame = cv2.copyMakeBorder(frame, 2,2,2,2, cv2.BORDER_CONSTANT, value=(0,0,0))
+    frame = cv2.copyMakeBorder(frame, 2, 2, 2, 2, cv2.BORDER_CONSTANT, value=(0, 0, 0))
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     # frame = append_text_to_image(frame, observations["instruction"]["text"])
 
     return frame
+
 
 def navigator_video_frame(
     observations,
@@ -693,13 +690,13 @@ def navigator_video_frame(
     #     interpolation=cv2.INTER_CUBIC,
     # )
     cube = {uuid: observations.pop(uuid) for uuid in UUIDS_EQ}
-    cube = {k: torch.from_numpy(v).unsqueeze(0) for k,v in cube.items()}
+    cube = {k: torch.from_numpy(v).unsqueeze(0) for k, v in cube.items()}
     eq = CUBE2EQ(cube)
-    rgb = eq['rgbback'][0].numpy().copy()
+    rgb = eq["rgbback"][0].numpy().copy()
 
     top_down_map = colorize_draw_agent_and_fit_to_height(
-        info[map_k], 
-        rgb.shape[0], 
+        info[map_k],
+        rgb.shape[0],
         vis_info,
     )
     frame = np.concatenate([rgb, top_down_map], axis=1)
@@ -770,17 +767,13 @@ def compute_heading_to(
     delta_z = pos_to[-1] - pos_from[-1]
     xz_angle = np.arctan2(delta_x, delta_z)
     xz_angle = (xz_angle + np.pi) % (2 * np.pi)
-    quat = quaternion_to_list(
-        quaternion.from_euler_angles([0.0, xz_angle, 0.0])
-    )
+    quat = quaternion_to_list(quaternion.from_euler_angles([0.0, xz_angle, 0.0]))
     return quat, xz_angle
 
 
 def heading_from_quaternion(quat: quaternion.quaternion) -> float:
     # https://github.com/facebookresearch/habitat-lab/blob/v0.1.7/habitat/tasks/nav/nav.py#L356
-    heading_vector = quaternion_rotate_vector(
-        quat.inverse(), np.array([0, 0, -1])
-    )
+    heading_vector = quaternion_rotate_vector(quat.inverse(), np.array([0, 0, -1]))
     phi = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
     return phi % (2 * np.pi)
 
@@ -810,9 +803,7 @@ def predictions_to_global_coordinates(
     phi = (current_heading + relative_pano_center + offset) % (2 * np.pi)
 
     x = current_position[:, 0] - distance * torch.sin(phi)
-    z = current_position[
-        :, current_position.shape[1] - 1
-    ] - distance * torch.cos(phi)
+    z = current_position[:, current_position.shape[1] - 1] - distance * torch.cos(phi)
     return torch.stack([x, z], dim=1)
 
 
@@ -833,9 +824,7 @@ def rtheta_to_global_coordinates(
         @ habitat_sim.geo.FRONT
     )
     agent_state = sim.get_agent_state()
-    rotation = habitat_sim.utils.quat_from_angle_axis(
-        theta, habitat_sim.geo.UP
-    )
+    rotation = habitat_sim.utils.quat_from_angle_axis(theta, habitat_sim.geo.UP)
     move_ax = habitat_sim.utils.quat_rotate_vector(rotation, forward_ax)
     position = agent_state.position + (move_ax * r)
     position[1] += y_delta

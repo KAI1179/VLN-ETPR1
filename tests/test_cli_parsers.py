@@ -424,9 +424,7 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
 
-def test_pretrain_prior_map_filter_skips_missing_entries(
-    tmp_path, monkeypatch, capsys
-):
+def test_pretrain_prior_map_filter_skips_missing_entries(tmp_path, monkeypatch, capsys):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
@@ -476,9 +474,7 @@ def test_pretrain_prior_map_filter_rejects_entirely_missing_cache(
         )
 
 
-def test_pretrain_llm_map_filter_skips_missing_entries(
-    tmp_path, monkeypatch, capsys
-):
+def test_pretrain_llm_map_filter_skips_missing_entries(tmp_path, monkeypatch, capsys):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
@@ -519,9 +515,7 @@ def test_pretrain_llm_map_filter_skips_missing_entries(
     )
 
 
-def test_pretrain_llm_map_filter_rejects_entirely_missing_cache(
-    tmp_path, monkeypatch
-):
+def test_pretrain_llm_map_filter_rejects_entirely_missing_cache(tmp_path, monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
@@ -600,7 +594,9 @@ def test_pretrain_llm_dataset_init_filters_non_english_records(
         "_filter_missing_pretrain_llm_cognitive_maps",
         lambda items: items,
     )
-    monkeypatch.setattr(pretrain_dataset, "load_nav_graphs", lambda *_args: ({}, {}, {}))
+    monkeypatch.setattr(
+        pretrain_dataset, "load_nav_graphs", lambda *_args: ({}, {}, {})
+    )
     monkeypatch.setattr(
         pretrain_dataset,
         "get_view_rel_angles",
@@ -627,7 +623,9 @@ def test_pretrain_llm_dataset_init_filters_non_english_records(
         in_memory=False,
     )
 
-    assert nav_db.data == [{"instr_id": "english", "scan": "scene", "instr_encoding": [1]}]
+    assert nav_db.data == [
+        {"instr_id": "english", "scan": "scene", "instr_encoding": [1]}
+    ]
     assert nav_db.data[0] is records[0]
 
 

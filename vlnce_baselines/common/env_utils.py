@@ -66,11 +66,13 @@ def construct_envs(
 
     configs = []
     env_classes = [env_class for _ in range(num_envs)]
-    dataset = make_dataset(config.TASK_CONFIG.DATASET.TYPE) 
-    scenes = config.TASK_CONFIG.DATASET.CONTENT_SCENES # ['*']
+    dataset = make_dataset(config.TASK_CONFIG.DATASET.TYPE)
+    scenes = config.TASK_CONFIG.DATASET.CONTENT_SCENES  # ['*']
     if "*" in config.TASK_CONFIG.DATASET.CONTENT_SCENES:
         scenes = dataset.get_scenes_to_load(config.TASK_CONFIG.DATASET)
-    logger.info(f"SPLTI: {config.TASK_CONFIG.DATASET.SPLIT}, NUMBER OF SCENES: {len(scenes)}")
+    logger.info(
+        f"SPLTI: {config.TASK_CONFIG.DATASET.SPLIT}, NUMBER OF SCENES: {len(scenes)}"
+    )
 
     if num_envs > 1:
         if len(scenes) == 0:
@@ -100,7 +102,7 @@ def construct_envs(
         for j in range(num_envs_per_gpu):
             proc_config = config.clone()
             proc_config.defrost()
-            proc_id = (i * num_envs_per_gpu) + j 
+            proc_id = (i * num_envs_per_gpu) + j
 
             task_config = proc_config.TASK_CONFIG
             task_config.SEED += proc_id
@@ -112,13 +114,13 @@ def construct_envs(
             task_config.SIMULATOR.AGENT_0.SENSORS = config.SENSORS
 
             proc_config.freeze()
-            configs.append(proc_config) 
-        
-    is_debug = True if sys.gettrace() else False # False
+            configs.append(proc_config)
+
+    is_debug = True if sys.gettrace() else False  # False
     env_entry = habitat.ThreadedVectorEnv if is_debug else habitat.VectorEnv
     envs = env_entry(
-        make_env_fn=make_env_fn, 
-        env_fn_args=tuple(zip(configs, env_classes)), 
+        make_env_fn=make_env_fn,
+        env_fn_args=tuple(zip(configs, env_classes)),
         auto_reset_done=auto_reset_done,
         workers_ignore_signals=workers_ignore_signals,
     )
@@ -129,6 +131,7 @@ def construct_envs_auto_reset_false(
     config: Config, env_class: Type[Union[Env, RLEnv]]
 ) -> VectorEnv:
     return construct_envs(config, env_class, auto_reset_done=False)
+
 
 def construct_envs_for_rl(
     config: Config,

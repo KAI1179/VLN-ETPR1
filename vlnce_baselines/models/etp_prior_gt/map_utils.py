@@ -88,7 +88,9 @@ def _validate_metadata_points(name: str, points) -> torch.Tensor:
     return tensor
 
 
-def direction5_cognitive_map_file_to_tensors(cache_path: Path) -> Dict[str, torch.Tensor]:
+def direction5_cognitive_map_file_to_tensors(
+    cache_path: Path,
+) -> Dict[str, torch.Tensor]:
     data = np.load(cache_path, allow_pickle=True)
     return {
         "grid": torch.from_numpy(data["grid"]),
@@ -180,9 +182,7 @@ def available_vlnce_cognitive_map_episode_ids(
             f"available={len(available)} skipped_missing={len(skipped)}"
         )
     if not available:
-        raise FileNotFoundError(
-            f"No cognitive-map caches found for {dataset}/{split}"
-        )
+        raise FileNotFoundError(f"No cognitive-map caches found for {dataset}/{split}")
     return available
 
 
@@ -215,7 +215,9 @@ def cognitive_map_file_to_tensors(
     elif metadata_schema == "direction5":
         tensors = direction5_cognitive_map_file_to_tensors(cache_path)
     else:
-        raise ValueError(f"Unsupported cognitive-map metadata_schema: {metadata_schema}")
+        raise ValueError(
+            f"Unsupported cognitive-map metadata_schema: {metadata_schema}"
+        )
     if random_rotation_augmentation:
         tensors = rotate_cognitive_map_tensors_by_right_angle(
             tensors,

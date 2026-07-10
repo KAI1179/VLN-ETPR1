@@ -29,9 +29,7 @@ class GlobalGPSSensor(Sensor):
 
     cls_uuid: str = "globalgps"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         self._dimensionality = getattr(config, "DIMENSIONALITY", 2)
         assert self._dimensionality in [2, 3]
@@ -58,12 +56,11 @@ class GlobalGPSSensor(Sensor):
 @registry.register_sensor(name="OrienSensor")
 class OrienSensor(HeadingSensor):
     cls_uuid: str = "orientation"
-    def get_observation(
-        self, observations, episode, *args: Any, **kwargs: Any
-    ):
+
+    def get_observation(self, observations, episode, *args: Any, **kwargs: Any):
         agent_state = self._sim.get_agent_state()
         rotation_world_agent = agent_state.rotation
-        res = np.array([*(rotation_world_agent.imag),rotation_world_agent.real])
+        res = np.array([*(rotation_world_agent.imag), rotation_world_agent.real])
         return res
 
 
@@ -79,9 +76,7 @@ class ShortestPathSensor(Sensor):
 
     cls_uuid: str = "shortest_path_sensor"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         super().__init__(config=config)
         if config.USE_ORIGINAL_FOLLOWER:
             self.follower = ShortestPathFollowerCompat(
@@ -93,6 +88,7 @@ class ShortestPathSensor(Sensor):
                 sim, config.GOAL_RADIUS, return_one_hot=False
             )
         # self._sim = sim
+
     def _get_uuid(self, *args: Any, **kwargs: Any):
         return self.cls_uuid
 
@@ -105,11 +101,7 @@ class ShortestPathSensor(Sensor):
     def get_observation(self, *args: Any, episode, **kwargs: Any):
         best_action = self.follower.get_next_action(episode.goals[0].position)
         return np.array(
-            [
-                best_action
-                if best_action is not None
-                else HabitatSimActions.STOP
-            ]
+            [best_action if best_action is not None else HabitatSimActions.STOP]
         )
 
 
@@ -124,9 +116,7 @@ class VLNOracleProgressSensor(Sensor):
 
     cls_uuid: str = "progress"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         super().__init__(config=config)
 
@@ -140,15 +130,12 @@ class VLNOracleProgressSensor(Sensor):
     def _get_observation_space(self, *args: Any, **kwargs: Any):
         return spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=float)
 
-    def get_observation(
-        self, observations, *args: Any, episode, **kwargs: Any
-    ):
+    def get_observation(self, observations, *args: Any, episode, **kwargs: Any):
         current_position = self._sim.get_agent_state().position.tolist()
 
         distance_to_target = self._sim.geodesic_distance(
             current_position, episode.goals[0].position
         )
-
 
         if "geodesic_distance" not in episode.info.keys():
             distance_from_start = self._sim.geodesic_distance(
@@ -158,19 +145,16 @@ class VLNOracleProgressSensor(Sensor):
 
         distance_from_start = episode.info["geodesic_distance"]
 
-        progress =  (distance_from_start - distance_to_target) / distance_from_start
+        progress = (distance_from_start - distance_to_target) / distance_from_start
 
-        return np.array(progress, dtype = np.float32)
+        return np.array(progress, dtype=np.float32)
 
 
 @registry.register_sensor
 class RxRInstructionSensor(Sensor):
-
     cls_uuid: str = "rxr_instruction"
 
-    def __init__(
-        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
-    ):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         # self.max_text_len = config.max_text_len
         # self.features_path = config.features_path
         # super().__init__(config=config)
@@ -200,7 +184,7 @@ class RxRInstructionSensor(Sensor):
         return {
             "text": episode.instruction.instruction_text,
             "tokens": episode.instruction.instruction_tokens,
-            "trajectory_id": episode.trajectory_id
+            "trajectory_id": episode.trajectory_id,
         }
         # features = np.load(
         #     self.features_path.format(

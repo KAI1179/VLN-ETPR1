@@ -3,12 +3,13 @@ import shutil
 
 # --- Modify these two paths (it is recommended to use absolute paths) ---
 source_root = "./data/extra_files"  # resource (extra_files)
-target_root = "./"     # working directory
+target_root = "./"  # working directory
 # habitat_source = "/home/user/habitat-lab-0.1.7/data/scene_datasets" # path to habitat scene_datasets, including mp3d subfolder
 # ---------------------------------------
 
 IGNORE_DIRS = {"scene_datasets"}
 # ---------------------------------------
+
 
 def smart_copy_merge(src, dst):
     if not os.path.exists(dst):
@@ -30,6 +31,7 @@ def smart_copy_merge(src, dst):
                 print(f"[Copy] {src_path} -> {dst_path}")
             except Exception as e:
                 print(f"[Error] Failed to copy {src_path}: {e}")
+
 
 def force_create_symlink(source, target):
     os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -58,6 +60,7 @@ def force_create_symlink(source, target):
         print(f"[External Link] Success: {target} -> {source}")
     except Exception as e:
         print(f"[Error] Failed to create symlink: {e}")
+
 
 if __name__ == "__main__":
     print("--- Starting Deployment ---")

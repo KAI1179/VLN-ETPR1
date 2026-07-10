@@ -95,16 +95,12 @@ class RLTrainer(PriorGTRLTrainer):
     def _eval_prefilled_episode_stats(self):
         return {
             episode_id: _llm_generation_failure_metric()
-            for episode_id in getattr(
-                self, "_llm_eval_missing_cache_episode_ids", []
-            )
+            for episode_id in getattr(self, "_llm_eval_missing_cache_episode_ids", [])
         }
 
     def _augment_eval_aggregated_states(self, aggregated_states, total):
         cache_missing_rate = aggregated_states.get("llm_cache_missing", 0.0)
-        generation_failure_rate = aggregated_states.get(
-            "llm_generation_failure", 0.0
-        )
+        generation_failure_rate = aggregated_states.get("llm_generation_failure", 0.0)
         aggregated_states["llm_cache_missing_count"] = int(
             round(cache_missing_rate * total)
         )

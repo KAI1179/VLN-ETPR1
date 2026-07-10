@@ -43,8 +43,7 @@ def _first_touched_level_points(
             if _is_position_in_level(position, level.range_y)
         ]
         level_points = [
-            _local_point(position, origin)
-            for _, position in indexed_positions
+            _local_point(position, origin) for _, position in indexed_positions
         ]
         if level_points:
             touched_levels.append(

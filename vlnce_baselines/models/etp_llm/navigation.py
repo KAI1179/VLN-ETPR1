@@ -175,9 +175,7 @@ def available_llm_navigation_episode_ids(
             f"skipped_missing={report.missing_count}"
         )
     if not report.available_episode_ids:
-        raise FileNotFoundError(
-            f"No LLM-Navigation caches found for {dataset}/{split}"
-        )
+        raise FileNotFoundError(f"No LLM-Navigation caches found for {dataset}/{split}")
     return report.available_episode_ids
 
 

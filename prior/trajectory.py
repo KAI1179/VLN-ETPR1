@@ -17,9 +17,7 @@ class InsufficientTrajectoryPointsError(ValueError):
     """Raised when a selected-level trajectory cannot define keypoints."""
 
 
-def _segment_direction(
-    start: Point2D, end: Point2D
-) -> Optional[Point2D]:
+def _segment_direction(start: Point2D, end: Point2D) -> Optional[Point2D]:
     dx = float(end[0]) - float(start[0])
     dz = float(end[1]) - float(start[1])
     norm = hypot(dx, dz)
@@ -69,6 +67,4 @@ def select_trajectory_keypoints(
     if final_point != keypoints[-1]:
         keypoints.append(final_point)
 
-    return keypoints + [(0.0, 0.0)] * (
-        TRAJECTORY_KEYPOINT_COUNT - len(keypoints)
-    )
+    return keypoints + [(0.0, 0.0)] * (TRAJECTORY_KEYPOINT_COUNT - len(keypoints))

@@ -228,10 +228,10 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
     monkeypatch.setattr(
         train_llm_boxes,
         "cognitive_map_boxes_cache_path",
-        lambda scene_id, cache_id, namespace: cache_calls.append(
-            (scene_id, cache_id, namespace)
-        )
-        or Path(f"/cache/{cache_id}.npz"),
+        lambda scene_id, cache_id, namespace: (
+            cache_calls.append((scene_id, cache_id, namespace))
+            or Path(f"/cache/{cache_id}.npz")
+        ),
     )
     monkeypatch.setattr(
         train_llm_boxes.RelevantSemanticBoxes,
@@ -400,10 +400,7 @@ class _ChatTokenizer:
             rows.append([ord(char) for char in text])
         max_len = max(len(row) for row in rows)
         padded = [row + [self.pad_token_id] * (max_len - len(row)) for row in rows]
-        masks = [
-            [1] * len(row) + [0] * (max_len - len(row))
-            for row in rows
-        ]
+        masks = [[1] * len(row) + [0] * (max_len - len(row)) for row in rows]
         return _BatchEncoding({"input_ids": padded, "attention_mask": masks})
 
     def encode(self, text, add_special_tokens=False):
@@ -411,7 +408,10 @@ class _ChatTokenizer:
 
     def batch_decode(self, sequences, skip_special_tokens=True):
         assert skip_special_tokens is True
-        return ["".join(chr(token) for token in sequence if token != self.pad_token_id) for sequence in sequences]
+        return [
+            "".join(chr(token) for token in sequence if token != self.pad_token_id)
+            for sequence in sequences
+        ]
 
 
 class _TruncatingChatTokenizer(_ChatTokenizer):
@@ -436,14 +436,8 @@ class _EosAsPadChatTokenizer(_ChatTokenizer):
         self.calls.append((list(texts), kwargs))
         rows = [[ord(char) for char in text] + [self.eos_token_id] for text in texts]
         max_len = max(len(row) for row in rows)
-        padded = [
-            row + [self.pad_token_id] * (max_len - len(row))
-            for row in rows
-        ]
-        masks = [
-            [1] * len(row) + [0] * (max_len - len(row))
-            for row in rows
-        ]
+        padded = [row + [self.pad_token_id] * (max_len - len(row)) for row in rows]
+        masks = [[1] * len(row) + [0] * (max_len - len(row)) for row in rows]
         return _BatchEncoding({"input_ids": padded, "attention_mask": masks})
 
     def encode(self, text, add_special_tokens=False):
@@ -483,12 +477,14 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
         ],
         False,
     )
-    assert collated["labels"][0][: collated["prompt_lengths"][0]] == [
-        -100
-    ] * collated["prompt_lengths"][0]
-    assert collated["labels"][0][collated["prompt_lengths"][0] :] == collated[
-        "input_ids"
-    ][0][collated["prompt_lengths"][0] :]
+    assert (
+        collated["labels"][0][: collated["prompt_lengths"][0]]
+        == [-100] * collated["prompt_lengths"][0]
+    )
+    assert (
+        collated["labels"][0][collated["prompt_lengths"][0] :]
+        == collated["input_ids"][0][collated["prompt_lengths"][0] :]
+    )
     assert collated["example_ids"] == ["ex"]
 
 
@@ -509,12 +505,12 @@ def test_collate_supervises_eos_when_eos_is_also_pad_token():
     short_labels = collated["labels"][0]
     short_mask = collated["attention_mask"][0]
     supervised = [
-        label for label, mask in zip(short_labels, short_mask)
+        label
+        for label, mask in zip(short_labels, short_mask)
         if label != -100 and mask == 1
     ]
     padding_labels = [
-        label for label, mask in zip(short_labels, short_mask)
-        if mask == 0
+        label for label, mask in zip(short_labels, short_mask) if mask == 0
     ]
     assert tokenizer.eos_token_id in supervised
     assert padding_labels
@@ -526,7 +522,13 @@ def test_collate_rejects_batches_with_no_supervised_target_tokens():
 
     with pytest.raises(ValueError, match="No supervised target tokens remain"):
         train_llm_boxes.collate_llm_boxes_batch(
-            [{"input_text": "input words", "target_text": "target", "example_id": "ex"}],
+            [
+                {
+                    "input_text": "input words",
+                    "target_text": "target",
+                    "example_id": "ex",
+                }
+            ],
             tokenizer,
             system_prompt="many prompt tokens before the target",
             max_input_length=1,
@@ -699,10 +701,7 @@ class _PromptInspectingEvalModel:
             "".join(chr(token) for token in row if token != 0)
             for row in kwargs["input_ids"]
         )
-        return [
-            [*row, ord("o"), ord("b"), ord("j")]
-            for row in kwargs["input_ids"]
-        ]
+        return [[*row, ord("o"), ord("b"), ord("j")] for row in kwargs["input_ids"]]
 
 
 def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
@@ -792,7 +791,9 @@ def test_evaluate_model_does_not_move_device_mapped_model(tmp_path):
     )
 
 
-def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, monkeypatch):
+def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
+    tmp_path, monkeypatch
+):
     def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
         return {
             "category_f1": float(len(pred_spec.objects)),
@@ -830,9 +831,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
 
     artifact_dir = tmp_path / "artifacts"
     valid_artifact = (artifact_dir / "valid_example.txt").read_text()
-    invalid_schema_artifact = (
-        artifact_dir / "invalid_schema_example.txt"
-    ).read_text()
+    invalid_schema_artifact = (artifact_dir / "invalid_schema_example.txt").read_text()
     malformed_artifact = (artifact_dir / "malformed_example.txt").read_text()
     array_artifact = (artifact_dir / "json_array_example.txt").read_text()
     string_artifact = (artifact_dir / "json_string_example.txt").read_text()
@@ -842,12 +841,9 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(tmp_path, 
     assert invalid_schema_artifact.startswith("keypoints ")
     assert "# error: unknown object category" in invalid_schema_artifact
     assert malformed_artifact == (
-        "not parseable\n\n"
-        "# error: entity[0] must start with keypoints, obj, or reg\n"
+        "not parseable\n\n# error: entity[0] must start with keypoints, obj, or reg\n"
     )
-    assert array_artifact == (
-        "none\n\n# error: trajectory keypoints are required\n"
-    )
+    assert array_artifact == ("none\n\n# error: trajectory keypoints are required\n")
     assert string_artifact.startswith("reg circulation")
     assert "# error: region.max must be greater than min" in string_artifact
 
@@ -947,9 +943,7 @@ def test_truncate_llm_boxes_text_preserves_complete_entities():
         max_tokens=19,
     )
 
-    assert truncated == (
-        "keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0"
-    )
+    assert truncated == ("keypoints 0 0 1 1 0 0 0 0 0 0 ; obj chair 1 2 0.5 0.5 0")
     assert parse_llm_boxes_text(truncated) == LLMBoxesSpec(
         objects=(ObjectBoxSpec("chair", (1.0, 2.0), (0.5, 0.5), 0.0),),
         regions=(),
@@ -989,6 +983,7 @@ def test_llm_text_stats_report_lengths_and_truncation():
         "input_truncation_rate": 0.5,
         "target_truncation_rate": 0.5,
     }
+
 
 def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):
     calls = []
@@ -1038,7 +1033,15 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
     assert metrics == {"examples": 1.0}
     assert calls == [
         ("load_model", LLAMA_3_1_8B_INSTRUCT_MODEL, "auto"),
-        ("load", "R2R", ["val_seen", "val_unseen"], 1, True, True, "gt.bbox.r1p5.path5.v1"),
+        (
+            "load",
+            "R2R",
+            ["val_seen", "val_unseen"],
+            1,
+            True,
+            True,
+            "gt.bbox.r1p5.path5.v1",
+        ),
         ("eval", str(tmp_path), ["example"]),
     ]
     assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
@@ -1127,7 +1130,9 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
         "_load_causal_lm_model_and_tokenizer",
         fake_load_model,
     )
-    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: []
+    )
     monkeypatch.setattr(train_llm_boxes, "evaluate_model", lambda *args, **kwargs: {})
 
     train_llm_boxes.main(

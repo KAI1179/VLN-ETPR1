@@ -31,7 +31,9 @@ def test_llm_navigation_policy_and_trainers_register(monkeypatch):
     assert baseline_registry.get_trainer("GRPO-ETP-LLM") is not None
 
 
-def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(tmp_path):
+def test_llm_navigation_cache_paths_are_namespaced_by_model_dataset_split_scene(
+    tmp_path,
+):
     from vlnce_baselines.models.etp_llm.navigation import (
         llm_navigation_cognitive_map_boxes_path,
         llm_navigation_cognitive_map_raster_path,
@@ -323,9 +325,7 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
 
     from vlnce_baselines import ss_trainer_ETP_LLM
 
-    trainer = ss_trainer_ETP_LLM.RLTrainer.__new__(
-        ss_trainer_ETP_LLM.RLTrainer
-    )
+    trainer = ss_trainer_ETP_LLM.RLTrainer.__new__(ss_trainer_ETP_LLM.RLTrainer)
     trainer.config = SimpleNamespace(
         MODEL=SimpleNamespace(
             task_type="R2R",
@@ -334,9 +334,7 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
                 llm_cache_model_key="test-model",
             ),
         ),
-        TASK_CONFIG=SimpleNamespace(
-            DATASET=SimpleNamespace(SPLIT="val_unseen")
-        ),
+        TASK_CONFIG=SimpleNamespace(DATASET=SimpleNamespace(SPLIT="val_unseen")),
     )
 
     monkeypatch.setattr(

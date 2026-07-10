@@ -167,10 +167,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
             raise FileNotFoundError(checkpoint_path)
-        if (
-            not getattr(self, "use_imagined", False)
-            or self.map_predictor is None
-        ):
+        if not getattr(self, "use_imagined", False) or self.map_predictor is None:
             raise ValueError("--map_predictor_checkpoint requires --use_imagined")
         map_predictor = self.map_predictor
 

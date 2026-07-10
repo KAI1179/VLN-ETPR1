@@ -63,9 +63,7 @@ def test_serialize_grid_target_orders_nonzero_binary_cells() -> None:
     assert target == {
         "predicted_regions": ["living/social space"],
         "predicted_objects": ["void", "door"],
-        "regions": {
-            "living/social space": {"cells": [[2, 3]], "mentioned": True}
-        },
+        "regions": {"living/social space": {"cells": [[2, 3]], "mentioned": True}},
         "objects": {
             "void": {"cells": [[1, 2], [3, 2]], "mentioned": False},
             "door": {"cells": [[1, 0]], "mentioned": True},
@@ -92,9 +90,7 @@ def test_serialize_grid_target_downsamples_by_max_pooling() -> None:
         "predicted_regions": [],
         "predicted_objects": ["void"],
         "regions": {},
-        "objects": {
-            "void": {"cells": [[0, 0], [1, 1]], "mentioned": False}
-        },
+        "objects": {"void": {"cells": [[0, 0], [1, 1]], "mentioned": False}},
         "direction_vectors": [[0.0, 0.0]] * 5,
     }
 
@@ -109,7 +105,9 @@ def test_serialize_grid_target_rejects_bad_direction_vector_shape() -> None:
         serialize_grid_target(grid, direction_vectors=np.zeros((2, 2)))
 
 
-def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path) -> None:
+def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(
+    tmp_path: Path,
+) -> None:
     grid = np.zeros((37, 4, 4), dtype=np.float32)
     grid[0, 0, 0] = 1.0
     grid[28, 3, 3] = 0.25
@@ -131,9 +129,7 @@ def test_analyze_grid_sample_reports_stats_with_whitespace_tokens(tmp_path: Path
     assert json.loads(sample["target_text"]) == {
         "predicted_regions": ["living/social space"],
         "predicted_objects": ["void"],
-        "regions": {
-            "living/social space": {"cells": [[3, 3]], "mentioned": False}
-        },
+        "regions": {"living/social space": {"cells": [[3, 3]], "mentioned": False}},
         "objects": {"void": {"cells": [[0, 0]], "mentioned": False}},
         "direction_vectors": [
             [1.0, 0.0],

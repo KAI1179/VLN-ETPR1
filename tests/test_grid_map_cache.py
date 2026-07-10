@@ -192,9 +192,7 @@ def test_cached_cognitive_map_to_tensors_loads_direction5_metadata(
     assert "trajectory_keypoints" not in tensors
     assert torch.equal(
         tensors["map_trajectory_metadata"],
-        torch.tensor(
-            [[0.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
-        ),
+        torch.tensor([[0.0, -1.0], [-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]),
     )
     assert torch.equal(tensors["start_position"], torch.tensor([4.0, 5.0]))
 

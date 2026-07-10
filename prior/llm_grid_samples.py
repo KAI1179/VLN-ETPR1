@@ -77,8 +77,7 @@ def serialize_grid_target(
     direction_array = np.asarray(direction_vectors, dtype=np.float32)
     if direction_array.shape != (5, 2):
         raise ValueError(
-            "direction_vectors must have shape "
-            f"(5, 2), got {direction_array.shape}"
+            f"direction_vectors must have shape (5, 2), got {direction_array.shape}"
         )
     mentioned_objects = mentioned_objects or set()
     mentioned_regions = mentioned_regions or set()
@@ -89,10 +88,7 @@ def serialize_grid_target(
         row_cols = np.argwhere(sampled[category] > 0)
         if len(row_cols) == 0:
             continue
-        cells = [
-            _cell_record(int(row), int(col))
-            for row, col in row_cols
-        ]
+        cells = [_cell_record(int(row), int(col)) for row, col in row_cols]
         if category < OBJECT_CATEGORIES:
             name = MAPPED_OBJECT_NAMES[category]
             objects[name] = {
@@ -144,7 +140,9 @@ def _load_token_counter(tokenizer_path: Optional[Path]) -> TokenCounter:
 
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(tokenizer_path), local_files_only=True
+    )
     return lambda text: len(tokenizer.encode(text, add_special_tokens=False))
 
 
@@ -202,10 +200,7 @@ def _summarize(
             "max": max(values) if values else 0,
             "mean": mean(values) if values else 0.0,
         }
-    over_budget = [
-        row for row in rows
-        if row["stats"]["token_count"] > max_new_tokens
-    ]
+    over_budget = [row for row in rows if row["stats"]["token_count"] > max_new_tokens]
     return {
         "sample_count": len(rows),
         "max_new_tokens": max_new_tokens,

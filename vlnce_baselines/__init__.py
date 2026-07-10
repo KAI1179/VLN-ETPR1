@@ -7,9 +7,7 @@ from vlnce_baselines import GRPO_trainer_ETP_Imagined
 from vlnce_baselines import ss_trainer_ETP_LLM
 from vlnce_baselines import GRPO_trainer_ETP_LLM
 from vlnce_baselines.common import environments
-from vlnce_baselines.models import (
-    R1Policy
-)
+from vlnce_baselines.models import R1Policy
 from vlnce_baselines.models.etp_prior_gt import policy as etp_prior_gt_policy
 from vlnce_baselines.models.etp_imagined import policy as etp_imagined_policy
 from vlnce_baselines.models.etp_llm import policy as etp_llm_policy

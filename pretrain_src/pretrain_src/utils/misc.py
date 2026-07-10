@@ -16,13 +16,15 @@ def set_random_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+
 def set_dropout(model, drop_p):
     for name, module in model.named_modules():
         # we might want to tune dropout for smaller dataset
         if isinstance(module, torch.nn.Dropout):
             if module.p != drop_p:
                 module.p = drop_p
-                LOGGER.info(f'{name} set to {drop_p}')
+                LOGGER.info(f"{name} set to {drop_p}")
+
 
 def set_cuda(opts) -> Tuple[bool, int, torch.device]:
     """
@@ -56,7 +58,7 @@ def wrap_model(
 
     if local_rank != -1:
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
-        # At the time of DDP wrapping, parameters and buffers (i.e., model.state_dict()) 
+        # At the time of DDP wrapping, parameters and buffers (i.e., model.state_dict())
         # on rank0 are broadcasted to all other ranks.
     elif torch.cuda.device_count() > 1:
         LOGGER.info("Using data parallel")
@@ -66,10 +68,10 @@ def wrap_model(
 
 
 class NoOp(object):
-    """ useful for distributed training No-Ops """
+    """useful for distributed training No-Ops"""
+
     def __getattr__(self, name):
         return self.noop
 
     def noop(self, *args, **kwargs):
         return
-

@@ -16,9 +16,11 @@ def test_vlnbert_init_passes_map_fusion_mode_to_visual_config(monkeypatch):
         vilmodel_cmt.GlocalTextPathNavCMT,
         "from_pretrained",
         classmethod(
-            lambda cls, pretrained_model_name_or_path, config, state_dict: captured.setdefault(
-                "config",
-                config,
+            lambda cls, pretrained_model_name_or_path, config, state_dict: (
+                captured.setdefault(
+                    "config",
+                    config,
+                )
             )
         ),
     )

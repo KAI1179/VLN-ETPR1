@@ -71,7 +71,7 @@ class VLNCEDatasetV1(Dataset):
     def get_scenes_to_load(cls, config: Config) -> List[str]:
         r"""Return a sorted list of scenes"""
         assert cls.check_config_paths_exist(config)
-        dataset = cls(config) 
+        dataset = cls(config)
         return sorted(
             {cls._scene_from_episode(episode) for episode in dataset.episodes}
         )
@@ -96,16 +96,16 @@ class VLNCEDatasetV1(Dataset):
 
         if config.EPISODES_ALLOWED is not None:
             ep_ids_before = {ep.episode_id for ep in self.episodes}
-            ep_ids_to_purge = ep_ids_before - set([ int(id) for id in config.EPISODES_ALLOWED])
+            ep_ids_to_purge = ep_ids_before - set(
+                [int(id) for id in config.EPISODES_ALLOWED]
+            )
             self.episodes = [
                 episode
                 for episode in self.episodes
                 if episode.episode_id not in ep_ids_to_purge
             ]
 
-    def from_json(
-        self, json_str: str, scenes_dir: Optional[str] = None
-    ) -> None:
+    def from_json(self, json_str: str, scenes_dir: Optional[str] = None) -> None:
 
         deserialized = json.loads(json_str)
         self.instruction_vocab = VocabDict(
@@ -130,6 +130,7 @@ class VLNCEDatasetV1(Dataset):
             self.episodes.append(episode)
 
         random.shuffle(self.episodes)
+
 
 @registry.register_dataset(name="VLN-CE-v2")
 class VLNCEDatasetV2(Dataset):
@@ -167,7 +168,9 @@ class VLNCEDatasetV2(Dataset):
         if config is None:
             return
 
-        dataset_filename = config.DATA_PATH.format(split=config.SPLIT, suffix=config.SUFFIX)
+        dataset_filename = config.DATA_PATH.format(
+            split=config.SPLIT, suffix=config.SUFFIX
+        )
         with gzip.open(dataset_filename, "rt") as f:
             self.from_json(f.read(), scenes_dir=config.SCENES_DIR)
 
@@ -181,16 +184,16 @@ class VLNCEDatasetV2(Dataset):
 
         if config.EPISODES_ALLOWED is not None:
             ep_ids_before = {ep.episode_id for ep in self.episodes}
-            ep_ids_to_purge = ep_ids_before - set([ int(id) for id in config.EPISODES_ALLOWED])
+            ep_ids_to_purge = ep_ids_before - set(
+                [int(id) for id in config.EPISODES_ALLOWED]
+            )
             self.episodes = [
                 episode
                 for episode in self.episodes
                 if episode.episode_id not in ep_ids_to_purge
             ]
 
-    def from_json(
-        self, json_str: str, scenes_dir: Optional[str] = None
-    ) -> None:
+    def from_json(self, json_str: str, scenes_dir: Optional[str] = None) -> None:
 
         deserialized = json.loads(json_str)
 
@@ -212,6 +215,7 @@ class VLNCEDatasetV2(Dataset):
             self.episodes.append(episode)
 
         random.shuffle(self.episodes)
+
 
 @registry.register_dataset(name="RxR-VLN-CE-v1")
 class RxRVLNCEDatasetV1(Dataset):
@@ -252,9 +256,7 @@ class RxRVLNCEDatasetV1(Dataset):
     @classmethod
     def check_config_paths_exist(cls, config: Config) -> bool:
         return all(
-            os.path.exists(
-                config.DATA_PATH.format(split=config.SPLIT, role=role)
-            )
+            os.path.exists(config.DATA_PATH.format(split=config.SPLIT, role=role))
             for role in cls.extract_roles_from_config(config)
         ) and os.path.exists(config.SCENES_DIR)
 
@@ -296,9 +298,7 @@ class RxRVLNCEDatasetV1(Dataset):
                 if episode.episode_id not in ep_ids_to_purge
             ]
 
-    def from_json(
-        self, json_str: str, scenes_dir: Optional[str] = None
-    ) -> None:
+    def from_json(self, json_str: str, scenes_dir: Optional[str] = None) -> None:
 
         deserialized = json.loads(json_str)
 
@@ -313,14 +313,13 @@ class RxRVLNCEDatasetV1(Dataset):
 
                 episode.scene_id = os.path.join(scenes_dir, episode.scene_id)
 
-            episode.instruction = ExtendedInstructionData(
-                **episode.instruction
-            )
+            episode.instruction = ExtendedInstructionData(**episode.instruction)
             episode.instruction.split = self.config.SPLIT
             if episode.goals is not None:
                 for g_index, goal in enumerate(episode.goals):
                     episode.goals[g_index] = NavigationGoal(**goal)
             self.episodes.append(episode)
+
 
 @registry.register_dataset(name="RxR-VLN-CE-v2")
 class RxRVLNCEDatasetV2(Dataset):
@@ -362,7 +361,9 @@ class RxRVLNCEDatasetV2(Dataset):
     def check_config_paths_exist(cls, config: Config) -> bool:
         return all(
             os.path.exists(
-                config.DATA_PATH.format(split=config.SPLIT, role=role, suffix=config.SUFFIX)
+                config.DATA_PATH.format(
+                    split=config.SPLIT, role=role, suffix=config.SUFFIX
+                )
             )
             for role in cls.extract_roles_from_config(config)
         ) and os.path.exists(config.SCENES_DIR)
@@ -376,7 +377,10 @@ class RxRVLNCEDatasetV2(Dataset):
 
         for role in self.extract_roles_from_config(config):
             with gzip.open(
-                config.DATA_PATH.format(split=config.SPLIT, role=role, suffix=config.SUFFIX), "rt"
+                config.DATA_PATH.format(
+                    split=config.SPLIT, role=role, suffix=config.SUFFIX
+                ),
+                "rt",
             ) as f:
                 self.from_json(f.read(), scenes_dir=config.SCENES_DIR)
 
@@ -405,9 +409,7 @@ class RxRVLNCEDatasetV2(Dataset):
                 if episode.episode_id not in ep_ids_to_purge
             ]
 
-    def from_json(
-        self, json_str: str, scenes_dir: Optional[str] = None
-    ) -> None:
+    def from_json(self, json_str: str, scenes_dir: Optional[str] = None) -> None:
 
         deserialized = json.loads(json_str)
 
@@ -422,9 +424,7 @@ class RxRVLNCEDatasetV2(Dataset):
 
                 episode.scene_id = os.path.join(scenes_dir, episode.scene_id)
 
-            episode.instruction = ExtendedInstructionData(
-                **episode.instruction
-            )
+            episode.instruction = ExtendedInstructionData(**episode.instruction)
             episode.instruction.split = self.config.SPLIT
             if episode.goals is not None:
                 for g_index, goal in enumerate(episode.goals):

@@ -9,13 +9,23 @@ from torch import nn
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss, MSELoss
 
-from .pytorch_transformer.modeling_bert import (BertEmbeddings,
-        BertSelfAttention, BertAttention, BertEncoder, BertLayer,
-        BertSelfOutput, BertIntermediate, BertOutput,
-        BertPooler, BertLayerNorm, BertPreTrainedModel,
-		BertPredictionHeadTransform)
+from .pytorch_transformer.modeling_bert import (
+    BertEmbeddings,
+    BertSelfAttention,
+    BertAttention,
+    BertEncoder,
+    BertLayer,
+    BertSelfOutput,
+    BertIntermediate,
+    BertOutput,
+    BertPooler,
+    BertLayerNorm,
+    BertPreTrainedModel,
+    BertPredictionHeadTransform,
+)
 
 logger = logging.getLogger(__name__)
+
 
 class VisPosEmbeddings(nn.Module):
     def __init__(self, config):
@@ -27,7 +37,9 @@ class VisPosEmbeddings(nn.Module):
     def forward(self, input_vis_feats, position_ids=None):
         seq_length = input_vis_feats.size(1)
         if position_ids is None:
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=input_vis_feats.device)
+            position_ids = torch.arange(
+                seq_length, dtype=torch.long, device=input_vis_feats.device
+            )
             position_ids = position_ids.unsqueeze(0).repeat(input_vis_feats.size(0), 1)
 
         vis_embeddings = input_vis_feats
@@ -38,16 +50,19 @@ class VisPosEmbeddings(nn.Module):
         # embeddings = self.dropout(embeddings)
         return embeddings
 
+
 class CaptionBertSelfAttention(BertSelfAttention):
     """
     Modified from BertSelfAttention to add support for output_hidden_states.
     """
+
     def __init__(self, config):
         super(CaptionBertSelfAttention, self).__init__(config)
         self.config = config
 
-    def forward(self, hidden_states, attention_mask, head_mask=None,
-            history_state=None):
+    def forward(
+        self, hidden_states, attention_mask, head_mask=None, history_state=None
+    ):
         if history_state is not None:
             x_states = torch.cat([history_state, hidden_states], dim=1)
             mixed_query_layer = self.query(hidden_states)
@@ -58,7 +73,7 @@ class CaptionBertSelfAttention(BertSelfAttention):
             mixed_key_layer = self.key(hidden_states)
             mixed_value_layer = self.value(hidden_states)
 
-        ''' language feature only provide Keys and Values '''
+        """ language feature only provide Keys and Values """
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
         value_layer = self.transpose_for_scores(mixed_value_layer)
@@ -94,21 +109,23 @@ class CaptionBertAttention(BertAttention):
     """
     Modified from BertAttention to add support for output_hidden_states.
     """
+
     def __init__(self, config):
         super(CaptionBertAttention, self).__init__(config)
         self.self = CaptionBertSelfAttention(config)
         self.output = BertSelfOutput(config)
         self.config = config
 
-    def forward(self, input_tensor, attention_mask, head_mask=None,
-            history_state=None):
-        ''' transformer processing '''
+    def forward(self, input_tensor, attention_mask, head_mask=None, history_state=None):
+        """transformer processing"""
         self_outputs = self.self(input_tensor, attention_mask, head_mask, history_state)
 
-        ''' feed-forward network with residule '''
+        """ feed-forward network with residule """
         attention_output = self.output(self_outputs[0], input_tensor)
 
-        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
+        outputs = (attention_output,) + self_outputs[
+            1:
+        ]  # add attentions if we output them
 
         return outputs
 
@@ -117,19 +134,22 @@ class CaptionBertLayer(BertLayer):
     """
     Modified from BertLayer to add support for output_hidden_states.
     """
+
     def __init__(self, config):
         super(CaptionBertLayer, self).__init__(config)
         self.attention = CaptionBertAttention(config)
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def forward(self, hidden_states, attention_mask, head_mask=None,
-                history_state=None):
+    def forward(
+        self, hidden_states, attention_mask, head_mask=None, history_state=None
+    ):
 
-        attention_outputs = self.attention(hidden_states, attention_mask,
-                head_mask, history_state)
+        attention_outputs = self.attention(
+            hidden_states, attention_mask, head_mask, history_state
+        )
 
-        ''' feed-forward network with residule '''
+        """ feed-forward network with residule """
         attention_output = attention_outputs[0]
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
@@ -142,23 +162,29 @@ class CaptionBertEncoder(BertEncoder):
     """
     Modified from BertEncoder to add support for output_hidden_states.
     """
+
     def __init__(self, config):
         super(CaptionBertEncoder, self).__init__(config)
         self.output_attentions = config.output_attentions
         self.output_hidden_states = config.output_hidden_states
         # 12 Bert layers
-        self.layer = nn.ModuleList([CaptionBertLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList(
+            [CaptionBertLayer(config) for _ in range(config.num_hidden_layers)]
+        )
         self.config = config
 
-    def forward(self, hidden_states, attention_mask, head_mask=None,
-                encoder_history_states=None):
+    def forward(
+        self, hidden_states, attention_mask, head_mask=None, encoder_history_states=None
+    ):
 
         for i, layer_module in enumerate(self.layer):
-            history_state = None if encoder_history_states is None else encoder_history_states[i] # default None
+            history_state = (
+                None if encoder_history_states is None else encoder_history_states[i]
+            )  # default None
 
             layer_outputs = layer_module(
-                    hidden_states, attention_mask, head_mask[i],
-                    history_state)
+                hidden_states, attention_mask, head_mask[i], history_state
+            )
             hidden_states = layer_outputs[0]
 
             if i == self.config.num_hidden_layers - 1:
@@ -170,8 +196,8 @@ class CaptionBertEncoder(BertEncoder):
 
 
 class BertImgModel(nn.Module):
-    """ Expand from BertModel to handle image region features as input
-    """
+    """Expand from BertModel to handle image region features as input"""
+
     def __init__(self, config):
         super(BertImgModel, self).__init__()
         self.config = config
@@ -180,17 +206,20 @@ class BertImgModel(nn.Module):
 
     def forward(self, input_x, attention_mask=None):
 
-        extended_attention_mask = attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+        extended_attention_mask = attention_mask.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
         head_mask = [None] * self.config.num_hidden_layers
 
-        ''' positional encodings '''
+        """ positional encodings """
         # input_x = self.vis_pos_embeds(input_x)
 
-        ''' pass to the Transformer layers '''
-        encoder_outputs = self.encoder(input_x,
-                extended_attention_mask, head_mask=head_mask)
+        """ pass to the Transformer layers """
+        encoder_outputs = self.encoder(
+            input_x, extended_attention_mask, head_mask=head_mask
+        )
 
         outputs = (encoder_outputs[0],) + encoder_outputs[1:]
 
@@ -201,6 +230,7 @@ class WaypointBert(nn.Module):
     """
     Modified from BertForMultipleChoice to support oscar training.
     """
+
     def __init__(self, config=None):
         super(WaypointBert, self).__init__()
         self.config = config

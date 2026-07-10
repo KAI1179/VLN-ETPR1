@@ -218,8 +218,12 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
-        cognitive_map_metadata_schema=getattr(opts, "cognitive_map_metadata_schema", "path5"),
+        cognitive_map_namespace=getattr(
+            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
+        ),
+        cognitive_map_metadata_schema=getattr(
+            opts, "cognitive_map_metadata_schema", "path5"
+        ),
         random_rotation_augmentation=False,
     )
     val_r2r_nav_db = R2RTextPathData(
@@ -238,8 +242,12 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
-        cognitive_map_metadata_schema=getattr(opts, "cognitive_map_metadata_schema", "path5"),
+        cognitive_map_namespace=getattr(
+            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
+        ),
+        cognitive_map_metadata_schema=getattr(
+            opts, "cognitive_map_metadata_schema", "path5"
+        ),
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files,
@@ -257,8 +265,12 @@ def main(opts):
         use_prior_gt=getattr(opts, "use_prior_gt", False)
         or getattr(opts, "use_imagined", False),
         use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"),
-        cognitive_map_metadata_schema=getattr(opts, "cognitive_map_metadata_schema", "path5"),
+        cognitive_map_namespace=getattr(
+            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
+        ),
+        cognitive_map_metadata_schema=getattr(
+            opts, "cognitive_map_metadata_schema", "path5"
+        ),
     )
 
     train_dataloaders = create_dataloaders(

@@ -6,8 +6,7 @@ def test_shared_model_paths_are_repo_relative_strings():
 
     assert model_paths.CLIP_VIT_B32_MODEL == "data/models/ViT-B-32.pt"
     assert (
-        model_paths.LLAMA_3_1_8B_INSTRUCT_MODEL
-        == "data/models/Llama-3.1-8B-Instruct"
+        model_paths.LLAMA_3_1_8B_INSTRUCT_MODEL == "data/models/Llama-3.1-8B-Instruct"
     )
     assert Path(model_paths.CLIP_VIT_B32_MODEL).is_file()
 

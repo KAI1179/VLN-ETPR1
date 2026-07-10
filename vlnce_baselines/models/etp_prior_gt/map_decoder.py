@@ -112,7 +112,9 @@ class HungarianBoxMatcher(nn.Module):
             labels = _target_labels(target).to(outputs.pred_logits.device)
             boxes = _target_boxes(target).to(outputs.pred_boxes.device)
             if labels.numel() == 0:
-                empty = torch.empty(0, dtype=torch.int64, device=outputs.pred_boxes.device)
+                empty = torch.empty(
+                    0, dtype=torch.int64, device=outputs.pred_boxes.device
+                )
                 indices.append((empty, empty))
                 continue
             cost_class = -probabilities[batch_idx][:, labels]
@@ -175,8 +177,7 @@ class CognitiveMapSetCriterion(nn.Module):
                 f"got {len(targets)} and {outputs.pred_logits.shape[0]}"
             )
         targets = [
-            _target_on_device(target, outputs.pred_logits.device)
-            for target in targets
+            _target_on_device(target, outputs.pred_logits.device) for target in targets
         ]
         indices = self.matcher(outputs, targets)
         target_classes = torch.full(
@@ -223,7 +224,9 @@ class CognitiveMapSetCriterion(nn.Module):
                 )
             )
         ).sum() / num_boxes
-        return loss_ce + self.bbox_loss_coef * loss_bbox + self.giou_loss_coef * loss_giou
+        return (
+            loss_ce + self.bbox_loss_coef * loss_bbox + self.giou_loss_coef * loss_giou
+        )
 
 
 def box_cxczwh_to_xzxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -277,7 +280,9 @@ def _default_attention_heads(hidden_size: int) -> int:
 def _source_permutation_indices(
     indices: Sequence[tuple[torch.Tensor, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    non_empty = [(batch_idx, src) for batch_idx, (src, _) in enumerate(indices) if src.numel()]
+    non_empty = [
+        (batch_idx, src) for batch_idx, (src, _) in enumerate(indices) if src.numel()
+    ]
     if not non_empty:
         device = indices[0][0].device if indices else torch.device("cpu")
         empty = torch.empty(0, dtype=torch.int64, device=device)

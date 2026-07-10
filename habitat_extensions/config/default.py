@@ -10,17 +10,17 @@ _C.defrost()
 # CUSTOM ACTION: HIGHTOLOWINFERENCE ACTION
 # ----------------------------------------------------------------------------
 _C.TASK.ACTIONS.HIGHTOLOWINFERENCE = CN()
-_C.TASK.ACTIONS.HIGHTOLOWINFERENCE.TYPE = 'MoveHighToLowActionInference'
+_C.TASK.ACTIONS.HIGHTOLOWINFERENCE.TYPE = "MoveHighToLowActionInference"
 # ----------------------------------------------------------------------------
 # CUSTOM ACTION: HIGHTOLOWEVAL ACTION
 # ----------------------------------------------------------------------------
 _C.TASK.ACTIONS.HIGHTOLOWEVAL = CN()
-_C.TASK.ACTIONS.HIGHTOLOWEVAL.TYPE = 'MoveHighToLowActionEval'
+_C.TASK.ACTIONS.HIGHTOLOWEVAL.TYPE = "MoveHighToLowActionEval"
 # ----------------------------------------------------------------------------
 # CUSTOM ACTION: HIGHTOLOW ACTION
 # ----------------------------------------------------------------------------
 _C.TASK.ACTIONS.HIGHTOLOW = CN()
-_C.TASK.ACTIONS.HIGHTOLOW.TYPE = 'MoveHighToLowAction'
+_C.TASK.ACTIONS.HIGHTOLOW.TYPE = "MoveHighToLowAction"
 # ----------------------------------------------------------------------------
 # GPS SENSOR
 # ----------------------------------------------------------------------------
@@ -101,13 +101,13 @@ _C.TASK.STEPS_TAKEN.TYPE = "StepsTaken"
 # POSITION MEASUREMENT For faster eval
 # ----------------------------------------------------------------------------
 _C.TASK.POSITION = CN()
-_C.TASK.POSITION.TYPE = 'Position'
+_C.TASK.POSITION.TYPE = "Position"
 # ----------------------------------------------------------------------------
 _C.TASK.POSITION_TRAIN = CN()
-_C.TASK.POSITION_TRAIN.TYPE = 'PositionTrain'
+_C.TASK.POSITION_TRAIN.TYPE = "PositionTrain"
 # -----------------------------------------------------------------------------
 _C.TASK.POSITION_INFER = CN()
-_C.TASK.POSITION_INFER.TYPE = 'PositionInfer'
+_C.TASK.POSITION_INFER.TYPE = "PositionInfer"
 # -----------------------------------------------------------------------------
 # TOP_DOWN_MAP_VLNCE MEASUREMENT
 # -----------------------------------------------------------------------------

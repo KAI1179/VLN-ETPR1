@@ -39,9 +39,7 @@ class VLNCEEpisodeEntry:
             if not data_path.exists():
                 continue
             if not gt_path.exists():
-                raise FileNotFoundError(
-                    f"Missing VLN-CE ground-truth file: {gt_path}"
-                )
+                raise FileNotFoundError(f"Missing VLN-CE ground-truth file: {gt_path}")
 
             with gzip_open(data_path, "rt", encoding="utf-8") as f:
                 raw_data = load(f)
@@ -71,9 +69,7 @@ class VLNCEEpisodeEntry:
                     start_position=episode["start_position"],
                     start_rotation=episode["start_rotation"],
                     instruction_tokens=instruction_data["instruction_tokens"],
-                    ground_truth_trajectory=_world_trajectory_3d(
-                        gt_entry["locations"]
-                    ),
+                    ground_truth_trajectory=_world_trajectory_3d(gt_entry["locations"]),
                 )
 
     @property
@@ -93,15 +89,10 @@ def _scene_id_from_episode(raw_scene_id: str) -> str:
 
 
 def _world_trajectory_3d(points: Iterable[Sequence[float]]) -> WorldTrajectory3D:
-    return [
-        (float(point[0]), float(point[1]), float(point[2]))
-        for point in points
-    ]
+    return [(float(point[0]), float(point[1]), float(point[2])) for point in points]
 
 
-def _files_for_split(
-    dataset: Literal["R2R", "RxR"], split: str
-) -> Tuple[Path, Path]:
+def _files_for_split(dataset: Literal["R2R", "RxR"], split: str) -> Tuple[Path, Path]:
     if dataset == "R2R":
         split_dir = R2R_DIR / split
         return (

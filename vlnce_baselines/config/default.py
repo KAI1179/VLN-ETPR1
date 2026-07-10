@@ -119,9 +119,7 @@ _C.IL.DAGGER.lmdb_fp16 = False
 _C.IL.DAGGER.lmdb_commit_frequency = 500
 # If True, load precomputed features directly from lmdb_features_dir.
 _C.IL.DAGGER.preload_lmdb_features = False
-_C.IL.DAGGER.lmdb_features_dir = (
-    "data/trajectories_dirs/debug/trajectories.lmdb"
-)
+_C.IL.DAGGER.lmdb_features_dir = "data/trajectories_dirs/debug/trajectories.lmdb"
 # -----------------------------------------------------------------------------
 # RL CONFIG
 # -----------------------------------------------------------------------------
@@ -178,9 +176,7 @@ _C.MODEL.DEPTH_ENCODER.output_size = 128
 # type of resnet to use
 _C.MODEL.DEPTH_ENCODER.backbone = "resnet50"
 # path to DDPPO resnet weights
-_C.MODEL.DEPTH_ENCODER.ddppo_checkpoint = (
-    "data/ddppo-models/gibson-2plus-resnet50.pth"
-)
+_C.MODEL.DEPTH_ENCODER.ddppo_checkpoint = "data/ddppo-models/gibson-2plus-resnet50.pth"
 
 _C.MODEL.STATE_ENCODER = CN()
 _C.MODEL.STATE_ENCODER.hidden_size = 512
@@ -195,15 +191,27 @@ _C.MODEL.PROGRESS_MONITOR.alpha = 1.0  # loss multiplier
 
 # MAP_ENCODER: embedding grid map module used by PriorGTPolicy and ImaginedPolicy.
 _C.MODEL.MAP_ENCODER = CN()
-_C.MODEL.MAP_ENCODER.enabled = False                         # toggle on/off
-_C.MODEL.MAP_ENCODER.freeze_base = False                     # freeze base VLN params (map modules remain trainable)
-_C.MODEL.MAP_ENCODER.map_loss_weight = 0.1                   # imagined-map BCE auxiliary loss weight
-_C.MODEL.MAP_ENCODER.trajectory_keypoint_loss_weight = 0.001      # Huber weight for imagined trajectory-keypoint target
-_C.MODEL.MAP_ENCODER.predictor_checkpoint = ""               # optional predictor-only checkpoint for ImaginedPolicy
-_C.MODEL.MAP_ENCODER.cache_namespace = "gt.bbox.r1p5.path5.v1"           # PriorGT cache namespace under data/cognitive_maps
-_C.MODEL.MAP_ENCODER.metadata_schema = "path5"               # path5 or direction5 cache metadata consumed by the map encoder
-_C.MODEL.MAP_ENCODER.fusion = "bidirectional"                # bidirectional or try5 one-way graph-map fusion
-_C.MODEL.MAP_ENCODER.llm_cache_dir = ""                      # optional LLM-Navigation cache root override
+_C.MODEL.MAP_ENCODER.enabled = False  # toggle on/off
+_C.MODEL.MAP_ENCODER.freeze_base = (
+    False  # freeze base VLN params (map modules remain trainable)
+)
+_C.MODEL.MAP_ENCODER.map_loss_weight = 0.1  # imagined-map BCE auxiliary loss weight
+_C.MODEL.MAP_ENCODER.trajectory_keypoint_loss_weight = (
+    0.001  # Huber weight for imagined trajectory-keypoint target
+)
+_C.MODEL.MAP_ENCODER.predictor_checkpoint = (
+    ""  # optional predictor-only checkpoint for ImaginedPolicy
+)
+_C.MODEL.MAP_ENCODER.cache_namespace = (
+    "gt.bbox.r1p5.path5.v1"  # PriorGT cache namespace under data/cognitive_maps
+)
+_C.MODEL.MAP_ENCODER.metadata_schema = (
+    "path5"  # path5 or direction5 cache metadata consumed by the map encoder
+)
+_C.MODEL.MAP_ENCODER.fusion = (
+    "bidirectional"  # bidirectional or try5 one-way graph-map fusion
+)
+_C.MODEL.MAP_ENCODER.llm_cache_dir = ""  # optional LLM-Navigation cache root override
 _C.MODEL.MAP_ENCODER.llm_cache_model_key = "llama-3.1-8b-instruct"
 
 
@@ -242,9 +250,7 @@ def get_config(
         for config_path in config_paths:
             config.merge_from_file(config_path)
             if config.BASE_TASK_CONFIG_PATH != prev_task_config:
-                config.TASK_CONFIG = get_task_config(
-                    config.BASE_TASK_CONFIG_PATH
-                )
+                config.TASK_CONFIG = get_task_config(config.BASE_TASK_CONFIG_PATH)
                 prev_task_config = config.BASE_TASK_CONFIG_PATH
     if opts:
         config.CMD_TRAILING_OPTS = opts

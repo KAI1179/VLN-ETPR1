@@ -786,10 +786,7 @@ def _cache_complete(
         cache_dir=args.cache_dir,
         model_key=args.cache_model_key,
     )
-    return (
-        cognitive_map_boxes_path.exists()
-        and cognitive_map_raster_path.exists()
-    )
+    return cognitive_map_boxes_path.exists() and cognitive_map_raster_path.exists()
 
 
 def _print_resume_summary(

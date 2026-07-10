@@ -129,9 +129,7 @@ def test_cognitive_map_set_criterion_matches_and_penalizes_boxes():
         bbox_loss_coef=5.0,
         giou_loss_coef=2.0,
     )
-    output = CognitiveMapDecoder(hidden_size=8, num_queries=2)(
-        torch.randn(1, 101, 8)
-    )
+    output = CognitiveMapDecoder(hidden_size=8, num_queries=2)(torch.randn(1, 101, 8))
     targets = [
         {
             "labels": torch.tensor([1], dtype=torch.int64),

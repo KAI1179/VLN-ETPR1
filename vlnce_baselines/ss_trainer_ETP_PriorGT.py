@@ -854,9 +854,7 @@ class RLTrainer(BaseVLNCETrainer):
         if not episodes_allowed and prefilled_stats:
             self.stat_eps = prefilled_stats
             self.pbar = (
-                tqdm.tqdm(total=len(prefilled_stats))
-                if self.config.use_pbar
-                else None
+                tqdm.tqdm(total=len(prefilled_stats)) if self.config.use_pbar else None
             )
             if self.pbar:
                 self.pbar.update(len(prefilled_stats))
@@ -1140,8 +1138,7 @@ class RLTrainer(BaseVLNCETrainer):
         )
         for stat_key in stat_keys:
             aggregated_states[stat_key] = (
-                sum(v.get(stat_key, 0.0) for v in self.stat_eps.values())
-                / num_episodes
+                sum(v.get(stat_key, 0.0) for v in self.stat_eps.values()) / num_episodes
             )
         total = torch.tensor(num_episodes).cuda()
         if self.world_size > 1:

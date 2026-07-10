@@ -13,7 +13,7 @@ def split_list_by_pattern(input_list, pattern=[102, 101]):
 
     for i in range(len(input_list)):
         temp.append(input_list[i])
-        if input_list[i:i + pattern_len] == pattern:
+        if input_list[i : i + pattern_len] == pattern:
             if temp:
                 result.append(temp)
             temp = []
@@ -22,8 +22,10 @@ def split_list_by_pattern(input_list, pattern=[102, 101]):
 
     return result
 
+
 def count_token(lst, token_id=1064):
     return lst.count(token_id)
+
 
 def extract_instruction_tokens(
     observations: List[Dict],
@@ -31,7 +33,7 @@ def extract_instruction_tokens(
     tokens_uuid: str = "tokens",
     max_length: int = 512,
     pad_id: int = 1,
-    task_type: int = None
+    task_type: int = None,
 ):
     """Extracts instruction tokens from an instruction sensor if the tokens
     exist and are in a dict structure."""
@@ -51,15 +53,16 @@ def extract_instruction_tokens(
                 task_type_token = [task_type] * origin_token_len
                 if len(task_type_token) < max_length:
                     task_type_token += [0] * (max_length - len(task_type_token))
-                observations[i]['txt_task_encoding'] = task_type_token
+                observations[i]["txt_task_encoding"] = task_type_token
             else:
                 print("task_type invalid")
                 break
         else:
             break
     return observations
-    
-def gather_list_and_concat(list_of_nums,world_size):
+
+
+def gather_list_and_concat(list_of_nums, world_size):
     if not torch.is_tensor(list_of_nums):
         tensor = torch.Tensor(list_of_nums).cuda()
     else:
@@ -67,32 +70,33 @@ def gather_list_and_concat(list_of_nums,world_size):
             tensor = list_of_nums.cuda()
         else:
             tensor = list_of_nums
-    gather_t = [torch.ones_like(tensor) for _ in
-                range(world_size)]
-    dist.all_gather(gather_t, tensor) 
+    gather_t = [torch.ones_like(tensor) for _ in range(world_size)]
+    dist.all_gather(gather_t, tensor)
     return gather_t
+
 
 def dis_to_con(path, amount=0.25):
     starts = path[:-1]
     ends = path[1:]
     new_path = [path[0]]
-    for s, e in zip(starts,ends):
+    for s, e in zip(starts, ends):
         vec = np.array(e) - np.array(s)
-        ratio = amount/np.linalg.norm(vec[[0,2]])
-        unit = vec*ratio
-        times = int(1/ratio)
+        ratio = amount / np.linalg.norm(vec[[0, 2]])
+        unit = vec * ratio
+        times = int(1 / ratio)
         for i in range(times):
             if i != times - 1:
-                location = np.array(new_path[-1])+unit
+                location = np.array(new_path[-1]) + unit
                 new_path.append(location.tolist())
         new_path.append(e)
-    
+
     return new_path
+
 
 def get_camera_orientations12():
     base_angle_deg = 30
     base_angle_rad = math.pi / 6
     orient_dict = {}
-    for k in range(1,12):
-        orient_dict[str(base_angle_deg*k)] = [0.0, base_angle_rad*k, 0.0]
+    for k in range(1, 12):
+        orient_dict[str(base_angle_deg * k)] = [0.0, base_angle_rad * k, 0.0]
     return orient_dict

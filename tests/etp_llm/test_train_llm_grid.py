@@ -10,7 +10,7 @@ from vlnce_baselines.models.etp_llm import train_llm_grid
 EMPTY_GRID_TEXT = (
     '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},'
     '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-    '[0.0,0.0]]}'
+    "[0.0,0.0]]}"
 )
 ZERO_DIRECTION_VECTORS = np.zeros((5, 2), dtype=np.float32)
 
@@ -64,8 +64,7 @@ class _ChatTokenizer:
         return_tensors,
     ):
         encoded = [
-            self.encode(text, add_special_tokens=False)[:max_length]
-            for text in texts
+            self.encode(text, add_special_tokens=False)[:max_length] for text in texts
         ]
         width = max(len(row) for row in encoded)
         input_ids = []
@@ -264,9 +263,7 @@ def test_serialize_grid_target_uses_keyed_binary_cells():
     assert json.loads(text) == {
         "predicted_regions": ["living/social space"],
         "predicted_objects": ["chair"],
-        "regions": {
-            "living/social space": {"cells": [[3, 2]], "mentioned": False}
-        },
+        "regions": {"living/social space": {"cells": [[3, 2]], "mentioned": False}},
         "objects": {"chair": {"cells": [[0, 1]], "mentioned": False}},
         "direction_vectors": [
             [1.0, 0.0],
@@ -294,7 +291,9 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         assert required in prompt
     for removed in ("region_candidates", "object_candidates", "motion_vectors"):
         assert removed not in prompt
-    assert "Each cell is [row,col] in a 100x100 grid with integers 0-99." in scale_1_prompt
+    assert (
+        "Each cell is [row,col] in a 100x100 grid with integers 0-99." in scale_1_prompt
+    )
     assert "{grid_size}" not in prompt
     assert "{max_grid_index}" not in prompt
 
@@ -309,7 +308,7 @@ def test_parse_grid_text_accepts_candidate_records_and_direction_vectors():
             '"objects":{"chair":{"cells":[[0,0],[0,0]],'
             '"mentioned":true}},'
             '"direction_vectors":[[1.0,0.0],[0.0,1.0],[-1.0,0.0],'
-            '[0.0,-1.0],[0.0,0.0]]}'
+            "[0.0,-1.0],[0.0,0.0]]}"
         ),
         shape=(37, 50, 50),
     )
@@ -344,7 +343,7 @@ def test_parse_grid_text_rejects_old_candidate_keys():
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
                 '"mentioned":true}},'
                 '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-                '[0.0,0.0],[0.0,0.0]]}'
+                "[0.0,0.0],[0.0,0.0]]}"
             )
         )
 
@@ -359,7 +358,7 @@ def test_parse_grid_text_rejects_wrong_top_level_key_order():
                 '{"predicted_objects":[],"predicted_regions":[],"regions":{},'
                 '"objects":{},'
                 '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-                '[0.0,0.0],[0.0,0.0]]}'
+                "[0.0,0.0],[0.0,0.0]]}"
             )
         )
 
@@ -388,7 +387,7 @@ def test_parse_grid_text_rejects_invalid_json_and_bad_records():
                 '"regions":{},"objects":{"chair":{"cells":[[0,0,1]],'
                 '"mentioned":true}},'
                 '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-                '[0.0,0.0],[0.0,0.0]]}'
+                "[0.0,0.0],[0.0,0.0]]}"
             )
         )
 
@@ -401,21 +400,21 @@ def test_parse_grid_text_rejects_invalid_json_and_bad_records():
             '"regions":{},"objects":{"chair":{"cells":[[true,0]],'
             '"mentioned":false}},'
             '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,true]],'
             '"mentioned":false}},'
             '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
             '"mentioned":false}},'
             '"direction_vectors":[[true,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
     ],
 )
@@ -433,7 +432,7 @@ def test_parse_grid_text_rejects_invalid_direction_vector_components(component):
                 '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
                 '"mentioned":false}},'
                 f'"direction_vectors":[[{component},0.0],[0.0,0.0],[0.0,0.0],'
-                '[0.0,0.0],[0.0,0.0]]}'
+                "[0.0,0.0],[0.0,0.0]]}"
             )
         )
 
@@ -448,7 +447,7 @@ def test_parse_grid_text_rejects_non_unit_direction_vectors():
                 '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
                 '"objects":{},'
                 '"direction_vectors":[[0.5,0.5],[0.0,0.0],[0.0,0.0],'
-                '[0.0,0.0],[0.0,0.0]]}'
+                "[0.0,0.0],[0.0,0.0]]}"
             )
         )
 
@@ -470,7 +469,7 @@ def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
             '"mentioned":false}},'
             '"objects":{"chair":{"cells":[[0,0]],"mentioned":true}},'
             '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         target,
         target_direction_vectors,
@@ -511,7 +510,7 @@ def test_evaluate_grid_prediction_distinguishes_invalid_schema():
             '"regions":{},"objects":{"chair":{"cells":"not a list",'
             '"mentioned":false}},'
             '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         target,
         ZERO_DIRECTION_VECTORS,
@@ -534,7 +533,7 @@ def test_evaluate_grid_prediction_scores_matching_direction_vectors():
             '{"predicted_regions":[],"predicted_objects":[],"regions":{},'
             '"objects":{},'
             '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         target,
         target_direction_vectors,
@@ -661,9 +660,7 @@ def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     assert json.loads(item["target_text"]) == {
         "predicted_regions": ["living/social space"],
         "predicted_objects": ["chair"],
-        "regions": {
-            "living/social space": {"cells": [[1, 1]], "mentioned": True}
-        },
+        "regions": {"living/social space": {"cells": [[1, 1]], "mentioned": True}},
         "objects": {"chair": {"cells": [[0, 0]], "mentioned": True}},
         "direction_vectors": [
             [1.0, 0.0],
@@ -726,7 +723,7 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
             '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
             '"mentioned":true}},'
             '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "target_direction_vectors": ZERO_DIRECTION_VECTORS,
@@ -790,7 +787,7 @@ def test_collate_llm_grid_rejects_target_over_completion_budget():
         '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1]],'
         '"mentioned":true}},'
         '"direction_vectors":[[0.0,0.0],[0.0,0.0],[0.0,0.0],'
-        '[0.0,0.0],[0.0,0.0]]}'
+        "[0.0,0.0],[0.0,0.0]]}"
     )
     item: train_llm_grid.LLMGridItem = {
         "input_text": "short",
@@ -879,7 +876,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
             '"regions":{},"objects":{"chair":{"cells":[[0,0],[1,1],'
             '[2,2]],"mentioned":true}},'
             '"direction_vectors":[[1.0,0.0],[0.0,1.0],[0.0,0.0],'
-            '[0.0,0.0],[0.0,0.0]]}'
+            "[0.0,0.0],[0.0,0.0]]}"
         ),
         "example_id": "long",
     }
@@ -1068,7 +1065,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
                     '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
                     '"mentioned":true}},'
                     '"direction_vectors":[[0.0,1.0],[0.0,0.0],[0.0,0.0],'
-                    '[0.0,0.0],[0.0,0.0]]}'
+                    "[0.0,0.0],[0.0,0.0]]}"
                 )
                 for _row in rows
             ]
@@ -1347,10 +1344,6 @@ def test_main_dispatches_train_and_eval(monkeypatch):
         lambda args: calls.append(("eval", args.device)) or {"json_valid": 1.0},
     )
 
-    assert train_llm_grid.main(["train", "--device", "cpu"]) == {
-        "train_loss": 1.0
-    }
-    assert train_llm_grid.main(["eval", "--device", "cpu"]) == {
-        "json_valid": 1.0
-    }
+    assert train_llm_grid.main(["train", "--device", "cpu"]) == {"train_loss": 1.0}
+    assert train_llm_grid.main(["eval", "--device", "cpu"]) == {"json_valid": 1.0}
     assert calls == [("train", "cpu"), ("eval", "cpu")]

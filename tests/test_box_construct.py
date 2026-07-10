@@ -205,17 +205,13 @@ def test_scene_semantic_boxes_rejects_first_touched_one_point_level():
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[0.0, 1.0],
     )
-    first_level.objects[3] = [
-        box.OBB2D(center=(0.0, 0.0), half_extents=(1.0, 1.0))
-    ]
+    first_level.objects[3] = [box.OBB2D(center=(0.0, 0.0), half_extents=(1.0, 1.0))]
     second_level = box.LevelSemanticBoxes(
         objects=[[] for _ in range(box.OBJECT_CATEGORIES)],
         regions=[[] for _ in range(box.REGION_CATEGORIES)],
         range_y=[1.0, 2.0],
     )
-    second_level.objects[3] = [
-        box.OBB2D(center=(2.0, 0.0), half_extents=(1.0, 1.0))
-    ]
+    second_level.objects[3] = [box.OBB2D(center=(2.0, 0.0), half_extents=(1.0, 1.0))]
 
     with pytest.raises(
         InsufficientTrajectoryPointsError,

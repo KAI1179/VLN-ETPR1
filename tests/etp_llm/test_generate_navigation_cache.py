@@ -200,9 +200,7 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     split_dir = tmp_path / "test-model" / "r2r" / "train"
     prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
     map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
-    boxes_path = (
-        split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
-    )
+    boxes_path = split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
     raster_path = (
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
@@ -230,16 +228,18 @@ def test_generate_navigation_cache_salvages_valid_entities_and_writes_npz(tmp_pa
     assert status["cognitive_map_raster_path"] == str(raster_path)
     assert status["failures"][0]["stage"] == "strict_parse"
     assert status["failures"][1]["stage"] == "salvage_parse"
-    assert status["failures"][1]["dropped_entities"] == [
-        "obj alien 1 2 0.5 0.5 0"
-    ]
+    assert status["failures"][1]["dropped_entities"] == ["obj alien 1 2 0.5 0.5 0"]
     assert not (split_dir / "failures.jsonl").exists()
-    assert json.loads((split_dir / "metrics.json").read_text())[
-        "strict_parse_failure_rate"
-    ] == 1.0
-    assert json.loads((split_dir / "manifest.json").read_text())[
-        "model_name_or_path"
-    ] == "tiny"
+    assert (
+        json.loads((split_dir / "metrics.json").read_text())[
+            "strict_parse_failure_rate"
+        ]
+        == 1.0
+    )
+    assert (
+        json.loads((split_dir / "manifest.json").read_text())["model_name_or_path"]
+        == "tiny"
+    )
 
 
 def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
@@ -273,9 +273,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
     split_dir = tmp_path / "test-model" / "r2r" / "train"
     prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
     map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
-    boxes_path = (
-        split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
-    )
+    boxes_path = split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
     raster_path = (
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
@@ -343,9 +341,7 @@ def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp
         system_prompt="system prompt",
     )
     split_dir = tmp_path / "test-model" / "r2r" / "train"
-    boxes_path = (
-        split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
-    )
+    boxes_path = split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
     raster_path = (
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
@@ -402,9 +398,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
     split_dir = tmp_path / "test-model" / "r2r" / "train"
     prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
     map_path = split_dir / "cognitive_maps" / "scene-a" / "R2R_train_42.npz"
-    boxes_path = (
-        split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
-    )
+    boxes_path = split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
     raster_path = (
         split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
     )
@@ -467,9 +461,7 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
         quiet=True,
     )
 
-    assert _PretrainAnnotationEntry.calls == [
-        ("R2R_Prevalent_enc_xlmr.jsonl", True)
-    ]
+    assert _PretrainAnnotationEntry.calls == [("R2R_Prevalent_enc_xlmr.jsonl", True)]
     assert _SceneBoxes.calls == ["scene-a"]
     assert len(items) == 1
     assert items[0]["example_id"] == "prevalent_1_0"
@@ -597,9 +589,7 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     )
 
     assert items == []
-    assert _PretrainAnnotationEntry.calls == [
-        ("R2R_Prevalent_enc_xlmr.jsonl", True)
-    ]
+    assert _PretrainAnnotationEntry.calls == [("R2R_Prevalent_enc_xlmr.jsonl", True)]
     assert _SceneBoxes.calls == []
 
 
@@ -870,10 +860,13 @@ def test_belongs_to_worker_assigns_each_cache_id_once():
 
 
 def test_skipped_cache_count_sums_split_metrics():
-    assert generate_navigation_cache._skipped_cache_count(
-        {
-            "r2r/train": {"skipped": 1.0},
-            "rxr/train": {"skipped": 2.0},
-            "pretrain/mixed": {"generated": 3.0},
-        }
-    ) == 3
+    assert (
+        generate_navigation_cache._skipped_cache_count(
+            {
+                "r2r/train": {"skipped": 1.0},
+                "rxr/train": {"skipped": 2.0},
+                "pretrain/mixed": {"generated": 3.0},
+            }
+        )
+        == 3
+    )
