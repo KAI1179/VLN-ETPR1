@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
-from typing import Literal, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 from prior import DATA_DIR
 from prior.vlnce import VLNCEEpisodeEntry
@@ -197,23 +198,14 @@ def llm_navigation_cache_report(
         episode_id = str(entry.episode_id)
         if requested and episode_id not in requested:
             continue
-        boxes_path = llm_navigation_cognitive_map_boxes_path(
+        if llm_navigation_cache_complete(
             entry.scene_id,
             entry.unique_id,
             dataset,
             split,
             cache_dir=cache_dir,
             model_key=model_key,
-        )
-        raster_path = llm_navigation_cognitive_map_raster_path(
-            entry.scene_id,
-            entry.unique_id,
-            dataset,
-            split,
-            cache_dir=cache_dir,
-            model_key=model_key,
-        )
-        if boxes_path.is_file() and raster_path.is_file():
+        ):
             available.append(episode_id)
         else:
             missing.append(episode_id)
@@ -222,6 +214,42 @@ def llm_navigation_cache_report(
         available_episode_ids=available,
         missing_episode_ids=missing,
     )
+
+
+def llm_navigation_cache_complete(
+    scene_id: str,
+    cache_id: str,
+    dataset: str,
+    split: str,
+    cache_dir: Optional[str | Path] = None,
+    model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+) -> bool:
+    raster_path = llm_navigation_cognitive_map_raster_path(
+        scene_id,
+        cache_id,
+        dataset,
+        split,
+        cache_dir=cache_dir,
+        model_key=model_key,
+    )
+    status_path = llm_navigation_status_path(
+        scene_id,
+        cache_id,
+        dataset,
+        split,
+        cache_dir=cache_dir,
+        model_key=model_key,
+    )
+    return raster_path.is_file() and _status_is_complete(status_path)
+
+
+def _status_is_complete(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"LLM-Navigation status must be a JSON object: {path}")
+    return payload.get("status") == "complete"
 
 
 def _safe_path_part(value: str) -> str:

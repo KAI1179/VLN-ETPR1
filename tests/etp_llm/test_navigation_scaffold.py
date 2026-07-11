@@ -1,5 +1,6 @@
 import pytest
 from types import SimpleNamespace
+import json
 
 
 class _StubClipModel:
@@ -228,7 +229,7 @@ def test_available_llm_navigation_episode_ids_skips_missing(
         cache_dir=tmp_path,
         model_key="test-model",
     )
-    boxes_path = navigation.llm_navigation_cognitive_map_boxes_path(
+    status_path = navigation.llm_navigation_status_path(
         "scene-a",
         "R2R_train_2",
         "R2R",
@@ -237,9 +238,9 @@ def test_available_llm_navigation_episode_ids_skips_missing(
         model_key="test-model",
     )
     raster_path.parent.mkdir(parents=True)
-    boxes_path.parent.mkdir(parents=True)
+    status_path.parent.mkdir(parents=True)
     raster_path.touch()
-    boxes_path.touch()
+    status_path.write_text(json.dumps({"status": "complete"}))
 
     allowed = navigation.available_llm_navigation_episode_ids(
         "R2R",
@@ -293,7 +294,7 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
         cache_dir=tmp_path,
         model_key="test-model",
     )
-    boxes_path = navigation.llm_navigation_cognitive_map_boxes_path(
+    status_path = navigation.llm_navigation_status_path(
         "scene-a",
         "R2R_val_unseen_2",
         "R2R",
@@ -302,9 +303,9 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
         model_key="test-model",
     )
     raster_path.parent.mkdir(parents=True)
-    boxes_path.parent.mkdir(parents=True)
+    status_path.parent.mkdir(parents=True)
     raster_path.touch()
-    boxes_path.touch()
+    status_path.write_text(json.dumps({"status": "complete"}))
 
     report = navigation.llm_navigation_cache_report(
         "R2R",

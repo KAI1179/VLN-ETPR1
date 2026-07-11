@@ -526,8 +526,19 @@ def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
     )
     boxes_path.parent.mkdir(parents=True)
     raster_path.parent.mkdir(parents=True)
+    status_path = (
+        tmp_path
+        / "test-model"
+        / "r2r"
+        / "train"
+        / "status"
+        / "scene-a"
+        / "R2R_train_42.json"
+    )
+    status_path.parent.mkdir(parents=True)
     boxes_path.write_bytes(b"done")
     raster_path.write_bytes(b"done")
+    status_path.write_text(json.dumps({"status": "complete"}))
 
     items = generate_navigation_cache.load_vlnce_cache_items(
         "R2R",
@@ -579,8 +590,19 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     )
     boxes_path.parent.mkdir(parents=True)
     raster_path.parent.mkdir(parents=True)
+    status_path = (
+        tmp_path
+        / "test-model"
+        / "pretrain"
+        / "mixed"
+        / "status"
+        / "scene-a"
+        / "prevalent_1_0.json"
+    )
+    status_path.parent.mkdir(parents=True)
     boxes_path.write_bytes(b"done")
     raster_path.write_bytes(b"done")
+    status_path.write_text(json.dumps({"status": "complete"}))
 
     items = generate_navigation_cache.load_pretrain_cache_items(
         annotation_files=["R2R_Prevalent_enc_xlmr.jsonl"],

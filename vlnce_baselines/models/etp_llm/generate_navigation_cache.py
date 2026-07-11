@@ -31,6 +31,7 @@ from .boxes_schema import (
 )
 from .navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+    llm_navigation_cache_complete,
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
     llm_navigation_prediction_path,
@@ -770,7 +771,7 @@ def _cache_complete(
     split: str,
     args: argparse.Namespace,
 ) -> bool:
-    cognitive_map_boxes_path = llm_navigation_cognitive_map_boxes_path(
+    return llm_navigation_cache_complete(
         scene_id,
         cache_id,
         dataset_key,
@@ -778,15 +779,6 @@ def _cache_complete(
         cache_dir=args.cache_dir,
         model_key=args.cache_model_key,
     )
-    cognitive_map_raster_path = llm_navigation_cognitive_map_raster_path(
-        scene_id,
-        cache_id,
-        dataset_key,
-        split,
-        cache_dir=args.cache_dir,
-        model_key=args.cache_model_key,
-    )
-    return cognitive_map_boxes_path.exists() and cognitive_map_raster_path.exists()
 
 
 def _print_resume_summary(
