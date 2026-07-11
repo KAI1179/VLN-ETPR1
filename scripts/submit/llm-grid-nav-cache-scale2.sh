@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=llm-grid-nav-s2
+#SBATCH --output=slurm-%x-%j.out
 #SBATCH --gpus=4
 #SBATCH -p vip_gpu_scze096
 set -eo pipefail
