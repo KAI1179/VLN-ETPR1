@@ -68,14 +68,19 @@ class BaseVLNCETrainer(BaseILTrainer):
     def __init__(self, config=None):
         super().__init__(config)
         self.policy = None
-        self.device = (
-            torch.device("cuda", self.config.TORCH_GPU_ID)
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
+        self.device = self._rank_device()
         self.obs_transforms = []
         self.start_epoch = 0
         self.step_id = 0
+
+    def _rank_device(self):
+        if not torch.cuda.is_available():
+            return torch.device("cpu")
+        if self.config.GPU_NUMBERS > 1:
+            return torch.device(
+                "cuda", self.config.TORCH_GPU_IDS[self.config.local_rank]
+            )
+        return torch.device("cuda", self.config.TORCH_GPU_ID)
 
     def _initialize_policy(
         self,
@@ -860,11 +865,7 @@ class BaseVLNCETrainer(BaseILTrainer):
         Returns:
             None
         """
-        self.device = (
-            torch.device("cuda", self.config.TORCH_GPU_ID)
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
+        self.device = self._rank_device()
 
         if "tensorboard" in self.config.VIDEO_OPTION:
             assert len(self.config.TENSORBOARD_DIR) > 0, (
