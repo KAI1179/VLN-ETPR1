@@ -1,6 +1,5 @@
 import os
 import re
-import warnings
 from collections import defaultdict
 
 import numpy as np
@@ -30,10 +29,6 @@ from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
 from .utils import get_camera_orientations12
 from habitat_extensions.measures import NDTW
 from fastdtw import fastdtw
-
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    import tensorflow as tf  # noqa: F401
 
 import torch.distributed as distr
 import gzip

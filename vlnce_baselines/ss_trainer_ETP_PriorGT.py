@@ -2,7 +2,6 @@ import gc
 import os
 import random
 import re
-import warnings
 from collections import defaultdict
 from typing import Dict
 import jsonlines
@@ -35,10 +34,6 @@ from .utils import get_camera_orientations12
 from vlnce_baselines.common.utils import gather_list_and_concat
 from habitat_extensions.measures import NDTW
 from fastdtw import fastdtw
-
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    import tensorflow as tf  # noqa: F401
 
 import torch.distributed as distr
 import gzip
