@@ -1,3 +1,7 @@
+from no_tensorflow import configure_no_tensorflow
+
+configure_no_tensorflow()
+
 from vlnce_baselines import ss_trainer_ETP_R1
 from vlnce_baselines import GRPO_trainer_ETP_R1
 from vlnce_baselines import ss_trainer_ETP_PriorGT
