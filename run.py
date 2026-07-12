@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
 import argparse
-import random
 import os
+import random
+import sys
+import types
 from typing import Iterable, List, Optional
+
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+sys.modules.setdefault(
+    "tensorboard.compat.notf", types.ModuleType("tensorboard.compat.notf")
+)
 
 import numpy as np
 import torch

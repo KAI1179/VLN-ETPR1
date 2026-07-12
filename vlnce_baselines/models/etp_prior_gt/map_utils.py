@@ -8,12 +8,13 @@ from typing import Dict, Literal, Optional
 import numpy as np
 import torch
 from prior import DATA_DIR
-from prior.cognitive_map_generation import DEFAULT_RADIUS_M, map_cache_namespace
 from prior._coords import meters_to_grid
 from prior.constants import (
+    CELL_SIZE,
     COLS,
     MAPPED_OBJECT_NAMES,
     MAPPED_REGION_NAMES,
+    MAX_DISTANCE_CELLS,
     ROWS,
 )
 from prior.directions import start_rotation_to_direction_vector
@@ -25,7 +26,9 @@ from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 NUM_MAP_CATEGORIES = len(MAPPED_OBJECT_NAMES) + len(MAPPED_REGION_NAMES)
 VLNCE_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps"
 ETP_R1_COGNITIVE_MAP_DIR = DATA_DIR / "cognitive_maps_etp_r1"
-DEFAULT_COGNITIVE_MAP_NAMESPACE = map_cache_namespace("bbox", DEFAULT_RADIUS_M)
+DEFAULT_RADIUS_M = MAX_DISTANCE_CELLS * CELL_SIZE
+DEFAULT_RADIUS_LABEL = f"{DEFAULT_RADIUS_M:g}".replace(".", "p")
+DEFAULT_COGNITIVE_MAP_NAMESPACE = f"gt.bbox.r{DEFAULT_RADIUS_LABEL}.path5.v1"
 MAP_TOKEN_GRID_SIZE = 10
 MAP_SPATIAL_TOKEN_COUNT = MAP_TOKEN_GRID_SIZE * MAP_TOKEN_GRID_SIZE
 MAP_TOKEN_COUNT = MAP_SPATIAL_TOKEN_COUNT + 1
