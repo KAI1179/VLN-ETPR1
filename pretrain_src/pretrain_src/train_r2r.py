@@ -4,6 +4,10 @@ from collections import defaultdict
 from easydict import EasyDict
 from tqdm import tqdm
 
+from no_tensorflow import configure_no_tensorflow
+
+configure_no_tensorflow()
+
 import torch
 import torch.nn.functional as F
 
