@@ -168,6 +168,7 @@
 | Try 9 (Dagger)             | 0.6378     | 0.6965     | 0.5394     | 28800   |
 | Try 10 (Dagger)            |            |            |            |         |
 | Try 5 (Dagger, r=1.5)      | **0.7656** | **0.7896** | **0.6682** | 25600   |
+| Try 5 Like 2x (Dagger, r=1.5) | 0.6639  | 0.7020     | 0.5772     | 9600    |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
@@ -199,6 +200,9 @@
 - Try 10 (`0a31d47`, @VIPL)
     - DETR-style Decoder
 - Try 5, r=1.5 (`121c369`)
+- Try 5 Like, 2x blurred (`6ce1e4a`)
+    - 模型：带双向 attn 和 DETR-style Decoder
+    - GT: legacy, direction-vectors, 1.5m
 
 ### 地图预测器 - 弃用
 
