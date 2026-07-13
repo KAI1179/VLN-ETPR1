@@ -44,6 +44,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     available_vlnce_cognitive_map_episode_ids,
     cached_cognitive_map_to_tensors,
 )
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 
 
 def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
@@ -280,9 +281,14 @@ class RLTrainer(BaseVLNCETrainer):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
         if map_cfg is None or not map_cfg.enabled:
             return None
+        candidate = CognitiveMapCandidate.parse(
+            map_cfg.architecture,
+            map_cfg.source,
+        )
         return available_vlnce_cognitive_map_episode_ids(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
+            require_boxes=candidate.requires_box_targets,
             namespace=map_cfg.cache_namespace,
         )
 
@@ -1194,13 +1200,18 @@ class RLTrainer(BaseVLNCETrainer):
         return map_cfg.enabled
 
     def _build_cognitive_maps(self):
+        map_cfg = self.config.MODEL.MAP_ENCODER
+        candidate = CognitiveMapCandidate.parse(
+            map_cfg.architecture,
+            map_cfg.source,
+        )
         return _build_cognitive_maps_for_episodes(
             self.envs.current_episodes(),
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
-            self.config.MODEL.MAP_ENCODER.cache_namespace,
+            map_cfg.cache_namespace,
             random_rotation_augmentation=False,
-            metadata_schema=self.config.MODEL.MAP_ENCODER.metadata_schema,
+            metadata_schema=candidate.metadata_schema,
         )
 
     def _prepare_map_inputs(

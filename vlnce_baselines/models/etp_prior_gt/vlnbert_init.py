@@ -69,12 +69,7 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
 
     vis_config.max_txt_task_embeddings = 4
     vis_config.max_gmap_task_embeddings = 3
-    map_cfg = getattr(config, "MAP_ENCODER", None)
-    vis_config.map_fusion = (
-        getattr(map_cfg, "fusion", "bidirectional")
-        if map_cfg is not None
-        else "bidirectional"
-    )
+    vis_config.navigation_architecture = config.MAP_ENCODER.architecture
 
     visual_model = model_class.from_pretrained(
         pretrained_model_name_or_path=None,

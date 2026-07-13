@@ -155,6 +155,8 @@ def cognitive_map_boxes_cache_path(
 def available_vlnce_cognitive_map_episode_ids(
     dataset: str,
     split: str,
+    *,
+    require_boxes: bool,
     cache_dir: Optional[Path] = None,
     namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
 ) -> list[str]:
@@ -174,7 +176,7 @@ def available_vlnce_cognitive_map_episode_ids(
             cache_dir,
             namespace,
         )
-        if raster_path.is_file() and boxes_path.is_file():
+        if raster_path.is_file() and (not require_boxes or boxes_path.is_file()):
             available.append(str(entry.episode_id))
         else:
             skipped.append(entry.unique_id)

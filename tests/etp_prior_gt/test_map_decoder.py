@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from prior import bbox
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.map_box_targets import (
     relevant_semantic_boxes_to_decoder_target,
 )
@@ -156,6 +157,9 @@ def test_pretraining_updated_map_loss_requires_box_targets():
     model.map_decoder = CognitiveMapDecoder(hidden_size=8, num_queries=2)
     model.map_box_criterion = CognitiveMapSetCriterion()
     model.map_loss_weight = 0.1
+    model.cognitive_map_candidate = CognitiveMapCandidate.parse(
+        "current", "prior_gt"
+    )
 
     with pytest.raises(
         ValueError,
@@ -192,6 +196,9 @@ def test_pretraining_updated_map_loss_uses_box_criterion():
     model.map_decoder = StubDecoder()
     model.map_box_criterion = StubCriterion()
     model.map_loss_weight = 0.1
+    model.cognitive_map_candidate = CognitiveMapCandidate.parse(
+        "current", "prior_gt"
+    )
 
     loss = model._compute_updated_cognitive_map_loss(
         torch.randn(1, 101, 8),

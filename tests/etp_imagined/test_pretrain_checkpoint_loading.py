@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,7 +33,7 @@ def test_pretrain_checkpoint_rejects_missing_trajectory_keypoint_head(tmp_path):
     )
     model = SimpleNamespace(
         config=SimpleNamespace(map_predictor_checkpoint=str(checkpoint_path)),
-        use_imagined=True,
+        cognitive_map_candidate=CognitiveMapCandidate.parse("current", "imagined"),
         map_predictor=predictor,
     )
 

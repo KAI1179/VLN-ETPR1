@@ -8,7 +8,7 @@ from torch import nn
 
 from transformers.models.bert.modeling_bert import BertPreTrainedModel
 
-from vlnce_baselines.models.etp_prior_gt.map_fusion import BidirectionalMapTokenFusion
+from vlnce_baselines.models.etp_prior_gt.map_fusion import build_map_token_fusion
 
 from .ops import create_transformer_encoder
 from .ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
@@ -669,7 +669,8 @@ class GlobalMapEncoder(nn.Module):
             config.max_gmap_task_embeddings, config.hidden_size, padding_idx=0
         )
         self.encoder = CrossmodalEncoder(config)
-        self.graph_map_attention = BidirectionalMapTokenFusion(
+        self.graph_map_attention = build_map_token_fusion(
+            config.navigation_architecture,
             config.hidden_size,
             config.num_attention_heads,
             config.hidden_dropout_prob,

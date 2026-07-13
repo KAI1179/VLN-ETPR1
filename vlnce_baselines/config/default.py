@@ -205,14 +205,10 @@ _C.MODEL.MAP_ENCODER.predictor_checkpoint = (
 _C.MODEL.MAP_ENCODER.cache_namespace = (
     "gt.bbox.r1p5.path5.v1"  # PriorGT cache namespace under data/cognitive_maps
 )
-_C.MODEL.MAP_ENCODER.metadata_schema = (
-    "path5"  # path5 or direction5 cache metadata consumed by the map encoder
-)
-_C.MODEL.MAP_ENCODER.fusion = (
-    "bidirectional"  # bidirectional or try5 one-way graph-map fusion
-)
+_C.MODEL.MAP_ENCODER.architecture = "current"
+_C.MODEL.MAP_ENCODER.source = "prior_gt"
 _C.MODEL.MAP_ENCODER.llm_cache_dir = ""  # optional LLM-Navigation cache root override
-_C.MODEL.MAP_ENCODER.llm_cache_model_key = "llama-3.1-8b-instruct"
+_C.MODEL.MAP_ENCODER.llm_cache_model_key = ""
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

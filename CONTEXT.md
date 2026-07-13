@@ -40,6 +40,26 @@ _Avoid_: map embedder
 A model component that converts updated map tokens into an updated cognitive map for dense supervision or inspection.
 _Avoid_: box decoder when the component predicts dense map logits
 
+**Navigation architecture**:
+The model-side contract for consuming cognitive-map tokens, independent of where the map came from. The supported architectures are `current` and `try5`.
+_Avoid_: model candidate when only the token interaction is meant
+
+**Current architecture**:
+The navigation architecture with map-first bidirectional map-token fusion and cognitive-map box reconstruction during pretraining.
+_Avoid_: default architecture, new model
+
+**Try5 architecture**:
+The navigation architecture with one-way graph queries over fixed map tokens, `direction5` metadata, and no cognitive-map decoder or box loss.
+_Avoid_: Try5-like when the implementation satisfies this complete contract
+
+**Cognitive-map source**:
+The producer or cache family supplying a cognitive map. Supported sources are `prior_gt`, `imagined`, `llm_boxes`, and `llm_grid`.
+_Avoid_: navigation architecture, model architecture
+
+**Cognitive-map candidate**:
+A supported pair of one navigation architecture and one cognitive-map source.
+_Avoid_: cache namespace when identifying model behavior
+
 **Bidirectional map-token fusion**:
 A navigation-model interaction in which cognitive-map tokens and global navigation graph representations remain distinct, but each representation is updated using information from the other.
 _Avoid_: map concatenation, pooled map fusion, single fused map

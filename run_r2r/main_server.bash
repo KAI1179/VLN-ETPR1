@@ -31,25 +31,30 @@ BASE_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 BASE_DAGGER_CKPT="data/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth"
 BASE_GRPO_CKPT="data/logs/checkpoints/release_r2r_grpo/store/ckpt.iter270.pth"
 
-GT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try9_step_345000.pt"
-GT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_dagger/store/try9.iter28800.pth"
-GT_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_grpo/store/try-5-vlnce.iter350.pth"
-GT_PROBE_CKPT="data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth"
-GT_COGNITIVE_MAP_NAMESPACE="${GT_COGNITIVE_MAP_NAMESPACE:-gt.bbox.r1p5.path5.v1}"
+PRIOR_GT_CURRENT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt_current/ckpts/model_step_425000.pt"
+PRIOR_GT_CURRENT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_prior_gt_current_dagger/store/ckpt.iter30000.pth"
+PRIOR_GT_CURRENT_GRPO_CKPT="data/logs/checkpoints/release_r2r_prior_gt_current_grpo/store/ckpt.iter500.pth"
+PRIOR_GT_CURRENT_COGNITIVE_MAP_NAMESPACE="gt.bbox.r1p5.path5.v1"
 
 PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE="gt.legacy.r1p5.direction5.blurred.v1"
-PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try5-r1p5-blurred_step_425000.pt"
-PRIORGT_TRY5_BLURRED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_dagger/store/try5-like-blur-r1p5.iter9600.pth"
-PRIORGT_TRY5_BLURRED_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_grpo/store/ckpt.iter350.pth"
+PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt_try5_r1p5_blurred/ckpts/model_step_425000.pt"
+PRIORGT_TRY5_BLURRED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_prior_gt_try5_blurred_dagger/store/ckpt.iter30000.pth"
+PRIORGT_TRY5_BLURRED_GRPO_CKPT="data/logs/checkpoints/release_r2r_prior_gt_try5_blurred_grpo/store/ckpt.iter500.pth"
 
 IMAGINED_PREDICTOR_CKPT="${IMAGINED_PREDICTOR_CKPT:-}"
 IMAGINED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000.pt"
 IMAGINED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth"
 IMAGINED_GRPO_CKPT="data/logs/checkpoints/release_r2r_imagined_grpo/store/ckpt.iter270.pth"
 
-LLM_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm/ckpts/model_step_100000.pt"
-LLM_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_dagger/store/ckpt.iter30000.pth"
-LLM_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grpo/store/ckpt.iter270.pth"
+LLM_BOXES_CURRENT_MODEL_KEY="llm-boxes-r1p5-path5"
+LLM_BOXES_CURRENT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_boxes_current/ckpts/model_step_425000.pt"
+LLM_BOXES_CURRENT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_boxes_current_dagger/store/ckpt.iter30000.pth"
+LLM_BOXES_CURRENT_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_boxes_current_grpo/store/ckpt.iter500.pth"
+
+LLM_GRID_TRY5_MODEL_KEY="llm-grid-r2r-legacy-r1p5-direction5-scale2"
+LLM_GRID_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_grid_try5/ckpts/model_step_425000.pt"
+LLM_GRID_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_dagger/store/ckpt.iter30000.pth"
+LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter500.pth"
 
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
@@ -92,30 +97,36 @@ GRPO_ARGS="ONLY_LAST_SAVEALL True
 
 BASE_MODEL_ARGS="MODEL.pretrained_path ${BASE_PRETRAINED_CKPT}"
 
-GT_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
+PRIOR_GT_CURRENT_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace ${GT_COGNITIVE_MAP_NAMESPACE}
-      MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source prior_gt
+      MODEL.MAP_ENCODER.cache_namespace ${PRIOR_GT_CURRENT_COGNITIVE_MAP_NAMESPACE}
+      MODEL.pretrained_path ${PRIOR_GT_CURRENT_PRETRAINED_CKPT}"
 
-GT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
+PRIOR_GT_CURRENT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.MAP_ENCODER.cache_namespace ${GT_COGNITIVE_MAP_NAMESPACE}
-      MODEL.pretrained_path ${GT_PRETRAINED_CKPT}"
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source prior_gt
+      MODEL.MAP_ENCODER.cache_namespace ${PRIOR_GT_CURRENT_COGNITIVE_MAP_NAMESPACE}
+      MODEL.pretrained_path ${PRIOR_GT_CURRENT_PRETRAINED_CKPT}"
 
 PRIORGT_TRY5_BLURRED_MODEL_ARGS="TRAINER_NAME SS-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source prior_gt
       MODEL.MAP_ENCODER.cache_namespace ${PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE}
-      MODEL.MAP_ENCODER.metadata_schema direction5
       MODEL.pretrained_path ${PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT}"
 
 PRIORGT_TRY5_BLURRED_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-PriorGT
       MODEL.policy_name PriorGTTry5Policy
       MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source prior_gt
       MODEL.MAP_ENCODER.cache_namespace ${PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE}
-      MODEL.MAP_ENCODER.metadata_schema direction5
       MODEL.pretrained_path ${PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT}"
 
 IMAGINED_PREDICTOR_ARG=""
@@ -126,24 +137,50 @@ fi
 IMAGINED_MODEL_ARGS="TRAINER_NAME SS-ETP-Imagined
       MODEL.policy_name ImaginedPolicy
       MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source imagined
       ${IMAGINED_PREDICTOR_ARG}
       MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
 IMAGINED_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-Imagined
       MODEL.policy_name ImaginedPolicy
       MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source imagined
       ${IMAGINED_PREDICTOR_ARG}
       MODEL.pretrained_path ${IMAGINED_PRETRAINED_CKPT}"
 
-LLM_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
-      MODEL.policy_name LLMPolicy
+LLM_BOXES_CURRENT_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMBoxesCurrentPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.pretrained_path ${LLM_PRETRAINED_CKPT}"
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source llm_boxes
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_BOXES_CURRENT_MODEL_KEY}
+      MODEL.pretrained_path ${LLM_BOXES_CURRENT_PRETRAINED_CKPT}"
 
-LLM_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
-      MODEL.policy_name LLMPolicy
+LLM_BOXES_CURRENT_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
+      MODEL.policy_name LLMBoxesCurrentPolicy
       MODEL.MAP_ENCODER.enabled True
-      MODEL.pretrained_path ${LLM_PRETRAINED_CKPT}"
+      MODEL.MAP_ENCODER.architecture current
+      MODEL.MAP_ENCODER.source llm_boxes
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_BOXES_CURRENT_MODEL_KEY}
+      MODEL.pretrained_path ${LLM_BOXES_CURRENT_PRETRAINED_CKPT}"
+
+LLM_GRID_TRY5_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMGridTry5Policy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source llm_grid
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
+      MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
+
+LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
+      MODEL.policy_name LLMGridTry5Policy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source llm_grid
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
+      MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
 launch() {
       python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $1
@@ -172,45 +209,37 @@ case $mode in
       echo "###### infer mode ######"
       launch "--exp_name release_r2r_grpo --run-type inference ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} INFERENCE.CKPT_PATH ${BASE_GRPO_CKPT} INFERENCE.PREDICTIONS_FILE preds.json IL.back_algo control ${BASE_MODEL_ARGS}"
       ;;
-      priorgt_dagger)
-      echo "###### priorgt dagger train mode ######"
-      launch "--exp_name release_r2r_priorgt_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} ${DAGGER_ARGS}"
+      prior_gt_current_dagger)
+      echo "###### PriorGT current DAgger ######"
+      launch "--exp_name release_r2r_prior_gt_current_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIOR_GT_CURRENT_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
-      priorgt_grpo)
-      echo "###### priorgt grpo train mode ######"
-      launch "--exp_name release_r2r_priorgt_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${GT_DAGGER_CKPT}"
+      prior_gt_current_grpo)
+      echo "###### PriorGT current GRPO ######"
+      launch "--exp_name release_r2r_prior_gt_current_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIOR_GT_CURRENT_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${PRIOR_GT_CURRENT_DAGGER_CKPT}"
       ;;
-      priorgt_eval_ss)
-      echo "###### priorgt eval mode (SS ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_DAGGER_CKPT} IL.back_algo control"
+      prior_gt_current_eval_dagger)
+      echo "###### PriorGT current DAgger eval ######"
+      launch "--exp_name release_r2r_prior_gt_current_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIOR_GT_CURRENT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIOR_GT_CURRENT_DAGGER_CKPT} IL.back_algo control"
       ;;
-      priorgt_eval_grpo)
-      echo "###### priorgt eval mode (GRPO ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_GRPO_CKPT} IL.back_algo control"
+      prior_gt_current_eval_grpo)
+      echo "###### PriorGT current GRPO eval ######"
+      launch "--exp_name release_r2r_prior_gt_current_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIOR_GT_CURRENT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIOR_GT_CURRENT_GRPO_CKPT} IL.back_algo control"
       ;;
-      priorgt_try5_blurred_dagger)
+      prior_gt_try5_blurred_dagger)
       echo "###### priorgt try5 blurred dagger train mode ######"
-      launch "--exp_name release_r2r_priorgt_try5_blurred_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} ${DAGGER_ARGS}"
+      launch "--exp_name release_r2r_prior_gt_try5_blurred_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
-      priorgt_try5_blurred_grpo)
+      prior_gt_try5_blurred_grpo)
       echo "###### priorgt try5 blurred grpo train mode ######"
-      launch "--exp_name release_r2r_priorgt_try5_blurred_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT}"
+      launch "--exp_name release_r2r_prior_gt_try5_blurred_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT}"
       ;;
-      priorgt_try5_blurred_eval_ss)
+      prior_gt_try5_blurred_eval_dagger)
       echo "###### priorgt try5 blurred eval mode (SS ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_try5_blurred_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT} IL.back_algo control"
+      launch "--exp_name release_r2r_prior_gt_try5_blurred_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_DAGGER_CKPT} IL.back_algo control"
       ;;
-      priorgt_try5_blurred_eval_grpo)
+      prior_gt_try5_blurred_eval_grpo)
       echo "###### priorgt try5 blurred eval mode (GRPO ckpt) ######"
-      launch "--exp_name release_r2r_priorgt_try5_blurred_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_GRPO_CKPT} IL.back_algo control"
-      ;;
-      priorgt_probe)
-      echo "###### priorgt probe: freeze base, train map encoder only ######"
-      launch "--exp_name release_r2r_priorgt_probe --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} ${GT_MODEL_ARGS} MODEL.MAP_ENCODER.freeze_base True IL.iters 3000 IL.lr 1e-4 IL.log_every 100 IL.ml_weight 1.0 IL.sample_ratio 0.75 IL.decay_interval 1000 IL.warmup_iters 200 IL.min_lr_ratio 0.1 IL.load_from_ckpt True IL.is_requeue False IL.waypoint_aug True IL.ckpt_to_load ${BASE_GRPO_CKPT} TASK_CONFIG.DATASET.SUFFIX _90"
-      ;;
-      priorgt_probe_eval)
-      echo "###### priorgt probe eval ######"
-      launch "--exp_name release_r2r_priorgt_probe --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${BASE_NUM_ENVS} ${GT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${GT_PROBE_CKPT} IL.back_algo control"
+      launch "--exp_name release_r2r_prior_gt_try5_blurred_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${PRIORGT_TRY5_BLURRED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${PRIORGT_TRY5_BLURRED_GRPO_CKPT} IL.back_algo control"
       ;;
       imagined_dagger)
       echo "###### imagined dagger train mode ######"
@@ -228,27 +257,43 @@ case $mode in
       echo "###### imagined eval mode (GRPO ckpt) ######"
       launch "--exp_name release_r2r_imagined_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${IMAGINED_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${IMAGINED_GRPO_CKPT} IL.back_algo control"
       ;;
-      llm_dagger)
-      echo "###### llm dagger train mode ######"
-      launch "--exp_name release_r2r_llm_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} ${DAGGER_ARGS}"
+      llm_boxes_current_dagger)
+      echo "###### LLM-Boxes current DAgger ######"
+      launch "--exp_name release_r2r_llm_boxes_current_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_BOXES_CURRENT_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
-      llm_eval_ss)
-      echo "###### llm eval mode (SS ckpt) ######"
-      launch "--exp_name release_r2r_llm_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_DAGGER_CKPT} IL.back_algo control"
+      llm_boxes_current_eval_dagger)
+      echo "###### LLM-Boxes current DAgger eval ######"
+      launch "--exp_name release_r2r_llm_boxes_current_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_BOXES_CURRENT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_BOXES_CURRENT_DAGGER_CKPT} IL.back_algo control"
       ;;
-      llm_grpo)
-      echo "###### llm grpo train mode ######"
-      launch "--exp_name release_r2r_llm_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${LLM_DAGGER_CKPT}"
+      llm_boxes_current_grpo)
+      echo "###### LLM-Boxes current GRPO ######"
+      launch "--exp_name release_r2r_llm_boxes_current_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_BOXES_CURRENT_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${LLM_BOXES_CURRENT_DAGGER_CKPT}"
       ;;
-      llm_eval_grpo)
-      echo "###### llm eval mode (GRPO ckpt) ######"
-      launch "--exp_name release_r2r_llm_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRPO_CKPT} IL.back_algo control"
+      llm_boxes_current_eval_grpo)
+      echo "###### LLM-Boxes current GRPO eval ######"
+      launch "--exp_name release_r2r_llm_boxes_current_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_BOXES_CURRENT_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_BOXES_CURRENT_GRPO_CKPT} IL.back_algo control"
+      ;;
+      llm_grid_try5_dagger)
+      echo "###### LLM-Grid Try5 DAgger ######"
+      launch "--exp_name release_r2r_llm_grid_try5_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} ${DAGGER_ARGS}"
+      ;;
+      llm_grid_try5_eval_dagger)
+      echo "###### LLM-Grid Try5 DAgger eval ######"
+      launch "--exp_name release_r2r_llm_grid_try5_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_DAGGER_CKPT} IL.back_algo control"
+      ;;
+      llm_grid_try5_grpo)
+      echo "###### LLM-Grid Try5 GRPO ######"
+      launch "--exp_name release_r2r_llm_grid_try5_grpo --run-type grpo ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_GRPO_MODEL_ARGS} ${GRPO_ARGS} GRPO.log_every 10 GRPO.ckpt_to_load ${LLM_GRID_TRY5_DAGGER_CKPT}"
+      ;;
+      llm_grid_try5_eval_grpo)
+      echo "###### LLM-Grid Try5 GRPO eval ######"
+      launch "--exp_name release_r2r_llm_grid_try5_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_GRPO_CKPT} IL.back_algo control"
       ;;
       imagined_infer)
       warn_unimplemented "inference path for imagined cognitive maps"
       ;;
       *)
-      echo "Usage: $0 {dagger|grpo|eval|infer|priorgt_dagger|priorgt_grpo|priorgt_eval_ss|priorgt_eval_grpo|priorgt_try5_blurred_dagger|priorgt_try5_blurred_grpo|priorgt_try5_blurred_eval_ss|priorgt_try5_blurred_eval_grpo|priorgt_probe|priorgt_probe_eval|imagined_dagger|imagined_eval_ss|imagined_grpo|imagined_eval_grpo|imagined_infer|llm_dagger|llm_eval_ss|llm_grpo|llm_eval_grpo} [master_port]" >&2
+      echo "Unknown mode: $mode" >&2
       exit 1
       ;;
 esac
@@ -259,21 +304,11 @@ esac
 # bash run_r2r/main_server.bash grpo 2333
 # bash run_r2r/main_server.bash eval 2333
 # bash run_r2r/main_server.bash infer 2333
-# bash run_r2r/main_server.bash priorgt_dagger 2333
-# bash run_r2r/main_server.bash priorgt_grpo 2333
-# bash run_r2r/main_server.bash priorgt_eval_ss 2333
-# bash run_r2r/main_server.bash priorgt_eval_grpo 2333
-# bash run_r2r/main_server.bash priorgt_try5_blurred_dagger 2333
-# bash run_r2r/main_server.bash priorgt_try5_blurred_grpo 2333
-# bash run_r2r/main_server.bash priorgt_try5_blurred_eval_ss 2333
-# bash run_r2r/main_server.bash priorgt_try5_blurred_eval_grpo 2333
-# bash run_r2r/main_server.bash priorgt_probe 2333       # quick verify: freeze base, ~3k steps
-# bash run_r2r/main_server.bash priorgt_probe_eval 2333  # eval after probe
+# bash run_r2r/main_server.bash prior_gt_current_dagger 2333
+# bash run_r2r/main_server.bash prior_gt_try5_blurred_dagger 2333
 # bash run_r2r/main_server.bash imagined_dagger 2333
 # bash run_r2r/main_server.bash imagined_eval_ss 2333
 # bash run_r2r/main_server.bash imagined_grpo 2333
 # bash run_r2r/main_server.bash imagined_eval_grpo 2333
-# bash run_r2r/main_server.bash llm_dagger 2333
-# bash run_r2r/main_server.bash llm_eval_ss 2333
-# bash run_r2r/main_server.bash llm_grpo 2333
-# bash run_r2r/main_server.bash llm_eval_grpo 2333
+# bash run_r2r/main_server.bash llm_boxes_current_dagger 2333
+# bash run_r2r/main_server.bash llm_grid_try5_dagger 2333

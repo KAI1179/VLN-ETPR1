@@ -27,7 +27,8 @@ def test_llm_navigation_policy_and_trainers_register(monkeypatch):
     import vlnce_baselines  # noqa: F401
     from habitat_baselines.common.baseline_registry import baseline_registry
 
-    assert baseline_registry.get_policy("LLMPolicy") is not None
+    assert baseline_registry.get_policy("LLMBoxesCurrentPolicy") is not None
+    assert baseline_registry.get_policy("LLMGridTry5Policy") is not None
     assert baseline_registry.get_trainer("SS-ETP-LLM") is not None
     assert baseline_registry.get_trainer("GRPO-ETP-LLM") is not None
 
@@ -122,16 +123,14 @@ def test_llm_navigation_cache_loader_fails_fast_when_map_missing(tmp_path):
 
     with pytest.raises(
         FileNotFoundError,
-        match=(
-            "Missing LLM-Navigation raster cognitive map cache: .*"
-            "llm_boxes_navigation_cache"
-        ),
+        match="Missing LLM-Navigation raster cognitive map cache",
     ):
         llm_cached_cognitive_map_to_tensors(
             "scene-a",
             "R2R_train_42",
             "R2R",
             "train",
+            metadata_schema="path5",
             cache_dir=tmp_path,
             model_key="test-model",
         )
@@ -164,9 +163,11 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
     def fake_cognitive_map_file_to_tensors(
         cache_path,
         random_rotation_augmentation,
+        metadata_schema,
     ):
         captured["cache_path"] = cache_path
         captured["random_rotation_augmentation"] = random_rotation_augmentation
+        captured["metadata_schema"] = metadata_schema
         return {"grid": "ok"}
 
     monkeypatch.setattr(
@@ -180,6 +181,7 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
         cache_id,
         "r2r",
         "val_unseen",
+        metadata_schema="direction5",
         cache_dir=tmp_path,
         model_key="llm5",
     )
@@ -188,6 +190,7 @@ def test_llm_navigation_cache_loader_normalizes_habitat_scene_paths(
     assert captured == {
         "cache_path": raster_path,
         "random_rotation_augmentation": False,
+        "metadata_schema": "direction5",
     }
 
 
@@ -245,6 +248,7 @@ def test_available_llm_navigation_episode_ids_skips_missing(
     allowed = navigation.available_llm_navigation_episode_ids(
         "R2R",
         "train",
+        require_boxes=False,
         cache_dir=tmp_path,
         model_key="test-model",
     )
@@ -311,6 +315,7 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
         "R2R",
         "val_unseen",
         ["1", "2"],
+        require_boxes=False,
         cache_dir=tmp_path,
         model_key="test-model",
     )
@@ -331,6 +336,8 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
         MODEL=SimpleNamespace(
             task_type="R2R",
             MAP_ENCODER=SimpleNamespace(
+                architecture="try5",
+                source="llm_grid",
                 llm_cache_dir="/tmp/cache",
                 llm_cache_model_key="test-model",
             ),

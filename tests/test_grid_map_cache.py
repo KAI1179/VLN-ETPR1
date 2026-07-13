@@ -266,7 +266,8 @@ def test_available_vlnce_cognitive_map_episode_ids_skips_missing(
     allowed = map_utils.available_vlnce_cognitive_map_episode_ids(
         "R2R",
         "train",
-        tmp_path,
+        require_boxes=True,
+        cache_dir=tmp_path,
         namespace="gt.legacy.r2p5.path5.v1",
     )
 

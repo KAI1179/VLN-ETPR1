@@ -8,6 +8,7 @@ from gym import Space
 from habitat import Config
 from habitat_baselines.common.baseline_registry import baseline_registry
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
     NUM_MAP_CATEGORIES,
@@ -95,6 +96,15 @@ class ImaginedPolicy(ILPolicy):
     ):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
+        candidate = CognitiveMapCandidate.parse(
+            config.MODEL.MAP_ENCODER.architecture,
+            config.MODEL.MAP_ENCODER.source,
+        )
+        expected = CognitiveMapCandidate.parse("current", "imagined")
+        if candidate != expected:
+            raise ValueError(
+                "ImaginedPolicy requires architecture=current, source=imagined"
+            )
         config.freeze()
 
         return cls(

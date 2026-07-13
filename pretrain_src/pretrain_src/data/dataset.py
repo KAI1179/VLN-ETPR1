@@ -9,6 +9,11 @@ import h5py
 import math
 from typing import Any, Dict, List, Optional
 
+from vlnce_baselines.models.cognitive_map_candidate import (
+    CognitiveMapCandidate,
+    CognitiveMapSource,
+)
+
 from .common import (
     load_nav_graphs,
     get_angle_fts,
@@ -17,7 +22,6 @@ from .common import (
     softmax,
 )
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
-    DEFAULT_COGNITIVE_MAP_NAMESPACE,
     ETP_R1_COGNITIVE_MAP_DIR,
     cached_cognitive_map_to_tensors,
     cognitive_map_boxes_cache_path,
@@ -27,7 +31,6 @@ from vlnce_baselines.models.etp_prior_gt.map_box_targets import (
     relevant_semantic_boxes_to_decoder_target,
 )
 from vlnce_baselines.models.etp_llm.navigation import (
-    DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_cached_cognitive_map_to_tensors,
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
@@ -39,19 +42,16 @@ MAX_DIST = 30  # normalize
 MAX_STEP = 10  # normalize
 TRAIN_MAX_STEP = 20
 PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
-PRETRAIN_COGNITIVE_MAP_NAMESPACE = DEFAULT_COGNITIVE_MAP_NAMESPACE
 PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
 PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
 PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
-PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY = DEFAULT_LLM_NAVIGATION_MODEL_KEY
 
 
 def _filter_missing_pretrain_cognitive_maps(
     items,
-    namespace: Optional[str] = None,
+    namespace: str,
+    require_boxes: bool,
 ):
-    if namespace is None:
-        namespace = PRETRAIN_COGNITIVE_MAP_NAMESPACE
     available = []
     skipped = 0
     for item in items:
@@ -67,7 +67,7 @@ def _filter_missing_pretrain_cognitive_maps(
             cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
             namespace=namespace,
         )
-        if raster_path.is_file() and boxes_path.is_file():
+        if raster_path.is_file() and (not require_boxes or boxes_path.is_file()):
             available.append(item)
         else:
             skipped += 1
@@ -85,7 +85,13 @@ def _filter_missing_pretrain_cognitive_maps(
     return available
 
 
-def _filter_missing_pretrain_llm_cognitive_maps(items):
+def _filter_missing_pretrain_llm_cognitive_maps(
+    items,
+    *,
+    cache_dir,
+    model_key: str,
+    require_boxes: bool,
+):
     available = []
     skipped = 0
     for item in items:
@@ -94,18 +100,18 @@ def _filter_missing_pretrain_llm_cognitive_maps(items):
             item["instr_id"],
             PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
             PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
-            cache_dir=PRETRAIN_LLM_COGNITIVE_MAP_DIR,
-            model_key=PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY,
+            cache_dir=cache_dir,
+            model_key=model_key,
         )
         raster_path = llm_navigation_cognitive_map_raster_path(
             item["scan"],
             item["instr_id"],
             PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
             PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
-            cache_dir=PRETRAIN_LLM_COGNITIVE_MAP_DIR,
-            model_key=PRETRAIN_LLM_COGNITIVE_MAP_MODEL_KEY,
+            cache_dir=cache_dir,
+            model_key=model_key,
         )
-        if boxes_path.is_file() and raster_path.is_file():
+        if raster_path.is_file() and (not require_boxes or boxes_path.is_file()):
             available.append(item)
         else:
             skipped += 1
@@ -118,7 +124,7 @@ def _filter_missing_pretrain_llm_cognitive_maps(items):
     if items and not available:
         raise FileNotFoundError(
             "No LLM-Navigation pretraining cognitive-map caches were found under "
-            f"{PRETRAIN_LLM_COGNITIVE_MAP_DIR}"
+            f"{cache_dir}"
         )
     return available
 
@@ -160,20 +166,23 @@ class ReverieTextPathData(object):
         in_memory=True,
         act_visited_node=False,
         val_sample_num=None,
-        use_prior_gt=False,
-        use_llm=False,
+        candidate: Optional[CognitiveMapCandidate] = None,
         cognitive_map_namespace=None,
-        cognitive_map_metadata_schema="path5",
+        llm_cache_dir=None,
+        llm_cache_model_key=None,
         random_rotation_augmentation=False,
     ):
-        self.use_prior_gt = use_prior_gt
-        self.use_llm = use_llm
-        self.cognitive_map_namespace = (
-            PRETRAIN_COGNITIVE_MAP_NAMESPACE
-            if cognitive_map_namespace is None
-            else cognitive_map_namespace
-        )
-        self.cognitive_map_metadata_schema = cognitive_map_metadata_schema
+        if candidate is not None and candidate.source in {
+            CognitiveMapSource.IMAGINED,
+            CognitiveMapSource.PRIOR_GT,
+        } and not cognitive_map_namespace:
+            raise ValueError("PriorGT-backed map sources require a cache namespace")
+        if candidate is not None and candidate.uses_llm_cache and not llm_cache_model_key:
+            raise ValueError("LLM map sources require a cache model key")
+        self.candidate = candidate
+        self.cognitive_map_namespace = cognitive_map_namespace
+        self.llm_cache_dir = llm_cache_dir
+        self.llm_cache_model_key = llm_cache_model_key
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -220,15 +229,24 @@ class ReverieTextPathData(object):
                 for item in f:
                     self.data.append(item)
 
-        if self.use_llm:
+        if self.candidate is not None and self.candidate.uses_llm_cache:
             self.data = _filter_non_english_pretrain_records(self.data)
-        if self.use_prior_gt:
+        if self.candidate is not None and self.candidate.source in {
+            CognitiveMapSource.IMAGINED,
+            CognitiveMapSource.PRIOR_GT,
+        }:
             self.data = _filter_missing_pretrain_cognitive_maps(
                 self.data,
                 self.cognitive_map_namespace,
+                self.candidate.requires_box_targets,
             )
-        if self.use_llm:
-            self.data = _filter_missing_pretrain_llm_cognitive_maps(self.data)
+        if self.candidate is not None and self.candidate.uses_llm_cache:
+            self.data = _filter_missing_pretrain_llm_cognitive_maps(
+                self.data,
+                cache_dir=self.llm_cache_dir,
+                model_key=self.llm_cache_model_key,
+                require_boxes=self.candidate.requires_box_targets,
+            )
 
         if val_sample_num:
             # cannot evaluate all the samples as it takes too much time
@@ -239,34 +257,19 @@ class ReverieTextPathData(object):
         return len(self.data)
 
     def _load_pretrain_cognitive_map(self, item: Dict[str, Any]):
+        if self.candidate is None:
+            raise RuntimeError("A cognitive-map candidate is required")
         self._reject_box_target_rotation_augmentation()
         tensors = cached_cognitive_map_to_tensors(
             item["scan"],
             item["instr_id"],
             cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
-            namespace=getattr(
-                self,
-                "cognitive_map_namespace",
-                PRETRAIN_COGNITIVE_MAP_NAMESPACE,
-            ),
-            random_rotation_augmentation=getattr(
-                self, "random_rotation_augmentation", False
-            ),
-            metadata_schema=getattr(self, "cognitive_map_metadata_schema", "path5"),
+            namespace=self.cognitive_map_namespace,
+            random_rotation_augmentation=self.random_rotation_augmentation,
+            metadata_schema=self.candidate.metadata_schema,
         )
-        boxes_path = cognitive_map_boxes_cache_path(
-            item["scan"],
-            item["instr_id"],
-            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
-            namespace=getattr(
-                self,
-                "cognitive_map_namespace",
-                PRETRAIN_COGNITIVE_MAP_NAMESPACE,
-            ),
-        )
-        relevant = RelevantSemanticBoxes.load(boxes_path)
         map_trajectory_metadata = tensors["map_trajectory_metadata"]
-        return {
+        result = {
             "cognitive_maps": tensors["grid"],
             "trajectory_keypoints": tensors.get(
                 "trajectory_keypoints",
@@ -275,48 +278,62 @@ class ReverieTextPathData(object):
             "map_trajectory_metadata": map_trajectory_metadata,
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
-            "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
-                relevant
-            ),
         }
+        if self.candidate.requires_box_targets:
+            boxes_path = cognitive_map_boxes_cache_path(
+                item["scan"],
+                item["instr_id"],
+                cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+                namespace=self.cognitive_map_namespace,
+            )
+            relevant = RelevantSemanticBoxes.load(boxes_path)
+            result["cognitive_map_box_targets"] = (
+                relevant_semantic_boxes_to_decoder_target(relevant)
+            )
+        return result
 
     def _load_llm_cognitive_map(self, item: Dict[str, Any]):
+        if self.candidate is None:
+            raise RuntimeError("A cognitive-map candidate is required")
         self._reject_box_target_rotation_augmentation()
         tensors = llm_cached_cognitive_map_to_tensors(
             item["scan"],
             item["instr_id"],
-            getattr(self, "llm_cache_dataset", "pretrain"),
-            getattr(self, "llm_cache_split", "mixed"),
-            cache_dir=getattr(self, "llm_cache_dir", None),
-            model_key=getattr(self, "llm_cache_model_key", "llama-3.1-8b-instruct"),
-            random_rotation_augmentation=getattr(
-                self, "random_rotation_augmentation", False
-            ),
+            PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
+            PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
+            cache_dir=self.llm_cache_dir,
+            model_key=self.llm_cache_model_key,
+            random_rotation_augmentation=self.random_rotation_augmentation,
+            metadata_schema=self.candidate.metadata_schema,
         )
-        boxes_path = llm_navigation_cognitive_map_boxes_path(
-            item["scan"],
-            item["instr_id"],
-            getattr(self, "llm_cache_dataset", "pretrain"),
-            getattr(self, "llm_cache_split", "mixed"),
-            cache_dir=getattr(self, "llm_cache_dir", None),
-            model_key=getattr(self, "llm_cache_model_key", "llama-3.1-8b-instruct"),
-        )
-        relevant = RelevantSemanticBoxes.load(boxes_path)
-        # Single-example cached tensors: grid=(37, 100, 100),
-        # keypoints=(5, 2), direction=(2,), start=(2,). Collate stacks B first.
-        return {
+        map_trajectory_metadata = tensors["map_trajectory_metadata"]
+        result = {
             "cognitive_maps": tensors["grid"],
-            "trajectory_keypoints": tensors["trajectory_keypoints"],
-            "map_trajectory_metadata": tensors["map_trajectory_metadata"],
+            "trajectory_keypoints": tensors.get(
+                "trajectory_keypoints",
+                map_trajectory_metadata,
+            ),
+            "map_trajectory_metadata": map_trajectory_metadata,
             "start_direction_vectors": tensors["start_direction_vector"],
             "start_positions": tensors["start_position"],
-            "cognitive_map_box_targets": relevant_semantic_boxes_to_decoder_target(
-                relevant
-            ),
         }
+        if self.candidate.requires_box_targets:
+            boxes_path = llm_navigation_cognitive_map_boxes_path(
+                item["scan"],
+                item["instr_id"],
+                PRETRAIN_LLM_COGNITIVE_MAP_DATASET,
+                PRETRAIN_LLM_COGNITIVE_MAP_SPLIT,
+                cache_dir=self.llm_cache_dir,
+                model_key=self.llm_cache_model_key,
+            )
+            relevant = RelevantSemanticBoxes.load(boxes_path)
+            result["cognitive_map_box_targets"] = (
+                relevant_semantic_boxes_to_decoder_target(relevant)
+            )
+        return result
 
     def _reject_box_target_rotation_augmentation(self) -> None:
-        if getattr(self, "random_rotation_augmentation", False):
+        if self.random_rotation_augmentation and self.candidate.requires_box_targets:
             raise ValueError(
                 "random_rotation_augmentation is not supported with "
                 "cognitive_map_box_targets yet"
@@ -719,10 +736,10 @@ class R2RTextPathData(ReverieTextPathData):
         act_visited_node=False,
         val_sample_num=None,
         start_vp_file=None,
-        use_prior_gt=False,
-        use_llm=False,
+        candidate: Optional[CognitiveMapCandidate] = None,
         cognitive_map_namespace=None,
-        cognitive_map_metadata_schema="path5",
+        llm_cache_dir=None,
+        llm_cache_model_key=None,
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -743,10 +760,10 @@ class R2RTextPathData(ReverieTextPathData):
             in_memory=in_memory,
             act_visited_node=act_visited_node,
             val_sample_num=val_sample_num,
-            use_prior_gt=use_prior_gt,
-            use_llm=use_llm,
+            candidate=candidate,
             cognitive_map_namespace=cognitive_map_namespace,
-            cognitive_map_metadata_schema=cognitive_map_metadata_schema,
+            llm_cache_dir=llm_cache_dir,
+            llm_cache_model_key=llm_cache_model_key,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 
@@ -877,9 +894,12 @@ class R2RTextPathData(ReverieTextPathData):
                 traj_view_img_fts[-1][:, self.image_feat_size :], dim=1
             )
 
-        if self.use_prior_gt:
+        if self.candidate is not None and self.candidate.source in {
+            CognitiveMapSource.IMAGINED,
+            CognitiveMapSource.PRIOR_GT,
+        }:
             outs.update(self._load_pretrain_cognitive_map(item))
-        if self.use_llm:
+        if self.candidate is not None and self.candidate.uses_llm_cache:
             outs.update(self._load_llm_cognitive_map(item))
 
         return outs

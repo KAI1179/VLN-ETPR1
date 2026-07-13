@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 
-def test_vlnbert_init_passes_map_fusion_mode_to_visual_config(monkeypatch):
+def test_vlnbert_init_passes_navigation_architecture_to_visual_config(monkeypatch):
     from transformers import PretrainedConfig
     from vlnce_baselines.models.etp_prior_gt import vilmodel_cmt, vlnbert_init
 
@@ -31,9 +31,9 @@ def test_vlnbert_init_passes_map_fusion_mode_to_visual_config(monkeypatch):
         use_sprels=True,
         fix_lang_embedding=False,
         fix_pano_embedding=False,
-        MAP_ENCODER=SimpleNamespace(fusion="try5"),
+        MAP_ENCODER=SimpleNamespace(architecture="try5"),
     )
 
     vlnbert_init.get_vlnbert_models(model_config)
 
-    assert captured["config"].map_fusion == "try5"
+    assert captured["config"].navigation_architecture == "try5"

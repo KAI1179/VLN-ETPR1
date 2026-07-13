@@ -1,17 +1,8 @@
-import json
 import logging
 import math
-import os
-import sys
-from io import open
-from typing import Callable, List, Tuple
-import numpy as np
-import copy
 
 import torch
 from torch import nn
-import torch.nn.functional as F
-from torch import Tensor, device, dtype
 
 from transformers import BertPreTrainedModel
 
@@ -28,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as BertLayerNorm
-except (ImportError, AttributeError) as e:
+except (ImportError, AttributeError):
     # logger.info("Better speed can be achieved with apex installed from https://www.github.com/nvidia/apex .")
     BertLayerNorm = torch.nn.LayerNorm
 
@@ -862,7 +853,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         self.img_embeddings = ImageEmbeddings(config)
         self.global_encoder = GlobalMapEncoder(config)
         self.graph_map_attention = build_map_token_fusion(
-            getattr(config, "map_fusion", "bidirectional"),
+            config.navigation_architecture,
             config.hidden_size,
             config.num_attention_heads,
             config.hidden_dropout_prob,

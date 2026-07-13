@@ -12,6 +12,7 @@ from prior import DATA_DIR
 from prior.vlnce import VLNCEEpisodeEntry
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    MapMetadataSchema,
     cognitive_map_file_to_tensors,
 )
 
@@ -130,6 +131,8 @@ def llm_cached_cognitive_map_to_tensors(
     cache_id: str,
     dataset: str,
     split: str,
+    *,
+    metadata_schema: MapMetadataSchema,
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     random_rotation_augmentation: bool = False,
@@ -145,19 +148,21 @@ def llm_cached_cognitive_map_to_tensors(
     if not cache_path.is_file():
         raise FileNotFoundError(
             "Missing LLM-Navigation raster cognitive map cache: "
-            f"{cache_path}. Generate caches with "
-            "`python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache` "
-            "before running LLM navigation."
+            f"{cache_path}. Generate the selected LLM cognitive-map cache "
+            "before navigation."
         )
     return cognitive_map_file_to_tensors(
         cache_path,
         random_rotation_augmentation=random_rotation_augmentation,
+        metadata_schema=metadata_schema,
     )
 
 
 def available_llm_navigation_episode_ids(
     dataset: str,
     split: str,
+    *,
+    require_boxes: bool,
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
 ) -> list[str]:
@@ -165,6 +170,7 @@ def available_llm_navigation_episode_ids(
         dataset,
         split,
         episode_ids=None,
+        require_boxes=require_boxes,
         cache_dir=cache_dir,
         model_key=model_key,
     )
@@ -184,6 +190,8 @@ def llm_navigation_cache_report(
     dataset: str,
     split: str,
     episode_ids: Optional[list[str]] = None,
+    *,
+    require_boxes: bool,
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
 ) -> LLMNavigationCacheReport:
@@ -198,14 +206,24 @@ def llm_navigation_cache_report(
         episode_id = str(entry.episode_id)
         if requested and episode_id not in requested:
             continue
-        if llm_navigation_cache_complete(
+        complete = llm_navigation_cache_complete(
             entry.scene_id,
             entry.unique_id,
             dataset,
             split,
             cache_dir=cache_dir,
             model_key=model_key,
-        ):
+        )
+        if require_boxes:
+            complete = complete and llm_navigation_cognitive_map_boxes_path(
+                entry.scene_id,
+                entry.unique_id,
+                dataset,
+                split,
+                cache_dir=cache_dir,
+                model_key=model_key,
+            ).is_file()
+        if complete:
             available.append(episode_id)
         else:
             missing.append(episode_id)

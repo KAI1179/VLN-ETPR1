@@ -21,6 +21,7 @@ from habitat import Config
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.rl.ppo.policy import Net
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
 from vlnce_baselines.models.encoders.resnet_encoders import (
@@ -36,6 +37,9 @@ import math
 
 @baseline_registry.register_policy
 class PriorGTPolicy(ILPolicy):
+    navigation_architecture = "current"
+    cognitive_map_source = "prior_gt"
+
     def __init__(
         self,
         observation_space: Space,
@@ -63,6 +67,22 @@ class PriorGTPolicy(ILPolicy):
     ):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
+        expected_candidate = CognitiveMapCandidate.parse(
+            cls.navigation_architecture,
+            cls.cognitive_map_source,
+        )
+        configured_candidate = CognitiveMapCandidate.parse(
+            config.MODEL.MAP_ENCODER.architecture,
+            config.MODEL.MAP_ENCODER.source,
+        )
+        if configured_candidate != expected_candidate:
+            raise ValueError(
+                f"{cls.__name__} requires architecture="
+                f"{expected_candidate.architecture.value}, source="
+                f"{expected_candidate.source.value}; got architecture="
+                f"{configured_candidate.architecture.value}, source="
+                f"{configured_candidate.source.value}"
+            )
         config.freeze()
 
         return cls(
@@ -75,26 +95,7 @@ class PriorGTPolicy(ILPolicy):
 
 @baseline_registry.register_policy
 class PriorGTTry5Policy(PriorGTPolicy):
-    @classmethod
-    def from_config(
-        cls,
-        config: Config,
-        observation_space: Space,
-        action_space: Any,
-        dropout_rate=0.1,
-    ):
-        config.defrost()
-        config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
-        config.MODEL.MAP_ENCODER.fusion = "try5"
-        config.MODEL.MAP_ENCODER.metadata_schema = "direction5"
-        config.freeze()
-
-        return cls(
-            observation_space=observation_space,
-            action_space=action_space,
-            model_config=config.MODEL,
-            dropout_rate=dropout_rate,
-        )
+    navigation_architecture = "try5"
 
 
 class Critic(nn.Module):

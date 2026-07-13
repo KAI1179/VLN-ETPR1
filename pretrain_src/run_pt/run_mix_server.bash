@@ -3,33 +3,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../scripts/gpu-detection.bash"
 configure_pretrain_gpu_vars
 PORT=$1
-shift
+OUTPUT_DIR=$2
+shift 2
 
-outdir=pretrained/r2r_rxr_ce/baseline
-args=()
-for arg in "$@"; do
-    case "$arg" in
-        --use_prior_gt)
-            outdir=pretrained/r2r_rxr_ce/prior_gt
-            args+=("$arg")
-            ;;
-        --use_imagined)
-            outdir=pretrained/r2r_rxr_ce/imagined
-            args+=("$arg")
-            ;;
-        --use_llm)
-            outdir=pretrained/r2r_rxr_ce/llm
-            args+=("$arg")
-            ;;
-        *)
-            args+=("$arg")
-            ;;
-    esac
-done
+if [ -z "$PORT" ] || [ -z "$OUTPUT_DIR" ]; then
+    echo "Usage: $0 PORT OUTPUT_DIR [training arguments...]" >&2
+    exit 2
+fi
 
 echo "Using port: $PORT"
-echo "Output dir: $outdir"
-echo "Args: ${args[*]}"
+echo "Output dir: $OUTPUT_DIR"
+echo "Args: $*"
 
 PYTHONPATH=$PYTHONPATH:. python -m torch.distributed.launch \
     --nproc_per_node=${NUM_GPUS} --node_rank "$NODE_RANK" --master_port="$PORT" \
@@ -37,5 +21,5 @@ PYTHONPATH=$PYTHONPATH:. python -m torch.distributed.launch \
     --vlnbert cmt \
     --model_config pretrain_src/run_pt/mix_model_config_dep.json \
     --config pretrain_src/run_pt/mix_pretrain_server.json \
-    --output_dir "$outdir" \
-    "${args[@]}"
+    --output_dir "$OUTPUT_DIR" \
+    "$@"

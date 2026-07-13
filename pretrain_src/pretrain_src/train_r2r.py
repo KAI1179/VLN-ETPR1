@@ -16,6 +16,8 @@ import torch.cuda.amp as amp  # TODO
 from transformers import AutoTokenizer, PretrainedConfig
 from transformers import AutoModel
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+
 from utils.logger import LOGGER, TB_LOGGER, RunningMeter, add_log_to_file
 from utils.save import ModelSaver, save_training_meta
 from utils.misc import NoOp, set_dropout, set_random_seed, set_cuda, wrap_model
@@ -99,9 +101,20 @@ def main(opts):
     for train_dataset_config in opts.train_datasets.values():
         model_config.pretrain_tasks.extend(train_dataset_config["tasks"])
     model_config.pretrain_tasks = set(model_config.pretrain_tasks)
-    model_config.use_prior_gt = getattr(opts, "use_prior_gt", False)
-    model_config.use_imagined = getattr(opts, "use_imagined", False)
-    model_config.use_llm = getattr(opts, "use_llm", False)
+    candidate = (
+        None
+        if opts.cognitive_map_source is None
+        else CognitiveMapCandidate.parse(
+            opts.navigation_architecture,
+            opts.cognitive_map_source,
+        )
+    )
+    model_config.navigation_architecture = (
+        "current" if candidate is None else candidate.architecture.value
+    )
+    model_config.cognitive_map_source = (
+        None if candidate is None else candidate.source.value
+    )
     model_config.map_loss_weight = getattr(opts, "map_loss_weight", 0.1)
     model_config.trajectory_keypoint_loss_weight = getattr(
         opts, "trajectory_keypoint_loss_weight", 0.001
@@ -109,12 +122,9 @@ def main(opts):
     model_config.map_predictor_checkpoint = getattr(
         opts, "map_predictor_checkpoint", ""
     )
-    model_config.cognitive_map_namespace = getattr(
-        opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
-    )
-    model_config.cognitive_map_metadata_schema = getattr(
-        opts, "cognitive_map_metadata_schema", "path5"
-    )
+    model_config.cognitive_map_namespace = opts.cognitive_map_namespace
+    model_config.llm_cache_model_key = opts.llm_cache_model_key
+    model_config.llm_cache_dir = opts.llm_cache_dir
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 
@@ -206,6 +216,12 @@ def main(opts):
 
     # load data training set
     data_cfg = EasyDict(opts.train_datasets["R2R"])
+    map_dataset_kwargs = {
+        "candidate": candidate,
+        "cognitive_map_namespace": opts.cognitive_map_namespace,
+        "llm_cache_dir": opts.llm_cache_dir,
+        "llm_cache_model_key": opts.llm_cache_model_key,
+    }
     train_nav_db = R2RTextPathData(
         data_cfg.train_traj_files,
         data_cfg.img_ft_file,
@@ -219,16 +235,8 @@ def main(opts):
         max_txt_len=opts.max_txt_len,
         in_memory=True,
         val_sample_num=None,
-        use_prior_gt=getattr(opts, "use_prior_gt", False)
-        or getattr(opts, "use_imagined", False),
-        use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(
-            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
-        ),
-        cognitive_map_metadata_schema=getattr(
-            opts, "cognitive_map_metadata_schema", "path5"
-        ),
         random_rotation_augmentation=False,
+        **map_dataset_kwargs,
     )
     val_r2r_nav_db = R2RTextPathData(
         data_cfg.val_unseen_r2r_traj_files,
@@ -243,15 +251,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len,
         in_memory=True,
         val_sample_num=opts.val_sample_num,
-        use_prior_gt=getattr(opts, "use_prior_gt", False)
-        or getattr(opts, "use_imagined", False),
-        use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(
-            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
-        ),
-        cognitive_map_metadata_schema=getattr(
-            opts, "cognitive_map_metadata_schema", "path5"
-        ),
+        **map_dataset_kwargs,
     )
     val_rxr_nav_db = R2RTextPathData(
         data_cfg.val_unseen_rxr_traj_files,
@@ -266,15 +266,7 @@ def main(opts):
         max_txt_len=opts.max_txt_len,
         in_memory=True,
         val_sample_num=opts.val_sample_num,
-        use_prior_gt=getattr(opts, "use_prior_gt", False)
-        or getattr(opts, "use_imagined", False),
-        use_llm=getattr(opts, "use_llm", False),
-        cognitive_map_namespace=getattr(
-            opts, "cognitive_map_namespace", "gt.bbox.r1p5.path5.v1"
-        ),
-        cognitive_map_metadata_schema=getattr(
-            opts, "cognitive_map_metadata_schema", "path5"
-        ),
+        **map_dataset_kwargs,
     )
 
     train_dataloaders = create_dataloaders(

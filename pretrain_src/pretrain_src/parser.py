@@ -2,6 +2,12 @@ import argparse
 import sys
 import json
 
+from vlnce_baselines.models.cognitive_map_candidate import (
+    CognitiveMapCandidate,
+    CognitiveMapSource,
+    NavigationArchitecture,
+)
+
 
 def load_parser():
     parser = argparse.ArgumentParser()
@@ -25,17 +31,14 @@ def load_parser():
 
     # Cognitive map arguments
     parser.add_argument(
-        "--use_prior_gt", action="store_true", help="Enable cognitive map encoder"
+        "--navigation-architecture",
+        choices=[value.value for value in NavigationArchitecture],
+        default=None,
     )
     parser.add_argument(
-        "--use_imagined",
-        action="store_true",
-        help="Enable instruction-imagined cognitive map predictor",
-    )
-    parser.add_argument(
-        "--use_llm",
-        action="store_true",
-        help="Enable LLM-derived cognitive map scaffold",
+        "--cognitive-map-source",
+        choices=[value.value for value in CognitiveMapSource],
+        default=None,
     )
     parser.add_argument(
         "--map_loss_weight",
@@ -53,19 +56,23 @@ def load_parser():
         "--map_predictor_checkpoint",
         default="",
         type=str,
-        help="Optional predictor-only checkpoint used to initialize --use_imagined pretraining",
+        help="Optional predictor-only checkpoint for the imagined map source",
     )
     parser.add_argument(
-        "--cognitive_map_namespace",
-        default="gt.bbox.r1p5.path5.v1",
+        "--cognitive-map-namespace",
+        default=None,
         type=str,
         help="PriorGT cognitive-map cache namespace under data/cognitive_maps_etp_r1",
     )
     parser.add_argument(
-        "--cognitive_map_metadata_schema",
-        default="path5",
-        choices=["path5", "direction5"],
-        help="PriorGT cognitive-map metadata schema consumed by the map encoder",
+        "--llm-cache-model-key",
+        default=None,
+        help="LLM-Navigation cache model key under data/llm_navigation",
+    )
+    parser.add_argument(
+        "--llm-cache-dir",
+        default=None,
+        help="Optional LLM-Navigation cache root override",
     )
     # training parameters
     parser.add_argument(
@@ -187,14 +194,43 @@ def parse_with_config(parser):
             if k not in override_keys:
                 setattr(args, k, v)
     del args.config
-    map_modes = [
-        name
-        for name in ("use_prior_gt", "use_imagined", "use_llm")
-        if getattr(args, name, False)
-    ]
-    if len(map_modes) > 1:
+    architecture = args.navigation_architecture
+    source = args.cognitive_map_source
+    if (architecture is None) != (source is None):
         raise ValueError(
-            "--use_prior_gt, --use_imagined, and --use_llm are mutually exclusive"
+            "--navigation-architecture and --cognitive-map-source must be provided together"
         )
+    if source is None and any(
+        (
+            args.cognitive_map_namespace,
+            args.llm_cache_model_key,
+            args.llm_cache_dir,
+            args.map_predictor_checkpoint,
+        )
+    ):
+        raise ValueError(
+            "Cognitive-map cache and predictor arguments require an explicit candidate"
+        )
+    if source is not None:
+        candidate = CognitiveMapCandidate.parse(architecture, source)
+        if candidate.source in {
+            CognitiveMapSource.IMAGINED,
+            CognitiveMapSource.PRIOR_GT,
+        } and not args.cognitive_map_namespace:
+            raise ValueError(
+                f"--cognitive-map-namespace is required for {candidate.source.value}"
+            )
+        if candidate.uses_llm_cache and not args.llm_cache_model_key:
+            raise ValueError(
+                f"--llm-cache-model-key is required for {candidate.source.value}"
+            )
+        if not candidate.uses_llm_cache and args.llm_cache_model_key:
+            raise ValueError(
+                "--llm-cache-model-key is only valid for an LLM cognitive-map source"
+            )
+        if args.map_predictor_checkpoint and candidate.source is not CognitiveMapSource.IMAGINED:
+            raise ValueError(
+                "--map_predictor_checkpoint is only valid for the imagined source"
+            )
     print("args:\n", args)
     return args

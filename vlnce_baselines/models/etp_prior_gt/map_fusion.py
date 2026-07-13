@@ -115,13 +115,13 @@ class BidirectionalMapTokenFusion(nn.Module):
 
 
 def build_map_token_fusion(
-    fusion: str,
+    architecture: str,
     hidden_size: int,
     num_heads: int,
     dropout: float = 0.1,
 ) -> nn.Module:
-    if fusion == "bidirectional":
+    if architecture == "current":
         return BidirectionalMapTokenFusion(hidden_size, num_heads, dropout)
-    if fusion == "try5":
+    if architecture == "try5":
         return GraphMapCrossAttention(hidden_size, num_heads, dropout)
-    raise ValueError(f"Unknown map-token fusion mode: {fusion}")
+    raise ValueError(f"Unknown navigation architecture: {architecture}")

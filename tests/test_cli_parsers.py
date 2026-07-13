@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import torch
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -143,10 +145,10 @@ def test_default_config_exposes_llm_navigation_cache_settings():
     config = get_config()
 
     assert config.MODEL.MAP_ENCODER.cache_namespace == "gt.bbox.r1p5.path5.v1"
-    assert config.MODEL.MAP_ENCODER.metadata_schema == "path5"
-    assert config.MODEL.MAP_ENCODER.fusion == "bidirectional"
+    assert config.MODEL.MAP_ENCODER.architecture == "current"
+    assert config.MODEL.MAP_ENCODER.source == "prior_gt"
     assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
-    assert config.MODEL.MAP_ENCODER.llm_cache_model_key == "llama-3.1-8b-instruct"
+    assert config.MODEL.MAP_ENCODER.llm_cache_model_key == ""
 
 
 def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
@@ -233,11 +235,6 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     monkeypatch.setattr(pretrain_dataset, "PRETRAIN_COGNITIVE_MAP_DIR", tmp_path)
     monkeypatch.setattr(
         pretrain_dataset,
-        "PRETRAIN_COGNITIVE_MAP_NAMESPACE",
-        "gt.legacy.r1p5.path5.v1",
-    )
-    monkeypatch.setattr(
-        pretrain_dataset,
         "cached_cognitive_map_to_tensors",
         fake_cached_cognitive_map_to_tensors,
     )
@@ -255,6 +252,9 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
+    nav_db.candidate = CognitiveMapCandidate.parse("current", "prior_gt")
+    nav_db.cognitive_map_namespace = "gt.legacy.r1p5.path5.v1"
+    nav_db.random_rotation_augmentation = False
     outputs = nav_db._load_pretrain_cognitive_map(
         {
             "instr_id": "42_0",
@@ -293,9 +293,11 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         cache_id,
         dataset,
         split,
-        cache_dir=None,
-        model_key="llama-3.1-8b-instruct",
-        random_rotation_augmentation=False,
+        *,
+        metadata_schema,
+        cache_dir,
+        model_key,
+        random_rotation_augmentation,
     ):
         captured["scene_id"] = scene_id
         captured["cache_id"] = cache_id
@@ -304,6 +306,7 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         captured["cache_dir"] = cache_dir
         captured["model_key"] = model_key
         captured["random_rotation_augmentation"] = random_rotation_augmentation
+        captured["metadata_schema"] = metadata_schema
         return {
             "grid": "llm-grid",
             "trajectory_keypoints": "llm-trajectory-keypoints",
@@ -331,6 +334,10 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
+    nav_db.candidate = CognitiveMapCandidate.parse("current", "llm_boxes")
+    nav_db.llm_cache_dir = None
+    nav_db.llm_cache_model_key = "llm-boxes-r1p5-path5"
+    nav_db.random_rotation_augmentation = False
 
     outputs = nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
@@ -340,8 +347,9 @@ def test_pretrain_llm_map_loads_precomputed_cache(monkeypatch):
         "dataset": "pretrain",
         "split": "mixed",
         "cache_dir": None,
-        "model_key": "llama-3.1-8b-instruct",
+        "model_key": "llm-boxes-r1p5-path5",
         "random_rotation_augmentation": False,
+        "metadata_schema": "path5",
     }
     assert outputs == {
         "cognitive_maps": "llm-grid",
@@ -364,18 +372,17 @@ def test_pretrain_llm_map_requires_precomputed_cache(tmp_path):
     )
     nav_db.llm_cache_dir = tmp_path
     nav_db.llm_cache_model_key = "test-model"
+    nav_db.candidate = CognitiveMapCandidate.parse("current", "llm_boxes")
+    nav_db.random_rotation_augmentation = False
 
     with pytest.raises(
         FileNotFoundError,
-        match=(
-            "Missing LLM-Navigation raster cognitive map cache: .*"
-            "llm_boxes_navigation_cache"
-        ),
+        match="Missing LLM-Navigation raster cognitive map cache",
     ):
         nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})
 
 
-def test_pretrain_parser_accepts_llm_mode_and_rejects_mixed_map_modes(monkeypatch):
+def test_pretrain_parser_accepts_candidate_and_rejects_invalid_pair(monkeypatch):
     pretrain_src = ROOT / "pretrain_src" / "pretrain_src"
     if str(pretrain_src) not in sys.path:
         sys.path.insert(0, str(pretrain_src))
@@ -398,13 +405,38 @@ def test_pretrain_parser_accepts_llm_mode_and_rejects_mixed_map_modes(monkeypatc
         pretrain_parser, "open", lambda *_args, **_kwargs: None, raising=False
     )
 
-    monkeypatch.setattr(sys, "argv", [*base_args, "--use_llm"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *base_args,
+            "--navigation-architecture",
+            "try5",
+            "--cognitive-map-source",
+            "llm_grid",
+            "--llm-cache-model-key",
+            "llm-grid-r1p5-direction5-scale2",
+        ],
+    )
     args = pretrain_parser.parse_with_config(parser)
-    assert args.use_llm is True
+    assert args.navigation_architecture == "try5"
+    assert args.cognitive_map_source == "llm_grid"
 
     parser = pretrain_parser.load_parser()
-    monkeypatch.setattr(sys, "argv", [*base_args, "--use_llm", "--use_imagined"])
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *base_args,
+            "--navigation-architecture",
+            "try5",
+            "--cognitive-map-source",
+            "llm_boxes",
+            "--llm-cache-model-key",
+            "llm-boxes-r1p5-path5",
+        ],
+    )
+    with pytest.raises(ValueError, match="Unsupported cognitive-map candidate"):
         pretrain_parser.parse_with_config(parser)
 
 
@@ -419,6 +451,9 @@ def test_pretrain_prior_map_requires_cached_map(tmp_path, monkeypatch):
     nav_db = pretrain_dataset.ReverieTextPathData.__new__(
         pretrain_dataset.ReverieTextPathData
     )
+    nav_db.candidate = CognitiveMapCandidate.parse("current", "prior_gt")
+    nav_db.cognitive_map_namespace = "gt.bbox.r1p5.path5.v1"
+    nav_db.random_rotation_augmentation = False
 
     with pytest.raises(FileNotFoundError, match="Missing cached cognitive map"):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})
@@ -446,6 +481,7 @@ def test_pretrain_prior_map_filter_skips_missing_entries(tmp_path, monkeypatch, 
     filtered = pretrain_dataset._filter_missing_pretrain_cognitive_maps(
         items,
         namespace=namespace,
+        require_boxes=True,
     )
 
     assert filtered == [{"instr_id": "good", "scan": "scene"}]
@@ -470,7 +506,9 @@ def test_pretrain_prior_map_filter_rejects_entirely_missing_cache(
         match="No PriorGT pretraining cognitive-map caches were found",
     ):
         pretrain_dataset._filter_missing_pretrain_cognitive_maps(
-            [{"instr_id": "missing", "scan": "scene"}]
+            [{"instr_id": "missing", "scan": "scene"}],
+            namespace="gt.bbox.r1p5.path5.v1",
+            require_boxes=True,
         )
 
 
@@ -506,7 +544,12 @@ def test_pretrain_llm_map_filter_skips_missing_entries(tmp_path, monkeypatch, ca
         {"instr_id": "missing", "scan": "scene"},
     ]
 
-    filtered = pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(items)
+    filtered = pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(
+        items,
+        cache_dir=tmp_path,
+        model_key="llama-3.1-8b-instruct",
+        require_boxes=True,
+    )
 
     assert filtered == [{"instr_id": "good", "scan": "scene"}]
     assert (
@@ -528,7 +571,10 @@ def test_pretrain_llm_map_filter_rejects_entirely_missing_cache(tmp_path, monkey
         match="No LLM-Navigation pretraining cognitive-map caches were found",
     ):
         pretrain_dataset._filter_missing_pretrain_llm_cognitive_maps(
-            [{"instr_id": "missing", "scan": "scene"}]
+            [{"instr_id": "missing", "scan": "scene"}],
+            cache_dir=tmp_path,
+            model_key="llama-3.1-8b-instruct",
+            require_boxes=True,
         )
 
 
@@ -592,7 +638,7 @@ def test_pretrain_llm_dataset_init_filters_non_english_records(
     monkeypatch.setattr(
         pretrain_dataset,
         "_filter_missing_pretrain_llm_cognitive_maps",
-        lambda items: items,
+        lambda items, **_kwargs: items,
     )
     monkeypatch.setattr(
         pretrain_dataset, "load_nav_graphs", lambda *_args: ({}, {}, {})
@@ -619,7 +665,8 @@ def test_pretrain_llm_dataset_init_filters_non_english_records(
         obj_ft_file=None,
         scanvp_cands_file=scanvp_cands_file,
         connectivity_dir="ignored",
-        use_llm=True,
+        candidate=CognitiveMapCandidate.parse("current", "llm_boxes"),
+        llm_cache_model_key="llm-boxes-r1p5-path5",
         in_memory=False,
     )
 
@@ -679,6 +726,8 @@ def test_pretrain_prior_map_rejects_random_rotation(tmp_path, monkeypatch):
         pretrain_dataset.ReverieTextPathData
     )
     nav_db.random_rotation_augmentation = True
+    nav_db.candidate = CognitiveMapCandidate.parse("current", "prior_gt")
+    nav_db.cognitive_map_namespace = "gt.bbox.r1p5.path5.v1"
 
     with pytest.raises(ValueError, match="random_rotation_augmentation"):
         nav_db._load_pretrain_cognitive_map({"instr_id": "42_0", "scan": "scene"})

@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=gt-dagger-eval
+#SBATCH --job-name=llm-grid-try5-dagger
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --gpus=4
 #SBATCH -p vip_gpu_scze096
 eval "$(conda shell.bash hook)" && conda activate etpr1-uv
-bash run_r2r/main_server.bash prior_gt_current_eval_dagger 2333
+bash run_r2r/main_server.bash llm_grid_try5_dagger 2333

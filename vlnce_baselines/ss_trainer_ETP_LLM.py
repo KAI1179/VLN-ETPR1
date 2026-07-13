@@ -2,6 +2,7 @@
 
 from habitat_baselines.common.baseline_registry import baseline_registry
 
+from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_llm.navigation import (
     available_llm_navigation_episode_ids,
     llm_navigation_cache_report,
@@ -39,29 +40,40 @@ class RLTrainer(PriorGTRLTrainer):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
         if map_cfg is None or not map_cfg.enabled:
             return None
+        candidate = CognitiveMapCandidate.parse(
+            map_cfg.architecture,
+            map_cfg.source,
+        )
+        model_key = map_cfg.llm_cache_model_key
+        if not model_key:
+            raise ValueError("MODEL.MAP_ENCODER.llm_cache_model_key is required")
         return available_llm_navigation_episode_ids(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
+            require_boxes=candidate.requires_box_targets,
             cache_dir=getattr(map_cfg, "llm_cache_dir", None),
-            model_key=getattr(
-                map_cfg,
-                "llm_cache_model_key",
-                "llama-3.1-8b-instruct",
-            ),
+            model_key=model_key,
         )
 
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         dataset = self.config.MODEL.task_type
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        candidate = CognitiveMapCandidate.parse(
+            map_cfg.architecture,
+            map_cfg.source,
+        )
         cache_dir = getattr(map_cfg, "llm_cache_dir", None)
-        model_key = getattr(map_cfg, "llm_cache_model_key", "llama-3.1-8b-instruct")
+        model_key = map_cfg.llm_cache_model_key
+        if not model_key:
+            raise ValueError("MODEL.MAP_ENCODER.llm_cache_model_key is required")
         return [
             llm_cached_cognitive_map_to_tensors(
                 ep.scene_id,
                 self._cognitive_map_cache_id(ep),
                 dataset,
                 split,
+                metadata_schema=candidate.metadata_schema,
                 cache_dir=cache_dir,
                 model_key=model_key,
                 random_rotation_augmentation=random_rotation_augmentation,
@@ -71,16 +83,20 @@ class RLTrainer(PriorGTRLTrainer):
 
     def _prepare_eval_episodes_allowed(self, episodes_allowed):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        candidate = CognitiveMapCandidate.parse(
+            map_cfg.architecture,
+            map_cfg.source,
+        )
+        model_key = map_cfg.llm_cache_model_key
+        if not model_key:
+            raise ValueError("MODEL.MAP_ENCODER.llm_cache_model_key is required")
         report = llm_navigation_cache_report(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
             [str(episode_id) for episode_id in episodes_allowed],
+            require_boxes=candidate.requires_box_targets,
             cache_dir=getattr(map_cfg, "llm_cache_dir", None),
-            model_key=getattr(
-                map_cfg,
-                "llm_cache_model_key",
-                "llama-3.1-8b-instruct",
-            ),
+            model_key=model_key,
         )
         self._llm_eval_missing_cache_episode_ids = report.missing_episode_ids
         if report.missing_episode_ids:

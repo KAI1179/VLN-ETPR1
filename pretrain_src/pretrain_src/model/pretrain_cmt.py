@@ -6,6 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers.models.bert.modeling_bert import BertPreTrainedModel
+from vlnce_baselines.models.cognitive_map_candidate import (
+    CognitiveMapCandidate,
+    CognitiveMapSource,
+)
 from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 
 from .vilmodel import (
@@ -94,9 +98,15 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
 
         self.config = config
         self.bert = GlocalTextPathCMT(config)
-        self.use_imagined = getattr(config, "use_imagined", False)
-        self.use_prior_gt = getattr(config, "use_prior_gt", False)
-        self.use_llm = getattr(config, "use_llm", False)
+        cognitive_map_source = getattr(config, "cognitive_map_source", None)
+        self.cognitive_map_candidate = (
+            None
+            if cognitive_map_source is None
+            else CognitiveMapCandidate.parse(
+                config.navigation_architecture,
+                cognitive_map_source,
+            )
+        )
         self.map_loss_weight = getattr(config, "map_loss_weight", 0.1)
         self.trajectory_keypoint_loss_weight = getattr(
             config, "trajectory_keypoint_loss_weight", 0.001
@@ -117,15 +127,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 self.config, self.config.hidden_size, self.config.pred_head_dropout_prob
             )
 
-        map_inputs_enabled = self.use_imagined or self.use_prior_gt or self.use_llm
-        if map_inputs_enabled:
+        if self.cognitive_map_candidate is not None:
             try:
                 from vlnce_baselines.models.etp_prior_gt.map_encoder import (
                     EmbeddingGridMapEncoder,
-                )
-                from vlnce_baselines.models.etp_prior_gt.map_decoder import (
-                    CognitiveMapDecoder,
-                    CognitiveMapSetCriterion,
                 )
             except ImportError as exc:
                 raise RuntimeError(
@@ -139,9 +144,20 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=self.config.hidden_size
             )
-            self.map_decoder = CognitiveMapDecoder(hidden_size=self.config.hidden_size)
-            self.map_box_criterion = CognitiveMapSetCriterion()
-            if self.use_imagined:
+            if self.cognitive_map_candidate.requires_box_targets:
+                from vlnce_baselines.models.etp_prior_gt.map_decoder import (
+                    CognitiveMapDecoder,
+                    CognitiveMapSetCriterion,
+                )
+
+                self.map_decoder = CognitiveMapDecoder(
+                    hidden_size=self.config.hidden_size
+                )
+                self.map_box_criterion = CognitiveMapSetCriterion()
+            if (
+                self.cognitive_map_candidate.source
+                is CognitiveMapSource.IMAGINED
+            ):
                 from vlnce_baselines.models.etp_imagined.instruction_map_predictor import (
                     InstructionCognitiveMapPredictor,
                 )
@@ -167,8 +183,15 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
             raise FileNotFoundError(checkpoint_path)
-        if not getattr(self, "use_imagined", False) or self.map_predictor is None:
-            raise ValueError("--map_predictor_checkpoint requires --use_imagined")
+        if (
+            self.cognitive_map_candidate is None
+            or self.cognitive_map_candidate.source
+            is not CognitiveMapSource.IMAGINED
+            or self.map_predictor is None
+        ):
+            raise ValueError(
+                "--map_predictor_checkpoint requires the imagined cognitive-map source"
+            )
         map_predictor = self.map_predictor
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -287,9 +310,12 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             return None, None, None
         map_encoder = self.map_encoder
 
-        if self.use_imagined:
+        if (
+            self.cognitive_map_candidate is not None
+            and self.cognitive_map_candidate.source is CognitiveMapSource.IMAGINED
+        ):
             if self.map_predictor is None:
-                raise RuntimeError("use_imagined requires map_predictor")
+                raise RuntimeError("imagined source requires map_predictor")
             map_predictor = self.map_predictor
             txt_token_type_ids = torch.zeros_like(batch["txt_ids"])
             txt_embeds = self.bert.embeddings(
@@ -329,7 +355,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 )
             return map_tokens, map_token_masks, map_loss
 
-        if self.use_prior_gt or self.use_llm:
+        if self.cognitive_map_candidate is not None:
             # Pretraining collate stacks cached map tensors to:
             # cognitive_maps=(B, 37, 100, 100), metadata=(B, 5, 2),
             # direction=(B, 2), start=(B, 2). The map encoder returns
@@ -350,8 +376,18 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         cognitive_map_box_targets,
         compute_loss,
     ):
-        if not compute_loss or updated_map_tokens is None:
+        if not compute_loss or not self.cognitive_map_candidate:
             return None
+        if not self.cognitive_map_candidate.requires_box_targets:
+            if updated_map_tokens is not None:
+                raise RuntimeError(
+                    "Try5 architecture must not produce updated map tokens"
+                )
+            return None
+        if updated_map_tokens is None:
+            raise RuntimeError(
+                "Current architecture must produce updated map tokens"
+            )
         if cognitive_map_box_targets is None:
             raise ValueError(
                 "cognitive_map_box_targets are required to supervise updated_map_tokens"
