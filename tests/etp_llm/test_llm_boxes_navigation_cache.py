@@ -8,9 +8,9 @@ import pytest
 import prior.bbox as bbox
 from prior.grid_map import CognitiveGridMap
 from prior.trajectory import InsufficientTrajectoryPointsError
-from vlnce_baselines.models.etp_llm import generate_navigation_cache
+from vlnce_baselines.models.etp_llm import llm_boxes_navigation_cache
 from vlnce_baselines.models.etp_llm.boxes_schema import LLMBoxesSpec
-from vlnce_baselines.models.etp_llm.train_llm_boxes import LLMBoxesItem
+from vlnce_baselines.models.etp_llm.llm_boxes_train import LLMBoxesItem
 
 KEYPOINTS = [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
 KEYPOINTS_ONLY_JSON = (
@@ -175,7 +175,7 @@ class _SceneBoxes:
         return relevant
 
 
-def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
+def test_llm_boxes_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
@@ -205,7 +205,7 @@ def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     )
     model = _CacheGenerationModel(CHAIR_JSON)
 
-    metrics = generate_navigation_cache.generate_navigation_cache(
+    metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
         model,
         _CharChatTokenizer(),
         dataset,
@@ -252,7 +252,7 @@ def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     )
 
 
-def test_generate_navigation_cache_uses_left_padding_for_decoder_only_generation(
+def test_llm_boxes_navigation_cache_uses_left_padding_for_decoder_only_generation(
     tmp_path,
 ):
     target = _empty_relevant()
@@ -284,7 +284,7 @@ def test_generate_navigation_cache_uses_left_padding_for_decoder_only_generation
     )
     tokenizer = _CharChatTokenizer()
 
-    generate_navigation_cache.generate_navigation_cache(
+    llm_boxes_navigation_cache.llm_boxes_navigation_cache(
         _CacheGenerationModel(CHAIR_JSON),
         tokenizer,
         dataset,
@@ -297,7 +297,7 @@ def test_generate_navigation_cache_uses_left_padding_for_decoder_only_generation
     assert tokenizer.padding_side_during_call == "left"
 
 
-def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
+def test_llm_boxes_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
@@ -343,7 +343,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
     status_path.write_text(json.dumps({"status": "complete", "attempt": "old"}))
     model = _CacheGenerationModel("should not run")
 
-    metrics = generate_navigation_cache.generate_navigation_cache(
+    metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
         model,
         _CharChatTokenizer(),
         dataset,
@@ -367,7 +367,7 @@ def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path)
     assert metrics["generated"] == 0.0
 
 
-def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp_path):
+def test_llm_boxes_navigation_cache_regenerates_when_structured_cache_missing(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
@@ -404,7 +404,7 @@ def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp
     boxes_path.write_bytes(b"boxes-only")
     model = _CacheGenerationModel(KEYPOINTS_ONLY_JSON)
 
-    metrics = generate_navigation_cache.generate_navigation_cache(
+    metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
         model,
         _CharChatTokenizer(),
         dataset,
@@ -420,7 +420,7 @@ def test_generate_navigation_cache_regenerates_when_structured_cache_missing(tmp
     assert metrics["generated"] == 1.0
 
 
-def test_generate_navigation_cache_records_conversion_failure_status(
+def test_llm_boxes_navigation_cache_records_conversion_failure_status(
     tmp_path, monkeypatch
 ):
     target = _empty_relevant()
@@ -464,13 +464,13 @@ def test_generate_navigation_cache_records_conversion_failure_status(
         raise ValueError("bad geometry")
 
     monkeypatch.setattr(
-        generate_navigation_cache,
+        llm_boxes_navigation_cache,
         "spec_to_relevant_semantic_boxes",
         fail_conversion,
     )
 
     with pytest.warns(RuntimeWarning, match="conversion_failed"):
-        metrics = generate_navigation_cache.generate_navigation_cache(
+        metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
             model,
             _CharChatTokenizer(),
             dataset,
@@ -500,7 +500,7 @@ def test_generate_navigation_cache_records_conversion_failure_status(
     assert metrics["skipped"] == 1.0
 
 
-def test_generate_navigation_cache_records_parse_failure_status(tmp_path):
+def test_llm_boxes_navigation_cache_records_parse_failure_status(tmp_path):
     target = _empty_relevant()
     dataset: List[LLMBoxesItem] = [
         {
@@ -537,7 +537,7 @@ def test_generate_navigation_cache_records_parse_failure_status(tmp_path):
     status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
 
     with pytest.warns(RuntimeWarning, match="parse_failed"):
-        metrics = generate_navigation_cache.generate_navigation_cache(
+        metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
             _CacheGenerationModel("not json"),
             _CharChatTokenizer(),
             dataset,
@@ -568,13 +568,13 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
     _PretrainAnnotationEntry.calls = []
     _SceneBoxes.calls = []
     monkeypatch.setattr(
-        generate_navigation_cache,
+        llm_boxes_navigation_cache,
         "PretrainAnnotationEntry",
         _PretrainAnnotationEntry,
     )
-    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
 
-    items = generate_navigation_cache.load_pretrain_cache_items(
+    items = llm_boxes_navigation_cache.load_pretrain_cache_items(
         annotation_files=["R2R_Prevalent_enc_xlmr.jsonl"],
         limit=1,
         quiet=True,
@@ -593,10 +593,10 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
 def test_load_vlnce_cache_items_uses_ground_truth_trajectory(monkeypatch):
     _EpisodeSource.calls = []
     _SceneBoxes.calls = []
-    monkeypatch.setattr(generate_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
 
-    items = generate_navigation_cache.load_vlnce_cache_items(
+    items = llm_boxes_navigation_cache.load_vlnce_cache_items(
         "R2R",
         "train",
         limit=1,
@@ -616,8 +616,8 @@ def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
 ):
     _EpisodeSource.calls = []
     _SceneBoxes.calls = []
-    monkeypatch.setattr(generate_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
     args = argparse.Namespace(
         cache_dir=str(tmp_path),
         cache_model_key="test-model",
@@ -658,7 +658,7 @@ def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(
     raster_path.write_bytes(b"done")
     status_path.write_text(json.dumps({"status": "complete"}))
 
-    items = generate_navigation_cache.load_vlnce_cache_items(
+    items = llm_boxes_navigation_cache.load_vlnce_cache_items(
         "R2R",
         "train",
         limit=1,
@@ -677,11 +677,11 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     _PretrainAnnotationEntry.calls = []
     _SceneBoxes.calls = []
     monkeypatch.setattr(
-        generate_navigation_cache,
+        llm_boxes_navigation_cache,
         "PretrainAnnotationEntry",
         _PretrainAnnotationEntry,
     )
-    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "SceneSemanticBoxes", _SceneBoxes)
     args = argparse.Namespace(
         cache_dir=str(tmp_path),
         cache_model_key="test-model",
@@ -722,7 +722,7 @@ def test_load_pretrain_cache_items_skips_existing_cache_before_scene_boxes(
     raster_path.write_bytes(b"done")
     status_path.write_text(json.dumps({"status": "complete"}))
 
-    items = generate_navigation_cache.load_pretrain_cache_items(
+    items = llm_boxes_navigation_cache.load_pretrain_cache_items(
         annotation_files=["R2R_Prevalent_enc_xlmr.jsonl"],
         limit=1,
         quiet=True,
@@ -742,13 +742,13 @@ def test_load_pretrain_cache_items_warns_and_skips_missing_annotation(monkeypatc
             yield
 
     monkeypatch.setattr(
-        generate_navigation_cache,
+        llm_boxes_navigation_cache,
         "PretrainAnnotationEntry",
         MissingPretrainAnnotationEntry,
     )
 
     with pytest.warns(RuntimeWarning, match="skipping missing pretrain annotation"):
-        items = generate_navigation_cache.load_pretrain_cache_items(
+        items = llm_boxes_navigation_cache.load_pretrain_cache_items(
             annotation_files=["missing.jsonl"],
             quiet=True,
         )
@@ -770,12 +770,12 @@ def test_load_vlnce_cache_items_records_skipped_input_status(monkeypatch, tmp_pa
         ):
             raise InsufficientTrajectoryPointsError("not enough points")
 
-    monkeypatch.setattr(generate_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(generate_navigation_cache, "SceneSemanticBoxes", BadSceneBoxes)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_navigation_cache, "SceneSemanticBoxes", BadSceneBoxes)
     args = argparse.Namespace(cache_dir=str(tmp_path), cache_model_key="test-model")
 
     with pytest.warns(RuntimeWarning, match="skipping R2R_train_42"):
-        items = generate_navigation_cache.load_vlnce_cache_items(
+        items = llm_boxes_navigation_cache.load_vlnce_cache_items(
             "R2R",
             "train",
             limit=1,
@@ -797,7 +797,7 @@ def test_load_vlnce_cache_items_records_skipped_input_status(monkeypatch, tmp_pa
 
 
 def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
-    args = generate_navigation_cache.parse_args(
+    args = llm_boxes_navigation_cache.parse_args(
         [
             "--model-name-or-path",
             "tiny-llm",
@@ -825,11 +825,11 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
     assert not hasattr(args, "annotation_file")
 
     with pytest.raises(SystemExit):
-        generate_navigation_cache.parse_args(["--dataset", "R2R"])
+        llm_boxes_navigation_cache.parse_args(["--dataset", "R2R"])
     with pytest.raises(SystemExit):
-        generate_navigation_cache.parse_args(["--split", "train"])
+        llm_boxes_navigation_cache.parse_args(["--split", "train"])
     with pytest.raises(SystemExit):
-        generate_navigation_cache.parse_args(
+        llm_boxes_navigation_cache.parse_args(
             ["--annotation-file", "R2R_Prevalent_enc_xlmr.jsonl"]
         )
 
@@ -837,29 +837,29 @@ def test_cache_parser_generates_all_sources_by_default_and_rejects_selectors():
 def test_visible_cuda_devices_uses_cuda_visible_devices(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5, 6,7")
 
-    assert generate_navigation_cache._visible_cuda_devices() == ["4", "5", "6", "7"]
+    assert llm_boxes_navigation_cache._visible_cuda_devices() == ["4", "5", "6", "7"]
 
 
 def test_visible_cuda_devices_treats_disabled_cuda_as_no_devices(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
 
-    assert generate_navigation_cache._visible_cuda_devices() == []
+    assert llm_boxes_navigation_cache._visible_cuda_devices() == []
 
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
 
-    assert generate_navigation_cache._visible_cuda_devices() == []
+    assert llm_boxes_navigation_cache._visible_cuda_devices() == []
 
 
 def test_parallel_worker_count_resolves_auto_from_visible_cuda(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
 
-    assert generate_navigation_cache._resolve_parallel_worker_count("auto") == 4
-    assert generate_navigation_cache._resolve_parallel_worker_count("2") == 2
+    assert llm_boxes_navigation_cache._resolve_parallel_worker_count("auto") == 4
+    assert llm_boxes_navigation_cache._resolve_parallel_worker_count("2") == 2
 
     with pytest.raises(ValueError, match="positive integer"):
-        generate_navigation_cache._resolve_parallel_worker_count("many")
+        llm_boxes_navigation_cache._resolve_parallel_worker_count("many")
     with pytest.raises(ValueError, match="at least 1"):
-        generate_navigation_cache._resolve_parallel_worker_count("0")
+        llm_boxes_navigation_cache._resolve_parallel_worker_count("0")
 
 
 def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_path):
@@ -876,16 +876,16 @@ def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_pat
         quiet=True,
     )
 
-    command = generate_navigation_cache._worker_command(
+    command = llm_boxes_navigation_cache._worker_command(
         args,
         worker_count=4,
         worker_index=2,
     )
 
     assert command[:3] == [
-        generate_navigation_cache.sys.executable,
+        llm_boxes_navigation_cache.sys.executable,
         "-m",
-        "vlnce_baselines.models.etp_llm.generate_navigation_cache",
+        "vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache",
     ]
     assert command[command.index("--parallel-workers") + 1] == "1"
     assert command[command.index("--worker-count") + 1] == "4"
@@ -910,7 +910,7 @@ def test_write_split_metrics_uses_worker_file_for_parallel_workers(tmp_path):
         "strict_parse_failure_rate": 1.0,
     }
 
-    generate_navigation_cache._write_split_metrics(split_dir, metrics, args)
+    llm_boxes_navigation_cache._write_split_metrics(split_dir, metrics, args)
 
     worker_path = split_dir / "worker_metrics" / "worker_2.json"
     assert worker_path.is_file()
@@ -949,7 +949,7 @@ def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
         )
     )
 
-    metrics = generate_navigation_cache._aggregate_worker_metrics(split_dir)
+    metrics = llm_boxes_navigation_cache._aggregate_worker_metrics(split_dir)
 
     assert metrics == {
         "examples": 5.0,
@@ -971,14 +971,14 @@ def test_belongs_to_worker_assigns_each_cache_id_once():
         owners = [
             index
             for index in range(worker_count)
-            if generate_navigation_cache._belongs_to_worker(
+            if llm_boxes_navigation_cache._belongs_to_worker(
                 cache_id,
                 argparse.Namespace(worker_count=worker_count, worker_index=index),
             )
         ]
         assert len(owners) == 1
 
-    assert generate_navigation_cache._belongs_to_worker(
+    assert llm_boxes_navigation_cache._belongs_to_worker(
         "R2R_train_42",
         argparse.Namespace(worker_count=1, worker_index=0),
     )
@@ -986,7 +986,7 @@ def test_belongs_to_worker_assigns_each_cache_id_once():
 
 def test_skipped_cache_count_sums_split_metrics():
     assert (
-        generate_navigation_cache._skipped_cache_count(
+        llm_boxes_navigation_cache._skipped_cache_count(
             {
                 "r2r/train": {"skipped": 1.0},
                 "rxr/train": {"skipped": 2.0},

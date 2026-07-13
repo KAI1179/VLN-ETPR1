@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llm-grid-train-s1
+#SBATCH --job-name=llm-grid-train-r1p5
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --gpus=6
 #SBATCH -p vip_gpu_scze096
@@ -10,14 +10,13 @@ conda activate etpr1-uv
 
 set -u
 
-python -m vlnce_baselines.models.etp_llm.train_llm_grid train \
-  --scale 1 \
-  --batch-size 1 \
-  --gradient-accumulation-steps 2 \
+python -m vlnce_baselines.models.etp_llm.llm_grid_train train \
+  --batch-size 2 \
+  --gradient-accumulation-steps 1 \
   --gradient-checkpointing \
-  --max-new-tokens 5120 \
+  --max-new-tokens 2048 \
   --lora-r 32 \
   --lora-alpha 64 \
   --lora-dropout 0.05 \
   --cognitive-map-namespace gt.legacy.r1p5.direction5.v1 \
-  --output-dir outputs/llm_grid/r2r-legacy-r1p5-direction5-scale1
+  --output-dir outputs/llm_grid/r2r-legacy-r1p5-direction5-scale2

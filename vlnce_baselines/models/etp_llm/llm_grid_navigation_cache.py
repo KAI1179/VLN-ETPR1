@@ -15,7 +15,7 @@ import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
 
-from .generate_navigation_cache import (
+from .llm_boxes_navigation_cache import (
     PRETRAIN_DATASET_KEY,
     PRETRAIN_SPLIT,
     VLNCE_DATASETS,
@@ -49,8 +49,8 @@ from .navigation import (
     llm_navigation_prediction_path,
     llm_navigation_split_dir,
 )
-from .train_llm_boxes import decode_generated_completion
-from .train_llm_grid import (
+from .llm_boxes_train import decode_generated_completion
+from .llm_grid_train import (
     DEFAULT_MODEL_NAME_OR_PATH,
     GRID_CHANNELS,
     GRID_SCALE,
@@ -89,7 +89,7 @@ class LLMGridNavigationCacheArgs(Tap):
             raise ValueError("LLM-Grid navigation cache generation supports scale=2")
 
 
-def generate_grid_navigation_cache(
+def llm_grid_navigation_cache(
     model: Any,
     tokenizer: Any,
     dataset: Iterable[Any],
@@ -270,7 +270,7 @@ def generate_all_grid_navigation_caches(
         args=args,
     )
     metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = (
-        generate_grid_navigation_cache(
+        llm_grid_navigation_cache(
             model,
             tokenizer,
             pretrain_items,
@@ -288,7 +288,7 @@ def generate_all_grid_navigation_caches(
                 quiet=args.quiet,
                 args=args,
             )
-            metrics[f"{dataset_key.lower()}/{split}"] = generate_grid_navigation_cache(
+            metrics[f"{dataset_key.lower()}/{split}"] = llm_grid_navigation_cache(
                 model,
                 tokenizer,
                 items,
@@ -439,7 +439,7 @@ def _worker_command(
     command = [
         sys.executable,
         "-m",
-        "vlnce_baselines.models.etp_llm.generate_grid_navigation_cache",
+        "vlnce_baselines.models.etp_llm.llm_grid_navigation_cache",
         "--model-name-or-path",
         str(args.model_name_or_path),
         "--max-input-length",

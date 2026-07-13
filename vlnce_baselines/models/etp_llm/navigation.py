@@ -146,7 +146,7 @@ def llm_cached_cognitive_map_to_tensors(
         raise FileNotFoundError(
             "Missing LLM-Navigation raster cognitive map cache: "
             f"{cache_path}. Generate caches with "
-            "`python -m vlnce_baselines.models.etp_llm.generate_navigation_cache` "
+            "`python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache` "
             "before running LLM navigation."
         )
     return cognitive_map_file_to_tensors(

@@ -16,7 +16,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     DEFAULT_COGNITIVE_MAP_NAMESPACE,
 )
 
-from .train_llm_boxes import (
+from .llm_boxes_train import (
     DEFAULT_MODEL_NAME_OR_PATH,
     LLMBoxesDataset,
     LLMBoxesItem,

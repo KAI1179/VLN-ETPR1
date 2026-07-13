@@ -14,7 +14,7 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
     LLMBoxesSpec,
     parse_llm_boxes_text,
 )
-from vlnce_baselines.models.etp_llm import train_llm_boxes
+from vlnce_baselines.models.etp_llm import llm_boxes_train
 
 KEYPOINTS = [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
 
@@ -90,13 +90,13 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
         assert path == Path("/cache/gt.bbox.r1p5.path5.v1/scene-a/R2R_train_42.npz")
         return _relevant_with_chair()
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes, "cognitive_map_boxes_cache_path", fake_cache_path
+        llm_boxes_train, "cognitive_map_boxes_cache_path", fake_cache_path
     )
-    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", fake_load)
+    monkeypatch.setattr(llm_boxes_train.RelevantSemanticBoxes, "load", fake_load)
 
-    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
+    examples = llm_boxes_train.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert _EpisodeSource.calls == [("R2R", ("train",))]
     assert cache_calls == [("scene-a", "R2R_train_42", "gt.bbox.r1p5.path5.v1")]
@@ -134,7 +134,7 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
         bbox.AABB2D(min=(0.0, 0.0), max=(3.0, 4.0), mentioned=True)
     ]
 
-    example = train_llm_boxes.LLMBoxesExample(
+    example = llm_boxes_train.LLMBoxesExample(
         example_id="R2R_train_mentioned",
         dataset_tag="R2R",
         split="train",
@@ -157,14 +157,14 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
 def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
     _EpisodeSource.calls = []
     cache_calls = []
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "cognitive_map_boxes_cache_path",
         lambda *args, **kwargs: cache_calls.append((args, kwargs)),
     )
 
-    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=0)
+    examples = llm_boxes_train.load_llm_boxes_examples("R2R", ["train"], limit=0)
 
     assert examples == []
     assert cache_calls == []
@@ -179,16 +179,16 @@ def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
     def missing_load(path):
         raise FileNotFoundError(2, "No such file or directory", path)
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "cognitive_map_boxes_cache_path",
         lambda scene_id, cache_id, namespace: missing_path,
     )
-    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
+    monkeypatch.setattr(llm_boxes_train.RelevantSemanticBoxes, "load", missing_load)
 
     with pytest.warns(RuntimeWarning, match="missing cached boxes"):
-        examples = train_llm_boxes.load_llm_boxes_examples(
+        examples = llm_boxes_train.load_llm_boxes_examples(
             "R2R",
             ["train"],
             skip_missing_cache=True,
@@ -210,16 +210,16 @@ def test_load_llm_boxes_examples_suppresses_missing_cache_summary_when_quiet(
     def missing_load(path):
         raise FileNotFoundError(2, "No such file or directory", path)
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "cognitive_map_boxes_cache_path",
         lambda scene_id, cache_id, namespace: missing_path,
     )
-    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
+    monkeypatch.setattr(llm_boxes_train.RelevantSemanticBoxes, "load", missing_load)
 
     with pytest.warns(RuntimeWarning, match="missing cached boxes"):
-        examples = train_llm_boxes.load_llm_boxes_examples(
+        examples = llm_boxes_train.load_llm_boxes_examples(
             "R2R",
             ["train"],
             quiet=True,
@@ -235,11 +235,11 @@ def test_load_llm_boxes_examples_raises_missing_cached_boxes_by_default(monkeypa
     def missing_load(path):
         raise FileNotFoundError(2, "No such file or directory", path)
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
-    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train.RelevantSemanticBoxes, "load", missing_load)
 
     with pytest.raises(FileNotFoundError):
-        train_llm_boxes.load_llm_boxes_examples(
+        llm_boxes_train.load_llm_boxes_examples(
             "R2R",
             ["train"],
             cognitive_map_namespace="gt.bbox.r2p5.path5.v1",
@@ -254,9 +254,9 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
             yield _EpisodeSameSceneB()
 
     cache_calls = []
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", TwoEpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", TwoEpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "cognitive_map_boxes_cache_path",
         lambda scene_id, cache_id, namespace: (
             cache_calls.append((scene_id, cache_id, namespace))
@@ -264,12 +264,12 @@ def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        train_llm_boxes.RelevantSemanticBoxes,
+        llm_boxes_train.RelevantSemanticBoxes,
         "load",
         lambda path: _relevant_with_chair(),
     )
 
-    examples = train_llm_boxes.load_llm_boxes_examples("R2R", ["train"])
+    examples = llm_boxes_train.load_llm_boxes_examples("R2R", ["train"])
 
     assert [example.example_id for example in examples] == [
         "R2R_train_43",
@@ -288,15 +288,15 @@ def test_load_llm_boxes_examples_wraps_episode_iterator_with_progress(monkeypatc
         progress_calls.append(kwargs)
         return iterable
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes.RelevantSemanticBoxes,
+        llm_boxes_train.RelevantSemanticBoxes,
         "load",
         lambda path: _relevant_with_chair(),
     )
-    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(llm_boxes_train, "tqdm", fake_progress)
 
-    train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1)
+    llm_boxes_train.load_llm_boxes_examples("R2R", ["train"], limit=1)
 
     assert progress_calls == [
         {
@@ -315,21 +315,21 @@ def test_load_llm_boxes_examples_disables_progress_when_quiet(monkeypatch):
         progress_calls.append(kwargs)
         return iterable
 
-    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(llm_boxes_train, "VLNCEEpisodeEntry", _EpisodeSource)
     monkeypatch.setattr(
-        train_llm_boxes.RelevantSemanticBoxes,
+        llm_boxes_train.RelevantSemanticBoxes,
         "load",
         lambda path: _relevant_with_chair(),
     )
-    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(llm_boxes_train, "tqdm", fake_progress)
 
-    train_llm_boxes.load_llm_boxes_examples("R2R", ["train"], limit=1, quiet=True)
+    llm_boxes_train.load_llm_boxes_examples("R2R", ["train"], limit=1, quiet=True)
 
     assert progress_calls[0]["disable"] is True
 
 
 def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
-    example = train_llm_boxes.LLMBoxesExample(
+    example = llm_boxes_train.LLMBoxesExample(
         example_id="RxR_val_seen_9",
         dataset_tag="RxR",
         split="val_seen",
@@ -342,7 +342,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
         target_relevant=_relevant_with_chair("Walk into the living room."),
     )
 
-    item = train_llm_boxes.LLMBoxesDataset([example])[0]
+    item = llm_boxes_train.LLMBoxesDataset([example])[0]
 
     assert item["example_id"] == "RxR_val_seen_9"
     assert item["input_text"] == (
@@ -373,7 +373,7 @@ def test_llm_boxes_dataset_item_uses_level_local_start_position():
         (0.0, 0.0),
         (0.0, 0.0),
     ]
-    example = train_llm_boxes.LLMBoxesExample(
+    example = llm_boxes_train.LLMBoxesExample(
         example_id="R2R_train_offset",
         dataset_tag="R2R",
         split="train",
@@ -389,7 +389,7 @@ def test_llm_boxes_dataset_item_uses_level_local_start_position():
         target_relevant=target_relevant,
     )
 
-    item = train_llm_boxes.LLMBoxesDataset([example])[0]
+    item = llm_boxes_train.LLMBoxesDataset([example])[0]
 
     assert "start x = 1.2 | start z = 3.0" in item["input_text"]
 
@@ -531,26 +531,26 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
     if batches is None:
         batches = [batch]
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "load_llm_boxes_examples",
         lambda *args, **kwargs: [object()],
     )
-    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: [item])
+    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: [item])
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "_load_causal_lm_model_and_tokenizer",
         lambda *args, **kwargs: (model, _TrainingTokenizer()),
     )
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "_apply_lora",
         lambda loaded_model, args: loaded_model,
     )
-    monkeypatch.setattr(train_llm_boxes, "DataLoader", lambda *args, **kwargs: batches)
+    monkeypatch.setattr(llm_boxes_train, "DataLoader", lambda *args, **kwargs: batches)
 
 
 def test_load_system_prompt_reads_package_prompt():
-    prompt = train_llm_boxes.load_system_prompt()
+    prompt = llm_boxes_train.load_system_prompt()
 
     assert "compact valid JSON" in prompt
     assert prompt.strip() == prompt
@@ -559,7 +559,7 @@ def test_load_system_prompt_reads_package_prompt():
 def test_collate_builds_chat_completion_and_masks_prompt_tokens():
     tokenizer = _ChatTokenizer()
 
-    collated = train_llm_boxes.collate_llm_boxes_batch(
+    collated = llm_boxes_train.collate_llm_boxes_batch(
         [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
         tokenizer,
         system_prompt="system prompt",
@@ -596,7 +596,7 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
 def test_collate_supervises_eos_when_eos_is_also_pad_token():
     tokenizer = _EosAsPadChatTokenizer()
 
-    collated = train_llm_boxes.collate_llm_boxes_batch(
+    collated = llm_boxes_train.collate_llm_boxes_batch(
         [
             {"input_text": "input", "target_text": "x", "example_id": "short"},
             {"input_text": "input", "target_text": "long target", "example_id": "long"},
@@ -626,7 +626,7 @@ def test_collate_rejects_batches_with_no_supervised_target_tokens():
     tokenizer = _TruncatingChatTokenizer()
 
     with pytest.raises(ValueError, match="No supervised target tokens remain"):
-        train_llm_boxes.collate_llm_boxes_batch(
+        llm_boxes_train.collate_llm_boxes_batch(
             [
                 {
                     "input_text": "input words",
@@ -643,7 +643,7 @@ def test_collate_rejects_batches_with_no_supervised_target_tokens():
 
 def test_decode_generated_completion_strips_prompt_tokens():
     tokenizer = _ChatTokenizer()
-    text = train_llm_boxes.decode_generated_completion(
+    text = llm_boxes_train.decode_generated_completion(
         tokenizer,
         generated_ids=[1, 2, 3, ord("o"), ord("b"), ord("j")],
         prompt_length=3,
@@ -653,7 +653,7 @@ def test_decode_generated_completion_strips_prompt_tokens():
 
 
 def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
-    args = train_llm_boxes.parse_args(
+    args = llm_boxes_train.parse_args(
         [
             "train",
             "--model-name-or-path",
@@ -669,7 +669,7 @@ def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
     )
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
-        train_llm_boxes.train_model(args)
+        llm_boxes_train.train_model(args)
 
 
 def test_cast_trainable_parameters_to_float32_only_changes_trainable_params():
@@ -679,7 +679,7 @@ def test_cast_trainable_parameters_to_float32_only_changes_trainable_params():
     model.register_parameter("frozen", frozen)
     model.register_parameter("trainable", trainable)
 
-    train_llm_boxes._cast_trainable_parameters_to_float32(model)
+    llm_boxes_train._cast_trainable_parameters_to_float32(model)
 
     assert frozen.dtype == torch.float16
     assert trainable.dtype == torch.float32
@@ -693,7 +693,7 @@ def test_validate_trainable_parameters_finite_reports_bad_parameter():
     )
 
     with pytest.raises(FloatingPointError, match="non-finite parameter=adapter"):
-        train_llm_boxes._validate_trainable_parameters_finite(
+        llm_boxes_train._validate_trainable_parameters_finite(
             model,
             context="Non-finite training trainable parameter",
         )
@@ -825,7 +825,7 @@ class _PromptInspectingEvalModel:
 
 def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
     target = _empty_relevant()
-    dataset: List[train_llm_boxes.LLMBoxesItem] = [
+    dataset: List[llm_boxes_train.LLMBoxesItem] = [
         {
             "example_id": "target_leak/example",
             "input_text": "find the target chair",
@@ -849,7 +849,7 @@ def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
     )
     model = _PromptInspectingEvalModel()
 
-    train_llm_boxes._evaluate_loaded_model(model, _ChatTokenizer(), dataset, args)
+    llm_boxes_train._evaluate_loaded_model(model, _ChatTokenizer(), dataset, args)
 
     assert len(model.input_texts) == 1
     assert "find the target chair" in model.input_texts[0]
@@ -863,7 +863,7 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         progress_calls.append(kwargs)
         return iterable
 
-    monkeypatch.setattr(train_llm_boxes, "tqdm", fake_progress)
+    monkeypatch.setattr(llm_boxes_train, "tqdm", fake_progress)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
@@ -874,7 +874,7 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         system_prompt="system prompt",
     )
 
-    train_llm_boxes._evaluate_loaded_model(
+    llm_boxes_train._evaluate_loaded_model(
         _EvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -902,7 +902,7 @@ def test_evaluate_model_does_not_move_device_mapped_model(tmp_path):
         system_prompt="system prompt",
     )
 
-    train_llm_boxes._evaluate_loaded_model(
+    llm_boxes_train._evaluate_loaded_model(
         _DeviceMappedEvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -919,7 +919,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
             "category_aware_raster_support": 2 if pred_spec.objects else 0,
         }
 
-    monkeypatch.setattr(train_llm_boxes, "evaluate_llm_boxes_prediction", fake_metrics)
+    monkeypatch.setattr(llm_boxes_train, "evaluate_llm_boxes_prediction", fake_metrics)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
@@ -932,7 +932,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
 
     tokenizer = _EvalTokenizer()
 
-    metrics = train_llm_boxes._evaluate_loaded_model(
+    metrics = llm_boxes_train._evaluate_loaded_model(
         _EvalModel(),
         tokenizer,
         _EvalDataset(),
@@ -981,7 +981,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
             self._decoded = ["not parseable"] * 5
             self._decode_offset = 0
 
-    monkeypatch.setattr(train_llm_boxes, "evaluate_llm_boxes_prediction", fake_metrics)
+    monkeypatch.setattr(llm_boxes_train, "evaluate_llm_boxes_prediction", fake_metrics)
     args = argparse.Namespace(
         output_dir=str(tmp_path),
         max_input_length=32,
@@ -992,7 +992,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
         system_prompt="system prompt",
     )
 
-    metrics = train_llm_boxes._evaluate_loaded_model(
+    metrics = llm_boxes_train._evaluate_loaded_model(
         _EvalModel(),
         InvalidTokenizer(),
         _EvalDataset(),
@@ -1018,8 +1018,8 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         calls.append((args, kwargs))
         return []
 
-    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
-    args = train_llm_boxes.parse_args(
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", fake_load)
+    args = llm_boxes_train.parse_args(
         [
             "train",
             "--model-name-or-path",
@@ -1037,7 +1037,7 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
     )
 
     with pytest.raises(ValueError, match="No LLM-Boxes training examples"):
-        train_llm_boxes.train_model(args)
+        llm_boxes_train.train_model(args)
     assert list(calls[0][0][1]) == ["train"]
 
 
@@ -1056,8 +1056,8 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
             }
         ]
 
-    monkeypatch.setattr(train_llm_boxes, "DataLoader", fake_data_loader)
-    args = train_llm_boxes.parse_args(
+    monkeypatch.setattr(llm_boxes_train, "DataLoader", fake_data_loader)
+    args = llm_boxes_train.parse_args(
         [
             "train",
             "--output-dir",
@@ -1072,11 +1072,11 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         ]
     )
 
-    train_llm_boxes.train_model(args)
+    llm_boxes_train.train_model(args)
 
     assert isinstance(
         captured["batch_sampler"],
-        train_llm_boxes.LengthGroupedBatchSampler,
+        llm_boxes_train.LengthGroupedBatchSampler,
     )
     assert "batch_size" not in captured
     assert "shuffle" not in captured
@@ -1111,7 +1111,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
 
     monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
     output_dir = tmp_path / "run"
-    args = train_llm_boxes.parse_args(
+    args = llm_boxes_train.parse_args(
         [
             "train",
             "--output-dir",
@@ -1128,7 +1128,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
         ]
     )
 
-    metrics = train_llm_boxes.train_model(args)
+    metrics = llm_boxes_train.train_model(args)
 
     assert calls == {"step": 2, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
@@ -1139,7 +1139,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
 def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
     model = _TrainingModel(1.0)
     _patch_training_dependencies(monkeypatch, model)
-    args = train_llm_boxes.parse_args(
+    args = llm_boxes_train.parse_args(
         [
             "train",
             "--output-dir",
@@ -1155,7 +1155,7 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
         ]
     )
 
-    train_llm_boxes.train_model(args)
+    llm_boxes_train.train_model(args)
 
     assert model.gradient_checkpointing_enabled is True
     assert model.input_require_grads_enabled is True
@@ -1163,17 +1163,17 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
 
 
 def test_training_checkpoint_dirs_are_grouped_under_checkpoints(tmp_path):
-    assert train_llm_boxes._checkpoint_dir(tmp_path, "epoch-1") == (
+    assert llm_boxes_train._checkpoint_dir(tmp_path, "epoch-1") == (
         tmp_path / "checkpoints" / "epoch-1"
     )
-    assert train_llm_boxes._checkpoint_dir(tmp_path, "final") == (
+    assert llm_boxes_train._checkpoint_dir(tmp_path, "final") == (
         tmp_path / "checkpoints" / "final"
     )
 
 
 def test_filter_llm_boxes_items_for_length_drops_examples_that_would_truncate():
     tokenizer = _ChatTokenizer()
-    items: List[train_llm_boxes.LLMBoxesItem] = [
+    items: List[llm_boxes_train.LLMBoxesItem] = [
         {"input_text": "short", "target_text": "short target", "example_id": "keep"},
         {
             "input_text": "short",
@@ -1187,7 +1187,7 @@ def test_filter_llm_boxes_items_for_length_drops_examples_that_would_truncate():
         },
     ]
 
-    filtered = train_llm_boxes.filter_llm_boxes_items_for_length(
+    filtered = llm_boxes_train.filter_llm_boxes_items_for_length(
         items,
         tokenizer,
         system_prompt="system prompt",
@@ -1200,7 +1200,7 @@ def test_filter_llm_boxes_items_for_length_drops_examples_that_would_truncate():
 
 
 def test_llm_text_stats_report_lengths_and_truncation():
-    items: List[train_llm_boxes.LLMBoxesItem] = [
+    items: List[llm_boxes_train.LLMBoxesItem] = [
         {
             "input_text": "input one",
             "target_text": (
@@ -1222,7 +1222,7 @@ def test_llm_text_stats_report_lengths_and_truncation():
         },
     ]
 
-    stats = train_llm_boxes.compute_llm_text_stats(
+    stats = llm_boxes_train.compute_llm_text_stats(
         items,
         _ChatTokenizer(),
         max_input_length=2,
@@ -1283,15 +1283,15 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
         return "model", "tokenizer"
 
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "_load_causal_lm_model_and_tokenizer",
         fake_load_model,
     )
-    monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
-    monkeypatch.setattr(train_llm_boxes, "_evaluate_loaded_model", fake_evaluate)
-    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: examples)
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", fake_load)
+    monkeypatch.setattr(llm_boxes_train, "_evaluate_loaded_model", fake_evaluate)
+    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
 
-    args = train_llm_boxes.parse_args(
+    args = llm_boxes_train.parse_args(
         [
             "eval",
             "--checkpoint-path",
@@ -1303,7 +1303,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
             "--quiet",
         ]
     )
-    metrics = train_llm_boxes.evaluate_model(args)
+    metrics = llm_boxes_train.evaluate_model(args)
 
     assert metrics == {"examples": 1.0}
     assert calls == [
@@ -1329,9 +1329,9 @@ def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
         calls.append((args.mode, args.output_dir, args.limit, args.quiet))
         return {"examples": 1.0}
 
-    monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(llm_boxes_train, "evaluate_model", fake_evaluate)
 
-    metrics = train_llm_boxes.main(
+    metrics = llm_boxes_train.main(
         ["eval", "--output-dir", str(tmp_path), "--limit", "1", "--quiet"]
     )
 
@@ -1340,7 +1340,7 @@ def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
 
 
 def test_cli_parser_supports_train_and_eval_modes():
-    train_args = train_llm_boxes.parse_args(
+    train_args = llm_boxes_train.parse_args(
         [
             "train",
             "--model-name-or-path",
@@ -1383,7 +1383,7 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--quiet",
         ]
     )
-    eval_args = train_llm_boxes.parse_args(
+    eval_args = llm_boxes_train.parse_args(
         ["eval", "--output-dir", "eval-out", "--device-map", "none"]
     )
 
@@ -1437,7 +1437,7 @@ def test_cli_parser_supports_train_and_eval_modes():
 
 def test_train_parser_rejects_cache_mode():
     with pytest.raises(SystemExit):
-        train_llm_boxes.parse_args(["cache"])
+        llm_boxes_train.parse_args(["cache"])
 
 
 def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_path):
@@ -1448,39 +1448,39 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
         return "model", "tokenizer"
 
     monkeypatch.setattr(
-        train_llm_boxes,
+        llm_boxes_train,
         "_load_causal_lm_model_and_tokenizer",
         fake_load_model,
     )
     monkeypatch.setattr(
-        train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: ["example"]
+        llm_boxes_train, "load_llm_boxes_examples", lambda *args, **kwargs: ["example"]
     )
     monkeypatch.setattr(
-        train_llm_boxes, "_evaluate_loaded_model", lambda *args, **kwargs: {}
+        llm_boxes_train, "_evaluate_loaded_model", lambda *args, **kwargs: {}
     )
-    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: examples)
+    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
 
-    args = train_llm_boxes.parse_args(
+    args = llm_boxes_train.parse_args(
         ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]
     )
-    train_llm_boxes.evaluate_model(args)
+    llm_boxes_train.evaluate_model(args)
 
     assert calls == [(LLAMA_3_1_8B_INSTRUCT_MODEL, None)]
 
 
 def test_cli_parser_rejects_torch_dtype_arg():
     with pytest.raises(SystemExit):
-        train_llm_boxes.parse_args(["train", "--torch-dtype", "float16"])
+        llm_boxes_train.parse_args(["train", "--torch-dtype", "float16"])
 
 
 def test_cli_parser_rejects_splits_arg():
     with pytest.raises(SystemExit):
-        train_llm_boxes.parse_args(["train", "--splits", "train,val_seen"])
+        llm_boxes_train.parse_args(["train", "--splits", "train,val_seen"])
 
 
 def test_cli_device_defaults_to_cuda_when_available_else_cpu(monkeypatch):
-    monkeypatch.setattr(train_llm_boxes, "_default_device", lambda: "cpu")
+    monkeypatch.setattr(llm_boxes_train, "_default_device", lambda: "cpu")
 
-    args = train_llm_boxes.parse_args(["eval", "--output-dir", "eval-out"])
+    args = llm_boxes_train.parse_args(["eval", "--output-dir", "eval-out"])
 
     assert args.device == "cpu"

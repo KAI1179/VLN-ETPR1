@@ -124,7 +124,7 @@ def test_llm_navigation_cache_loader_fails_fast_when_map_missing(tmp_path):
         FileNotFoundError,
         match=(
             "Missing LLM-Navigation raster cognitive map cache: .*"
-            "generate_navigation_cache"
+            "llm_boxes_navigation_cache"
         ),
     ):
         llm_cached_cognitive_map_to_tensors(

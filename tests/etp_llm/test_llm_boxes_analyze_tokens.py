@@ -1,6 +1,6 @@
 import json
 
-from vlnce_baselines.models.etp_llm import analyze_tokens
+from vlnce_baselines.models.etp_llm import llm_boxes_analyze_tokens
 
 
 class _Tokenizer:
@@ -44,16 +44,16 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
             "example_id": "b",
         },
     ]
-    monkeypatch.setattr(analyze_tokens, "AutoTokenizer", _AutoTokenizer)
+    monkeypatch.setattr(llm_boxes_analyze_tokens, "AutoTokenizer", _AutoTokenizer)
     monkeypatch.setattr(
-        analyze_tokens,
+        llm_boxes_analyze_tokens,
         "load_llm_boxes_examples",
         lambda *args, **kwargs: ["example-a", "example-b"],
     )
-    monkeypatch.setattr(analyze_tokens, "LLMBoxesDataset", lambda examples: items)
-    monkeypatch.setattr(analyze_tokens, "load_system_prompt", lambda: "system prompt")
+    monkeypatch.setattr(llm_boxes_analyze_tokens, "LLMBoxesDataset", lambda examples: items)
+    monkeypatch.setattr(llm_boxes_analyze_tokens, "load_system_prompt", lambda: "system prompt")
 
-    args = analyze_tokens.TokenAnalysisArgs().parse_args(
+    args = llm_boxes_analyze_tokens.TokenAnalysisArgs().parse_args(
         [
             "--model-name-or-path",
             "tiny-tokenizer",
@@ -69,7 +69,7 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
         ]
     )
 
-    report = analyze_tokens.analyze_llm_boxes_tokens(args)
+    report = llm_boxes_analyze_tokens.analyze_llm_boxes_tokens(args)
 
     assert _AutoTokenizer.calls == ["tiny-tokenizer"]
     assert report["dataset"] == "R2R"
@@ -84,13 +84,13 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
     assert report["configured_budget"]["target_over_budget_count"] == 1
 
 
-def test_analyze_tokens_main_prints_json(monkeypatch, capsys):
+def test_llm_boxes_analyze_tokens_main_prints_json(monkeypatch, capsys):
     monkeypatch.setattr(
-        analyze_tokens,
+        llm_boxes_analyze_tokens,
         "analyze_llm_boxes_tokens",
         lambda args: {"max_new_tokens": args.max_new_tokens},
     )
 
-    analyze_tokens.main(["--max-new-tokens", "2048"])
+    llm_boxes_analyze_tokens.main(["--max-new-tokens", "2048"])
 
     assert json.loads(capsys.readouterr().out) == {"max_new_tokens": 2048}

@@ -5,13 +5,13 @@ ETP-LLM is the LLM-based variant of PriorGT.
 ## LLM-Boxes Training
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.train_llm_boxes train
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.llm_boxes_train train
 ```
 
 ## LLM-Boxes Evaluating
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.train_llm_boxes eval --model-name-or-path ./data/logs/llm/checkpoints/final/
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.llm_boxes_train eval --model-name-or-path ./data/logs/llm/checkpoints/final/
 ```
 
 ## LLM-Navigation Scaffold
@@ -90,7 +90,7 @@ in per-entry `status` JSON files, and aggregate failure rates are written to
 Generate all LLM-Navigation caches with one command:
 
 ```shell
-python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --batch-size 8
@@ -105,7 +105,7 @@ skipped independently during resume.
 Use a smaller per-worker batch size when a single model copy nearly fills a GPU:
 
 ```shell
-python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --batch-size 1
@@ -114,7 +114,7 @@ python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
 Force single-process generation when debugging or when only one model copy fits:
 
 ```shell
-python -m vlnce_baselines.models.etp_llm.generate_navigation_cache \
+python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
   --model-name-or-path ./data/logs/llm/checkpoints/final/ \
   --cache-model-key llama-3.1-8b-instruct \
   --parallel-workers 1

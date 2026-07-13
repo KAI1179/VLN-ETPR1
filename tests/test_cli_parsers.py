@@ -369,7 +369,7 @@ def test_pretrain_llm_map_requires_precomputed_cache(tmp_path):
         FileNotFoundError,
         match=(
             "Missing LLM-Navigation raster cognitive map cache: .*"
-            "generate_navigation_cache"
+            "llm_boxes_navigation_cache"
         ),
     ):
         nav_db._load_llm_cognitive_map({"instr_id": "42_0", "scan": "scene"})

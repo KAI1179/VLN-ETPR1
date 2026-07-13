@@ -37,7 +37,7 @@ from .sft import (
     LengthGroupedBatchSampler,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
 )
-from .train_llm_boxes import (
+from .llm_boxes_train import (
     _causal_lm_labels,
     _cast_trainable_parameters_to_float32,
     _default_device,

@@ -3,7 +3,7 @@ import json
 
 import numpy as np
 
-from vlnce_baselines.models.etp_llm import generate_grid_navigation_cache
+from vlnce_baselines.models.etp_llm import llm_grid_navigation_cache
 
 GRID_JSON = (
     '{"predicted_regions":[],"predicted_objects":["chair"],'
@@ -71,7 +71,7 @@ class _CacheGenerationModel:
         return [[*row, *suffix] for row in kwargs["input_ids"]]
 
 
-def test_generate_grid_navigation_cache_writes_direction5_raster_without_boxes(
+def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
     tmp_path,
 ):
     dataset = [
@@ -101,7 +101,7 @@ def test_generate_grid_navigation_cache_writes_direction5_raster_without_boxes(
     )
     model = _CacheGenerationModel(GRID_JSON)
 
-    metrics = generate_grid_navigation_cache.generate_grid_navigation_cache(
+    metrics = llm_grid_navigation_cache.llm_grid_navigation_cache(
         model,
         _CharChatTokenizer(),
         dataset,

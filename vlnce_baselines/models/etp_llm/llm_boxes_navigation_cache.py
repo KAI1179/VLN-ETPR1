@@ -37,7 +37,7 @@ from .navigation import (
     llm_navigation_split_dir,
     llm_navigation_status_path,
 )
-from .train_llm_boxes import (
+from .llm_boxes_train import (
     DEFAULT_MODEL_NAME_OR_PATH,
     LLMBoxesItem,
     collate_llm_boxes_prompt_batch,
@@ -60,7 +60,7 @@ PRETRAIN_DATASET_KEY = "pretrain"
 PRETRAIN_SPLIT = "mixed"
 
 
-def generate_navigation_cache(
+def llm_boxes_navigation_cache(
     model: Any,
     tokenizer: Any,
     dataset: Iterable[LLMBoxesItem],
@@ -486,7 +486,7 @@ def generate_all_navigation_caches(
         quiet=args.quiet,
         args=args,
     )
-    metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = generate_navigation_cache(
+    metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = llm_boxes_navigation_cache(
         model,
         tokenizer,
         pretrain_items,
@@ -503,7 +503,7 @@ def generate_all_navigation_caches(
                 quiet=args.quiet,
                 args=args,
             )
-            metrics[f"{dataset_key.lower()}/{split}"] = generate_navigation_cache(
+            metrics[f"{dataset_key.lower()}/{split}"] = llm_boxes_navigation_cache(
                 model,
                 tokenizer,
                 examples,
@@ -667,7 +667,7 @@ def _worker_command(
     command = [
         sys.executable,
         "-m",
-        "vlnce_baselines.models.etp_llm.generate_navigation_cache",
+        "vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache",
         "--model-name-or-path",
         str(args.model_name_or_path),
         "--max-input-length",
