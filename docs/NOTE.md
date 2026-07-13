@@ -1036,4 +1036,5 @@ Drop Rate By `max_new_tokens`:
 - [ ] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
 - [x] 2x "Blurred", r=1.5 LLM-Grid 微调 (r2r-legacy-r1p5-direction5-scale2) @ 超算
 - [ ] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
-- [ ] LLM-Boxes 微调 @ 超算
+- [x] LLM-Boxes 微调 @ 超算
+- [ ] LLM-Boxes 导航缓存生成 @ 超算

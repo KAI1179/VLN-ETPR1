@@ -39,7 +39,7 @@ GT_COGNITIVE_MAP_NAMESPACE="${GT_COGNITIVE_MAP_NAMESPACE:-gt.bbox.r1p5.path5.v1}
 
 PRIORGT_TRY5_BLURRED_COGNITIVE_MAP_NAMESPACE="gt.legacy.r1p5.direction5.blurred.v1"
 PRIORGT_TRY5_BLURRED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/prior_gt/store2/try5-r1p5-blurred_step_425000.pt"
-PRIORGT_TRY5_BLURRED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_dagger/store/ckpt.iter27800.pth"
+PRIORGT_TRY5_BLURRED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_dagger/store/try5-like-blur-r1p5.iter9600.pth"
 PRIORGT_TRY5_BLURRED_GRPO_CKPT="data/logs/checkpoints/release_r2r_priorgt_try5_blurred_grpo/store/ckpt.iter350.pth"
 
 IMAGINED_PREDICTOR_CKPT="${IMAGINED_PREDICTOR_CKPT:-}"
