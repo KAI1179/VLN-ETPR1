@@ -457,6 +457,7 @@ def evaluate_model(
         model.to(args.device)
     if hasattr(model, "eval"):
         model.eval()
+    tokenizer.padding_side = "left"
 
     system_prompt = getattr(args, "system_prompt", None) or load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)

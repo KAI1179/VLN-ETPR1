@@ -77,6 +77,7 @@ def generate_navigation_cache(
         model.to(args.device)
     if hasattr(model, "eval"):
         model.eval()
+    tokenizer.padding_side = "left"
 
     system_prompt = getattr(args, "system_prompt", None) or load_system_prompt()
     split_dir = llm_navigation_split_dir(

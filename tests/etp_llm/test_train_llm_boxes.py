@@ -728,6 +728,8 @@ class _EvalDataset:
 class _EvalTokenizer(_ChatTokenizer):
     def __init__(self):
         super().__init__()
+        self.padding_side = "right"
+        self.padding_side_during_call = None
         self._decoded = [
             '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
             '"predicted_regions":[],"predicted_objects":["chair"],'
@@ -745,6 +747,10 @@ class _EvalTokenizer(_ChatTokenizer):
             '"objects":{}}',
         ]
         self._decode_offset = 0
+
+    def __call__(self, texts, **kwargs):
+        self.padding_side_during_call = self.padding_side
+        return super().__call__(texts, **kwargs)
 
     def batch_decode(self, sequences, skip_special_tokens=True):
         assert skip_special_tokens is True
@@ -894,9 +900,11 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
         system_prompt="system prompt",
     )
 
+    tokenizer = _EvalTokenizer()
+
     metrics = train_llm_boxes.evaluate_model(
         _EvalModel(),
-        _EvalTokenizer(),
+        tokenizer,
         _EvalDataset(),
         args,
     )
@@ -911,6 +919,8 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
     assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
     assert "json_parse_rate" not in metrics
     assert "category_aware_raster_support" not in metrics
+    assert tokenizer.padding_side == "left"
+    assert tokenizer.padding_side_during_call == "left"
 
     artifact_dir = tmp_path / "artifacts"
     valid_artifact = (artifact_dir / "valid_example.txt").read_text()

@@ -51,6 +51,8 @@ class _CharChatTokenizer:
     eos_token_id = 9
     eos_token = "<eos>"
     pad_token = "<pad>"
+    padding_side = "right"
+    padding_side_during_call = None
 
     def apply_chat_template(
         self,
@@ -68,10 +70,19 @@ class _CharChatTokenizer:
         return rendered
 
     def __call__(self, texts, **kwargs):
+        self.padding_side_during_call = self.padding_side
         rows = [[ord(char) for char in text] for text in texts]
         max_len = max(len(row) for row in rows)
-        padded = [row + [self.pad_token_id] * (max_len - len(row)) for row in rows]
-        masks = [[1] * len(row) + [0] * (max_len - len(row)) for row in rows]
+        padded = []
+        masks = []
+        for row in rows:
+            pad_count = max_len - len(row)
+            if self.padding_side == "left":
+                padded.append([self.pad_token_id] * pad_count + row)
+                masks.append([0] * pad_count + [1] * len(row))
+            else:
+                padded.append(row + [self.pad_token_id] * pad_count)
+                masks.append([1] * len(row) + [0] * pad_count)
         return _BatchEncoding({"input_ids": padded, "attention_mask": masks})
 
     def encode(self, text, add_special_tokens=False):
@@ -241,6 +252,51 @@ def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
         json.loads((split_dir / "manifest.json").read_text())["model_name_or_path"]
         == "tiny"
     )
+
+
+def test_generate_navigation_cache_uses_left_padding_for_decoder_only_generation(
+    tmp_path,
+):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": "R2R_train_42",
+            "scene_id": "scene-a",
+            "input_text": "find the chair",
+            "target_text": CHAIR_JSON,
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Find the chair.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+    tokenizer = _CharChatTokenizer()
+
+    generate_navigation_cache.generate_navigation_cache(
+        _CacheGenerationModel(CHAIR_JSON),
+        tokenizer,
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="train",
+    )
+
+    assert tokenizer.padding_side == "left"
+    assert tokenizer.padding_side_during_call == "left"
 
 
 def test_generate_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
