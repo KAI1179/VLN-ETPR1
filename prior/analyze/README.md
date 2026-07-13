@@ -1,5 +1,6 @@
 # Analyze
 
+- `prior.analyze.batch_vis`: Batch visualization.
 - `prior.analyze.bbox_stat`: Relevant bounding box statistics for R2R & RxR dataset. Accepts optional radius position param (in unit of cells).
 - `prior.analyze.vis_json`: Try to visualize JSON (exported or flattened).
 - `prior.analyze.vis_json`: Try to visualize the result of _rotate_cognitive_map_tensors_by_right_angle.
