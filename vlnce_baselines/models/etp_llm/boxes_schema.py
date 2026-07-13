@@ -79,17 +79,6 @@ class LLMBoxesPartialParse:
     dropped_entity_count: int
 
 
-@dataclass(frozen=True)
-class LLMBoxesSalvageParse:
-    spec: LLMBoxesSpec
-    dropped_entities: Sequence[str]
-    errors: Sequence[str]
-
-    @property
-    def dropped_entity_count(self) -> int:
-        return len(self.dropped_entities)
-
-
 def build_llm_boxes_input(
     dataset_tag: str,
     instruction: str,
@@ -302,27 +291,6 @@ def parse_llm_boxes_text_partial(text: str) -> LLMBoxesPartialParse:
         spec=_parse_raw_llm_boxes_json(raw),
         dropped_text=dropped_text,
         dropped_entity_count=int(bool(dropped_text)),
-    )
-
-
-def parse_llm_boxes_text_salvage(text: str) -> LLMBoxesSalvageParse:
-    """Parse JSON output for cache generation, or drop the whole invalid output."""
-    stripped = text.strip()
-    try:
-        result = parse_llm_boxes_text_partial(stripped)
-    except LLMBoxesValidationError as exc:
-        return LLMBoxesSalvageParse(
-            spec=LLMBoxesSpec(objects=(), regions=()),
-            dropped_entities=(stripped,),
-            errors=(str(exc),),
-        )
-
-    dropped_entities = (result.dropped_text,) if result.dropped_text else ()
-    errors = ("trailing text after JSON object",) if result.dropped_text else ()
-    return LLMBoxesSalvageParse(
-        spec=result.spec,
-        dropped_entities=dropped_entities,
-        errors=errors,
     )
 
 

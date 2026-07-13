@@ -162,7 +162,7 @@ def load_llm_boxes_examples(
         )
         if limit is not None and len(examples) >= limit:
             break
-    if skipped_missing_cache:
+    if skipped_missing_cache and not quiet:
         print(f"skipped_missing_cache={len(skipped_missing_cache)}")
         for example_id, path in skipped_missing_cache:
             print(f"  {example_id}: {path}")
@@ -437,16 +437,18 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     save_llm_boxes_checkpoint(
         model, tokenizer, _checkpoint_dir(args.output_dir, "final")
     )
-    return {
+    metrics = {
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
         "optimizer_steps": float(optimizer_steps),
         "dropped_truncated_examples": float(len(filtered.dropped_example_ids)),
         **text_stats,
     }
+    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    return metrics
 
 
-def evaluate_model(
+def _evaluate_loaded_model(
     model: Any,
     tokenizer: Any,
     dataset: Iterable[LLMBoxesItem],
@@ -591,6 +593,34 @@ def evaluate_model(
     return metrics
 
 
+def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
+    """Load eval data/model, generate predictions, and write eval metrics."""
+    examples = load_llm_boxes_examples(
+        args.dataset,
+        EVAL_SPLITS,
+        limit=args.limit,
+        quiet=args.quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    if not examples:
+        raise ValueError("No LLM-Boxes eval examples were loaded")
+
+    model_path = args.checkpoint_path or args.model_name_or_path
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        model_path,
+        device_map=_normalize_device_map(args.device_map),
+    )
+    metrics = _evaluate_loaded_model(
+        model,
+        tokenizer,
+        LLMBoxesDataset(examples),
+        args,
+    )
+    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    return metrics
+
+
 def save_llm_boxes_checkpoint(
     model: Any, tokenizer: Any, output_dir: str | Path
 ) -> None:
@@ -598,6 +628,14 @@ def save_llm_boxes_checkpoint(
     output_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(output_path)
     tokenizer.save_pretrained(output_path)
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _load_causal_lm_model_and_tokenizer(
@@ -623,18 +661,31 @@ class LLMBoxesArgs(Tap):
     """Run mode."""
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     """Pretrained or checkpoint path for the causal language model."""
-    output_dir: str = "./data/logs/llm/"
+    checkpoint_path: Optional[str] = None
+    output_dir: str = "outputs/llm_boxes"
     dataset: Literal["R2R", "RxR"] = "R2R"
     max_input_length: int = 1024
     max_new_tokens: int = 2048
     finetune_method: Literal["lora", "full"] = "lora"
-    batch_size: int = 1
+    batch_size: int = 2
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     epochs: int = 10
-    learning_rate: float = 1e-4
+    learning_rate: float = 2e-4
     max_grad_norm: float = 1.0
     """Clip trainable parameter gradients to this norm; use 0 to disable."""
+    lora_r: int = 32
+    lora_alpha: int = 64
+    lora_dropout: float = 0.05
+    lora_target_modules: Tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
     limit: Optional[int] = None
     device: str = ""
     device_map: Literal["auto", "balanced", "balanced_low_0", "sequential", "none"] = (
@@ -646,8 +697,18 @@ class LLMBoxesArgs(Tap):
     quiet: bool = False
     """Disable progress bars."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("underscores_to_dashes", True)
+        super().__init__(*args, **kwargs)
+
     def configure(self) -> None:
         self.add_argument("mode")
+
+    def process_args(self) -> None:
+        if not self.device:
+            self.device = _default_device()
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError("--gradient-accumulation-steps must be >= 1")
 
 
 def _default_device() -> str:
@@ -655,38 +716,14 @@ def _default_device() -> str:
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
-    args = LLMBoxesArgs(underscores_to_dashes=True).parse_args(argv)
-    if not args.device:
-        args.device = _default_device()
-    if args.gradient_accumulation_steps < 1:
-        raise ValueError("--gradient-accumulation-steps must be >= 1")
-    return args
+    return LLMBoxesArgs().parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     args = parse_args(argv)
     if args.mode == "train":
         return train_model(args)
-
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
-        args.model_name_or_path,
-        device_map=_normalize_device_map(args.device_map),
-    )
-    examples = load_llm_boxes_examples(
-        args.dataset,
-        EVAL_SPLITS,
-        limit=args.limit,
-        quiet=args.quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    metrics = evaluate_model(model, tokenizer, LLMBoxesDataset(examples), args)
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    (Path(args.output_dir) / "metrics.json").write_text(
-        json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    return metrics
+    return evaluate_model(args)
 
 
 def load_system_prompt() -> str:
@@ -817,26 +854,18 @@ def _generation_kwargs(tokenizer: Any, max_new_tokens: int) -> Dict[str, Any]:
     return kwargs
 
 
-def _apply_lora(model: Any, args: Any) -> Any:
+def _apply_lora(model: Any, args: LLMBoxesArgs) -> Any:
     if args.finetune_method != "lora":
         raise ValueError(f"Unsupported finetune method: {args.finetune_method}")
     from peft import LoraConfig, get_peft_model
 
     config = LoraConfig(
-        r=32,
-        lora_alpha=64,
-        lora_dropout=0.05,
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
+        target_modules=list(args.lora_target_modules),
     )
     return get_peft_model(model, config)
 

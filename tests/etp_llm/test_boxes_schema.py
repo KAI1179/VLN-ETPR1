@@ -12,7 +12,6 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
     build_llm_boxes_input,
     parse_llm_boxes_text,
     parse_llm_boxes_text_partial,
-    parse_llm_boxes_text_salvage,
     relevant_semantic_boxes_to_mentioned_spec,
     spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
@@ -197,14 +196,6 @@ def test_parse_llm_boxes_text_partial_reports_dropped_suffix():
         ),
     )
     assert result.dropped_text == "trailing"
-    assert result.dropped_entity_count == 1
-
-
-def test_parse_llm_boxes_text_salvage_drops_invalid_json_output():
-    result = parse_llm_boxes_text_salvage("not parseable")
-
-    assert result.spec == LLMBoxesSpec(objects=(), regions=())
-    assert result.dropped_entities == ("not parseable",)
     assert result.dropped_entity_count == 1
 
 

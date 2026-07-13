@@ -224,7 +224,6 @@ def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
     assert metrics["examples"] == 1.0
     assert metrics["strict_parse_failure_rate"] == 0.0
-    assert metrics["salvage_rate"] == 0.0
     assert prediction_path.read_text() == f"{CHAIR_JSON}\n"
     assert not map_path.exists()
     assert boxes_path.exists()
@@ -235,7 +234,6 @@ def test_generate_navigation_cache_writes_valid_json_prediction_npz(tmp_path):
     status = json.loads(status_path.read_text())
     assert status["status"] == "complete"
     assert status["strict_valid"] is True
-    assert status["salvaged"] is False
     assert status["prediction_path"] == str(prediction_path)
     assert "cognitive_map_path" not in status
     assert status["cognitive_map_boxes_path"] == str(boxes_path)
@@ -500,6 +498,70 @@ def test_generate_navigation_cache_records_conversion_failure_status(
     assert metrics["cached"] == 0.0
     assert metrics["generated"] == 0.0
     assert metrics["skipped"] == 1.0
+
+
+def test_generate_navigation_cache_records_parse_failure_status(tmp_path):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": "R2R_train_42",
+            "scene_id": "scene-a",
+            "input_text": "find the chair",
+            "target_text": KEYPOINTS_ONLY_JSON,
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Find the chair.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    prediction_path = split_dir / "predictions" / "scene-a" / "R2R_train_42.txt"
+    boxes_path = split_dir / "cognitive_maps" / "boxes" / "scene-a" / "R2R_train_42.npz"
+    raster_path = (
+        split_dir / "cognitive_maps" / "raster" / "scene-a" / "R2R_train_42.npz"
+    )
+    status_path = split_dir / "status" / "scene-a" / "R2R_train_42.json"
+
+    with pytest.warns(RuntimeWarning, match="parse_failed"):
+        metrics = generate_navigation_cache.generate_navigation_cache(
+            _CacheGenerationModel("not json"),
+            _CharChatTokenizer(),
+            dataset,
+            args,
+            dataset_key="R2R",
+            split="train",
+        )
+
+    assert prediction_path.read_text() == "not json\n"
+    assert not boxes_path.exists()
+    assert not raster_path.exists()
+    status = json.loads(status_path.read_text())
+    assert status["status"] == "parse_failed"
+    assert status["strict_valid"] is False
+    assert status["failures"] == [
+        {
+            "error": "invalid JSON: Expecting value",
+            "stage": "parse_failed",
+        }
+    ]
+    assert metrics["strict_valid"] == 0.0
+    assert metrics["generated"] == 0.0
+    assert metrics["skipped"] == 1.0
+    assert metrics["strict_parse_failure_rate"] == 1.0
 
 
 def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
@@ -843,13 +905,9 @@ def test_write_split_metrics_uses_worker_file_for_parallel_workers(tmp_path):
         "cached": 0.0,
         "attempted": 1.0,
         "strict_valid": 0.0,
-        "salvaged": 1.0,
-        "missing_trajectory_keypoints": 0.0,
         "generated": 1.0,
         "skipped": 0.0,
         "strict_parse_failure_rate": 1.0,
-        "salvage_rate": 1.0,
-        "missing_trajectory_keypoints_rate": 0.0,
     }
 
     generate_navigation_cache._write_split_metrics(split_dir, metrics, args)
@@ -871,13 +929,9 @@ def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
                 "cached": 1.0,
                 "attempted": 1.0,
                 "strict_valid": 1.0,
-                "salvaged": 0.0,
-                "missing_trajectory_keypoints": 0.0,
                 "generated": 1.0,
                 "skipped": 0.0,
                 "strict_parse_failure_rate": 0.0,
-                "salvage_rate": 0.0,
-                "missing_trajectory_keypoints_rate": 0.0,
             }
         )
     )
@@ -888,13 +942,9 @@ def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
                 "cached": 0.0,
                 "attempted": 3.0,
                 "strict_valid": 1.0,
-                "salvaged": 1.0,
-                "missing_trajectory_keypoints": 1.0,
                 "generated": 1.0,
                 "skipped": 2.0,
                 "strict_parse_failure_rate": 2.0 / 3.0,
-                "salvage_rate": 1.0 / 3.0,
-                "missing_trajectory_keypoints_rate": 1.0 / 3.0,
             }
         )
     )
@@ -906,13 +956,9 @@ def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
         "cached": 1.0,
         "attempted": 4.0,
         "strict_valid": 2.0,
-        "salvaged": 1.0,
-        "missing_trajectory_keypoints": 1.0,
         "generated": 2.0,
         "skipped": 2.0,
         "strict_parse_failure_rate": 0.5,
-        "salvage_rate": 0.25,
-        "missing_trajectory_keypoints_rate": 0.25,
     }
     assert json.loads((split_dir / "metrics.json").read_text()) == metrics
 

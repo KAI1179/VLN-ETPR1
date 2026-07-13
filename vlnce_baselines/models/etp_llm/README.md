@@ -153,10 +153,9 @@ but navigation consumes the `.npz`, so a map is sufficient for resume. To regene
 existing cache entries, remove the target cache directory and run generation again.
 
 Per-entry `status` JSON files record generation attempt outcomes only:
-`complete`, `missing_keypoints`, `conversion_failed`, or `skipped_input`. Resume
-skips do not write or overwrite status files. Failed or partially salvaged entries
-also include a `failures` array with the parse, salvage, missing-keypoint, or
-conversion details for that entry.
+`complete`, `parse_failed`, `conversion_failed`, or `skipped_input`. Resume skips
+do not write or overwrite status files. Failed entries also include a `failures`
+array with the parse or conversion details for that entry.
 
 Single-process generation writes split-level `metrics.json` directly. Parallel
 generation writes per-worker metrics under `worker_metrics/` and aggregates them
@@ -171,14 +170,10 @@ cache_resume R2R/train: total=<seen> cached=<map_exists> pending=<to_generate>
 VLN-CE `cache_id` is `<DATASET>_<split>_<episode_id>`, matching the loader used by
 `SS-ETP-LLM` and `GRPO-ETP-LLM`. Pretraining cache ids are `instr_id`.
 
-Malformed output does not abort the cache run. The generator first tries strict
-parsing, then salvage parsing. Salvage parsing keeps valid `keypoints`, `obj`, and
-`reg` entities even when other semicolon- or newline-separated entities are invalid.
-Warnings are emitted per affected item, dropped entities are written to that entry's
-`status` JSON, and rates are summarized in `metrics.json`.
-
-If the output omits `keypoints`, the generator warns, records the failure, and
-refuses to create a cognitive-map cache for that entry. Other entries continue.
+Malformed output does not abort the cache run. The generator uses strict JSON
+parsing only; outputs with invalid JSON, trailing text, unknown categories, invalid
+box geometry, or missing `keypoints` are recorded as `parse_failed` and do not
+create cognitive-map caches. Other entries continue.
 
 ### Pretraining Cache
 

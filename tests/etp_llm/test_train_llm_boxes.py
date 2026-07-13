@@ -201,6 +201,36 @@ def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
     assert f"R2R_train_42: {missing_path}" in output
 
 
+def test_load_llm_boxes_examples_suppresses_missing_cache_summary_when_quiet(
+    monkeypatch,
+    capsys,
+):
+    missing_path = Path("/cache/gt.bbox.r2p5.path5.v1/boxes/scene-a/R2R_train_42.npz")
+
+    def missing_load(path):
+        raise FileNotFoundError(2, "No such file or directory", path)
+
+    monkeypatch.setattr(train_llm_boxes, "VLNCEEpisodeEntry", _EpisodeSource)
+    monkeypatch.setattr(
+        train_llm_boxes,
+        "cognitive_map_boxes_cache_path",
+        lambda scene_id, cache_id, namespace: missing_path,
+    )
+    monkeypatch.setattr(train_llm_boxes.RelevantSemanticBoxes, "load", missing_load)
+
+    with pytest.warns(RuntimeWarning, match="missing cached boxes"):
+        examples = train_llm_boxes.load_llm_boxes_examples(
+            "R2R",
+            ["train"],
+            quiet=True,
+            skip_missing_cache=True,
+            cognitive_map_namespace="gt.bbox.r2p5.path5.v1",
+        )
+
+    assert examples == []
+    assert capsys.readouterr().out == ""
+
+
 def test_load_llm_boxes_examples_raises_missing_cached_boxes_by_default(monkeypatch):
     def missing_load(path):
         raise FileNotFoundError(2, "No such file or directory", path)
@@ -819,7 +849,7 @@ def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
     )
     model = _PromptInspectingEvalModel()
 
-    train_llm_boxes.evaluate_model(model, _ChatTokenizer(), dataset, args)
+    train_llm_boxes._evaluate_loaded_model(model, _ChatTokenizer(), dataset, args)
 
     assert len(model.input_texts) == 1
     assert "find the target chair" in model.input_texts[0]
@@ -844,7 +874,7 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         system_prompt="system prompt",
     )
 
-    train_llm_boxes.evaluate_model(
+    train_llm_boxes._evaluate_loaded_model(
         _EvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -872,7 +902,7 @@ def test_evaluate_model_does_not_move_device_mapped_model(tmp_path):
         system_prompt="system prompt",
     )
 
-    train_llm_boxes.evaluate_model(
+    train_llm_boxes._evaluate_loaded_model(
         _DeviceMappedEvalModel(),
         _EvalTokenizer(),
         _EvalDataset(),
@@ -902,7 +932,7 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
 
     tokenizer = _EvalTokenizer()
 
-    metrics = train_llm_boxes.evaluate_model(
+    metrics = train_llm_boxes._evaluate_loaded_model(
         _EvalModel(),
         tokenizer,
         _EvalDataset(),
@@ -962,7 +992,7 @@ def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
         system_prompt="system prompt",
     )
 
-    metrics = train_llm_boxes.evaluate_model(
+    metrics = train_llm_boxes._evaluate_loaded_model(
         _EvalModel(),
         InvalidTokenizer(),
         _EvalDataset(),
@@ -1080,11 +1110,12 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             calls["zero_grad"] += 1
 
     monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
+    output_dir = tmp_path / "run"
     args = train_llm_boxes.parse_args(
         [
             "train",
             "--output-dir",
-            str(tmp_path / "run"),
+            str(output_dir),
             "--device",
             "cpu",
             "--device-map",
@@ -1102,6 +1133,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
     assert calls == {"step": 2, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
     assert metrics["optimizer_steps"] == pytest.approx(2.0)
+    assert json.loads((output_dir / "metrics.json").read_text()) == metrics
 
 
 def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
@@ -1215,7 +1247,10 @@ def test_llm_text_stats_report_lengths_and_truncation():
     }
 
 
-def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_path):
+def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
+    monkeypatch,
+    tmp_path,
+):
     calls = []
 
     def fake_load(
@@ -1240,7 +1275,7 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         return ["example"]
 
     def fake_evaluate(model, tokenizer, dataset, args):
-        calls.append(("eval", args.output_dir, list(dataset)))
+        calls.append(("eval", model, tokenizer, args.output_dir, list(dataset)))
         return {"examples": 1.0}
 
     def fake_load_model(path, device_map=None):
@@ -1253,16 +1288,25 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
         fake_load_model,
     )
     monkeypatch.setattr(train_llm_boxes, "load_llm_boxes_examples", fake_load)
-    monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(train_llm_boxes, "_evaluate_loaded_model", fake_evaluate)
     monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: examples)
 
-    metrics = train_llm_boxes.main(
-        ["eval", "--output-dir", str(tmp_path), "--limit", "1", "--quiet"]
+    args = train_llm_boxes.parse_args(
+        [
+            "eval",
+            "--checkpoint-path",
+            "checkpoint/final",
+            "--output-dir",
+            str(tmp_path),
+            "--limit",
+            "1",
+            "--quiet",
+        ]
     )
+    metrics = train_llm_boxes.evaluate_model(args)
 
     assert metrics == {"examples": 1.0}
     assert calls == [
-        ("load_model", LLAMA_3_1_8B_INSTRUCT_MODEL, "auto"),
         (
             "load",
             "R2R",
@@ -1272,9 +1316,27 @@ def test_eval_main_uses_validation_splits_and_artifact_subdir(monkeypatch, tmp_p
             True,
             "gt.bbox.r1p5.path5.v1",
         ),
-        ("eval", str(tmp_path), ["example"]),
+        ("load_model", "checkpoint/final", "auto"),
+        ("eval", "model", "tokenizer", str(tmp_path), ["example"]),
     ]
     assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
+
+
+def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_evaluate(args):
+        calls.append((args.mode, args.output_dir, args.limit, args.quiet))
+        return {"examples": 1.0}
+
+    monkeypatch.setattr(train_llm_boxes, "evaluate_model", fake_evaluate)
+
+    metrics = train_llm_boxes.main(
+        ["eval", "--output-dir", str(tmp_path), "--limit", "1", "--quiet"]
+    )
+
+    assert metrics == {"examples": 1.0}
+    assert calls == [("eval", str(tmp_path), 1, True)]
 
 
 def test_cli_parser_supports_train_and_eval_modes():
@@ -1304,6 +1366,12 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--gradient-accumulation-steps",
             "2",
             "--gradient-checkpointing",
+            "--lora-r",
+            "8",
+            "--lora-alpha",
+            "16",
+            "--lora-dropout",
+            "0.1",
             "--limit",
             "5",
             "--device",
@@ -1333,6 +1401,9 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.max_grad_norm == 0.5
     assert train_args.gradient_accumulation_steps == 2
     assert train_args.gradient_checkpointing is True
+    assert train_args.lora_r == 8
+    assert train_args.lora_alpha == 16
+    assert train_args.lora_dropout == 0.1
     assert train_args.limit == 5
     assert train_args.device == "cpu"
     assert train_args.device_map == "auto"
@@ -1342,9 +1413,23 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
     assert eval_args.output_dir == "eval-out"
     assert eval_args.max_new_tokens == 2048
+    assert eval_args.batch_size == 2
+    assert eval_args.learning_rate == 2e-4
     assert eval_args.max_grad_norm == 1.0
     assert eval_args.gradient_accumulation_steps == 1
     assert eval_args.gradient_checkpointing is False
+    assert eval_args.lora_r == 32
+    assert eval_args.lora_alpha == 64
+    assert eval_args.lora_dropout == 0.05
+    assert eval_args.lora_target_modules == (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
     assert eval_args.device_map == "none"
     assert eval_args.cognitive_map_namespace == "gt.bbox.r1p5.path5.v1"
     assert eval_args.quiet is False
@@ -1368,13 +1453,17 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
         fake_load_model,
     )
     monkeypatch.setattr(
-        train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: []
+        train_llm_boxes, "load_llm_boxes_examples", lambda *args, **kwargs: ["example"]
     )
-    monkeypatch.setattr(train_llm_boxes, "evaluate_model", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        train_llm_boxes, "_evaluate_loaded_model", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(train_llm_boxes, "LLMBoxesDataset", lambda examples: examples)
 
-    train_llm_boxes.main(
+    args = train_llm_boxes.parse_args(
         ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]
     )
+    train_llm_boxes.evaluate_model(args)
 
     assert calls == [(LLAMA_3_1_8B_INSTRUCT_MODEL, None)]
 

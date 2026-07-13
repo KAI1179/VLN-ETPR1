@@ -25,7 +25,6 @@ from .boxes_schema import (
     LLMBoxesSpec,
     build_llm_boxes_input,
     parse_llm_boxes_text,
-    parse_llm_boxes_text_salvage,
     spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
 )
@@ -126,8 +125,6 @@ def generate_navigation_cache(
 
     attempted = 0
     strict_valid = 0
-    salvaged = 0
-    missing_keypoints = 0
     generated = 0
     skipped = 0
 
@@ -180,57 +177,26 @@ def generate_navigation_cache(
                 failures: List[Dict[str, Any]] = []
 
                 try:
-                    strict_spec = parse_llm_boxes_text(generated_text)
+                    spec = parse_llm_boxes_text(generated_text)
                 except Exception as exc:
-                    strict_spec = None
-                    failures.append(_failure_detail("strict_parse", exc))
-                    _warn_navigation_cache_failure(item, "strict_parse", exc)
-                else:
-                    strict_valid += 1
-
-                salvage = parse_llm_boxes_text_salvage(generated_text)
-                spec = strict_spec if strict_spec is not None else salvage.spec
-                if salvage.dropped_entity_count:
-                    salvaged += 1
-                    error_text = "; ".join(salvage.errors)
-                    failures.append(
-                        _failure_detail(
-                            "salvage_parse",
-                            error_text,
-                            dropped_entities=salvage.dropped_entities,
-                        )
-                    )
-                    _warn_navigation_cache_failure(item, "salvage_parse", error_text)
-
-                if not spec.trajectory_keypoints:
-                    missing_keypoints += 1
                     skipped += 1
-                    error_text = (
-                        "refusing to generate cache without trajectory keypoints"
-                    )
-                    failures.append(
-                        _failure_detail("missing_trajectory_keypoints", error_text)
-                    )
-                    _warn_navigation_cache_failure(
-                        item,
-                        "missing_trajectory_keypoints",
-                        error_text,
-                    )
+                    failures.append(_failure_detail("parse_failed", exc))
+                    _warn_navigation_cache_failure(item, "parse_failed", exc)
                     _write_navigation_cache_status(
                         item,
-                        status="missing_keypoints",
+                        status="parse_failed",
                         dataset_key=dataset_key,
                         split=split,
                         args=args,
                         prediction_path=prediction_path,
                         cognitive_map_boxes_path=cognitive_map_boxes_path,
                         cognitive_map_raster_path=cognitive_map_raster_path,
-                        strict_valid=strict_spec is not None,
-                        salvaged=bool(salvage.dropped_entity_count),
-                        error=error_text,
+                        strict_valid=False,
+                        error=str(exc),
                         failures=failures,
                     )
                     continue
+                strict_valid += 1
 
                 # Spec geometry remains level-local meters:
                 # keypoints=(5, 2), object boxes=(center[2], half_extents[2], rot),
@@ -262,8 +228,7 @@ def generate_navigation_cache(
                         prediction_path=prediction_path,
                         cognitive_map_boxes_path=cognitive_map_boxes_path,
                         cognitive_map_raster_path=cognitive_map_raster_path,
-                        strict_valid=strict_spec is not None,
-                        salvaged=bool(salvage.dropped_entity_count),
+                        strict_valid=True,
                         error=str(exc),
                         failures=failures,
                     )
@@ -277,8 +242,7 @@ def generate_navigation_cache(
                     prediction_path=prediction_path,
                     cognitive_map_boxes_path=cognitive_map_boxes_path,
                     cognitive_map_raster_path=cognitive_map_raster_path,
-                    strict_valid=strict_spec is not None,
-                    salvaged=bool(salvage.dropped_entity_count),
+                    strict_valid=True,
                     failures=failures,
                 )
                 generated += 1
@@ -288,16 +252,10 @@ def generate_navigation_cache(
         "cached": float(cached),
         "attempted": float(attempted),
         "strict_valid": float(strict_valid),
-        "salvaged": float(salvaged),
-        "missing_trajectory_keypoints": float(missing_keypoints),
         "generated": float(generated),
         "skipped": float(skipped),
         "strict_parse_failure_rate": (
             float(attempted - strict_valid) / float(attempted) if attempted else 0.0
-        ),
-        "salvage_rate": float(salvaged) / float(attempted) if attempted else 0.0,
-        "missing_trajectory_keypoints_rate": (
-            float(missing_keypoints) / float(attempted) if attempted else 0.0
         ),
     }
     _write_split_metrics(split_dir, metrics, args)
@@ -865,8 +823,6 @@ def _sum_metrics(metrics_by_worker: Sequence[Dict[str, float]]) -> Dict[str, flo
         "cached": 0.0,
         "attempted": 0.0,
         "strict_valid": 0.0,
-        "salvaged": 0.0,
-        "missing_trajectory_keypoints": 0.0,
         "generated": 0.0,
         "skipped": 0.0,
     }
@@ -877,10 +833,6 @@ def _sum_metrics(metrics_by_worker: Sequence[Dict[str, float]]) -> Dict[str, flo
     attempted = metrics["attempted"]
     metrics["strict_parse_failure_rate"] = (
         (attempted - metrics["strict_valid"]) / attempted if attempted else 0.0
-    )
-    metrics["salvage_rate"] = metrics["salvaged"] / attempted if attempted else 0.0
-    metrics["missing_trajectory_keypoints_rate"] = (
-        metrics["missing_trajectory_keypoints"] / attempted if attempted else 0.0
     )
     return metrics
 
@@ -902,7 +854,6 @@ def _write_navigation_cache_status(
     cognitive_map_boxes_path: Optional[Path] = None,
     cognitive_map_raster_path: Optional[Path] = None,
     strict_valid: Optional[bool] = None,
-    salvaged: Optional[bool] = None,
     error: Optional[str] = None,
     failures: Sequence[Dict[str, Any]] = (),
 ) -> None:
@@ -917,7 +868,6 @@ def _write_navigation_cache_status(
         cognitive_map_boxes_path=cognitive_map_boxes_path,
         cognitive_map_raster_path=cognitive_map_raster_path,
         strict_valid=strict_valid,
-        salvaged=salvaged,
         error=error,
         failures=failures,
     )
@@ -935,7 +885,6 @@ def _write_navigation_cache_status_record(
     cognitive_map_boxes_path: Optional[Path] = None,
     cognitive_map_raster_path: Optional[Path] = None,
     strict_valid: Optional[bool] = None,
-    salvaged: Optional[bool] = None,
     error: Optional[str] = None,
     failures: Sequence[Dict[str, Any]] = (),
 ) -> None:
@@ -954,8 +903,6 @@ def _write_navigation_cache_status_record(
         record["cognitive_map_raster_path"] = str(cognitive_map_raster_path)
     if strict_valid is not None:
         record["strict_valid"] = strict_valid
-    if salvaged is not None:
-        record["salvaged"] = salvaged
     if error is not None:
         record["error"] = error
     if failures:

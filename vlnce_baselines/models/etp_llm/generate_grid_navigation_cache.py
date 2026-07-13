@@ -248,15 +248,11 @@ def generate_grid_navigation_cache(
         "cached": float(cached),
         "attempted": float(attempted),
         "strict_valid": float(strict_valid),
-        "salvaged": 0.0,
-        "missing_trajectory_keypoints": 0.0,
         "generated": float(generated),
         "skipped": float(skipped),
         "strict_parse_failure_rate": (
             float(attempted - strict_valid) / float(attempted) if attempted else 0.0
         ),
-        "salvage_rate": 0.0,
-        "missing_trajectory_keypoints_rate": 0.0,
     }
     _write_split_metrics(split_dir, metrics, args)
     return metrics
