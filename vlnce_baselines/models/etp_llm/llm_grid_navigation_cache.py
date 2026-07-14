@@ -7,9 +7,10 @@ import hashlib
 import os
 import subprocess
 import sys
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,11 +19,9 @@ from tap import Tap
 from .llm_boxes_navigation_cache import (
     PRETRAIN_DATASET_KEY,
     PRETRAIN_SPLIT,
-    VLNCE_DATASETS,
     VLNCE_SPLITS,
     _aggregate_worker_metrics,
     _batch_count,
-    _cache_split_keys,
     _default_device,
     _failure_detail,
     _generation_kwargs,
@@ -59,6 +58,8 @@ from .llm_grid_train import (
     load_system_prompt,
     parse_grid_text,
 )
+
+GRID_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
 
 
 class LLMGridNavigationCacheArgs(Tap):
@@ -161,14 +162,17 @@ def llm_grid_navigation_cache(
     strict_valid = 0
     generated = 0
     skipped = 0
+    oom_split_retries = 0
 
     with torch.inference_mode():
         for batch in progress_loader:
             attempted += len(batch["items"])
-            generated_sequences = model.generate(
-                **_model_batch(batch, args.device, include_labels=False),
-                **_generation_kwargs(tokenizer, args.max_new_tokens),
+            generated_sequences, split_retries = _generate_with_oom_splitting(
+                model,
+                _model_batch(batch, args.device, include_labels=False),
+                _generation_kwargs(tokenizer, args.max_new_tokens),
             )
+            oom_split_retries += split_retries
             decoded = [
                 decode_generated_completion(tokenizer, sequence, prompt_length)
                 for sequence, prompt_length in zip(
@@ -250,6 +254,7 @@ def llm_grid_navigation_cache(
         "strict_valid": float(strict_valid),
         "generated": float(generated),
         "skipped": float(skipped),
+        "oom_split_retries": float(oom_split_retries),
         "strict_parse_failure_rate": (
             float(attempted - strict_valid) / float(attempted) if attempted else 0.0
         ),
@@ -279,7 +284,7 @@ def generate_all_grid_navigation_caches(
             split=PRETRAIN_SPLIT,
         )
     )
-    for dataset_key in VLNCE_DATASETS:
+    for dataset_key in GRID_VLNCE_DATASETS:
         for split in VLNCE_SPLITS:
             items = load_vlnce_cache_items(
                 dataset_key,
@@ -297,6 +302,48 @@ def generate_all_grid_navigation_caches(
                 split=split,
             )
     return metrics
+
+
+def _generate_with_oom_splitting(
+    model: Any,
+    model_inputs: Dict[str, Any],
+    generation_kwargs: Dict[str, Any],
+) -> Tuple[List[Any], int]:
+    import torch
+
+    batch_size = len(model_inputs["input_ids"])
+    try:
+        return list(model.generate(**model_inputs, **generation_kwargs)), 0
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        if batch_size <= 1:
+            raise
+        midpoint = batch_size // 2
+        warnings.warn(
+            f"CUDA OOM during generation; splitting batch of {batch_size} into "
+            f"{midpoint} and {batch_size - midpoint}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        left, left_retries = _generate_with_oom_splitting(
+            model,
+            _slice_model_inputs(model_inputs, 0, midpoint),
+            generation_kwargs,
+        )
+        right, right_retries = _generate_with_oom_splitting(
+            model,
+            _slice_model_inputs(model_inputs, midpoint, batch_size),
+            generation_kwargs,
+        )
+        return left + right, 1 + left_retries + right_retries
+
+
+def _slice_model_inputs(
+    model_inputs: Dict[str, Any],
+    start: int,
+    end: int,
+) -> Dict[str, Any]:
+    return {key: value[start:end] for key, value in model_inputs.items()}
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> LLMGridNavigationCacheArgs:
@@ -418,7 +465,7 @@ def _run_parallel_workers(
     if failed:
         raise SystemExit(f"LLM-Grid navigation cache workers failed: {failed}")
     metrics: Dict[str, Dict[str, float]] = {}
-    for dataset_key, split in _cache_split_keys():
+    for dataset_key, split in _grid_cache_split_keys():
         split_dir = llm_navigation_split_dir(
             dataset_key,
             split,
@@ -429,6 +476,16 @@ def _run_parallel_workers(
             split_dir
         )
     return metrics
+
+
+def _grid_cache_split_keys() -> List[Tuple[str, str]]:
+    keys: List[Tuple[str, str]] = [
+        (dataset_key, split)
+        for dataset_key in GRID_VLNCE_DATASETS
+        for split in VLNCE_SPLITS
+    ]
+    keys.append((PRETRAIN_DATASET_KEY, PRETRAIN_SPLIT))
+    return keys
 
 
 def _worker_command(

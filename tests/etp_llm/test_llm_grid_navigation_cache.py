@@ -2,6 +2,8 @@ import argparse
 import json
 
 import numpy as np
+import pytest
+import torch
 
 from vlnce_baselines.models.etp_llm import llm_grid_navigation_cache
 
@@ -69,6 +71,19 @@ class _CacheGenerationModel:
         assert kwargs["pad_token_id"] == 0
         suffix = [ord(char) for char in self.text]
         return [[*row, *suffix] for row in kwargs["input_ids"]]
+
+
+class _OOMSplittingModel(_CacheGenerationModel):
+    def __init__(self, text):
+        super().__init__(text)
+        self.batch_sizes = []
+
+    def generate(self, **kwargs):
+        batch_size = len(kwargs["input_ids"])
+        self.batch_sizes.append(batch_size)
+        if batch_size > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic generation OOM")
+        return super().generate(**kwargs)
 
 
 def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
@@ -143,3 +158,78 @@ def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
     assert status["prediction_path"] == str(prediction_path)
     assert "cognitive_map_boxes_path" not in status
     assert status["cognitive_map_raster_path"] == str(raster_path)
+
+
+def test_llm_grid_navigation_cache_splits_only_the_oom_batch(tmp_path):
+    dataset = [
+        {
+            "example_id": f"R2R_train_{index}",
+            "scene_id": "scene-a",
+            "input_text": f"find chair {index}",
+            "instruction": f"Find chair {index}.",
+            "start_direction": (0.0, 1.0),
+            "start_position": (4.0, 5.0),
+        }
+        for index in range(2)
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="grid-model",
+        max_input_length=256,
+        max_new_tokens=256,
+        batch_size=2,
+        device="cpu",
+        quiet=True,
+        scale=2,
+    )
+    model = _OOMSplittingModel(GRID_JSON)
+
+    with pytest.warns(RuntimeWarning, match="splitting batch of 2"):
+        metrics = llm_grid_navigation_cache.llm_grid_navigation_cache(
+            model,
+            _CharChatTokenizer(),
+            dataset,
+            args,
+            dataset_key="R2R",
+            split="train",
+        )
+
+    assert model.batch_sizes == [2, 1, 1]
+    assert metrics["generated"] == 2.0
+    assert metrics["oom_split_retries"] == 1.0
+
+
+def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
+    loaded_splits = []
+    generated_splits = []
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_pretrain_cache_items",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_vlnce_cache_items",
+        lambda dataset, split, **_kwargs: loaded_splits.append((dataset, split)) or [],
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "llm_grid_navigation_cache",
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split: (
+            generated_splits.append((dataset_key, split)) or {}
+        ),
+    )
+
+    llm_grid_navigation_cache.generate_all_grid_navigation_caches(
+        object(),
+        object(),
+        argparse.Namespace(limit=None, quiet=True),
+    )
+
+    assert loaded_splits == [
+        ("R2R", "train"),
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+    ]
+    assert generated_splits == [("pretrain", "mixed"), *loaded_splits]

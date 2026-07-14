@@ -834,6 +834,10 @@ def _sum_metrics(metrics_by_worker: Sequence[Dict[str, float]]) -> Dict[str, flo
     metrics["strict_parse_failure_rate"] = (
         (attempted - metrics["strict_valid"]) / attempted if attempted else 0.0
     )
+    if any("oom_split_retries" in item for item in metrics_by_worker):
+        metrics["oom_split_retries"] = sum(
+            float(item.get("oom_split_retries", 0.0)) for item in metrics_by_worker
+        )
     return metrics
 
 
