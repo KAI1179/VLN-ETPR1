@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from os import PathLike
-from typing import List, Optional, Tuple, Type, TypeVar, cast
+from typing import List, Optional, Sequence, Tuple, Type, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,6 +25,18 @@ from prior.trajectory import TRAJECTORY_KEYPOINT_COUNT
 
 GridMapT = TypeVar("GridMapT", bound="BaseGridMap")
 Point2D = Tuple[float, float]
+
+
+def _trim_zero_padded_points(points: Sequence[Point2D]) -> Sequence[Point2D]:
+    last_nonzero_index = next(
+        (
+            index
+            for index in range(len(points) - 1, -1, -1)
+            if points[index] != (0.0, 0.0)
+        ),
+        -1,
+    )
+    return points[: last_nonzero_index + 1]
 
 
 class BaseGridMap:
@@ -199,6 +211,42 @@ class BaseGridMap:
             crop_margin=crop_margin,
         )
 
+    def visualize_comparison(
+        self,
+        ground_truth_map: BaseGridMap,
+        save_path: str | Path,
+        *,
+        instruction: str,
+        ground_truth_trajectory: Sequence[Point2D],
+        trajectory_keypoints: Sequence[Point2D],
+        start_direction_vector: DirectionVector,
+        figsize: tuple[int, int] = (24, 14),
+        auto_crop: bool = True,
+        crop_margin: int = 5,
+    ) -> None:
+        """Compare this predicted map with ground truth in one shared frame."""
+        from ._visualize import visualize_comparison
+
+        visible_keypoints = _trim_zero_padded_points(trajectory_keypoints)
+        visualize_comparison(
+            self,
+            ground_truth_map,
+            save_path,
+            instruction=instruction,
+            ground_truth_trajectory=[
+                meters_to_grid(float(position[0]), float(position[1]))
+                for position in ground_truth_trajectory
+            ],
+            trajectory_keypoints=[
+                meters_to_grid(float(position[0]), float(position[1]))
+                for position in visible_keypoints
+            ],
+            start_direction_vector=start_direction_vector,
+            figsize=figsize,
+            auto_crop=auto_crop,
+            crop_margin=crop_margin,
+        )
+
     def print_summary(self) -> None:
         """Print a text summary of the grid map to terminal.
 
@@ -309,15 +357,7 @@ class CognitiveGridMap(BaseGridMap):
         """
         from ._visualize import visualize
 
-        last_nonzero_idx = next(
-            (
-                index
-                for index in range(len(self.trajectory_keypoints) - 1, -1, -1)
-                if self.trajectory_keypoints[index] != (0.0, 0.0)
-            ),
-            -1,
-        )
-        visible_keypoints = self.trajectory_keypoints[: last_nonzero_idx + 1]
+        visible_keypoints = _trim_zero_padded_points(self.trajectory_keypoints)
         visualize(
             self,
             save_path,
