@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from prior.analyze.batch_vis import render_comparisons
+from prior.analyze.batch_vis import _sample_prediction_paths, render_comparisons
 from prior.grid_map import BaseGridMap
 from prior.grid_map._visualize import _MapOverlay, _grid_bounds
 
@@ -134,3 +134,28 @@ def test_render_comparisons_rejects_missing_boxes(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="Missing paired boxes"):
         render_comparisons(prediction_root, ground_truth_root, tmp_path / "output")
+
+
+def test_sample_prediction_paths_is_deterministic(tmp_path: Path) -> None:
+    prediction_root = tmp_path / "predictions"
+    paths = [prediction_root / "scene" / f"episode_{index}.npz" for index in range(5)]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    first = _sample_prediction_paths(prediction_root, count=2, seed=7)
+    second = _sample_prediction_paths(prediction_root, count=2, seed=7)
+
+    assert first == second
+    assert len(first) == 2
+
+
+def test_sample_prediction_paths_rejects_excess_count(tmp_path: Path) -> None:
+    prediction_root = tmp_path / "predictions"
+    prediction_root.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="count 1 exceeds available prediction count 0",
+    ):
+        _sample_prediction_paths(prediction_root, count=1, seed=0)

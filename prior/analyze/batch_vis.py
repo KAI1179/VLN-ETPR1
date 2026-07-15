@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -17,6 +18,7 @@ class BatchVisualizationArgs(Tap):
         "llm-grid-r2r-legacy-r1p5-direction5-scale2/"
         "r2r/val_unseen/cognitive_maps/raster"
     )
+    # Use --prediction-root data/llm_navigation/llm-grid-r2r-legacy-r1p5-direction5-scale2/r2r/train/cognitive_maps/raster to sample training
     """Prediction raster directory containing one directory per scene."""
     ground_truth_root: Path = Path(
         "data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1"
@@ -26,12 +28,36 @@ class BatchVisualizationArgs(Tap):
         "data/samples/llm-grid-s2.legacy.r1p5.direction5.comparison"
     )
     """Destination directory containing one directory per scene."""
+    count: Optional[int] = None
+    """Number of randomly sampled predictions; defaults to all predictions."""
+    seed: int = 0
+    """Random seed used when count is set."""
+
+
+def _sample_prediction_paths(
+    prediction_root: Path,
+    count: Optional[int],
+    seed: int,
+) -> list[Path]:
+    paths = sorted(prediction_root.glob("*/*.npz"))
+    if count is None:
+        return paths
+    if count < 0:
+        raise ValueError(f"count must be non-negative, got {count}")
+    if count > len(paths):
+        raise ValueError(
+            f"count {count} exceeds available prediction count {len(paths)}"
+        )
+    return sorted(random.Random(seed).sample(paths, count))
 
 
 def render_comparisons(
     prediction_root: Path,
     ground_truth_root: Path,
     output_root: Path,
+    *,
+    count: Optional[int] = None,
+    seed: int = 0,
 ) -> int:
     if not prediction_root.is_dir():
         raise FileNotFoundError(f"Missing prediction root: {prediction_root}")
@@ -43,7 +69,7 @@ def render_comparisons(
         raise FileNotFoundError(f"Missing ground-truth boxes root: {boxes_root}")
 
     rendered = 0
-    for prediction_path in sorted(prediction_root.glob("*/*.npz")):
+    for prediction_path in _sample_prediction_paths(prediction_root, count, seed):
         scene_id = prediction_path.parent.name
         ground_truth_path = raster_root / scene_id / prediction_path.name
         boxes_path = boxes_root / scene_id / prediction_path.name
@@ -78,6 +104,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         args.prediction_root,
         args.ground_truth_root,
         args.output_root,
+        count=args.count,
+        seed=args.seed,
     )
     print(f"Rendered {rendered} comparison visualizations to {args.output_root}")
 
