@@ -168,7 +168,7 @@
 | Try 9 (Dagger)             | 0.6378     | 0.6965     | 0.5394     | 28800   |
 | Try 10 (Dagger)            |            |            |            |         |
 | Try 5 (Dagger, r=1.5)      | **0.7656** | **0.7896** | **0.6682** | 25600   |
-| Try 5 Like 2x (Dagger, r=1.5) | 0.6639  | 0.7020     | 0.5772     | 9600    |
+| Try 5 Like 2x (Dagger, r=1.5) | 0.6917  | 0.7221     | 0.5988     | 29800   |
 
 - Try 4 (reuse+full, new-model-full)
     - [新的地图编码器结构](https://github.com/PRO-2684/ETP-R1/commit/8b7c5763f06156581b59d871e2afaaf4131aad3a) V2 (ResNet-like)
@@ -1033,8 +1033,9 @@ Drop Rate By `max_new_tokens`:
 - ~~Nav 2: Try 9 + LLM 5 @ 超算~~
 - ~~Try 10: DETR-style decoder @ VIPL~~
 - [x] Try 5 repro (半径 1.5, on-the-fly) @ 超算
-- [ ] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
+- [x] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
 - [x] 2x "Blurred", r=1.5 LLM-Grid 微调 (r2r-legacy-r1p5-direction5-scale2) @ 超算
-- [ ] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
+- [x] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
+- [ ] 2x "Blurred", r=1.5 LLM-Grid 导航 @ 超算
 - [x] LLM-Boxes 微调 @ 超算
 - [ ] LLM-Boxes 导航缓存生成 @ 超算
