@@ -133,18 +133,16 @@ data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/status/<scene>/<cache_id>.
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/manifest.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/metrics.json
 data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/worker_metrics/worker_<index>.json
-data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/predictions/<scene>/<cache_id>.txt
-data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/cognitive_maps/<scene>/<cache_id>.npz
-data/llm_navigation/llama-3.1-8b-instruct/rxr/<split>/status/<scene>/<cache_id>.json
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
 data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/status/<scene>/<instr_id>.json
 ```
 
-It generates `train`, `val_seen`, and `val_unseen` for both R2R and RxR, plus the
-mixed pretraining cache. The cache generator intentionally has no `--dataset`,
-`--split`, or `--annotation-file` selector; a complete cache should be generated as
-one reproducible artifact set.
+It generates R2R `train`, `val_seen`, and `val_unseen`, plus the mixed pretraining
+cache. Standalone RxR VLN-CE splits are excluded because navigation does not consume
+them; `pretrain/mixed` still includes RxR-derived pretraining records. The cache
+generator intentionally has no `--dataset`, `--split`, or `--annotation-file`
+selector; a complete cache should be generated as one reproducible artifact set.
 
 Generation resumes by default. If the cognitive-map `.npz` already exists for an
 item, that item is skipped before tokenization, LLM generation, and scene-box

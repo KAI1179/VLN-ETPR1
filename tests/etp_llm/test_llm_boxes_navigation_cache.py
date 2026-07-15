@@ -4,6 +4,7 @@ from typing import List
 
 import numpy as np
 import pytest
+import torch
 
 import prior.bbox as bbox
 from prior.grid_map import CognitiveGridMap
@@ -23,6 +24,7 @@ CHAIR_JSON = (
     '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
     '"half":[0.5,0.5],"rotation":0}]}}}'
 )
+SECOND_CHAIR_JSON = CHAIR_JSON.replace('"center":[1,2]', '"center":[3,4]')
 
 
 def _empty_relevant(instruction="Go to the chair."):
@@ -110,6 +112,38 @@ class _CacheGenerationModel:
         assert kwargs["pad_token_id"] == 0
         suffix = [ord(char) for char in self.text]
         return [[*row, *suffix] for row in kwargs["input_ids"]]
+
+
+class _OOMSplittingModel(_CacheGenerationModel):
+    def __init__(self, text):
+        super().__init__(text)
+        self.batch_sizes = []
+
+    def generate(self, **kwargs):
+        batch_size = len(kwargs["input_ids"])
+        self.batch_sizes.append(batch_size)
+        if batch_size > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic generation OOM")
+        return super().generate(**kwargs)
+
+
+class _OrderedOOMSplittingModel(_OOMSplittingModel):
+    def __init__(self, texts):
+        super().__init__("")
+        self.texts = iter(texts)
+
+    def generate(self, **kwargs):
+        batch_size = len(kwargs["input_ids"])
+        self.batch_sizes.append(batch_size)
+        if batch_size > 1:
+            raise torch.cuda.OutOfMemoryError("synthetic generation OOM")
+        suffix = [ord(char) for char in next(self.texts)]
+        return [[*kwargs["input_ids"][0], *suffix]]
+
+
+class _AlwaysOOMModel(_CacheGenerationModel):
+    def generate(self, **kwargs):
+        raise torch.cuda.OutOfMemoryError("synthetic size-one generation OOM")
 
 
 class _PretrainEntry:
@@ -295,6 +329,111 @@ def test_llm_boxes_navigation_cache_uses_left_padding_for_decoder_only_generatio
 
     assert tokenizer.padding_side == "left"
     assert tokenizer.padding_side_during_call == "left"
+
+
+def test_llm_boxes_navigation_cache_splits_only_the_oom_batch(tmp_path):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": f"R2R_train_{index}",
+            "scene_id": "scene-a",
+            "input_text": f"find chair {index}",
+            "target_text": CHAIR_JSON,
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": f"Find chair {index}.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+        for index in range(2)
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=2,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+    model = _OrderedOOMSplittingModel([CHAIR_JSON, SECOND_CHAIR_JSON])
+
+    with pytest.warns(RuntimeWarning, match="splitting batch of 2"):
+        metrics = llm_boxes_navigation_cache.llm_boxes_navigation_cache(
+            model,
+            _CharChatTokenizer(),
+            dataset,
+            args,
+            dataset_key="R2R",
+            split="train",
+        )
+
+    assert model.batch_sizes == [2, 1, 1]
+    assert metrics["generated"] == 2.0
+    assert metrics["oom_split_retries"] == 1.0
+
+    split_dir = tmp_path / "test-model" / "r2r" / "train"
+    for index, (prediction, center) in enumerate(
+        [(CHAIR_JSON, (1.0, 2.0)), (SECOND_CHAIR_JSON, (3.0, 4.0))]
+    ):
+        cache_id = f"R2R_train_{index}"
+        prediction_path = split_dir / "predictions" / "scene-a" / f"{cache_id}.txt"
+        boxes_path = (
+            split_dir / "cognitive_maps" / "boxes" / "scene-a" / f"{cache_id}.npz"
+        )
+        raster_path = (
+            split_dir / "cognitive_maps" / "raster" / "scene-a" / f"{cache_id}.npz"
+        )
+        boxes = bbox.RelevantSemanticBoxes.load(boxes_path)
+        raster = CognitiveGridMap.load(raster_path)
+
+        assert prediction_path.read_text() == f"{prediction}\n"
+        assert boxes.level.objects[1][0].center == center
+        np.testing.assert_array_equal(boxes.to_cognitive_map().grid, raster.grid)
+
+
+def test_llm_boxes_navigation_cache_propagates_size_one_oom(tmp_path):
+    target = _empty_relevant()
+    dataset: List[LLMBoxesItem] = [
+        {
+            "example_id": "R2R_train_0",
+            "scene_id": "scene-a",
+            "input_text": "find chair",
+            "target_text": CHAIR_JSON,
+            "target_spec": LLMBoxesSpec(objects=(), regions=()),
+            "target_relevant": target,
+            "instruction": "Find chair.",
+            "level_idx": 0,
+            "trajectory_keypoints": KEYPOINTS,
+            "start_direction": (0.0, 1.0),
+            "start_position": (0.0, 0.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        max_input_length=256,
+        max_new_tokens=64,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+
+    with pytest.raises(torch.cuda.OutOfMemoryError, match="size-one"):
+        llm_boxes_navigation_cache.llm_boxes_navigation_cache(
+            _AlwaysOOMModel(CHAIR_JSON),
+            _CharChatTokenizer(),
+            dataset,
+            args,
+            dataset_key="R2R",
+            split="train",
+        )
 
 
 def test_llm_boxes_navigation_cache_resumes_existing_prediction_and_map(tmp_path):
@@ -860,6 +999,51 @@ def test_parallel_worker_count_resolves_auto_from_visible_cuda(monkeypatch):
         llm_boxes_navigation_cache._resolve_parallel_worker_count("many")
     with pytest.raises(ValueError, match="at least 1"):
         llm_boxes_navigation_cache._resolve_parallel_worker_count("0")
+
+
+def test_generate_all_navigation_caches_skips_rxr_vlnce(monkeypatch):
+    loaded_splits = []
+    generated_splits = []
+    monkeypatch.setattr(
+        llm_boxes_navigation_cache,
+        "load_pretrain_cache_items",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        llm_boxes_navigation_cache,
+        "load_vlnce_cache_items",
+        lambda dataset, split, **_kwargs: loaded_splits.append((dataset, split)) or [],
+    )
+    monkeypatch.setattr(
+        llm_boxes_navigation_cache,
+        "llm_boxes_navigation_cache",
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split: (
+            generated_splits.append((dataset_key, split)) or {}
+        ),
+    )
+
+    llm_boxes_navigation_cache.generate_all_navigation_caches(
+        object(),
+        object(),
+        argparse.Namespace(limit=None, quiet=True),
+    )
+
+    expected_vlnce_splits = [
+        ("R2R", "train"),
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+    ]
+    assert loaded_splits == expected_vlnce_splits
+    assert generated_splits == [("pretrain", "mixed"), *expected_vlnce_splits]
+
+
+def test_parallel_aggregation_uses_only_boxes_navigation_split_keys():
+    assert llm_boxes_navigation_cache._cache_split_keys() == [
+        ("R2R", "train"),
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+        ("pretrain", "mixed"),
+    ]
 
 
 def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_path):

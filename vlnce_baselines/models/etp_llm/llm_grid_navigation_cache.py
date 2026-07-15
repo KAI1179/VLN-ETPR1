@@ -7,7 +7,6 @@ import hashlib
 import os
 import subprocess
 import sys
-import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
@@ -16,6 +15,7 @@ import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
 
+from .generation import generate_with_oom_splitting
 from .llm_boxes_navigation_cache import (
     PRETRAIN_DATASET_KEY,
     PRETRAIN_SPLIT,
@@ -167,7 +167,7 @@ def llm_grid_navigation_cache(
     with torch.inference_mode():
         for batch in progress_loader:
             attempted += len(batch["items"])
-            generated_sequences, split_retries = _generate_with_oom_splitting(
+            generated_sequences, split_retries = generate_with_oom_splitting(
                 model,
                 _model_batch(batch, args.device, include_labels=False),
                 _generation_kwargs(tokenizer, args.max_new_tokens),
@@ -302,48 +302,6 @@ def generate_all_grid_navigation_caches(
                 split=split,
             )
     return metrics
-
-
-def _generate_with_oom_splitting(
-    model: Any,
-    model_inputs: Dict[str, Any],
-    generation_kwargs: Dict[str, Any],
-) -> Tuple[List[Any], int]:
-    import torch
-
-    batch_size = len(model_inputs["input_ids"])
-    try:
-        return list(model.generate(**model_inputs, **generation_kwargs)), 0
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        if batch_size <= 1:
-            raise
-        midpoint = batch_size // 2
-        warnings.warn(
-            f"CUDA OOM during generation; splitting batch of {batch_size} into "
-            f"{midpoint} and {batch_size - midpoint}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        left, left_retries = _generate_with_oom_splitting(
-            model,
-            _slice_model_inputs(model_inputs, 0, midpoint),
-            generation_kwargs,
-        )
-        right, right_retries = _generate_with_oom_splitting(
-            model,
-            _slice_model_inputs(model_inputs, midpoint, batch_size),
-            generation_kwargs,
-        )
-        return left + right, 1 + left_retries + right_retries
-
-
-def _slice_model_inputs(
-    model_inputs: Dict[str, Any],
-    start: int,
-    end: int,
-) -> Dict[str, Any]:
-    return {key: value[start:end] for key, value in model_inputs.items()}
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> LLMGridNavigationCacheArgs:

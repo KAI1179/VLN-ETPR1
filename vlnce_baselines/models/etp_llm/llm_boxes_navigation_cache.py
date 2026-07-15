@@ -28,6 +28,7 @@ from .boxes_schema import (
     spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
 )
+from .generation import generate_with_oom_splitting
 from .navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     llm_navigation_cache_complete,
@@ -54,7 +55,7 @@ from .llm_boxes_train import (
     _progress,
 )
 
-VLNCE_DATASETS: Tuple[Literal["R2R", "RxR"], ...] = ("R2R", "RxR")
+BOXES_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
 VLNCE_SPLITS = ("train", "val_seen", "val_unseen")
 PRETRAIN_DATASET_KEY = "pretrain"
 PRETRAIN_SPLIT = "mixed"
@@ -127,6 +128,7 @@ def llm_boxes_navigation_cache(
     strict_valid = 0
     generated = 0
     skipped = 0
+    oom_split_retries = 0
 
     with torch.inference_mode():
         for batch in progress_loader:
@@ -134,10 +136,12 @@ def llm_boxes_navigation_cache(
             model_inputs = _model_batch(batch, args.device, include_labels=False)
             # input_ids/attention_mask: (B, T_prompt).
             # generated_sequences: (B, T_prompt + T_generated).
-            generated_sequences = model.generate(
-                **model_inputs,
-                **_generation_kwargs(tokenizer, args.max_new_tokens),
+            generated_sequences, split_retries = generate_with_oom_splitting(
+                model,
+                model_inputs,
+                _generation_kwargs(tokenizer, args.max_new_tokens),
             )
+            oom_split_retries += split_retries
             decoded = [
                 decode_generated_completion(tokenizer, sequence, prompt_length)
                 for sequence, prompt_length in zip(
@@ -254,6 +258,7 @@ def llm_boxes_navigation_cache(
         "strict_valid": float(strict_valid),
         "generated": float(generated),
         "skipped": float(skipped),
+        "oom_split_retries": float(oom_split_retries),
         "strict_parse_failure_rate": (
             float(attempted - strict_valid) / float(attempted) if attempted else 0.0
         ),
@@ -494,7 +499,7 @@ def generate_all_navigation_caches(
         dataset_key=PRETRAIN_DATASET_KEY,
         split=PRETRAIN_SPLIT,
     )
-    for dataset_key in VLNCE_DATASETS:
+    for dataset_key in BOXES_VLNCE_DATASETS:
         for split in VLNCE_SPLITS:
             examples = load_vlnce_cache_items(
                 dataset_key,
@@ -523,7 +528,7 @@ def _skipped_cache_count(metrics: Dict[str, Dict[str, float]]) -> int:
 
 def _cache_split_keys() -> List[Tuple[str, str]]:
     keys: List[Tuple[str, str]] = []
-    for dataset_key in VLNCE_DATASETS:
+    for dataset_key in BOXES_VLNCE_DATASETS:
         for split in VLNCE_SPLITS:
             keys.append((dataset_key, split))
     keys.append((PRETRAIN_DATASET_KEY, PRETRAIN_SPLIT))
