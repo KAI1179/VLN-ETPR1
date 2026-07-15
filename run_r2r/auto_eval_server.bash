@@ -4,7 +4,6 @@ export MAGNUM_LOG=quiet
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
 configure_distributed_gpu_vars
-MASTER_PORT="${MASTER_PORT:-2333}"
 
 flag_template=" --exp_name release_r2r_dagger
       --run-type eval
@@ -33,7 +32,7 @@ for ((ckpt_num=$start_ckpt; ckpt_num>=$end_ckpt; ckpt_num+=$step)); do
     # 将 ckpt_num 替换到 flag 中
     flag=$(echo "$flag_template" | sed "s/{ckpt_num}/$ckpt_num/")
     # 运行 eval 模式
-    python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag 2>&1 | stdbuf -oL grep -v 'it/s' | tee -a $log_file
+    torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $flag 2>&1 | stdbuf -oL grep -v 'it/s' | tee -a $log_file
 
 done
 

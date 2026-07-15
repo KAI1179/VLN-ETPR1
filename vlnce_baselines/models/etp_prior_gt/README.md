@@ -114,7 +114,7 @@ steps vs 30 k) by freezing the base model and training only the map encoder.
 ### Step 1 — Probe training (load R1 GRPO checkpoint, freeze base)
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe
 ```
 
 This sets:
@@ -127,7 +127,7 @@ This sets:
 You may have to move `data/logs/checkpoints/release_r2r_priorgt_probe/ckpt.iter3000.pth` to `data/logs/checkpoints/release_r2r_priorgt_probe/store/ckpt.iter3000.pth` first.
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe_eval 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_probe_eval
 ```
 
 Compare `SR` / `SPL` against the R1 GRPO baseline. If the probe is better, proceed with full
@@ -142,7 +142,7 @@ The launcher now supports dedicated PriorGT modes in `run_r2r/main_server.bash`.
 ### 1) Train IL (DAgger) PriorGT
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_dagger 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_dagger
 ```
 
 This runs with:
@@ -154,7 +154,7 @@ This runs with:
 ### 2) Train GRPO PriorGT
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_grpo 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_grpo
 ```
 
 By default this mode loads IL checkpoint:
@@ -168,13 +168,13 @@ Update this path if your IL checkpoint name differs.
 Evaluate SS checkpoint:
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_eval_ss 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_eval_ss
 ```
 
 Evaluate GRPO checkpoint:
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_eval_grpo 2333
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_eval_grpo
 ```
 
 ## Manual Override Command (Optional)
@@ -182,8 +182,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash run_r2r/main_server.bash priorgt_eval_grpo 233
 If you want to run without the bash mode, use direct overrides:
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.launch \
-  --nproc_per_node=4 --master_port 2333 run.py \
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nproc-per-node=4 run.py \
   --exp_name release_r2r_priorgt_eval \
   --run-type eval \
   --exp-config run_r2r/iter_train.yaml \
@@ -218,7 +217,7 @@ by navigation training.
 To run pretraining with PriorGT maps:
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/prior_gt \
     --use_prior_gt \
     --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 ```

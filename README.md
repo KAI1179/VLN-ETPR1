@@ -169,14 +169,15 @@ We provide scripts for Pretraining, Online SFT, and Online RFT across R2R-CE and
 Start the pretraining process on the joint dataset:
 
 ```bash
-bash pretrain_src/run_pt/run_mix_server.bash 2333
+bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2
 ```
 
 PriorGT and imagined-map variants use the same helper with extra flags:
 
 ```bash
-bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_prior_gt --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
-bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/prior_gt \
+  --use_prior_gt --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
+bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/imagined \
   --use_imagined \
   --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
 ```
@@ -189,13 +190,13 @@ Run the following commands for Supervised Fine-tuning (SFT), Reinforcement Fine-
 
 ```bash
 # Online SFT (DAgger)
-bash run_r2r/main_server.bash dagger 2333
+bash run_r2r/main_server.bash dagger
 
 # Online RFT (GRPO)
-bash run_r2r/main_server.bash grpo 2333
+bash run_r2r/main_server.bash grpo
 
 # Evaluation
-bash run_r2r/main_server.bash eval 2333
+bash run_r2r/main_server.bash eval
 ```
 
 ### 3. RxR-CE Benchmark
@@ -204,14 +205,16 @@ Run the following commands for RxR-CE experiments:
 
 ```bash
 # Online SFT (DAgger)
-bash run_rxr/main_server.bash dagger 2333
+bash run_rxr/main_server.bash dagger
 
 # Online RFT (GRPO)
-bash run_rxr/main_server.bash grpo 2333
+bash run_rxr/main_server.bash grpo
 
 # Evaluation
-bash run_rxr/main_server.bash eval 2333
+bash run_rxr/main_server.bash eval
 ```
+
+The launch helpers use `torchrun --standalone`, which selects a free local rendezvous port automatically.
 
 
 

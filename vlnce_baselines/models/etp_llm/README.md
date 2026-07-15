@@ -32,9 +32,9 @@ pretrained/r2r_rxr_ce/llm/
 Launcher modes:
 
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 --use_llm --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger 2333
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo 2333
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/llm --use_llm --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo
 ```
 
 These paths consume precomputed LLM-derived cognitive-map caches. They should not

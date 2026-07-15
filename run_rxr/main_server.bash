@@ -4,7 +4,6 @@ export MAGNUM_LOG=quiet
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
 configure_distributed_gpu_vars
-MASTER_PORT=${2:-2333}
 
 flag1="--exp_name release_rxr_dagger
       --run-type dagger
@@ -95,25 +94,25 @@ mode=$1
 case $mode in
       dagger)
       echo "###### dagger train mode ######"
-      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag1
+      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $flag1
       ;;
       grpo)
       echo "###### grpo train mode ######"
-      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag2
+      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $flag2
       ;;
       eval)
       echo "###### eval mode ######"
-      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag3
+      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $flag3
       ;;
       infer)
       echo "###### infer mode ######"
-      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $flag4
+      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $flag4
       ;;
 esac
 
 # 命令行运行：
 # Uses all visible GPUs by default. Set CUDA_VISIBLE_DEVICES first to restrict cards.
-# bash run_rxr/main_server.bash dagger 2333
-# bash run_rxr/main_server.bash grpo 2333
-# bash run_rxr/main_server.bash eval 2333
-# bash run_rxr/main_server.bash infer 2333
+# bash run_rxr/main_server.bash dagger
+# bash run_rxr/main_server.bash grpo
+# bash run_rxr/main_server.bash eval
+# bash run_rxr/main_server.bash infer

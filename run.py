@@ -3,7 +3,7 @@
 import argparse
 import os
 import random
-from typing import Iterable, List, Optional
+from typing import List, Optional, Sequence
 
 from no_tensorflow import configure_no_tensorflow
 
@@ -25,7 +25,6 @@ class RunArgs(Tap):
     run_type: str
     exp_config: str
     opts: Optional[List[str]] = None
-    local_rank: int = 0
 
     def configure(self) -> None:
         self.add_argument(
@@ -47,11 +46,14 @@ class RunArgs(Tap):
             nargs=argparse.REMAINDER,
             help="Modify config options from command line",
         )
-        self.add_argument("--local-rank", type=int, help="local gpu id")
 
 
-def parse_args(argv: Optional[Iterable[str]] = None) -> RunArgs:
+def parse_args(argv: Optional[Sequence[str]] = None) -> RunArgs:
     return RunArgs().parse_args(argv)
+
+
+def local_rank_from_environment() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
 
 
 def main():
@@ -59,9 +61,7 @@ def main():
     run_exp(**args.as_dict())
 
 
-def run_exp(
-    exp_name: str, exp_config: str, run_type: str, opts=None, local_rank=None
-) -> None:
+def run_exp(exp_name: str, exp_config: str, run_type: str, opts=None) -> None:
     r"""Runs experiment given mode and config
 
     Args:
@@ -87,9 +87,9 @@ def run_exp(
     config.VIDEO_DIR += exp_name
     config.LOG_FILE = exp_name + "_" + config.LOG_FILE
 
-    config.local_rank = local_rank
+    config.local_rank = local_rank_from_environment()
     config.freeze()
-    os.system("mkdir -p data/logs/running_log")
+    os.makedirs("data/logs/running_log", exist_ok=True)
     os.makedirs("data/logs/checkpoints/" + exp_name, exist_ok=True)
     if run_type == "dagger" or run_type == "grpo":
         logger.add_filehandler(

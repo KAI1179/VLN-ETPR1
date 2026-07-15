@@ -179,7 +179,7 @@ joint R2R/RxR pretraining data, optionally seeding the predictor from the
 predictor-only checkpoint:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash 2333 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/imagined \
   --use_imagined \
   --map_predictor_checkpoint data/logs/checkpoints/release_r2r_imagined_predictor/store/predictor.best.pt \
   --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
@@ -194,7 +194,7 @@ pretrained/r2r_rxr_ce/imagined/ckpts/
 Train the normal SS/DAgger imagined model through the shared R2R launcher:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger 2333
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_dagger
 ```
 
 This trains the navigation model, the instruction-to-map predictor, and the
@@ -220,7 +220,7 @@ normal post-pretraining path should use the jointly pretrained predictor from
 Evaluate the SS checkpoint with:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss 2333
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_ss
 ```
 
 The default eval checkpoint path is:
@@ -235,13 +235,13 @@ checkpoint name differs.
 Run GRPO finetuning after DAgger:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo 2333
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_grpo
 ```
 
 Evaluate the GRPO checkpoint with:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo 2333
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash imagined_eval_grpo
 ```
 
 ## Scope

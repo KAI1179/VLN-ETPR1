@@ -17,82 +17,82 @@ if str(ROOT) not in sys.path:
 def test_run_parser_returns_typed_args_with_passthrough_opts():
     import run
 
-    args = run.parse_args(
-        [
-            "--exp_name",
-            "debug",
-            "--run-type",
-            "eval",
-            "--exp-config",
-            "run_r2r/iter_train.yaml",
-            "--local-rank",
-            "3",
-            "MODEL.hidden_size",
-            "768",
-        ]
-    )
+    args = run.parse_args([
+        "--exp_name",
+        "debug",
+        "--run-type",
+        "eval",
+        "--exp-config",
+        "run_r2r/iter_train.yaml",
+        "MODEL.hidden_size",
+        "768",
+    ])
 
     assert isinstance(args, run.RunArgs)
     assert args.exp_name == "debug"
     assert args.run_type == "eval"
     assert args.exp_config == "run_r2r/iter_train.yaml"
-    assert args.local_rank == 3
     assert args.opts == ["MODEL.hidden_size", "768"]
+
+
+def test_run_reads_local_rank_from_environment(monkeypatch):
+    import run
+
+    monkeypatch.setenv("LOCAL_RANK", "3")
+    assert run.local_rank_from_environment() == 3
 
 
 def test_train_map_predictor_parser_returns_typed_args():
     from vlnce_baselines.models.etp_imagined import train_map_predictor
 
-    args = train_map_predictor.parse_args(
-        [
-            "--exp-config",
-            "run_r2r/iter_train.yaml",
-            "--dataset",
-            "r2r",
-            "--train-splits",
-            "train",
-            "val_seen",
-            "--val-splits",
-            "val_unseen",
-            "--output",
-            "predictor.pt",
-            "--batch-size",
-            "4",
-            "--epochs",
-            "2",
-            "--lr",
-            "0.001",
-            "--loss",
-            "focal",
-            "--max-pos-weight",
-            "7.5",
-            "--focal-gamma",
-            "1.5",
-            "--trajectory-keypoint-loss-weight",
-            "0.25",
-            "--init-positive-prob",
-            "0.01",
-            "--thresholds",
-            "0.1,0.2",
-            "--max-text-len",
-            "16",
-            "--num-workers",
-            "0",
-            "--seed",
-            "9",
-            "--limit",
-            "10",
-            "--val-limit",
-            "3",
-            "--log-every",
-            "2",
-            "--device",
-            "cpu",
-            "--opts",
-            "MODEL.hidden_size",
-            "768",
-        ]
-    )
+    args = train_map_predictor.parse_args([
+        "--exp-config",
+        "run_r2r/iter_train.yaml",
+        "--dataset",
+        "r2r",
+        "--train-splits",
+        "train",
+        "val_seen",
+        "--val-splits",
+        "val_unseen",
+        "--output",
+        "predictor.pt",
+        "--batch-size",
+        "4",
+        "--epochs",
+        "2",
+        "--lr",
+        "0.001",
+        "--loss",
+        "focal",
+        "--max-pos-weight",
+        "7.5",
+        "--focal-gamma",
+        "1.5",
+        "--trajectory-keypoint-loss-weight",
+        "0.25",
+        "--init-positive-prob",
+        "0.01",
+        "--thresholds",
+        "0.1,0.2",
+        "--max-text-len",
+        "16",
+        "--num-workers",
+        "0",
+        "--seed",
+        "9",
+        "--limit",
+        "10",
+        "--val-limit",
+        "3",
+        "--log-every",
+        "2",
+        "--device",
+        "cpu",
+        "--opts",
+        "MODEL.hidden_size",
+        "768",
+    ])
 
     assert isinstance(args, train_map_predictor.TrainMapPredictorArgs)
     assert args.exp_config == "run_r2r/iter_train.yaml"
@@ -154,19 +154,17 @@ def test_default_config_exposes_llm_navigation_cache_settings():
 def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
     from prior.bbox import __main__ as bbox_main
 
-    args = bbox_main.parse_args(
-        [
-            "17DRP5sb8fy",
-            "--dataset",
-            "r2r",
-            "--episode-id",
-            "123",
-            "--split",
-            "val_unseen",
-            "--output",
-            "boxes",
-        ]
-    )
+    args = bbox_main.parse_args([
+        "17DRP5sb8fy",
+        "--dataset",
+        "r2r",
+        "--episode-id",
+        "123",
+        "--split",
+        "val_unseen",
+        "--output",
+        "boxes",
+    ])
 
     assert isinstance(args, bbox_main.BoundingBoxArgs)
     assert args.scenes == ["17DRP5sb8fy"]
@@ -255,12 +253,10 @@ def test_pretrain_prior_map_loads_cached_map(tmp_path, monkeypatch):
     nav_db.candidate = CognitiveMapCandidate.parse("current", "prior_gt")
     nav_db.cognitive_map_namespace = "gt.legacy.r1p5.path5.v1"
     nav_db.random_rotation_augmentation = False
-    outputs = nav_db._load_pretrain_cognitive_map(
-        {
-            "instr_id": "42_0",
-            "scan": "scene",
-        }
-    )
+    outputs = nav_db._load_pretrain_cognitive_map({
+        "instr_id": "42_0",
+        "scan": "scene",
+    })
 
     assert captured == {
         "scene_id": "scene",
@@ -404,6 +400,9 @@ def test_pretrain_parser_accepts_candidate_and_rejects_invalid_pair(monkeypatch)
     monkeypatch.setattr(
         pretrain_parser, "open", lambda *_args, **_kwargs: None, raising=False
     )
+    monkeypatch.setenv("LOCAL_RANK", "2")
+    monkeypatch.setenv("RANK", "6")
+    monkeypatch.setenv("WORLD_SIZE", "8")
 
     monkeypatch.setattr(
         sys,
@@ -421,6 +420,9 @@ def test_pretrain_parser_accepts_candidate_and_rejects_invalid_pair(monkeypatch)
     args = pretrain_parser.parse_with_config(parser)
     assert args.navigation_architecture == "try5"
     assert args.cognitive_map_source == "llm_grid"
+    assert args.local_rank == 2
+    assert args.rank == 6
+    assert args.world_size == 8
 
     parser = pretrain_parser.load_parser()
     monkeypatch.setattr(

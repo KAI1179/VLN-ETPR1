@@ -1,6 +1,7 @@
 import argparse
-import sys
 import json
+import os
+import sys
 
 from vlnce_baselines.models.cognitive_map_candidate import (
     CognitiveMapCandidate,
@@ -155,26 +156,6 @@ def load_parser():
     )
     parser.add_argument("--pin_mem", action="store_true", help="pin memory")
 
-    # distributed computing
-    parser.add_argument(
-        "--local-rank",
-        type=int,
-        default=-1,
-        help="local rank for distributed training on gpus",
-    )
-    parser.add_argument(
-        "--node_rank",
-        type=int,
-        default=0,
-        help="Id of the node",
-    )
-    parser.add_argument(
-        "--world_size",
-        type=int,
-        default=1,
-        help="Number of GPUs across all nodes",
-    )
-
     # can use config files
     parser.add_argument("--config", required=True, help="JSON config files")
 
@@ -185,7 +166,6 @@ def parse_with_config(parser):
     args = parser.parse_args()
     if args.config is not None:
         config_args = json.load(open(args.config))
-        # override_keys = {'output_dir', 'model_config', 'world_size', 'vlnbert', 'config', 'local_rank'}
         override_keys = {
             arg[2:].split("=")[0] for arg in sys.argv[1:] if arg.startswith("--")
         }
@@ -194,29 +174,34 @@ def parse_with_config(parser):
             if k not in override_keys:
                 setattr(args, k, v)
     del args.config
+    args.local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    args.rank = int(os.environ.get("RANK", "0"))
+    args.world_size = int(os.environ.get("WORLD_SIZE", "1"))
     architecture = args.navigation_architecture
     source = args.cognitive_map_source
     if (architecture is None) != (source is None):
         raise ValueError(
             "--navigation-architecture and --cognitive-map-source must be provided together"
         )
-    if source is None and any(
-        (
-            args.cognitive_map_namespace,
-            args.llm_cache_model_key,
-            args.llm_cache_dir,
-            args.map_predictor_checkpoint,
-        )
-    ):
+    if source is None and any((
+        args.cognitive_map_namespace,
+        args.llm_cache_model_key,
+        args.llm_cache_dir,
+        args.map_predictor_checkpoint,
+    )):
         raise ValueError(
             "Cognitive-map cache and predictor arguments require an explicit candidate"
         )
     if source is not None:
         candidate = CognitiveMapCandidate.parse(architecture, source)
-        if candidate.source in {
-            CognitiveMapSource.IMAGINED,
-            CognitiveMapSource.PRIOR_GT,
-        } and not args.cognitive_map_namespace:
+        if (
+            candidate.source
+            in {
+                CognitiveMapSource.IMAGINED,
+                CognitiveMapSource.PRIOR_GT,
+            }
+            and not args.cognitive_map_namespace
+        ):
             raise ValueError(
                 f"--cognitive-map-namespace is required for {candidate.source.value}"
             )
@@ -228,7 +213,10 @@ def parse_with_config(parser):
             raise ValueError(
                 "--llm-cache-model-key is only valid for an LLM cognitive-map source"
             )
-        if args.map_predictor_checkpoint and candidate.source is not CognitiveMapSource.IMAGINED:
+        if (
+            args.map_predictor_checkpoint
+            and candidate.source is not CognitiveMapSource.IMAGINED
+        ):
             raise ValueError(
                 "--map_predictor_checkpoint is only valid for the imagined source"
             )

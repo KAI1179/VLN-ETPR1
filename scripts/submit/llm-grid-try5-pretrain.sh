@@ -5,7 +5,7 @@
 #SBATCH -p vip_gpu_scze096
 eval "$(conda shell.bash hook)" && conda activate etpr1-uv
 bash pretrain_src/run_pt/run_mix_server.bash \
-  2334 pretrained/r2r_rxr_ce/llm_grid_try5 \
+  pretrained/r2r_rxr_ce/llm_grid_try5 \
   --navigation-architecture try5 \
   --cognitive-map-source llm_grid \
   --llm-cache-model-key llm-grid-r2r-legacy-r1p5-direction5-scale2 \

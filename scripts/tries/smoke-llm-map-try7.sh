@@ -10,7 +10,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${REPO_ROOT}/scripts/gpu-detection.bash"
 
 CACHE_ALIAS="${1:-llm5}"
-MASTER_PORT="${2:-2333}"
 
 case "${CACHE_ALIAS}" in
       llm4)
@@ -49,12 +48,10 @@ echo "cache_model_key=${CACHE_MODEL_KEY}"
 echo "pretrained_ckpt=${GT_PRETRAINED_CKPT}"
 echo "dagger_ckpt=${GT_DAGGER_CKPT}"
 echo "exp_name=${EXP_NAME}"
-echo "master_port=${MASTER_PORT}"
 
 cd "${REPO_ROOT}"
-python -m torch.distributed.launch \
-      --nproc_per_node="${NPROC_PER_NODE}" \
-      --master_port "${MASTER_PORT}" \
+torchrun --standalone \
+      --nproc-per-node="${NPROC_PER_NODE}" \
       run.py \
       --exp_name "${EXP_NAME}" \
       --run-type eval \

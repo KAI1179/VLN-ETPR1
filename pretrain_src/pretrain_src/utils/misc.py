@@ -1,7 +1,7 @@
 import random
-import numpy as np
-from typing import Tuple, Union, Dict, Any
+from typing import Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -36,7 +36,7 @@ def set_cuda(opts) -> Tuple[bool, int, torch.device]:
 
     # get device settings
     if opts.local_rank != -1:
-        init_distributed(opts)
+        init_distributed()
         torch.cuda.set_device(opts.local_rank)
         device = torch.device("cuda", opts.local_rank)
         n_gpu = 1

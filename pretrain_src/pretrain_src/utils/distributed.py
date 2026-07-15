@@ -2,75 +2,15 @@
 Distributed tools
 """
 
-import os
-from pathlib import Path
-from pprint import pformat
 import pickle
 
 import torch
 import torch.distributed as dist
 
 
-def load_init_param(opts):
-    """
-    Load parameters for the rendezvous distributed procedure
-    """
-    # sync file
-    if opts.output_dir != "":
-        sync_dir = Path(opts.output_dir).resolve()
-        sync_dir.mkdir(parents=True, exist_ok=True)
-        sync_file = f"{sync_dir}/.torch_distributed_sync"
-    else:
-        raise RuntimeError("Can't find any sync dir")
-
-    # world size
-    if opts.world_size != -1:
-        world_size = opts.world_size
-    elif os.environ.get("WORLD_SIZE", "") != "":
-        world_size = int(os.environ["WORLD_SIZE"])
-    else:
-        raise RuntimeError("Can't find any world size")
-
-    # rank
-    if os.environ.get("RANK", "") != "":
-        # pytorch.distributed.launch provide this variable no matter what
-        rank = int(os.environ["RANK"])
-    else:
-        # if not provided, calculate the gpu rank
-        if opts.node_rank != -1:
-            node_rank = opts.node_rank
-        elif os.environ.get("NODE_RANK", "") != "":
-            node_rank = int(os.environ["NODE_RANK"])
-        else:
-            raise RuntimeError("Can't find any rank or node rank")
-
-        if opts.local_rank != -1:
-            local_rank = opts.local_rank
-        elif os.environ.get("LOCAL_RANK", "") != "":
-            local_rank = int(os.environ["LOCAL_RANK"])
-        else:
-            raise RuntimeError("Can't find any rank or local rank")
-
-        # WARNING: this assumes that each node has the same number of GPUs
-        n_gpus = torch.cuda.device_count()
-        rank = local_rank + node_rank * n_gpus
-    opts.rank = rank
-
-    return {
-        "backend": "nccl",
-        # "init_method": f"file://{sync_file}",
-        "rank": rank,
-        "world_size": world_size,
-    }
-
-
-def init_distributed(opts):
-    init_param = load_init_param(opts)
-    rank = init_param["rank"]
-
-    print(f"Init distributed {init_param['rank']} - {init_param['world_size']}")
-
-    dist.init_process_group(**init_param)
+def init_distributed() -> None:
+    dist.init_process_group(backend="nccl")
+    print(f"Init distributed {dist.get_rank()} - {dist.get_world_size()}")
 
 
 def is_default_gpu(opts) -> bool:

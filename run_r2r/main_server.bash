@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
 # world_size/rank：整个分布式训练任务中，参与训练的全局总进程（gpu）数量/编号。对于单机多卡而言，rank就等于local_rank
 # 全部代码都运行在一个master节点上；在节点中含有多个进程，每个进程使用一个单独的gpu；
 # 每个进程中创建了多个habitat的envs，每个habitat的env包含多个scenes，负责运行该gpu需要运行的episodes中对应scenes的子集
-# （torch.distributed.launch默认只能处理一个进程一张gpu的问题,因为训练需要保证每个gpu都至少能单独运行全部可训练权重的网络）
+# torchrun为每个gpu启动一个进程，因为每个gpu都需要能容纳全部可训练权重。
 
 
 # NUM_ENVIRONMENTS：num_envs_per_gpu
@@ -21,7 +21,6 @@ source "${SCRIPT_DIR}/../scripts/gpu-detection.bash"
 # Continue from previous checkpoints: Set IL.load_from_ckpt and IL.is_requeue to True
 
 configure_distributed_gpu_vars
-MASTER_PORT=${2:-2333}
 
 EXP_CONFIG="run_r2r/iter_train.yaml"
 BASE_NUM_ENVS=8
@@ -183,7 +182,7 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
 launch() {
-      python -m torch.distributed.launch --nproc_per_node="${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" run.py $1
+      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $1
 }
 
 warn_unimplemented() {
@@ -300,15 +299,15 @@ esac
 
 # 命令行运行：
 # Uses all visible GPUs by default. Set CUDA_VISIBLE_DEVICES first to restrict cards.
-# bash run_r2r/main_server.bash dagger 2333
-# bash run_r2r/main_server.bash grpo 2333
-# bash run_r2r/main_server.bash eval 2333
-# bash run_r2r/main_server.bash infer 2333
-# bash run_r2r/main_server.bash prior_gt_current_dagger 2333
-# bash run_r2r/main_server.bash prior_gt_try5_blurred_dagger 2333
-# bash run_r2r/main_server.bash imagined_dagger 2333
-# bash run_r2r/main_server.bash imagined_eval_ss 2333
-# bash run_r2r/main_server.bash imagined_grpo 2333
-# bash run_r2r/main_server.bash imagined_eval_grpo 2333
-# bash run_r2r/main_server.bash llm_boxes_current_dagger 2333
-# bash run_r2r/main_server.bash llm_grid_try5_dagger 2333
+# bash run_r2r/main_server.bash dagger
+# bash run_r2r/main_server.bash grpo
+# bash run_r2r/main_server.bash eval
+# bash run_r2r/main_server.bash infer
+# bash run_r2r/main_server.bash prior_gt_current_dagger
+# bash run_r2r/main_server.bash prior_gt_try5_blurred_dagger
+# bash run_r2r/main_server.bash imagined_dagger
+# bash run_r2r/main_server.bash imagined_eval_ss
+# bash run_r2r/main_server.bash imagined_grpo
+# bash run_r2r/main_server.bash imagined_eval_grpo
+# bash run_r2r/main_server.bash llm_boxes_current_dagger
+# bash run_r2r/main_server.bash llm_grid_try5_dagger
