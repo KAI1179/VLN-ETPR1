@@ -30,6 +30,7 @@ from .llm_boxes_navigation_cache import (
     _model_batch,
     _model_uses_device_map,
     _normalize_device_map,
+    _new_worker_shard_seed,
     _progress,
     _resolve_parallel_worker_count,
     _skipped_cache_count,
@@ -78,6 +79,7 @@ class LLMGridNavigationCacheArgs(Tap):
     scale: int = GRID_SCALE
     worker_count: int = 1
     worker_index: int = 0
+    worker_shard_seed: str = ""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("underscores_to_dashes", True)
@@ -406,9 +408,18 @@ def _run_parallel_workers(
 ) -> Dict[str, Dict[str, float]]:
     devices = _visible_cuda_devices()
     processes: List[subprocess.Popen] = []
-    print(f"parallel_workers={worker_count} visible_cuda_devices={devices or ['cpu']}")
+    worker_shard_seed = _new_worker_shard_seed()
+    print(
+        f"parallel_workers={worker_count} visible_cuda_devices={devices or ['cpu']} "
+        f"worker_shard_seed={worker_shard_seed}"
+    )
     for worker_index in range(worker_count):
-        command = _worker_command(args, worker_count, worker_index)
+        command = _worker_command(
+            args,
+            worker_count,
+            worker_index,
+            worker_shard_seed,
+        )
         env = os.environ.copy()
         if devices:
             env["CUDA_VISIBLE_DEVICES"] = devices[worker_index % len(devices)]
@@ -450,6 +461,7 @@ def _worker_command(
     args: LLMGridNavigationCacheArgs,
     worker_count: int,
     worker_index: int,
+    worker_shard_seed: str,
 ) -> List[str]:
     command = [
         sys.executable,
@@ -483,6 +495,8 @@ def _worker_command(
         str(worker_count),
         "--worker-index",
         str(worker_index),
+        "--worker-shard-seed",
+        worker_shard_seed,
     ]
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])

@@ -233,3 +233,28 @@ def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
         ("R2R", "val_unseen"),
     ]
     assert generated_splits == [("pretrain", "mixed"), *loaded_splits]
+
+
+def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
+    args = argparse.Namespace(
+        model_name_or_path="tiny-llm",
+        max_input_length=128,
+        max_new_tokens=64,
+        batch_size=3,
+        device="cuda",
+        device_map="none",
+        cache_dir=str(tmp_path),
+        cache_model_key="test-model",
+        limit=None,
+        quiet=True,
+        scale=2,
+    )
+
+    command = llm_grid_navigation_cache._worker_command(
+        args,
+        worker_count=4,
+        worker_index=2,
+        worker_shard_seed="resume-seed",
+    )
+
+    assert command[command.index("--worker-shard-seed") + 1] == "resume-seed"
