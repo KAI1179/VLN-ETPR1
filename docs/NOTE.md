@@ -1047,6 +1047,51 @@ Drop Rate By `max_new_tokens`:
 - 分工
     - 我：预测
     - 学长：融合
+- 分析
+    - 采样 (`5dbad61`): `python -m prior.analyze.batch_vis --count 20 --seed 0`; `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-grid-r2r-legacy-r1p5-direction5-scale2/r2r/train/cognitive_maps/raster --count 20 --seed 0`
+        - [`R2R_train_4715`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/29hnd4uzFmX/R2R_train_4715.png): 预测的路径方向不正确（指令中确实没明说）；正确推测出初始房间的类型，未能推测出 `sofa`
+        - [`R2R_val_unseen_1756`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/2azQ1b91cZZ/R2R_val_unseen_1756.png): 明显质量差
+        - [`R2R_train_4823`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/759xd9YjKW5/R2R_train_4823.png): 完全一致
+        - [`R2R_train_7354`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/8WUmhLawc2A/R2R_train_7354.png): 很接近 GT，甚至预测到了 `bathroom`
+        - [`R2R_train_7433`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/8WUmhLawc2A/R2R_train_7433.png): 只预测了一半，预测的也没有很好地和轨迹对齐；能预测到 `bathroom`，学习到 `bathroom` -> `towel`/`bathtub`/`sink` 等的关联，但是 GT 中没有出现后两者
+        - [`R2R_val_unseen_1275`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/EU6Fwq7SyZv/R2R_val_unseen_1275.png): 指令本身没有场景信息；上楼
+        - [`R2R_train_3215`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/JeFG25nYj2p/R2R_train_3215.png): 门、区域预测基本正确
+        - [`R2R_train_6444`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/PX4nDJXEHrG/R2R_train_6444.png): 有 dining room，但是方向错误；区域和 物体预测总体不好
+        - [`R2R_train_636`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/PuKPg4mmafe/R2R_train_636.png): 指令过于简单，信息量不足；只预测了一小部分，但是预测的正确
+        - [`R2R_val_unseen_1095`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/QUCTc6BB5sX/R2R_val_unseen_1095.png): 预测初始房间就是 bathroom, 可以认为预测错误
+        - [`R2R_val_unseen_176`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/QUCTc6BB5sX/R2R_val_unseen_176.png): 偏移；预测到了 bathroom 和 recreation，相对方位错误
+        - [`R2R_val_unseen_786`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/QUCTc6BB5sX/R2R_val_unseen_786.png): 偏移；bathroom & bedroom 基本正确
+        - [`R2R_train_5262`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/SN83YJsR3w2/R2R_train_5262.png): 预测错误
+        - [`R2R_val_unseen_1409`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/TbHJrupSAjP/R2R_val_unseen_1409.png): 预测错误；指令仅包含区域信息
+        - [`R2R_val_unseen_309`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/TbHJrupSAjP/R2R_val_unseen_309.png): 指令方向信息不足；预测错误
+        - [`R2R_val_unseen_581`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/TbHJrupSAjP/R2R_val_unseen_581.png): 预测错误
+        - [`R2R_val_unseen_792`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/TbHJrupSAjP/R2R_val_unseen_792.png): regions 有前进离开房间进入 bedroom，并离开 bedroom 的意思；door 疑似太大了
+        - [`R2R_train_1582`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/Uxmj2M2itWa/R2R_train_1582.png): 预测错误
+        - [`R2R_train_5570`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/Vvot9Ly1tCj/R2R_train_5570.png): 可以预测到起始/结束的区域，但是预测总体较差
+        - [`R2R_val_unseen_372`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/X7HyMhZNoso/R2R_val_unseen_372.png): 方向错误（指令未提及）；未能预测到提及的 dining room；预测错误
+        - [`R2R_val_unseen_599`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/X7HyMhZNoso/R2R_val_unseen_599.png): 路径方向正确（指令提及）；能预测到末尾的 bedroom 以及 door；关键部分可以认为正确
+        - [`R2R_val_unseen_927`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/X7HyMhZNoso/R2R_val_unseen_927.png): 起始位置偏移；预测的是可行解（bathroom 向下右转进入 bedroom），但是方向错误；不符合 GT
+        - [`R2R_val_unseen_1164`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/Z6MFQCViBuw/R2R_val_unseen_1164.png): 预测错误；指令未指明方向与物体/区域，信息量少
+        - [`R2R_train_528`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/ZMojNkEp431/R2R_train_528.png): 起始位置偏移；物体/区域类别基本正确（只缺少 circulation）；预测类似 GT
+        - [`R2R_train_1390`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/ac26ZMwG7aT/R2R_train_1390.png): 旋转 90° 后房间布局类似（均有 `outdoor`/`dining`），物体分布类似；指令本身不精确
+        - [`R2R_train_492`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/b8cTxDM8gDG/R2R_train_492.png): 涉及上楼；预测较为精确，只是缺少了 painting
+        - [`R2R_train_9133`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/jh4fc5c5qoQ/R2R_train_9133.png): 预测正确
+        - [`R2R_train_6850`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/kEZ7cmS4wCh/R2R_train_6850.png): 未能捕捉到 "turn around" 含义；旋转后布局类似（bed, bathtub...）
+        - [`R2R_train_7976`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/mJXqzFtmKg4/R2R_train_7976.png): 偏移；旋转 180°后区域布局类似；bed 不在 bedroom 内
+        - [`R2R_val_unseen_1047`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/oLBMNvg9in8/R2R_val_unseen_1047.png): 预测错误
+        - [`R2R_train_454`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/p5wJjkQkbXX/R2R_train_454.png): 预测不完整；指令中场景信息不足
+        - [`R2R_train_6808`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/qoiz87JEwZ2/R2R_train_6808.png): 偏移；预测错误；可以认为初始从左上角 bathroom 向右，出房间右转（方向错误）
+        - [`R2R_train_9263`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/s8pcmisQ38h/R2R_train_9263.png): 预测不完整
+        - [`R2R_train_6840`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/uNb9QFRL6hY/R2R_train_6840.png): 指令信息量少；预测基本正确
+        - [`R2R_val_unseen_1440`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_1440.png): 可以预测到 bed 和 bedroom 的大致位置（指令未提及方向）；终点预测错误
+        - [`R2R_val_unseen_1685`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_1685.png): 轨迹方向大致正确；sofa counter 相对位置正确，甚至能预测到终点附近的 bathroom；预测质量较好
+        - [`R2R_val_unseen_387`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_387.png): 轨迹方向大致正确；可以预测到中间的 kitchen，未能预测到起点的 bathroom；物体预测不好
+        - [`R2R_val_unseen_441`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_441.png): 能预测到终点 bathroom，但是多预测了一个；区域分布合理，物体预测不好（指令缺少物体描述）
+        - [`R2R_val_unseen_924`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_924.png): 起点偏移；指令信息过少
+        - [`R2R_val_unseen_963`](./images/llm-grid-s2.legacy.r1p5.direction5.comparison/zsNo4HB9uLZ/R2R_val_unseen_963.png): 起点偏移，预测错误；指令信息过少
+    - 总结
+        - 可能有过拟合现象
+        - 信息确实不足
 
 # 实验
 
