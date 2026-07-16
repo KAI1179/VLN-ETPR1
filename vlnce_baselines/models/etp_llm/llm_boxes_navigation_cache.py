@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import warnings
@@ -577,6 +578,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--worker-count", type=int, default=1, help=argparse.SUPPRESS)
     parser.add_argument("--worker-index", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--worker-shard-seed", default="", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -636,9 +638,18 @@ def _run_parallel_workers(
 ) -> Dict[str, Dict[str, float]]:
     devices = _visible_cuda_devices()
     processes: List[subprocess.Popen] = []
-    print(f"parallel_workers={worker_count} visible_cuda_devices={devices or ['cpu']}")
+    worker_shard_seed = _new_worker_shard_seed()
+    print(
+        f"parallel_workers={worker_count} visible_cuda_devices={devices or ['cpu']} "
+        f"worker_shard_seed={worker_shard_seed}"
+    )
     for worker_index in range(worker_count):
-        command = _worker_command(args, worker_count, worker_index)
+        command = _worker_command(
+            args,
+            worker_count,
+            worker_index,
+            worker_shard_seed,
+        )
         env = os.environ.copy()
         if devices:
             env["CUDA_VISIBLE_DEVICES"] = devices[worker_index % len(devices)]
@@ -668,6 +679,7 @@ def _worker_command(
     args: argparse.Namespace,
     worker_count: int,
     worker_index: int,
+    worker_shard_seed: str,
 ) -> List[str]:
     command = [
         sys.executable,
@@ -699,6 +711,8 @@ def _worker_command(
         str(worker_count),
         "--worker-index",
         str(worker_index),
+        "--worker-shard-seed",
+        worker_shard_seed,
     ]
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])
@@ -712,9 +726,14 @@ def _belongs_to_worker(cache_id: str, args: argparse.Namespace) -> bool:
     worker_index = int(getattr(args, "worker_index", 0))
     if worker_count <= 1:
         return True
-    digest = hashlib.sha1(str(cache_id).encode("utf-8")).digest()
+    shard_seed = str(getattr(args, "worker_shard_seed", ""))
+    digest = hashlib.sha1(f"{shard_seed}\0{cache_id}".encode("utf-8")).digest()
     bucket = int.from_bytes(digest[:8], "big") % worker_count
     return bucket == worker_index
+
+
+def _new_worker_shard_seed() -> str:
+    return secrets.token_hex(16)
 
 
 def _pretrain_dataset_tag(annotation_file: str) -> str:

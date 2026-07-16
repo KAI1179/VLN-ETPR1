@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import json
 from typing import List
 
@@ -1064,6 +1065,7 @@ def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_pat
         args,
         worker_count=4,
         worker_index=2,
+        worker_shard_seed="resume-seed",
     )
 
     assert command[:3] == [
@@ -1074,6 +1076,7 @@ def test_worker_command_preserves_generation_args_and_disables_recursion(tmp_pat
     assert command[command.index("--parallel-workers") + 1] == "1"
     assert command[command.index("--worker-count") + 1] == "4"
     assert command[command.index("--worker-index") + 1] == "2"
+    assert command[command.index("--worker-shard-seed") + 1] == "resume-seed"
     assert command[command.index("--device-map") + 1] == "none"
     assert command[command.index("--cache-dir") + 1] == str(tmp_path)
     assert command[command.index("--limit") + 1] == "5"
@@ -1157,7 +1160,11 @@ def test_belongs_to_worker_assigns_each_cache_id_once():
             for index in range(worker_count)
             if llm_boxes_navigation_cache._belongs_to_worker(
                 cache_id,
-                argparse.Namespace(worker_count=worker_count, worker_index=index),
+                argparse.Namespace(
+                    worker_count=worker_count,
+                    worker_index=index,
+                    worker_shard_seed="run-a",
+                ),
             )
         ]
         assert len(owners) == 1
@@ -1166,6 +1173,34 @@ def test_belongs_to_worker_assigns_each_cache_id_once():
         "R2R_train_42",
         argparse.Namespace(worker_count=1, worker_index=0),
     )
+
+
+def test_new_worker_shard_seed_redistributes_resumed_cache_ids():
+    cache_ids = [f"pretrain_{index}" for index in range(1000)]
+    worker_count = 4
+
+    def owner(cache_id, seed):
+        return next(
+            index
+            for index in range(worker_count)
+            if llm_boxes_navigation_cache._belongs_to_worker(
+                cache_id,
+                argparse.Namespace(
+                    worker_count=worker_count,
+                    worker_index=index,
+                    worker_shard_seed=seed,
+                ),
+            )
+        )
+
+    old_owners = {cache_id: owner(cache_id, "run-a") for cache_id in cache_ids}
+    remaining = [
+        cache_id for cache_id in cache_ids if old_owners[cache_id] != 1
+    ]
+    resumed_counts = Counter(owner(cache_id, "run-b") for cache_id in remaining)
+
+    assert len(resumed_counts) == worker_count
+    assert max(resumed_counts.values()) - min(resumed_counts.values()) < 50
 
 
 def test_skipped_cache_count_sums_split_metrics():
