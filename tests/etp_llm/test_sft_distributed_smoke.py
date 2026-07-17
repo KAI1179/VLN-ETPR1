@@ -10,6 +10,8 @@ from torch import nn
 
 from vlnce_baselines.models.etp_llm.sft import (
     LengthGroupedBatchSampler,
+    TrainingManifest,
+    load_or_create_training_manifest,
     make_sft_accelerator,
     scale_training_loss,
 )
@@ -125,3 +127,29 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         shutil.rmtree(artifact_dir)
+
+
+@pytest.mark.skipif(
+    int(os.environ.get("WORLD_SIZE", "1")) != 2,
+    reason="run with torchrun --nproc-per-node=2",
+)
+def test_manifest_build_failure_reaches_every_rank_without_barrier_hang():
+    accelerator = make_sft_accelerator(gradient_accumulation_steps=1)
+
+    def fail_on_main() -> TrainingManifest:
+        raise ValueError("deliberate manifest failure")
+
+    with pytest.raises(
+        (ValueError, RuntimeError),
+        match="deliberate manifest failure",
+    ):
+        load_or_create_training_manifest(
+            accelerator,
+            Path(".pytest_cache") / "unused-training-manifest.jsonl",
+            fail_on_main,
+        )
+
+    reached = accelerator.gather(
+        torch.ones(1, dtype=torch.long, device=accelerator.device)
+    )
+    assert reached.sum().item() == 2

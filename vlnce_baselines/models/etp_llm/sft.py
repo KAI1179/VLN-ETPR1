@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Dict,
     Generic,
     Iterator,
@@ -20,7 +22,7 @@ from typing import (
 
 import torch
 from accelerate import Accelerator, FullyShardedDataParallelPlugin
-from accelerate.utils import DistributedType
+from accelerate.utils import DistributedType, broadcast_object_list
 from torch.distributed.fsdp import ShardingStrategy
 from torch.utils.data import Sampler
 
@@ -68,6 +70,171 @@ class SFTBatchMetrics:
     per_device_batch_size: int
     gradient_accumulation_steps: int
     global_batch_size: int
+
+
+@dataclass(frozen=True)
+class TrainingManifest:
+    metadata: Mapping[str, Any]
+    items: Tuple[Mapping[str, Any], ...]
+
+
+TRAINING_MANIFEST_SCHEMA_VERSION = 1
+TRAINING_MANIFEST_ITEM_KEYS = {
+    "example_id",
+    "dataset",
+    "input_text",
+    "target_text",
+    "prompt_tokens",
+    "completion_tokens",
+    "sequence_tokens",
+}
+
+
+def load_or_create_training_manifest(
+    accelerator: Accelerator,
+    path: str | Path,
+    build: Callable[[], TrainingManifest],
+) -> TrainingManifest:
+    manifest_path = Path(path)
+    build_error: Exception | None = None
+    outcome: List[Dict[str, str] | None] = [None]
+    if accelerator.is_main_process:
+        try:
+            _write_training_manifest(manifest_path, build())
+        except Exception as error:
+            build_error = error
+            outcome[0] = {
+                "error_type": type(error).__name__,
+                "message": str(error),
+            }
+    broadcast_object_list(outcome)
+    if outcome[0] is not None:
+        if build_error is not None:
+            raise build_error
+        raise RuntimeError(
+            "training manifest startup failed on rank 0: "
+            f"{outcome[0]['error_type']}: {outcome[0]['message']}"
+        )
+    accelerator.wait_for_everyone()
+    return _read_training_manifest(manifest_path)
+
+
+def _write_training_manifest(path: Path, manifest: TrainingManifest) -> None:
+    _validate_training_manifest(manifest, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as manifest_file:
+            header = {
+                "record_type": "metadata",
+                "schema_version": TRAINING_MANIFEST_SCHEMA_VERSION,
+                "metadata": dict(manifest.metadata),
+            }
+            manifest_file.write(json.dumps(header, sort_keys=True) + "\n")
+            for item in manifest.items:
+                record = {"record_type": "item", "item": dict(item)}
+                manifest_file.write(json.dumps(record, sort_keys=True) + "\n")
+            manifest_file.flush()
+            os.fsync(manifest_file.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _read_training_manifest(path: Path) -> TrainingManifest:
+    with path.open(encoding="utf-8") as manifest_file:
+        header_line = manifest_file.readline()
+        if not header_line:
+            raise ValueError(f"training manifest is empty: {path}")
+        header = json.loads(header_line)
+        if (
+            not isinstance(header, dict)
+            or set(header) != {"record_type", "schema_version", "metadata"}
+            or header.get("record_type") != "metadata"
+        ):
+            raise ValueError(f"training manifest metadata header is invalid: {path}")
+        if header.get("schema_version") != TRAINING_MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                "training manifest schema_version must be "
+                f"{TRAINING_MANIFEST_SCHEMA_VERSION}: {path}"
+            )
+        metadata = header.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError(f"training manifest metadata must be an object: {path}")
+        items: List[Mapping[str, Any]] = []
+        for line_number, line in enumerate(manifest_file, start=2):
+            record = json.loads(line)
+            if (
+                not isinstance(record, dict)
+                or set(record) != {"record_type", "item"}
+                or record.get("record_type") != "item"
+            ):
+                raise ValueError(
+                    f"training manifest item record is invalid at line {line_number}: "
+                    f"{path}"
+                )
+            item = record.get("item")
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"training manifest item must be an object at line {line_number}: "
+                    f"{path}"
+                )
+            items.append(item)
+    manifest = TrainingManifest(metadata=metadata, items=tuple(items))
+    _validate_training_manifest(manifest, path)
+    return manifest
+
+
+def _validate_training_manifest(manifest: TrainingManifest, path: Path) -> None:
+    if not isinstance(manifest.metadata, Mapping):
+        raise ValueError(f"training manifest metadata must be a mapping: {path}")
+    if not manifest.items:
+        raise ValueError(f"training manifest has no items: {path}")
+    seen_example_ids = set()
+    for index, item in enumerate(manifest.items):
+        if set(item) != TRAINING_MANIFEST_ITEM_KEYS:
+            raise ValueError(
+                f"training manifest item {index} has invalid fields: {path}"
+            )
+        example_id = item["example_id"]
+        if not isinstance(example_id, str) or not example_id:
+            raise ValueError(
+                f"training manifest item {index} has invalid example_id: {path}"
+            )
+        if example_id in seen_example_ids:
+            raise ValueError(
+                f"training manifest has duplicate example_id {example_id}: {path}"
+            )
+        seen_example_ids.add(example_id)
+        if item["dataset"] not in ("R2R", "RxR"):
+            raise ValueError(
+                f"training manifest item {index} has invalid dataset: {path}"
+            )
+        for field_name in ("input_text", "target_text"):
+            if not isinstance(item[field_name], str):
+                raise ValueError(
+                    f"training manifest item {index} has invalid {field_name}: {path}"
+                )
+        counts = []
+        for field_name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "sequence_tokens",
+        ):
+            value = item[field_name]
+            if type(value) is not int or value < 0:
+                raise ValueError(
+                    f"training manifest item {index} has invalid {field_name}: {path}"
+                )
+            counts.append(value)
+        prompt_tokens, completion_tokens, sequence_tokens = counts
+        if sequence_tokens <= 0 or sequence_tokens != (
+            prompt_tokens + completion_tokens
+        ):
+            raise ValueError(
+                f"training manifest item {index} has inconsistent token counts: {path}"
+            )
 
 
 def rendered_token_counts(

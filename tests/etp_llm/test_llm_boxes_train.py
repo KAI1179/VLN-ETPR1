@@ -684,6 +684,21 @@ def _patch_training_dependencies(
     )
     monkeypatch.setattr(
         llm_boxes_train,
+        "_load_causal_lm_tokenizer",
+        lambda *args, **kwargs: _TrainingTokenizer(),
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "_load_causal_lm_model",
+        lambda *args, **kwargs: model,
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "load_or_create_training_manifest",
+        lambda accelerator, path, build: build(),
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
         "_apply_lora",
         lambda loaded_model, args: loaded_model,
     )
@@ -1329,6 +1344,11 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         return _load_result()
 
     monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", fake_load)
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "_load_causal_lm_tokenizer",
+        lambda path: _TrainingTokenizer(),
+    )
     args = llm_boxes_train.parse_args(
         [
             "train",
@@ -1412,10 +1432,22 @@ def test_train_model_preflights_globally_longest_example_after_prepare(
     model = _TrainingModel(1.0)
     accelerator = _patch_training_dependencies(monkeypatch, model)
     calls = []
+
+    def replace_manifest_lengths(accelerator_arg, path, build):
+        del accelerator_arg, path
+        manifest = build()
+        return llm_boxes_train.TrainingManifest(
+            metadata=manifest.metadata,
+            items=tuple(
+                {**item, "sequence_tokens": sequence_tokens}
+                for item, sequence_tokens in zip(manifest.items, (2, 9))
+            ),
+        )
+
     monkeypatch.setattr(
         llm_boxes_train,
-        "_training_sequence_lengths",
-        lambda *args, **kwargs: [2, 9],
+        "load_or_create_training_manifest",
+        replace_manifest_lengths,
     )
 
     def record_preflight(
@@ -1475,6 +1507,104 @@ def test_train_model_preflights_globally_longest_example_after_prepare(
     assert example_id == "rxr-train-example"
     assert sequence_tokens == 9
     assert prepare_calls == 2
+
+
+def test_boxes_training_manifest_contains_only_lightweight_text_and_token_rows(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device-map",
+            "none",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    manifest = llm_boxes_train._build_boxes_training_manifest(
+        args,
+        _TrainingTokenizer(),
+        "system",
+        quiet=True,
+    )
+
+    assert manifest.metadata["candidate"] == "llm_boxes"
+    assert len(manifest.items) == 2
+    assert set(manifest.items[0]) == {
+        "example_id",
+        "dataset",
+        "input_text",
+        "target_text",
+        "prompt_tokens",
+        "completion_tokens",
+        "sequence_tokens",
+    }
+    assert "target_spec" not in manifest.items[0]
+    assert all(
+        item["sequence_tokens"] == item["prompt_tokens"] + item["completion_tokens"]
+        for item in manifest.items
+    )
+    corpus = llm_boxes_train._boxes_training_corpus_from_manifest(manifest)
+    assert [item["example_id"] for item in corpus.filtered.kept] == [
+        "train-example",
+        "rxr-train-example",
+    ]
+    assert corpus.sequence_lengths == tuple(
+        item["sequence_tokens"] for item in manifest.items
+    )
+
+
+def test_train_model_finishes_manifest_before_loading_model(monkeypatch, tmp_path):
+    model = _TrainingModel(1.0)
+    _patch_training_dependencies(monkeypatch, model)
+    calls = []
+
+    def load_tokenizer(*args, **kwargs):
+        calls.append("tokenizer")
+        return _TrainingTokenizer()
+
+    def load_manifest(accelerator, path, build):
+        calls.append(("manifest", path))
+        manifest = build()
+        calls.append("manifest-ready")
+        return manifest
+
+    def load_model(*args, **kwargs):
+        calls.append("model")
+        return model
+
+    monkeypatch.setattr(llm_boxes_train, "_load_causal_lm_tokenizer", load_tokenizer)
+    monkeypatch.setattr(
+        llm_boxes_train, "load_or_create_training_manifest", load_manifest
+    )
+    monkeypatch.setattr(llm_boxes_train, "_load_causal_lm_model", load_model)
+    output_dir = tmp_path / "run"
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(output_dir),
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    llm_boxes_train.train_model(args)
+
+    assert calls[:4] == [
+        "tokenizer",
+        ("manifest", output_dir / "artifacts" / "training_manifest.jsonl"),
+        "manifest-ready",
+        "model",
+    ]
 
 
 def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):

@@ -15,6 +15,7 @@ from typing import (
     Iterator,
     List,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -54,11 +55,13 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     TrainingIndex,
+    TrainingManifest,
     configure_peft_fsdp,
     distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
     make_sft_accelerator,
+    load_or_create_training_manifest,
     reduce_training_totals,
     rendered_token_counts,
     run_backward_preflight,
@@ -72,6 +75,7 @@ DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_boxes_system.md"
 TRAIN_SPLITS = ("train",)
 EVAL_SPLITS = ("val_seen", "val_unseen")
+TRAINING_MANIFEST_NAME = "training_manifest.jsonl"
 AGGREGATE_METRIC_KEYS: Dict[str, str] = {
     "category_precision": "category_precision",
     "category_recall": "category_recall",
@@ -118,6 +122,15 @@ class LLMBoxesExample:
         self.target_spec = relevant_semantic_boxes_to_mentioned_spec(
             self.target_relevant
         )
+
+
+@dataclass(frozen=True)
+class _PreparedBoxesTrainingCorpus:
+    load_stats: Mapping[str, SourceLoadStats]
+    filtered: LengthFilterResult[LLMBoxesItem]
+    sequence_lengths: Tuple[int, ...]
+    text_stats: Mapping[str, float]
+    corpus_metrics: Mapping[str, float]
 
 
 @dataclass
@@ -390,6 +403,178 @@ def collate_llm_boxes_prompt_batch(
     return encoded
 
 
+def _build_boxes_training_manifest(
+    args: LLMBoxesArgs,
+    tokenizer: Any,
+    system_prompt: str,
+    quiet: bool,
+) -> TrainingManifest:
+    load_result = load_llm_boxes_examples(
+        TRAIN_SPLITS,
+        limit_per_dataset=args.limit_per_dataset,
+        quiet=quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    validate_fixed_corpus(load_result.by_dataset)
+    all_items = tuple(LLMBoxesDataset(load_result.examples))
+    filtered = filter_llm_boxes_items_for_length(
+        all_items,
+        tokenizer,
+        system_prompt,
+        max_input_length=args.max_input_length,
+        max_new_tokens=args.max_new_tokens,
+    )
+    validate_fixed_corpus(load_result.by_dataset, retained_items=filtered.kept)
+    rows = []
+    for item in all_items:
+        prompt_text = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        completion_text = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            _target_text(item),
+        )
+        counts = rendered_token_counts(tokenizer, prompt_text, completion_text)
+        rows.append(
+            {
+                "input_text": item["input_text"],
+                "target_text": _target_text(item),
+                "example_id": item["example_id"],
+                "dataset": item["dataset"],
+                "prompt_tokens": counts.prompt_tokens,
+                "completion_tokens": counts.completion_tokens,
+                "sequence_tokens": counts.sequence_tokens,
+            }
+        )
+    text_stats = compute_llm_text_stats(
+        filtered.kept,
+        tokenizer,
+        system_prompt,
+        max_input_length=args.max_input_length,
+        max_new_tokens=args.max_new_tokens,
+    )
+    corpus_metrics = fixed_corpus_metrics(load_result.by_dataset, all_items, filtered)
+    return TrainingManifest(
+        metadata={
+            "candidate": "llm_boxes",
+            "source_stats": {
+                dataset: {
+                    "discovered": stats.discovered,
+                    "loaded": stats.loaded,
+                    "missing_cache_example_ids": list(stats.missing_cache_example_ids),
+                }
+                for dataset, stats in load_result.by_dataset.items()
+            },
+            "dropped_prompt_example_ids": list(filtered.dropped_prompt_example_ids),
+            "dropped_completion_example_ids": list(
+                filtered.dropped_completion_example_ids
+            ),
+            "text_stats": text_stats,
+            "corpus_metrics": corpus_metrics,
+        },
+        items=tuple(rows),
+    )
+
+
+def _boxes_training_corpus_from_manifest(
+    manifest: TrainingManifest,
+) -> _PreparedBoxesTrainingCorpus:
+    metadata = manifest.metadata
+    if metadata.get("candidate") != "llm_boxes":
+        raise ValueError("training manifest candidate must be llm_boxes")
+    load_stats = _source_stats_from_manifest(metadata.get("source_stats"))
+    kept_items: List[LLMBoxesItem] = []
+    sequence_lengths: List[int] = []
+    dropped_ids = set(
+        _manifest_string_tuple(metadata, "dropped_prompt_example_ids")
+    ) | set(_manifest_string_tuple(metadata, "dropped_completion_example_ids"))
+    for row in manifest.items:
+        dataset = row.get("dataset")
+        if dataset not in ("R2R", "RxR"):
+            raise ValueError("training manifest item dataset must be R2R or RxR")
+        item: LLMBoxesItem = {
+            "input_text": _manifest_string(row, "input_text"),
+            "target_text": _manifest_string(row, "target_text"),
+            "example_id": _manifest_string(row, "example_id"),
+            "dataset": dataset,
+        }
+        if item["example_id"] not in dropped_ids:
+            sequence_tokens = row.get("sequence_tokens")
+            if not isinstance(sequence_tokens, int) or sequence_tokens < 1:
+                raise ValueError(
+                    "training manifest item sequence_tokens must be a positive integer"
+                )
+            kept_items.append(item)
+            sequence_lengths.append(sequence_tokens)
+    filtered = LengthFilterResult(
+        kept=tuple(kept_items),
+        dropped_prompt_example_ids=_manifest_string_tuple(
+            metadata, "dropped_prompt_example_ids"
+        ),
+        dropped_completion_example_ids=_manifest_string_tuple(
+            metadata, "dropped_completion_example_ids"
+        ),
+    )
+    return _PreparedBoxesTrainingCorpus(
+        load_stats=load_stats,
+        filtered=filtered,
+        sequence_lengths=tuple(sequence_lengths),
+        text_stats=_manifest_float_mapping(metadata, "text_stats"),
+        corpus_metrics=_manifest_float_mapping(metadata, "corpus_metrics"),
+    )
+
+
+def _source_stats_from_manifest(value: Any) -> Mapping[str, SourceLoadStats]:
+    if not isinstance(value, dict):
+        raise ValueError("training manifest source_stats must be an object")
+    result: Dict[str, SourceLoadStats] = {}
+    for dataset in ("R2R", "RxR"):
+        raw = value.get(dataset)
+        if not isinstance(raw, dict):
+            raise ValueError(f"training manifest source_stats.{dataset} is missing")
+        discovered = raw.get("discovered")
+        loaded = raw.get("loaded")
+        if not isinstance(discovered, int) or not isinstance(loaded, int):
+            raise ValueError(
+                f"training manifest source_stats.{dataset} counts must be integers"
+            )
+        result[dataset] = SourceLoadStats(
+            discovered=discovered,
+            loaded=loaded,
+            missing_cache_example_ids=_manifest_string_tuple(
+                raw, "missing_cache_example_ids"
+            ),
+        )
+    return result
+
+
+def _manifest_string(row: Mapping[str, Any], key: str) -> str:
+    value = row.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"training manifest {key} must be a string")
+    return value
+
+
+def _manifest_string_tuple(row: Mapping[str, Any], key: str) -> Tuple[str, ...]:
+    value = row.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"training manifest {key} must be a list of strings")
+    return tuple(value)
+
+
+def _manifest_float_mapping(
+    metadata: Mapping[str, Any], key: str
+) -> Mapping[str, float]:
+    value = metadata.get(key)
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str) and isinstance(number, (int, float))
+        for name, number in value.items()
+    ):
+        raise ValueError(f"training manifest {key} must contain numeric values")
+    return {name: float(number) for name, number in value.items()}
+
+
 def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Fine-tune a causal language model on LLM-Boxes examples."""
     _validate_llm_boxes_training_args(args)
@@ -404,19 +589,22 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         args.gradient_accumulation_steps,
     )
     quiet = bool(getattr(args, "quiet", False))
-    load_result = load_llm_boxes_examples(
-        TRAIN_SPLITS,
-        limit_per_dataset=args.limit_per_dataset,
-        quiet=quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    validate_fixed_corpus(load_result.by_dataset)
-
     system_prompt = load_system_prompt()
     if accelerator.is_main_process:
         _write_run_system_prompt(args.output_dir, system_prompt)
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+    tokenizer = _load_causal_lm_tokenizer(args.model_name_or_path)
+    manifest = load_or_create_training_manifest(
+        accelerator,
+        _artifact_dir(args.output_dir) / TRAINING_MANIFEST_NAME,
+        lambda: _build_boxes_training_manifest(args, tokenizer, system_prompt, quiet),
+    )
+    corpus = _boxes_training_corpus_from_manifest(manifest)
+    validate_fixed_corpus(
+        corpus.load_stats,
+        retained_items=corpus.filtered.kept,
+    )
+
+    model = _load_causal_lm_model(
         args.model_name_or_path,
         device_map=(
             None
@@ -430,31 +618,8 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         _enable_gradient_checkpointing(model)
     configure_peft_fsdp(accelerator, model)
 
-    all_items = tuple(LLMBoxesDataset(load_result.examples))
-    filtered = filter_llm_boxes_items_for_length(
-        all_items,
-        tokenizer,
-        system_prompt,
-        max_input_length=args.max_input_length,
-        max_new_tokens=args.max_new_tokens,
-    )
-    validate_fixed_corpus(
-        load_result.by_dataset,
-        retained_items=filtered.kept,
-    )
-    filtered_dataset = LLMBoxesItemDataset(filtered.kept)
-    text_stats = compute_llm_text_stats(
-        filtered_dataset,
-        tokenizer,
-        system_prompt,
-        max_input_length=args.max_input_length,
-        max_new_tokens=args.max_new_tokens,
-    )
-    sequence_lengths = _training_sequence_lengths(
-        filtered.kept,
-        tokenizer,
-        system_prompt,
-    )
+    filtered_dataset = LLMBoxesItemDataset(corpus.filtered.kept)
+    sequence_lengths = corpus.sequence_lengths
     batch_sampler = LengthGroupedBatchSampler(
         sequence_lengths,
         batch_size=args.per_device_batch_size,
@@ -608,12 +773,14 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
         "gradient_accumulation_steps": float(batch_metrics.gradient_accumulation_steps),
         "global_batch_size": float(batch_metrics.global_batch_size),
-        "dropped_prompt_examples": float(len(filtered.dropped_prompt_example_ids)),
-        "dropped_completion_examples": float(
-            len(filtered.dropped_completion_example_ids)
+        "dropped_prompt_examples": float(
+            len(corpus.filtered.dropped_prompt_example_ids)
         ),
-        **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
-        **text_stats,
+        "dropped_completion_examples": float(
+            len(corpus.filtered.dropped_completion_example_ids)
+        ),
+        **corpus.corpus_metrics,
+        **corpus.text_stats,
     }
     if accelerator.is_main_process:
         _write_json(Path(args.output_dir) / "metrics.json", metrics)
@@ -836,18 +1003,33 @@ def _load_causal_lm_model_and_tokenizer(
     model_name_or_path: str,
     device_map: Optional[str] = None,
 ) -> Tuple[Any, Any]:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    return (
+        _load_causal_lm_model(model_name_or_path, device_map=device_map),
+        _load_causal_lm_tokenizer(model_name_or_path),
+    )
+
+
+def _load_causal_lm_tokenizer(model_name_or_path: str) -> Any:
+    from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
+def _load_causal_lm_model(
+    model_name_or_path: str,
+    device_map: Optional[str] = None,
+) -> Any:
+    from transformers import AutoModelForCausalLM
+
     model_kwargs: Dict[str, Any] = {
         "torch_dtype": "auto",
     }
     if device_map is not None:
         model_kwargs["device_map"] = device_map
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
-    return model, tokenizer
+    return AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
 
 
 class LLMBoxesArgs(Tap):
@@ -1206,23 +1388,6 @@ def filter_llm_boxes_items_for_length(
         dropped_prompt_example_ids=tuple(dropped_prompt),
         dropped_completion_example_ids=tuple(dropped_completion),
     )
-
-
-def _training_sequence_lengths(
-    items: Sequence[LLMBoxesItem],
-    tokenizer: Any,
-    system_prompt: str,
-) -> List[int]:
-    return [
-        rendered_token_counts(
-            tokenizer,
-            _render_chat_prompt(tokenizer, system_prompt, item["input_text"]),
-            _render_chat_completion(
-                tokenizer, system_prompt, item["input_text"], _target_text(item)
-            ),
-        ).sequence_tokens
-        for item in items
-    ]
 
 
 def compute_llm_text_stats(

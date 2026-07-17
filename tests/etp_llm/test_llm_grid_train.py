@@ -361,8 +361,18 @@ def _patch_training_dependencies(
     )
     monkeypatch.setattr(
         llm_grid_train,
-        "_load_causal_lm_model_and_tokenizer",
-        lambda *args, **kwargs: (model, _TrainingTokenizer()),
+        "_load_grid_training_tokenizer",
+        lambda *args, **kwargs: _TrainingTokenizer(),
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "_load_grid_training_model",
+        lambda *args, **kwargs: model,
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_or_create_training_manifest",
+        lambda accelerator_arg, path, build: build(),
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -1217,6 +1227,66 @@ def test_training_collator_rejects_missing_training_metadata():
         )
 
 
+def test_build_training_manifest_keeps_only_text_and_token_metadata(
+    monkeypatch,
+):
+    item: llm_grid_train.LLMGridItem = {
+        "input_text": "map input",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
+        "example_id": "r2r-example",
+        "instruction": "instruction",
+        "start_position": (1.0, 2.0),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+        "dataset": "R2R",
+    }
+    rxr_item: llm_grid_train.LLMGridItem = {
+        **item,
+        "example_id": "rxr-example",
+        "dataset": "RxR",
+    }
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: _load_result([object()]),
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "LLMGridDataset",
+        lambda *args, **kwargs: [item, rxr_item],
+    )
+    args = llm_grid_train.LLMGridArgs().parse_args(
+        [
+            "train",
+            "--gradient-checkpointing",
+            "--quiet",
+        ]
+    )
+
+    manifest = llm_grid_train._build_grid_training_manifest(
+        args,
+        _TrainingTokenizer(),
+        "system",
+    )
+
+    assert len(manifest.items) == 2
+    assert set(manifest.items[0]) == {
+        "input_text",
+        "target_text",
+        "example_id",
+        "dataset",
+        "prompt_tokens",
+        "completion_tokens",
+        "sequence_tokens",
+    }
+    assert manifest.items[0]["sequence_tokens"] > 0
+    assert "target_grid" not in manifest.items[0]
+    assert manifest.metadata["skipped_over_budget_count"] == 0
+    assert manifest.metadata["fixed_corpus_metrics"]["combined_retained"] == 2.0
+
+
 def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     accelerator = _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
     captured = {}
@@ -1265,6 +1335,58 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert metrics["global_batch_size"] == 8.0
 
 
+def test_train_model_builds_manifest_before_loading_model(monkeypatch, tmp_path):
+    model = _TrainingModel(1.0)
+    _patch_training_dependencies(monkeypatch, model)
+    events = []
+    tokenizer = _TrainingTokenizer()
+
+    def load_tokenizer(*args, **kwargs):
+        events.append("tokenizer")
+        return tokenizer
+
+    def load_manifest(accelerator, path, build):
+        events.append(("manifest", path))
+        manifest = build()
+        events.append("manifest-built")
+        return manifest
+
+    def load_model(*args, **kwargs):
+        events.append("model")
+        return model
+
+    monkeypatch.setattr(llm_grid_train, "_load_grid_training_tokenizer", load_tokenizer)
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_or_create_training_manifest",
+        load_manifest,
+    )
+    monkeypatch.setattr(llm_grid_train, "_load_grid_training_model", load_model)
+    output_dir = tmp_path / "run"
+    args = llm_grid_train.LLMGridArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(output_dir),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    llm_grid_train.train_model(args)
+
+    assert events == [
+        "tokenizer",
+        ("manifest", output_dir / "artifacts" / "training_manifest.jsonl"),
+        "manifest-built",
+        "model",
+    ]
+
+
 def test_train_model_preflights_globally_longest_example_after_prepare(
     monkeypatch,
     tmp_path,
@@ -1272,10 +1394,22 @@ def test_train_model_preflights_globally_longest_example_after_prepare(
     model = _TrainingModel(1.0)
     accelerator = _patch_training_dependencies(monkeypatch, model)
     calls = []
+    original_manifest_loader = llm_grid_train.load_or_create_training_manifest
+
+    def manifest_with_distinct_lengths(accelerator_arg, path, build):
+        manifest = original_manifest_loader(accelerator_arg, path, build)
+        items = [dict(item) for item in manifest.items]
+        items[0]["sequence_tokens"] = 2
+        items[1]["sequence_tokens"] = 9
+        return llm_grid_train.TrainingManifest(
+            metadata=manifest.metadata,
+            items=tuple(items),
+        )
+
     monkeypatch.setattr(
         llm_grid_train,
-        "_training_sequence_lengths",
-        lambda *args, **kwargs: [2, 9],
+        "load_or_create_training_manifest",
+        manifest_with_distinct_lengths,
     )
 
     def record_preflight(

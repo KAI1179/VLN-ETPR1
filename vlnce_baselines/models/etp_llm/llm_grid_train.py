@@ -13,6 +13,7 @@ from typing import (
     Iterator,
     List,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -40,11 +41,13 @@ from .sft import (
     LengthFilterResult,
     LengthGroupedBatchSampler,
     SourceLoadStats,
+    TrainingManifest,
     TrainingIndex,
     configure_peft_fsdp,
     distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
+    load_or_create_training_manifest,
     make_sft_accelerator,
     reduce_training_totals,
     rendered_token_counts,
@@ -109,6 +112,15 @@ class LLMGridItem(TypedDict):
     start_position: Sequence[float]
     start_direction: Sequence[float]
     scene_id: str
+    dataset: Literal["R2R", "RxR"]
+    training_weight: NotRequired[float]
+    is_padding: NotRequired[bool]
+
+
+class LLMGridTrainingItem(TypedDict):
+    input_text: str
+    target_text: str
+    example_id: str
     dataset: Literal["R2R", "RxR"]
     training_weight: NotRequired[float]
     is_padding: NotRequired[bool]
@@ -319,13 +331,13 @@ class LLMGridDataset(Dataset):
 
 
 class LLMGridItemsDataset(Dataset):
-    def __init__(self, items: Sequence[LLMGridItem]) -> None:
+    def __init__(self, items: Sequence[LLMGridTrainingItem]) -> None:
         self.items = list(items)
 
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, index: Union[int, TrainingIndex]) -> LLMGridItem:
+    def __getitem__(self, index: Union[int, TrainingIndex]) -> LLMGridTrainingItem:
         if isinstance(index, TrainingIndex):
             item = self.items[index.index].copy()
             item["training_weight"] = index.loss_scale
@@ -335,7 +347,7 @@ class LLMGridItemsDataset(Dataset):
 
 
 def _completion_token_count(
-    item: LLMGridItem,
+    item: LLMGridTrainingItem,
     tokenizer: Any,
     system_prompt: str,
     prompt_length: int,
@@ -391,25 +403,8 @@ def filter_grid_training_items(
     )
 
 
-def _training_sequence_lengths(
-    items: Sequence[LLMGridItem],
-    tokenizer: Any,
-    system_prompt: str,
-) -> List[int]:
-    return [
-        rendered_token_counts(
-            tokenizer,
-            _render_chat_prompt(tokenizer, system_prompt, item["input_text"]),
-            _render_chat_completion(
-                tokenizer, system_prompt, item["input_text"], item["target_text"]
-            ),
-        ).sequence_tokens
-        for item in items
-    ]
-
-
 def collate_llm_grid_batch(
-    batch: Sequence[LLMGridItem],
+    batch: Sequence[LLMGridTrainingItem],
     tokenizer: Any,
     system_prompt: str,
     max_input_length: int,
@@ -989,19 +984,24 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         args.per_device_batch_size,
         args.gradient_accumulation_steps,
     )
-    load_result = load_llm_grid_examples(
-        TRAIN_SPLITS,
-        limit_per_dataset=args.limit_per_dataset,
-        quiet=args.quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    validate_fixed_corpus(load_result.by_dataset)
-
     system_prompt = load_system_prompt(scale=args.scale)
     if accelerator.is_main_process:
         _write_run_system_prompt(args.output_dir, system_prompt)
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+    tokenizer = _load_grid_training_tokenizer(args.model_name_or_path)
+    manifest = load_or_create_training_manifest(
+        accelerator,
+        Path(args.output_dir) / "artifacts" / "training_manifest.jsonl",
+        lambda: _build_grid_training_manifest(args, tokenizer, system_prompt),
+    )
+    train_items = [_grid_training_item_from_manifest(item) for item in manifest.items]
+    sequence_lengths = [int(item["sequence_tokens"]) for item in manifest.items]
+    skipped_over_budget_count = int(manifest.metadata["skipped_over_budget_count"])
+    corpus_metrics = {
+        str(name): float(value)
+        for name, value in dict(manifest.metadata["fixed_corpus_metrics"]).items()
+    }
+
+    model = _load_grid_training_model(
         args.model_name_or_path,
         device_map=(
             None
@@ -1014,31 +1014,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
     configure_peft_fsdp(accelerator, model)
-
-    all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
-    filtered = filter_grid_training_items(
-        all_items,
-        tokenizer=tokenizer,
-        system_prompt=system_prompt,
-        max_input_length=args.max_input_length,
-        max_new_tokens=args.max_new_tokens,
-    )
-    train_items = list(filtered.kept)
-    validate_fixed_corpus(
-        load_result.by_dataset,
-        retained_items=train_items,
-    )
-    dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
-        filtered.dropped_completion_example_ids
-    )
-    if dropped_over_budget and not args.quiet:
-        print(f"skipped_over_budget={len(dropped_over_budget)}")
     dataset = LLMGridItemsDataset(train_items)
-    sequence_lengths = _training_sequence_lengths(
-        train_items,
-        tokenizer,
-        system_prompt,
-    )
     batch_sampler = LengthGroupedBatchSampler(
         sequence_lengths,
         batch_size=args.per_device_batch_size,
@@ -1189,12 +1165,108 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
         "gradient_accumulation_steps": float(batch_metrics.gradient_accumulation_steps),
         "global_batch_size": float(batch_metrics.global_batch_size),
-        "skipped_over_budget_count": float(len(dropped_over_budget)),
-        **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
+        "skipped_over_budget_count": float(skipped_over_budget_count),
+        **corpus_metrics,
     }
     if accelerator.is_main_process:
         _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
+
+
+def _build_grid_training_manifest(
+    args: LLMGridArgs,
+    tokenizer: Any,
+    system_prompt: str,
+) -> TrainingManifest:
+    load_result = load_llm_grid_examples(
+        TRAIN_SPLITS,
+        limit_per_dataset=args.limit_per_dataset,
+        quiet=args.quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    validate_fixed_corpus(load_result.by_dataset)
+    all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
+    filtered = filter_grid_training_items(
+        all_items,
+        tokenizer=tokenizer,
+        system_prompt=system_prompt,
+        max_input_length=args.max_input_length,
+        max_new_tokens=args.max_new_tokens,
+    )
+    train_items = list(filtered.kept)
+    validate_fixed_corpus(load_result.by_dataset, retained_items=train_items)
+    dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
+        filtered.dropped_completion_example_ids
+    )
+    if dropped_over_budget and not args.quiet:
+        print(f"skipped_over_budget={len(dropped_over_budget)}")
+
+    manifest_items = []
+    for item in train_items:
+        prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        completion = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            item["target_text"],
+        )
+        counts = rendered_token_counts(tokenizer, prompt, completion)
+        manifest_items.append(
+            {
+                "input_text": item["input_text"],
+                "target_text": item["target_text"],
+                "example_id": item["example_id"],
+                "dataset": item["dataset"],
+                "prompt_tokens": counts.prompt_tokens,
+                "completion_tokens": counts.completion_tokens,
+                "sequence_tokens": counts.sequence_tokens,
+            }
+        )
+    return TrainingManifest(
+        metadata={
+            "skipped_over_budget_count": len(dropped_over_budget),
+            "fixed_corpus_metrics": fixed_corpus_metrics(
+                load_result.by_dataset,
+                all_items,
+                filtered,
+            ),
+        },
+        items=tuple(manifest_items),
+    )
+
+
+def _grid_training_item_from_manifest(
+    item: Mapping[str, Any],
+) -> LLMGridTrainingItem:
+    dataset = _episode_dataset(str(item["dataset"]))
+    return {
+        "input_text": str(item["input_text"]),
+        "target_text": str(item["target_text"]),
+        "example_id": str(item["example_id"]),
+        "dataset": dataset,
+    }
+
+
+def _load_grid_training_tokenizer(model_name_or_path: str) -> Any:
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
+def _load_grid_training_model(
+    model_name_or_path: str,
+    device_map: Optional[str],
+) -> Any:
+    from transformers import AutoModelForCausalLM
+
+    model_kwargs: Dict[str, Any] = {"torch_dtype": "auto"}
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
+    return AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
 
 
 def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:

@@ -421,6 +421,141 @@ def test_run_backward_preflight_checks_memory_without_optimizer_step():
     assert parameter.grad is None
 
 
+def test_load_or_create_training_manifest_builds_on_main_and_round_trips(tmp_path):
+    calls = []
+
+    class Accelerator:
+        is_main_process = True
+
+        def wait_for_everyone(self):
+            calls.append("wait")
+
+    expected = sft.TrainingManifest(
+        metadata={"candidate": "boxes", "examples": 1},
+        items=(
+            {
+                "example_id": "rxr-1",
+                "input_text": "go upstairs",
+                "target_text": "{}",
+                "dataset": "RxR",
+                "prompt_tokens": 9,
+                "completion_tokens": 8,
+                "sequence_tokens": 17,
+            },
+        ),
+    )
+
+    manifest = sft.load_or_create_training_manifest(
+        Accelerator(),
+        tmp_path / "training_manifest.jsonl",
+        lambda: expected,
+    )
+
+    assert manifest == expected
+    assert calls == ["wait"]
+    lines = (tmp_path / "training_manifest.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+    assert not (tmp_path / ".training_manifest.jsonl.tmp").exists()
+
+
+def test_load_or_create_training_manifest_non_main_only_reads(tmp_path):
+    path = tmp_path / "training_manifest.jsonl"
+    path.write_text(
+        '{"record_type":"metadata","schema_version":1,'
+        '"metadata":{"candidate":"grid"}}\n'
+        '{"record_type":"item","item":{"example_id":"r2r-1",'
+        '"dataset":"R2R","input_text":"go","target_text":"{}",'
+        '"prompt_tokens":2,"completion_tokens":3,"sequence_tokens":5}}\n',
+        encoding="utf-8",
+    )
+
+    class Accelerator:
+        is_main_process = False
+
+        def wait_for_everyone(self):
+            return None
+
+    def unexpected_build():
+        raise AssertionError("non-main rank must not preprocess the corpus")
+
+    manifest = sft.load_or_create_training_manifest(
+        Accelerator(), path, unexpected_build
+    )
+
+    assert manifest.metadata == {"candidate": "grid"}
+    assert manifest.items[0]["example_id"] == "r2r-1"
+
+
+def test_load_or_create_training_manifest_rejects_unversioned_file(tmp_path):
+    path = tmp_path / "training_manifest.jsonl"
+    path.write_text('{"record_type":"metadata","metadata":{}}\n', encoding="utf-8")
+    accelerator = SimpleNamespace(
+        is_main_process=False,
+        wait_for_everyone=lambda: None,
+    )
+
+    with pytest.raises(ValueError, match="metadata header"):
+        sft.load_or_create_training_manifest(accelerator, path, lambda: None)
+
+
+def test_load_or_create_training_manifest_broadcasts_main_build_failure(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+
+    class Accelerator:
+        is_main_process = True
+
+        def wait_for_everyone(self):
+            raise AssertionError("failed startup must not enter the success barrier")
+
+    def broadcast(outcome):
+        calls.append(outcome[0].copy())
+        return outcome
+
+    def fail_build():
+        raise ValueError("missing training cache")
+
+    monkeypatch.setattr(sft, "broadcast_object_list", broadcast, raising=False)
+
+    with pytest.raises(ValueError, match="missing training cache"):
+        sft.load_or_create_training_manifest(
+            Accelerator(), tmp_path / "manifest.jsonl", fail_build
+        )
+
+    assert calls == [
+        {"error_type": "ValueError", "message": "missing training cache"}
+    ]
+
+
+def test_load_or_create_training_manifest_non_main_raises_broadcast_failure(
+    monkeypatch,
+    tmp_path,
+):
+    class Accelerator:
+        is_main_process = False
+
+        def wait_for_everyone(self):
+            raise AssertionError("failed startup must not enter the success barrier")
+
+    def broadcast(outcome):
+        outcome[0] = {"error_type": "OSError", "message": "manifest disk full"}
+        return outcome
+
+    monkeypatch.setattr(sft, "broadcast_object_list", broadcast, raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match="training manifest startup failed on rank 0: OSError: manifest disk full",
+    ):
+        sft.load_or_create_training_manifest(
+            Accelerator(),
+            tmp_path / "manifest.jsonl",
+            lambda: pytest.fail("non-main rank must not build"),
+        )
+
+
 def test_reduce_training_totals_uses_global_support_weighted_loss():
     class _Accelerator:
         device = torch.device("cpu")

@@ -48,6 +48,12 @@ FSDP. An epoch checkpoint is written after the epoch completes. Cancelling
 mid-epoch does not create an interruption checkpoint or save optimizer state,
 so wait for the desired epoch directory before cancelling.
 
+Before model allocation, rank zero alone expands cached targets, filters
+over-budget examples, and counts tokens. It atomically writes the per-run
+`artifacts/training_manifest.jsonl`; every rank reads the same lightweight
+text/token rows after a barrier, avoiding eight copies of heavy R2R/RxR
+preprocessing.
+
 ## LLM-Boxes Evaluation
 
 ```shell

@@ -31,6 +31,10 @@ collective, while only rank zero exports portable PEFT adapter directories and
 metrics. An epoch checkpoint appears only after that epoch completes; cancelling
 mid-epoch does not create an interruption checkpoint or preserve optimizer
 state. Wait for the required `checkpoints/epoch-N` directory before cancelling.
+Before model allocation, rank zero performs cache expansion, target
+serialization, length filtering, and token counting once. It atomically writes
+`artifacts/training_manifest.jsonl`; every rank reads that lightweight per-run
+manifest after a barrier instead of repeating heavy R2R/RxR preprocessing.
 
 Submit the maintained training commands with:
 
