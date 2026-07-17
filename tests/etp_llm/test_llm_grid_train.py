@@ -827,6 +827,8 @@ def test_grid_collate_disables_special_tokens_to_match_filter_counts():
         "start_direction": (0.0, 1.0),
         "scene_id": "scene",
         "dataset": "R2R",
+        "training_weight": 1.0,
+        "is_padding": False,
     }
     prompt = llm_grid_train._render_chat_prompt(tokenizer, "system", "user")
     completion = llm_grid_train._render_chat_completion(
@@ -866,6 +868,8 @@ def test_collate_llm_grid_rejects_prompt_over_input_budget():
         "start_position": (1.2, 3.4),
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
+        "training_weight": 1.0,
+        "is_padding": False,
     }
     tokenizer = _EosChatTokenizer()
     prompt = llm_grid_train._render_chat_prompt(
@@ -905,6 +909,8 @@ def test_collate_llm_grid_rejects_target_over_completion_budget():
         "start_position": (1.2, 3.4),
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
+        "training_weight": 1.0,
+        "is_padding": False,
     }
     tokenizer = _EosChatTokenizer()
     prompt = llm_grid_train._render_chat_prompt(
@@ -1046,13 +1052,31 @@ def test_training_items_dataset_resolves_training_index_metadata():
     training_item = dataset[
         llm_grid_train.TrainingIndex(
             index=0,
-            loss_scale=8 / 3,
-            is_padding=False,
+            loss_scale=0.0,
+            is_padding=True,
         )
     ]
+    collated = llm_grid_train.collate_llm_grid_batch(
+        [training_item],
+        _ChatTokenizer(),
+        system_prompt="system",
+        max_input_length=128,
+        max_new_tokens=128,
+    )
 
-    assert training_item["training_weight"] == 8 / 3
-    assert training_item["is_padding"] is False
+    assert collated["training_weights"].tolist() == [0.0]
+    assert collated["is_padding"].tolist() == [True]
+
+
+def test_training_collator_rejects_missing_training_metadata():
+    with pytest.raises(KeyError, match="training_weight"):
+        llm_grid_train.collate_llm_grid_batch(
+            [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
+            _ChatTokenizer(),
+            system_prompt="system",
+            max_input_length=128,
+            max_new_tokens=128,
+        )
 
 
 def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
@@ -1093,6 +1117,40 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert not hasattr(captured["batch_sampler"], "legacy_integer_indices")
     assert "batch_size" not in captured
     assert "shuffle" not in captured
+
+
+def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    epochs = []
+    original_set_epoch = llm_grid_train.LengthGroupedBatchSampler.set_epoch
+
+    def record_epoch(self, epoch):
+        epochs.append(epoch)
+        original_set_epoch(self, epoch)
+
+    monkeypatch.setattr(
+        llm_grid_train.LengthGroupedBatchSampler,
+        "set_epoch",
+        record_epoch,
+    )
+    args = llm_grid_train.LLMGridArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "2",
+            "--quiet",
+        ]
+    )
+
+    llm_grid_train.train_model(args)
+
+    assert epochs == [0, 1]
 
 
 def test_llm_grid_args_defaults_to_grid_namespace_and_scale():

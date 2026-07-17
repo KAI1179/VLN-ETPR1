@@ -633,13 +633,31 @@ def test_training_item_dataset_resolves_training_index_metadata():
     training_item = dataset[
         llm_boxes_train.TrainingIndex(
             index=0,
-            loss_scale=8 / 3,
-            is_padding=False,
+            loss_scale=0.0,
+            is_padding=True,
         )
     ]
+    collated = llm_boxes_train.collate_llm_boxes_batch(
+        [training_item],
+        _ChatTokenizer(),
+        system_prompt="system",
+        max_input_length=32,
+        max_new_tokens=32,
+    )
 
-    assert training_item["training_weight"] == 8 / 3
-    assert training_item["is_padding"] is False
+    assert collated["training_weights"].tolist() == [0.0]
+    assert collated["is_padding"].tolist() == [True]
+
+
+def test_training_collator_rejects_missing_training_metadata():
+    with pytest.raises(KeyError, match="training_weight"):
+        llm_boxes_train.collate_llm_boxes_batch(
+            [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
+            _ChatTokenizer(),
+            system_prompt="system",
+            max_input_length=32,
+            max_new_tokens=32,
+        )
 
 
 def test_collate_disables_special_tokens_to_match_rendered_filter_counts():
@@ -678,7 +696,13 @@ def test_collate_disables_special_tokens_to_match_rendered_filter_counts():
             )
 
     tokenizer = BosTokenizer()
-    item = {"input_text": "user", "target_text": "answer", "example_id": "ex"}
+    item = {
+        "input_text": "user",
+        "target_text": "answer",
+        "example_id": "ex",
+        "training_weight": 1.0,
+        "is_padding": False,
+    }
     prompt = llm_boxes_train._render_chat_prompt(tokenizer, "system", "user")
     completion = llm_boxes_train._render_chat_completion(
         tokenizer, "system", "user", "answer"
@@ -713,8 +737,20 @@ def test_collate_supervises_eos_when_eos_is_also_pad_token():
 
     collated = llm_boxes_train.collate_llm_boxes_batch(
         [
-            {"input_text": "input", "target_text": "x", "example_id": "short"},
-            {"input_text": "input", "target_text": "long target", "example_id": "long"},
+            {
+                "input_text": "input",
+                "target_text": "x",
+                "example_id": "short",
+                "training_weight": 1.0,
+                "is_padding": False,
+            },
+            {
+                "input_text": "input",
+                "target_text": "long target",
+                "example_id": "long",
+                "training_weight": 1.0,
+                "is_padding": False,
+            },
         ],
         tokenizer,
         system_prompt="system prompt",
@@ -747,6 +783,8 @@ def test_collate_rejects_batches_with_no_supervised_target_tokens():
                     "input_text": "input words",
                     "target_text": "target",
                     "example_id": "ex",
+                    "training_weight": 1.0,
+                    "is_padding": False,
                 }
             ],
             tokenizer,
@@ -1207,6 +1245,40 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert not hasattr(captured["batch_sampler"], "legacy_integer_indices")
     assert "batch_size" not in captured
     assert "shuffle" not in captured
+
+
+def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
+    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    epochs = []
+    original_set_epoch = llm_boxes_train.LengthGroupedBatchSampler.set_epoch
+
+    def record_epoch(self, epoch):
+        epochs.append(epoch)
+        original_set_epoch(self, epoch)
+
+    monkeypatch.setattr(
+        llm_boxes_train.LengthGroupedBatchSampler,
+        "set_epoch",
+        record_epoch,
+    )
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "2",
+            "--quiet",
+        ]
+    )
+
+    llm_boxes_train.train_model(args)
+
+    assert epochs == [0, 1]
 
 
 def test_train_model_accumulates_gradients_before_optimizer_step(

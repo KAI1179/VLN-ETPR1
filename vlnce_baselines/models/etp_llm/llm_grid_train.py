@@ -406,6 +406,14 @@ def collate_llm_grid_batch(
     max_input_length: int,
     max_new_tokens: int,
 ) -> Dict[str, Any]:
+    training_weights = torch.tensor(
+        [item["training_weight"] for item in batch],
+        dtype=torch.float32,
+    )
+    is_padding = torch.tensor(
+        [item["is_padding"] for item in batch],
+        dtype=torch.bool,
+    )
     prompt_texts = [
         _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         for item in batch
@@ -469,14 +477,8 @@ def collate_llm_grid_batch(
     encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
-    encoded["training_weights"] = torch.tensor(
-        [item.get("training_weight", 1.0) for item in batch],
-        dtype=torch.float32,
-    )
-    encoded["is_padding"] = torch.tensor(
-        [item.get("is_padding", False) for item in batch],
-        dtype=torch.bool,
-    )
+    encoded["training_weights"] = training_weights
+    encoded["is_padding"] = is_padding
     return encoded
 
 
@@ -1026,6 +1028,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     optimizer_steps = 0
     optimizer.zero_grad()
     for epoch_index in range(args.epochs):
+        batch_sampler.set_epoch(epoch_index)
         batch_count = len(loader)
         for batch_index, batch in enumerate(
             _progress(

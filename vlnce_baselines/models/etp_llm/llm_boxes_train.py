@@ -308,6 +308,14 @@ def collate_llm_boxes_batch(
     max_input_length: int,
     max_new_tokens: int,
 ) -> Dict[str, Any]:
+    training_weights = torch.tensor(
+        [item["training_weight"] for item in batch],
+        dtype=torch.float32,
+    )
+    is_padding = torch.tensor(
+        [item["is_padding"] for item in batch],
+        dtype=torch.bool,
+    )
     # Tokenizer output tensors use shape (B, T), where T is padded to the
     # longest prompt+completion sequence in this batch, capped by max_length.
     target_texts = [_target_text(item) for item in batch]
@@ -349,14 +357,8 @@ def collate_llm_boxes_batch(
     encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
-    encoded["training_weights"] = torch.tensor(
-        [item.get("training_weight", 1.0) for item in batch],
-        dtype=torch.float32,
-    )
-    encoded["is_padding"] = torch.tensor(
-        [item.get("is_padding", False) for item in batch],
-        dtype=torch.bool,
-    )
+    encoded["training_weights"] = training_weights
+    encoded["is_padding"] = is_padding
     return encoded
 
 
@@ -463,6 +465,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     optimizer_steps = 0
     optimizer.zero_grad()
     for epoch in range(args.epochs):
+        batch_sampler.set_epoch(epoch)
         batch_count = len(loader)
         progress_loader = _progress(
             loader,
