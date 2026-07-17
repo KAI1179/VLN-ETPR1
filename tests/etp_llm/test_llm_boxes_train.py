@@ -1,5 +1,6 @@
 import argparse
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List
 
@@ -526,7 +527,95 @@ class _TrainingModel(torch.nn.Module):
         return None
 
 
-def _patch_training_dependencies(monkeypatch, model, batches=None):
+class _PreparedOptimizer:
+    def __init__(self, optimizer, accelerator):
+        self.optimizer = optimizer
+        self.accelerator = accelerator
+
+    def step(self):
+        if self.accelerator.sync_gradients:
+            self.optimizer.step()
+
+    def zero_grad(self):
+        self.optimizer.zero_grad()
+
+
+class _TrainingAccelerator:
+    def __init__(
+        self,
+        gradient_accumulation_steps,
+        *,
+        batch_count=1,
+        is_main_process=True,
+        num_processes=8,
+        process_index=0,
+        reduced_totals=None,
+    ):
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.batch_count = batch_count
+        self.is_main_process = is_main_process
+        self.num_processes = num_processes
+        self.process_index = process_index
+        self.device = torch.device("cpu")
+        self.sync_gradients = True
+        self.reduced_totals = reduced_totals
+        self.prepare_calls = 0
+        self.accumulate_calls = 0
+        self.backward_calls = 0
+        self.backward_losses = []
+        self.clip_grad_norm_calls = 0
+        self.reduce_calls = []
+        self.unwrap_model_calls = 0
+        self.wait_for_everyone_calls = 0
+
+    def prepare(self, model, optimizer):
+        self.prepare_calls += 1
+        return model, _PreparedOptimizer(optimizer, self)
+
+    @contextmanager
+    def accumulate(self, model):
+        del model
+        self.accumulate_calls += 1
+        self.sync_gradients = (
+            self.accumulate_calls % self.gradient_accumulation_steps == 0
+            or self.accumulate_calls == self.batch_count
+        )
+        yield
+
+    def backward(self, loss):
+        self.backward_calls += 1
+        self.backward_losses.append(float(loss.detach()))
+        loss.backward()
+
+    def clip_grad_norm_(self, parameters, max_norm):
+        self.clip_grad_norm_calls += 1
+        return torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+
+    def reduce(self, totals, reduction):
+        assert reduction == "sum"
+        self.reduce_calls.append(totals.detach().cpu().tolist())
+        if self.reduced_totals is not None:
+            return torch.tensor(
+                self.reduced_totals,
+                dtype=totals.dtype,
+                device=totals.device,
+            )
+        return totals * self.num_processes
+
+    def unwrap_model(self, model):
+        self.unwrap_model_calls += 1
+        return model
+
+    def wait_for_everyone(self):
+        self.wait_for_everyone_calls += 1
+
+
+def _patch_training_dependencies(
+    monkeypatch,
+    model,
+    batches=None,
+    accelerator=None,
+):
     item = {
         "input_text": "short",
         "target_text": (
@@ -550,9 +639,18 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
         "attention_mask": torch.ones((1, 2), dtype=torch.long),
         "labels": torch.ones((1, 2), dtype=torch.long),
         "example_ids": ["train-example"],
+        "training_weights": torch.ones(1),
+        "is_padding": torch.zeros(1, dtype=torch.bool),
     }
     if batches is None:
         batches = [batch]
+    if accelerator is None:
+        accelerator = _TrainingAccelerator(1, batch_count=len(batches))
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "make_sft_accelerator",
+        lambda gradient_accumulation_steps: accelerator,
+    )
     monkeypatch.setattr(
         llm_boxes_train,
         "load_llm_boxes_examples",
@@ -570,6 +668,7 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
         lambda loaded_model, args: loaded_model,
     )
     monkeypatch.setattr(llm_boxes_train, "DataLoader", lambda *args, **kwargs: batches)
+    return accelerator
 
 
 def test_load_system_prompt_reads_package_prompt():
@@ -1133,6 +1232,29 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
     assert "# error: region.max must be greater than min" in string_artifact
 
 
+def test_evaluate_model_reports_each_dataset_and_combined_support(tmp_path):
+    args = argparse.Namespace(
+        output_dir=str(tmp_path),
+        max_input_length=32,
+        max_new_tokens=64,
+        per_device_batch_size=2,
+        device="cpu",
+        quiet=True,
+        system_prompt="system prompt",
+    )
+
+    metrics = llm_boxes_train._evaluate_loaded_model(
+        _EvalModel(),
+        _EvalTokenizer(),
+        tuple(_EvalDataset())[:2],
+        args,
+    )
+
+    assert metrics["r2r/examples"] == 1.0
+    assert metrics["rxr/examples"] == 1.0
+    assert metrics["combined/examples"] == 2.0
+
+
 def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
     tmp_path, monkeypatch
 ):
@@ -1206,7 +1328,7 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
 
 
 def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
-    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    accelerator = _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
     captured = {}
 
     def fake_data_loader(*args, **kwargs):
@@ -1217,6 +1339,8 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
                 "attention_mask": torch.ones((1, 2), dtype=torch.long),
                 "labels": torch.ones((1, 2), dtype=torch.long),
                 "example_ids": ["train-example"],
+                "training_weights": torch.ones(1),
+                "is_padding": torch.zeros(1, dtype=torch.bool),
             }
         ]
 
@@ -1236,7 +1360,7 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         ]
     )
 
-    llm_boxes_train.train_model(args)
+    metrics = llm_boxes_train.train_model(args)
 
     assert isinstance(
         captured["batch_sampler"],
@@ -1245,6 +1369,11 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert not hasattr(captured["batch_sampler"], "legacy_integer_indices")
     assert "batch_size" not in captured
     assert "shuffle" not in captured
+    assert captured["batch_sampler"].rank == accelerator.process_index
+    assert captured["batch_sampler"].world_size == accelerator.num_processes
+    assert accelerator.prepare_calls == 1
+    assert metrics["world_size"] == 8.0
+    assert metrics["global_batch_size"] == 8.0
 
 
 def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
@@ -1291,10 +1420,18 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             "attention_mask": torch.ones((1, 2), dtype=torch.long),
             "labels": torch.ones((1, 2), dtype=torch.long),
             "example_ids": [f"train-example-{index}"],
+            "training_weights": torch.ones(1),
+            "is_padding": torch.zeros(1, dtype=torch.bool),
         }
         for index in range(3)
     ]
-    _patch_training_dependencies(monkeypatch, _TrainingModel(1.0), batches=batches)
+    accelerator = _TrainingAccelerator(2, batch_count=len(batches))
+    _patch_training_dependencies(
+        monkeypatch,
+        _TrainingModel(1.0),
+        batches=batches,
+        accelerator=accelerator,
+    )
     calls = {"step": 0, "zero_grad": 0}
 
     class FakeOptimizer:
@@ -1332,7 +1469,101 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
     assert calls == {"step": 2, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
     assert metrics["optimizer_steps"] == pytest.approx(2.0)
+    assert metrics["world_size"] == 8.0
+    assert metrics["global_batch_size"] == 16.0
+    assert accelerator.prepare_calls == 1
+    assert accelerator.backward_calls == len(batches)
+    assert accelerator.clip_grad_norm_calls == 2
     assert json.loads((output_dir / "metrics.json").read_text()) == metrics
+
+
+def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
+    accelerator = _TrainingAccelerator(
+        1,
+        is_main_process=False,
+        num_processes=2,
+        process_index=1,
+    )
+    _patch_training_dependencies(
+        monkeypatch,
+        _TrainingModel(1.0),
+        accelerator=accelerator,
+    )
+    output_dir = tmp_path / "run"
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(output_dir),
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+        ]
+    )
+
+    metrics = llm_boxes_train.train_model(args)
+
+    assert metrics["world_size"] == 2.0
+    assert not (output_dir / "artifacts" / "system_prompt.md").exists()
+    assert not (output_dir / "metrics.json").exists()
+    assert not (output_dir / "checkpoints").exists()
+    assert accelerator.unwrap_model_calls == 0
+    assert accelerator.wait_for_everyone_calls == 4
+
+
+def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path):
+    batches = [
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+            "labels": torch.ones((1, 2), dtype=torch.long),
+            "example_ids": ["real"],
+            "training_weights": torch.ones(1),
+            "is_padding": torch.zeros(1, dtype=torch.bool),
+        },
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+            "labels": torch.ones((1, 2), dtype=torch.long),
+            "example_ids": ["padding"],
+            "training_weights": torch.zeros(1),
+            "is_padding": torch.ones(1, dtype=torch.bool),
+        },
+    ]
+    accelerator = _TrainingAccelerator(
+        1,
+        batch_count=2,
+        num_processes=2,
+        reduced_totals=(3.0, 3.0, 4.0, 8.0),
+    )
+    _patch_training_dependencies(
+        monkeypatch,
+        _TrainingModel(1.0),
+        batches=batches,
+        accelerator=accelerator,
+    )
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+        ]
+    )
+
+    metrics = llm_boxes_train.train_model(args)
+
+    assert accelerator.backward_losses == [1.0, 0.0]
+    assert accelerator.reduce_calls == [[1.0, 1.0, 2.0, 4.0]]
+    assert metrics["train_loss"] == 1.0
+    assert metrics["examples"] == 3.0
+    assert metrics["steps"] == 2.0
 
 
 def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):

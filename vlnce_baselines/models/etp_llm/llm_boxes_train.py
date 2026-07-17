@@ -54,9 +54,14 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     TrainingIndex,
+    distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
+    make_sft_accelerator,
+    reduce_training_totals,
     rendered_token_counts,
+    scale_training_loss,
+    validate_distributed_device_map,
 )
 
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
@@ -393,6 +398,13 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
 
+    accelerator = make_sft_accelerator(args.gradient_accumulation_steps)
+    validate_distributed_device_map(accelerator, args.device_map)
+    batch_metrics = distributed_batch_metrics(
+        accelerator,
+        args.per_device_batch_size,
+        args.gradient_accumulation_steps,
+    )
     quiet = bool(getattr(args, "quiet", False))
     load_result = load_llm_boxes_examples(
         TRAIN_SPLITS,
@@ -405,18 +417,20 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         raise ValueError("No LLM-Boxes training examples were loaded")
 
     system_prompt = load_system_prompt()
-    _write_run_system_prompt(args.output_dir, system_prompt)
+    if accelerator.is_main_process:
+        _write_run_system_prompt(args.output_dir, system_prompt)
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
-        device_map=_normalize_device_map(args.device_map),
+        device_map=(
+            None
+            if accelerator.num_processes > 1
+            else _normalize_device_map(args.device_map)
+        ),
     )
     model = _apply_lora(model, args)
     _cast_trainable_parameters_to_float32(model)
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
-    device = torch.device(args.device)
-    if not _model_uses_device_map(model):
-        model.to(device)
 
     all_items = tuple(LLMBoxesDataset(load_result.examples))
     filtered = filter_llm_boxes_items_for_length(
@@ -439,8 +453,8 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(filtered.kept, tokenizer, system_prompt),
         batch_size=args.per_device_batch_size,
-        rank=0,
-        world_size=1,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
         seed=args.seed,
     )
     loader = DataLoader(
@@ -458,88 +472,111 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         param for param in model.parameters() if param.requires_grad
     ]
     optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate)
+    model, optimizer = accelerator.prepare(model, optimizer)
 
     model.train()
-    total_loss = 0.0
-    steps = 0
+    local_loss_sum = 0.0
+    local_example_count = 0
+    local_batch_count = 0
     optimizer_steps = 0
-    optimizer.zero_grad()
     for epoch in range(args.epochs):
         batch_sampler.set_epoch(epoch)
-        batch_count = len(loader)
         progress_loader = _progress(
             loader,
             desc=f"train epoch {epoch + 1}/{args.epochs}",
             quiet=quiet,
             total=len(loader),
         )
-        for batch_index, batch in enumerate(progress_loader, start=1):
-            model_inputs = _model_batch(batch, device)
-            outputs = model(**model_inputs)
-            loss = outputs.loss
-            if not torch.isfinite(loss.detach()):
-                raise FloatingPointError(
-                    _non_finite_step_message("loss", epoch + 1, steps + 1, batch)
+        for batch in progress_loader:
+            with accelerator.accumulate(model):
+                outputs = model(**_model_batch(batch, accelerator.device))
+                loss = outputs.loss
+                if not torch.isfinite(loss.detach()):
+                    raise FloatingPointError(
+                        _non_finite_step_message(
+                            "loss",
+                            epoch + 1,
+                            local_batch_count + 1,
+                            batch,
+                        )
+                    )
+                weighted_loss = scale_training_loss(
+                    loss,
+                    batch["training_weights"],
+                    batch["is_padding"],
                 )
-            (loss / args.gradient_accumulation_steps).backward()
-            should_step_optimizer = (
-                batch_index % args.gradient_accumulation_steps == 0
-                or batch_index == batch_count
-            )
-            if should_step_optimizer:
-                max_grad_norm = float(getattr(args, "max_grad_norm", 1.0))
+                accelerator.backward(weighted_loss)
                 grad_norm = None
-                if max_grad_norm > 0:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                if accelerator.sync_gradients and args.max_grad_norm > 0:
+                    grad_norm = accelerator.clip_grad_norm_(
                         trainable_parameters,
-                        max_grad_norm,
-                        error_if_nonfinite=False,
+                        args.max_grad_norm,
                     )
                     if not torch.isfinite(grad_norm.detach()):
                         raise FloatingPointError(
                             _non_finite_step_message(
                                 "gradient norm",
                                 epoch + 1,
-                                steps + 1,
+                                local_batch_count + 1,
                                 batch,
                                 value=float(grad_norm.detach().cpu()),
                             )
                         )
                 optimizer.step()
-                optimizer_steps += 1
                 optimizer.zero_grad()
-                _validate_trainable_parameters_finite(
-                    model,
-                    context=_non_finite_step_message(
-                        "trainable parameter",
-                        epoch + 1,
-                        steps + 1,
-                        batch,
-                        value=(
-                            float(grad_norm.detach().cpu())
-                            if grad_norm is not None
-                            else None
+                if accelerator.sync_gradients:
+                    optimizer_steps += 1
+                    _validate_trainable_parameters_finite(
+                        model,
+                        context=_non_finite_step_message(
+                            "trainable parameter",
+                            epoch + 1,
+                            local_batch_count + 1,
+                            batch,
+                            value=(
+                                float(grad_norm.detach().cpu())
+                                if grad_norm is not None
+                                else None
+                            ),
                         ),
                     )
-                )
-            total_loss += float(loss.detach().cpu())
-            steps += 1
+            real_example_count = int((~batch["is_padding"].bool()).sum().item())
+            local_loss_sum += float(loss.detach().cpu()) * real_example_count
+            local_example_count += real_example_count
+            local_batch_count += 1
             set_postfix = getattr(progress_loader, "set_postfix", None)
             if callable(set_postfix):
                 set_postfix(loss=float(loss.detach().cpu()))
-        save_llm_boxes_checkpoint(
+        _save_llm_boxes_checkpoint_on_main(
+            accelerator,
             model,
             tokenizer,
             _checkpoint_dir(args.output_dir, f"epoch-{epoch + 1}"),
         )
 
-    save_llm_boxes_checkpoint(
-        model, tokenizer, _checkpoint_dir(args.output_dir, "final")
+    _save_llm_boxes_checkpoint_on_main(
+        accelerator,
+        model,
+        tokenizer,
+        _checkpoint_dir(args.output_dir, "final"),
+    )
+    training_totals = reduce_training_totals(
+        accelerator,
+        local_loss_sum,
+        local_example_count,
+        local_batch_count,
     )
     metrics = {
-        "train_loss": total_loss / steps if steps else 0.0,
-        "steps": float(steps),
+        "train_loss": training_totals["loss"],
+        "examples": training_totals["example_count"],
+        "steps": training_totals["batch_count"],
         "optimizer_steps": float(optimizer_steps),
+        "world_size": float(batch_metrics.world_size),
+        "per_device_batch_size": float(batch_metrics.per_device_batch_size),
+        "gradient_accumulation_steps": float(
+            batch_metrics.gradient_accumulation_steps
+        ),
+        "global_batch_size": float(batch_metrics.global_batch_size),
         "dropped_prompt_examples": float(
             len(filtered.dropped_prompt_example_ids)
         ),
@@ -549,7 +586,8 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
         **text_stats,
     }
-    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    if accelerator.is_main_process:
+        _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
 
 
@@ -745,6 +783,22 @@ def save_llm_boxes_checkpoint(
     output_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(output_path)
     tokenizer.save_pretrained(output_path)
+
+
+def _save_llm_boxes_checkpoint_on_main(
+    accelerator: Any,
+    model: Any,
+    tokenizer: Any,
+    output_dir: str | Path,
+) -> None:
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        save_llm_boxes_checkpoint(
+            accelerator.unwrap_model(model),
+            tokenizer,
+            output_dir,
+        )
+    accelerator.wait_for_everyone()
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
