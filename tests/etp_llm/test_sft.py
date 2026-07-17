@@ -395,6 +395,9 @@ def test_run_backward_preflight_checks_memory_without_optimizer_step():
             return SimpleNamespace(loss=parameter.square())
 
     class Accelerator:
+        device = torch.device("cpu")
+        distributed_type = DistributedType.NO
+
         def backward(self, loss):
             calls.append(("backward", loss))
             loss.backward()
@@ -419,6 +422,123 @@ def test_run_backward_preflight_checks_memory_without_optimizer_step():
     assert [call[0] for call in calls] == ["forward", "backward", "zero_grad"]
     assert parameter.item() == 2.0
     assert parameter.grad is None
+
+
+def test_run_backward_preflight_clears_cuda_cache_and_logs_memory(monkeypatch):
+    calls = []
+    parameter = torch.nn.Parameter(torch.tensor(2.0))
+
+    class Model:
+        def __call__(self, **model_inputs):
+            calls.append(("forward", model_inputs))
+            return SimpleNamespace(loss=parameter.square())
+
+    class Accelerator:
+        device = torch.device("cuda")
+        distributed_type = DistributedType.NO
+
+        def backward(self, loss):
+            calls.append(("backward", loss))
+
+    class Optimizer:
+        def zero_grad(self, *, set_to_none):
+            calls.append(("zero_grad", set_to_none))
+
+    monkeypatch.setattr(
+        sft,
+        "log_fsdp_layout",
+        lambda accelerator, model: calls.append(("layout", accelerator, model)),
+    )
+    monkeypatch.setattr(
+        sft,
+        "log_cuda_memory",
+        lambda accelerator, *, stage: calls.append(("memory", stage)),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "empty_cache",
+        lambda: calls.append(("empty_cache",)),
+    )
+
+    sft.run_backward_preflight(
+        Accelerator(),
+        Model(),
+        Optimizer(),
+        {"input_ids": torch.tensor([[1, 2, 3]])},
+        example_id="longest",
+        sequence_tokens=3,
+    )
+
+    assert [call[0] for call in calls] == [
+        "layout",
+        "empty_cache",
+        "memory",
+        "forward",
+        "memory",
+        "backward",
+        "zero_grad",
+    ]
+    assert calls[2] == ("memory", "after_empty_cache")
+    assert calls[4] == ("memory", "after_forward")
+
+
+def test_run_backward_preflight_wraps_cuda_oom_with_example_context():
+    original_error = torch.cuda.OutOfMemoryError("requested 10 GiB")
+
+    class Model:
+        def __call__(self, **model_inputs):
+            del model_inputs
+            return SimpleNamespace(loss=torch.tensor(1.0))
+
+    class Accelerator:
+        device = torch.device("cpu")
+        distributed_type = DistributedType.NO
+
+        def backward(self, loss):
+            del loss
+            raise original_error
+
+    class Optimizer:
+        def zero_grad(self, *, set_to_none):
+            del set_to_none
+            raise AssertionError("failed preflight must not clear gradients")
+
+    with pytest.raises(
+        torch.cuda.OutOfMemoryError,
+        match=r"longest-sequence preflight failed for rxr-long \(4681 tokens\)",
+    ) as raised:
+        sft.run_backward_preflight(
+            Accelerator(),
+            Model(),
+            Optimizer(),
+            {},
+            example_id="rxr-long",
+            sequence_tokens=4681,
+        )
+
+    assert raised.value.__cause__ is original_error
+
+
+def test_enable_gradient_checkpointing_uses_non_reentrant_mode():
+    calls = []
+
+    class Model:
+        config = SimpleNamespace(use_cache=True)
+
+        def enable_input_require_grads(self):
+            calls.append(("input_grads",))
+
+        def gradient_checkpointing_enable(self, *, gradient_checkpointing_kwargs):
+            calls.append(("checkpointing", gradient_checkpointing_kwargs))
+
+    model = Model()
+    sft.enable_gradient_checkpointing(model)
+
+    assert calls == [
+        ("input_grads",),
+        ("checkpointing", {"use_reentrant": False}),
+    ]
+    assert model.config.use_cache is False
 
 
 def test_load_or_create_training_manifest_builds_on_main_and_round_trips(tmp_path):

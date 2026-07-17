@@ -23,7 +23,7 @@ from typing import (
 import torch
 from accelerate import Accelerator, FullyShardedDataParallelPlugin
 from accelerate.utils import DistributedType, broadcast_object_list
-from torch.distributed.fsdp import ShardingStrategy
+from torch.distributed.fsdp import FullyShardedDataParallel, ShardingStrategy
 from torch.utils.data import Sampler
 
 ItemT = TypeVar("ItemT")
@@ -390,14 +390,71 @@ def run_backward_preflight(
     example_id: str,
     sequence_tokens: int,
 ) -> None:
+    log_fsdp_layout(accelerator, model)
+    if accelerator.device.type == "cuda":
+        torch.cuda.empty_cache()
+        log_cuda_memory(accelerator, stage="after_empty_cache")
     try:
-        accelerator.backward(model(**model_inputs).loss)
-    except torch.OutOfMemoryError as error:
-        raise torch.OutOfMemoryError(
+        loss = model(**model_inputs).loss
+        log_cuda_memory(accelerator, stage="after_forward")
+        accelerator.backward(loss)
+    except torch.cuda.OutOfMemoryError as error:
+        raise torch.cuda.OutOfMemoryError(
             "longest-sequence preflight failed for "
             f"{example_id} ({sequence_tokens} tokens): {error}"
         ) from error
     optimizer.zero_grad(set_to_none=True)
+
+
+def log_cuda_memory(accelerator: Accelerator, *, stage: str) -> None:
+    if accelerator.device.type != "cuda":
+        return
+    free_bytes, total_bytes = torch.cuda.mem_get_info(accelerator.device)
+    memory_stats = torch.cuda.memory_stats(accelerator.device)
+    gib = 1024**3
+    allocated_bytes = torch.cuda.memory_allocated(accelerator.device)
+    reserved_bytes = torch.cuda.memory_reserved(accelerator.device)
+    inactive_split_bytes = memory_stats["inactive_split_bytes.all.current"]
+    print(
+        f"preflight_cuda_memory stage={stage} rank={accelerator.process_index} "
+        f"free_gib={free_bytes / gib:.2f} total_gib={total_bytes / gib:.2f} "
+        f"allocated_gib={allocated_bytes / gib:.2f} "
+        f"reserved_gib={reserved_bytes / gib:.2f} "
+        f"reserved_unused_gib={(reserved_bytes - allocated_bytes) / gib:.2f} "
+        f"inactive_split_gib={inactive_split_bytes / gib:.2f}",
+        flush=True,
+    )
+
+
+def log_fsdp_layout(accelerator: Accelerator, model: Any) -> None:
+    if accelerator.distributed_type != DistributedType.FSDP:
+        return
+    wrappers = [
+        (name or "<root>", module)
+        for name, module in model.named_modules()
+        if isinstance(module, FullyShardedDataParallel)
+    ]
+    if not wrappers:
+        raise RuntimeError("FSDP training model contains no FSDP wrappers")
+    world_size = int(accelerator.num_processes)
+    largest_name, largest_bytes = max(
+        (
+            name,
+            sum(
+                parameter.numel() * parameter.element_size() * world_size
+                for parameter in module.parameters(recurse=False)
+            ),
+        )
+        for name, module in wrappers
+    )
+    if accelerator.is_main_process:
+        print(
+            f"fsdp_layout wrappers={len(wrappers)} "
+            f"largest_wrapper={largest_name} "
+            "largest_estimated_unsharded_flat_parameter_gib="
+            f"{largest_bytes / 1024**3:.2f}",
+            flush=True,
+        )
 
 
 def validate_distributed_device_map(
@@ -589,4 +646,6 @@ def enable_gradient_checkpointing(model: Any) -> None:
             output.requires_grad_(True)
 
         input_embeddings.register_forward_hook(make_inputs_require_grad)
-    gradient_checkpointing_enable()
+    gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )

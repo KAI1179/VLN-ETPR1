@@ -511,7 +511,8 @@ class _TrainingModel(torch.nn.Module):
         loss = self.adapter * 0 + torch.tensor(self.loss_value)
         return type("Outputs", (), {"loss": loss})()
 
-    def gradient_checkpointing_enable(self):
+    def gradient_checkpointing_enable(self, *, gradient_checkpointing_kwargs):
+        assert gradient_checkpointing_kwargs == {"use_reentrant": False}
         self.gradient_checkpointing_enabled = True
 
     def enable_input_require_grads(self):
