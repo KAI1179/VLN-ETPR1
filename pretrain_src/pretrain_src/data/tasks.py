@@ -8,6 +8,29 @@ from torch.nn.utils.rnn import pad_sequence
 from .common import pad_tensors
 
 
+COGNITIVE_MAP_TENSOR_KEYS = (
+    "cognitive_maps",
+    "trajectory_keypoints",
+    "map_trajectory_metadata",
+    "start_direction_vectors",
+    "start_positions",
+)
+
+
+def _copy_cognitive_map_inputs(inputs, output):
+    present_keys = [key for key in COGNITIVE_MAP_TENSOR_KEYS if key in inputs]
+    if not present_keys:
+        if "cognitive_map_box_targets" in inputs:
+            raise ValueError("cognitive_map_box_targets require cognitive_maps")
+        return
+    if len(present_keys) != len(COGNITIVE_MAP_TENSOR_KEYS):
+        missing_keys = sorted(set(COGNITIVE_MAP_TENSOR_KEYS) - set(present_keys))
+        raise ValueError(f"Incomplete cognitive-map inputs; missing {missing_keys}")
+    output.update({key: inputs[key] for key in COGNITIVE_MAP_TENSOR_KEYS})
+    if "cognitive_map_box_targets" in inputs:
+        output["cognitive_map_box_targets"] = inputs["cognitive_map_box_targets"]
+
+
 ############### Masked Language Modeling ###############
 def random_word(tokens, vocab_range, mask):
     """
@@ -122,6 +145,7 @@ class MlmDataset(Dataset):
             output["txt_task_encoding"] = None
             output["gmap_task_embeddings"] = None
 
+        _copy_cognitive_map_inputs(inputs, output)
         return output
 
 
@@ -131,9 +155,7 @@ def mlm_collate(inputs):
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
         batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
-        batch["map_trajectory_metadata"] = torch.stack(
-            batch["map_trajectory_metadata"]
-        )
+        batch["map_trajectory_metadata"] = torch.stack(batch["map_trajectory_metadata"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 
@@ -258,6 +280,7 @@ class SapDataset(Dataset):
 
         output["local_act_labels"] = inputs["local_act_labels"]
         output["global_act_labels"] = inputs["global_act_labels"]
+        _copy_cognitive_map_inputs(inputs, output)
         return output
 
 
@@ -267,9 +290,7 @@ def sap_collate(inputs):
     if "cognitive_maps" in batch:
         batch["cognitive_maps"] = torch.stack(batch["cognitive_maps"])
         batch["trajectory_keypoints"] = torch.stack(batch["trajectory_keypoints"])
-        batch["map_trajectory_metadata"] = torch.stack(
-            batch["map_trajectory_metadata"]
-        )
+        batch["map_trajectory_metadata"] = torch.stack(batch["map_trajectory_metadata"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
 
