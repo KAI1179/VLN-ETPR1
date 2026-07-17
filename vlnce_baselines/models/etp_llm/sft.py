@@ -14,10 +14,12 @@ from typing import (
     Sequence,
     Tuple,
     TypeVar,
+    Union,
 )
 
 import torch
-from torch.utils.data import BatchSampler
+from accelerate import Accelerator
+from torch.utils.data import Sampler
 
 ItemT = TypeVar("ItemT")
 MetricItemT = TypeVar("MetricItemT", bound=Mapping[str, Any])
@@ -48,6 +50,21 @@ class LengthFilterResult(Generic[ItemT]):
     kept: Tuple[ItemT, ...]
     dropped_prompt_example_ids: Tuple[str, ...]
     dropped_completion_example_ids: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TrainingIndex:
+    index: int
+    loss_scale: float = 1.0
+    is_padding: bool = False
+
+
+@dataclass(frozen=True)
+class SFTBatchMetrics:
+    world_size: int
+    per_device_batch_size: int
+    gradient_accumulation_steps: int
+    global_batch_size: int
 
 
 def rendered_token_counts(
@@ -117,37 +134,159 @@ def fixed_corpus_metrics(
     return metrics
 
 
-class LengthGroupedBatchSampler(BatchSampler):
+def make_sft_accelerator(gradient_accumulation_steps: int) -> Accelerator:
+    return Accelerator(
+        gradient_accumulation_steps=gradient_accumulation_steps,
+    )
+
+
+def validate_distributed_device_map(
+    accelerator: Accelerator,
+    device_map: str,
+) -> None:
+    if accelerator.num_processes > 1 and device_map != "none":
+        raise ValueError("--device-map must be none when WORLD_SIZE > 1")
+
+
+def distributed_batch_metrics(
+    accelerator: Accelerator,
+    per_device_batch_size: int,
+    gradient_accumulation_steps: int,
+) -> SFTBatchMetrics:
+    world_size = int(accelerator.num_processes)
+    if world_size > 1 and per_device_batch_size != 1:
+        raise ValueError(
+            "distributed LLM finetuning currently requires "
+            "--per-device-batch-size 1"
+        )
+    return SFTBatchMetrics(
+        world_size=world_size,
+        per_device_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        global_batch_size=(
+            world_size
+            * per_device_batch_size
+            * gradient_accumulation_steps
+        ),
+    )
+
+
+def reduce_training_totals(
+    accelerator: Accelerator,
+    loss_sum: float,
+    example_count: int,
+    batch_count: int,
+) -> Dict[str, float]:
+    local_totals = torch.tensor(
+        [loss_sum, example_count, batch_count],
+        dtype=torch.float64,
+        device=accelerator.device,
+    )
+    global_totals = accelerator.reduce(local_totals, reduction="sum")
+    global_loss_sum, global_example_count, global_batch_count = (
+        float(value.item()) for value in global_totals
+    )
+    return {
+        "loss": (
+            global_loss_sum / global_example_count
+            if global_example_count
+            else 0.0
+        ),
+        "loss_sum": global_loss_sum,
+        "example_count": global_example_count,
+        "batch_count": global_batch_count,
+    }
+
+
+def scale_training_loss(
+    loss: torch.Tensor,
+    training_weights: torch.Tensor,
+    is_padding: torch.Tensor,
+) -> torch.Tensor:
+    weights = training_weights.reshape(-1)
+    padding = is_padding.reshape(-1).bool()
+    if weights.numel() == 0 or weights.shape != padding.shape:
+        raise ValueError("training weights and padding flags must be non-empty peers")
+    if not torch.equal(weights == 0, padding):
+        raise ValueError("only synthetic padding may have zero training weight")
+    if not torch.all(weights == weights[0]):
+        raise ValueError("all examples in a training batch must use one loss scale")
+    return loss * weights[0].to(device=loss.device, dtype=loss.dtype)
+
+
+class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
     def __init__(
         self,
         lengths: Sequence[int],
         batch_size: int,
+        *,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: int = 42,
         generator: Optional[torch.Generator] = None,
     ) -> None:
-        super().__init__(range(len(lengths)), batch_size=batch_size, drop_last=False)
-        self.generator = generator
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        if world_size < 1:
+            raise ValueError("world_size must be at least 1")
+        if rank < 0 or rank >= world_size:
+            raise ValueError("rank must be in [0, world_size)")
+        if generator is not None and world_size != 1:
+            raise ValueError(
+                "generator is only supported for legacy single-process sampling"
+            )
+        if world_size > 1 and batch_size != 1:
+            raise ValueError(
+                "distributed LLM finetuning currently requires "
+                "--per-device-batch-size 1"
+            )
+        self.batch_size = batch_size
+        self.rank = rank
+        self.world_size = world_size
+        self.seed = seed if generator is None else int(generator.initial_seed())
+        self.legacy_integer_indices = generator is not None
+        self.epoch = 0
         self.sorted_indices = sorted(
             range(len(lengths)), key=lambda index: lengths[index]
         )
 
-    def __iter__(self) -> Iterator[List[int]]:
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self) -> Iterator[List[Union[int, TrainingIndex]]]:
         batches = [
             self.sorted_indices[start : start + self.batch_size]
             for start in range(0, len(self.sorted_indices), self.batch_size)
         ]
-        full_batches = [batch for batch in batches if len(batch) == self.batch_size]
-        tail_batches = [batch for batch in batches if len(batch) != self.batch_size]
-        order = torch.randperm(
-            len(full_batches),
-            generator=self.generator,
-        ).tolist()
-        for batch_index in order:
-            yield full_batches[batch_index]
-        for batch in tail_batches:
-            yield batch
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        order = torch.randperm(len(batches), generator=generator).tolist()
+        shuffled_batches = [batches[index] for index in order]
+        for start in range(0, len(shuffled_batches), self.world_size):
+            rank_group = shuffled_batches[start : start + self.world_size]
+            real_rank_count = len(rank_group)
+            if self.rank < real_rank_count:
+                if self.legacy_integer_indices:
+                    yield rank_group[self.rank]
+                    continue
+                loss_scale = self.world_size / real_rank_count
+                yield [
+                    TrainingIndex(index=index, loss_scale=loss_scale)
+                    for index in rank_group[self.rank]
+                ]
+            else:
+                yield [
+                    TrainingIndex(
+                        index=self.sorted_indices[0],
+                        loss_scale=0.0,
+                        is_padding=True,
+                    )
+                ]
 
     def __len__(self) -> int:
-        return (len(self.sorted_indices) + self.batch_size - 1) // self.batch_size
+        batch_count = (
+            len(self.sorted_indices) + self.batch_size - 1
+        ) // self.batch_size
+        return (batch_count + self.world_size - 1) // self.world_size
 
 
 def enable_gradient_checkpointing(model: Any) -> None:
