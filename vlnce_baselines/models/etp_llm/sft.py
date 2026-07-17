@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import (
     Any,
+    Dict,
     Generic,
     Iterator,
     List,
@@ -19,6 +20,7 @@ import torch
 from torch.utils.data import BatchSampler
 
 ItemT = TypeVar("ItemT")
+MetricItemT = TypeVar("MetricItemT", bound=Mapping[str, Any])
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,55 @@ def rendered_token_counts(
         completion_tokens=sequence_tokens - prompt_tokens,
         sequence_tokens=sequence_tokens,
     )
+
+
+def fixed_corpus_metrics(
+    load_stats: Mapping[str, SourceLoadStats],
+    items: Sequence[MetricItemT],
+    filtered: LengthFilterResult[MetricItemT],
+) -> Dict[str, float]:
+    dataset_by_id = {
+        str(item["example_id"]): str(item["dataset"]) for item in items
+    }
+    kept_ids = {str(item["example_id"]) for item in filtered.kept}
+    prompt_dropped_ids = set(filtered.dropped_prompt_example_ids)
+    completion_dropped_ids = set(filtered.dropped_completion_example_ids)
+    metrics: Dict[str, float] = {}
+    for dataset, prefix in (("R2R", "r2r"), ("RxR", "rxr")):
+        stats = load_stats[dataset]
+        metrics.update(
+            {
+                f"{prefix}_discovered": float(stats.discovered),
+                f"{prefix}_loaded": float(stats.loaded),
+                f"{prefix}_missing_cache": float(
+                    len(stats.missing_cache_example_ids)
+                ),
+                f"{prefix}_prompt_dropped": float(
+                    sum(dataset_by_id[item_id] == dataset for item_id in prompt_dropped_ids)
+                ),
+                f"{prefix}_completion_dropped": float(
+                    sum(
+                        dataset_by_id[item_id] == dataset
+                        for item_id in completion_dropped_ids
+                    )
+                ),
+                f"{prefix}_retained": float(
+                    sum(dataset_by_id[item_id] == dataset for item_id in kept_ids)
+                ),
+            }
+        )
+    for name in (
+        "discovered",
+        "loaded",
+        "missing_cache",
+        "prompt_dropped",
+        "completion_dropped",
+        "retained",
+    ):
+        metrics[f"combined_{name}"] = metrics[f"r2r_{name}"] + metrics[
+            f"rxr_{name}"
+        ]
+    return metrics
 
 
 class LengthGroupedBatchSampler(BatchSampler):

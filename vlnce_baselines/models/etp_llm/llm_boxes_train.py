@@ -53,6 +53,7 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
+    fixed_corpus_metrics,
     rendered_token_counts,
 )
 
@@ -104,6 +105,53 @@ class LLMBoxesExample:
         self.target_spec = relevant_semantic_boxes_to_mentioned_spec(
             self.target_relevant
         )
+
+
+@dataclass
+class _BoxesEvaluationAccumulator:
+    metric_sums: Dict[str, float] = field(
+        default_factory=lambda: {
+            key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()
+        }
+    )
+    example_count: int = 0
+    schema_valid_count: int = 0
+    partial_schema_valid_count: int = 0
+    entity_valid_rate_sum: float = 0.0
+    entity_valid_support_sum: float = 0.0
+
+    def metrics(self) -> Dict[str, float]:
+        metrics = (
+            {
+                key: value / self.example_count
+                for key, value in self.metric_sums.items()
+            }
+            if self.example_count
+            else {key: 0.0 for key in self.metric_sums}
+        )
+        metrics["examples"] = float(self.example_count)
+        metrics["schema_valid_rate"] = _safe_rate(
+            self.schema_valid_count, self.example_count
+        )
+        metrics["format_parse_rate"] = metrics["schema_valid_rate"]
+        metrics["partial_schema_valid_rate"] = _safe_rate(
+            self.partial_schema_valid_count, self.example_count
+        )
+        metrics["entity_valid_rate"] = (
+            self.entity_valid_rate_sum / self.example_count
+            if self.example_count
+            else 0.0
+        )
+        metrics["entity_valid_support_mean"] = (
+            self.entity_valid_support_sum / self.example_count
+            if self.example_count
+            else 0.0
+        )
+        return metrics
+
+
+def _safe_rate(numerator: int, denominator: int) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
 
 
 def load_llm_boxes_examples(
@@ -271,6 +319,7 @@ def collate_llm_boxes_batch(
     max_length = max_input_length + max_new_tokens
     encoded = tokenizer(
         full_texts,
+        add_special_tokens=False,
         max_length=max_length,
         padding=True,
         truncation=True,
@@ -307,6 +356,7 @@ def collate_llm_boxes_prompt_batch(
     ]
     encoded = tokenizer(
         prompt_texts,
+        add_special_tokens=False,
         max_length=max_input_length,
         padding=True,
         truncation=True,
@@ -349,9 +399,9 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    dataset = LLMBoxesDataset(load_result.examples)
+    all_items = tuple(LLMBoxesDataset(load_result.examples))
     filtered = filter_llm_boxes_items_for_length(
-        dataset,
+        all_items,
         tokenizer,
         system_prompt,
         max_input_length=args.max_input_length,
@@ -474,6 +524,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         "dropped_completion_examples": float(
             len(filtered.dropped_completion_example_ids)
         ),
+        **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
         **text_stats,
     }
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
@@ -495,8 +546,9 @@ def _evaluate_loaded_model(
 
     system_prompt = getattr(args, "system_prompt", None) or load_system_prompt()
     _write_run_system_prompt(args.output_dir, system_prompt)
+    items = tuple(dataset)
     loader = _iter_collated_batches(
-        dataset,
+        items,
         args.per_device_batch_size,
         lambda batch: collate_llm_boxes_prompt_batch(
             batch,
@@ -505,26 +557,18 @@ def _evaluate_loaded_model(
             args.max_input_length,
         ),
     )
-    text_stats = compute_llm_text_stats(
-        dataset,
-        tokenizer,
-        system_prompt,
-        max_input_length=args.max_input_length,
-        max_new_tokens=args.max_new_tokens,
-    )
     progress_loader = _progress(
         loader,
         desc="eval LLM-Boxes",
         quiet=bool(getattr(args, "quiet", False)),
-        total=_batch_count(dataset, args.per_device_batch_size),
+        total=_batch_count(items, args.per_device_batch_size),
     )
 
-    metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
-    example_count = 0
-    schema_valid_count = 0
-    partial_schema_valid_count = 0
-    entity_valid_rate_sum = 0.0
-    entity_valid_support_sum = 0.0
+    accumulators = {
+        "combined": _BoxesEvaluationAccumulator(),
+        "r2r": _BoxesEvaluationAccumulator(),
+        "rxr": _BoxesEvaluationAccumulator(),
+    }
 
     with torch.no_grad():
         for batch in progress_loader:
@@ -539,12 +583,17 @@ def _evaluate_loaded_model(
             ]
 
             for item, generated_text in zip(batch["items"], decoded):
-                example_count += 1
+                item_accumulators = (
+                    accumulators["combined"],
+                    accumulators[item["dataset"].lower()],
+                )
                 entity_valid_rate, entity_valid_support = _entity_valid_stats(
                     generated_text
                 )
-                entity_valid_rate_sum += entity_valid_rate
-                entity_valid_support_sum += entity_valid_support
+                for accumulator in item_accumulators:
+                    accumulator.example_count += 1
+                    accumulator.entity_valid_rate_sum += entity_valid_rate
+                    accumulator.entity_valid_support_sum += entity_valid_support
 
                 try:
                     pred_spec = parse_llm_boxes_text(
@@ -569,13 +618,15 @@ def _evaluate_loaded_model(
                     )
                     continue
 
-                partial_schema_valid_count += 1
+                for accumulator in item_accumulators:
+                    accumulator.partial_schema_valid_count += 1
                 try:
                     parse_llm_boxes_text(generated_text)
                 except Exception:
                     pass
                 else:
-                    schema_valid_count += 1
+                    for accumulator in item_accumulators:
+                        accumulator.schema_valid_count += 1
 
                 pred_relevant = spec_to_relevant_semantic_boxes(
                     pred_spec,
@@ -599,30 +650,30 @@ def _evaluate_loaded_model(
                     if isinstance(value, (int, float)):
                         metric_key = AGGREGATE_METRIC_KEYS.get(key)
                         if metric_key is not None:
-                            metric_sums[metric_key] += float(value)
+                            for accumulator in item_accumulators:
+                                accumulator.metric_sums[metric_key] += float(value)
 
-    metrics = (
-        {key: value / example_count for key, value in metric_sums.items()}
-        if example_count
-        else {}
-    )
-    metrics["examples"] = float(example_count)
-    metrics["schema_valid_rate"] = (
-        float(schema_valid_count) / float(example_count) if example_count else 0.0
-    )
-    metrics["format_parse_rate"] = metrics["schema_valid_rate"]
-    metrics["partial_schema_valid_rate"] = (
-        float(partial_schema_valid_count) / float(example_count)
-        if example_count
-        else 0.0
-    )
-    metrics["entity_valid_rate"] = (
-        entity_valid_rate_sum / float(example_count) if example_count else 0.0
-    )
-    metrics["entity_valid_support_mean"] = (
-        entity_valid_support_sum / float(example_count) if example_count else 0.0
-    )
-    metrics.update(text_stats)
+    metrics = accumulators["combined"].metrics()
+    for prefix, dataset_items in (
+        ("combined", items),
+        ("r2r", tuple(item for item in items if item["dataset"] == "R2R")),
+        ("rxr", tuple(item for item in items if item["dataset"] == "RxR")),
+    ):
+        group_metrics = accumulators[prefix].metrics()
+        group_metrics.update(
+            compute_llm_text_stats(
+                dataset_items,
+                tokenizer,
+                system_prompt,
+                max_input_length=args.max_input_length,
+                max_new_tokens=args.max_new_tokens,
+            )
+        )
+        metrics.update(
+            {f"{prefix}/{name}": value for name, value in group_metrics.items()}
+        )
+        if prefix == "combined":
+            metrics.update(group_metrics)
     return metrics
 
 
@@ -643,11 +694,23 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
         model_path,
         device_map=_normalize_device_map(args.device_map),
     )
+    eval_items = tuple(LLMBoxesDataset(load_result.examples))
     metrics = _evaluate_loaded_model(
         model,
         tokenizer,
-        LLMBoxesDataset(load_result.examples),
+        eval_items,
         args,
+    )
+    metrics.update(
+        fixed_corpus_metrics(
+            load_result.by_dataset,
+            eval_items,
+            LengthFilterResult(
+                kept=eval_items,
+                dropped_prompt_example_ids=(),
+                dropped_completion_example_ids=(),
+            ),
+        )
     )
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics

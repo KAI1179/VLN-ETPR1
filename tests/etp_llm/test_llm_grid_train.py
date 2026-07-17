@@ -72,7 +72,9 @@ class _ChatTokenizer:
         padding,
         truncation,
         return_tensors,
+        add_special_tokens=False,
     ):
+        assert add_special_tokens is False
         encoded = [
             self.encode(text, add_special_tokens=False)[:max_length] for text in texts
         ]
@@ -118,7 +120,9 @@ class _EosChatTokenizer(_ChatTokenizer):
         padding,
         truncation,
         return_tensors,
+        add_special_tokens=False,
     ):
+        assert add_special_tokens is False
         self.encoded_texts = list(texts)
         return super().__call__(
             texts,
@@ -126,6 +130,7 @@ class _EosChatTokenizer(_ChatTokenizer):
             padding=padding,
             truncation=truncation,
             return_tensors=return_tensors,
+            add_special_tokens=add_special_tokens,
         )
 
     def encode(self, text, add_special_tokens=False):
@@ -199,6 +204,7 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
         "start_position": (1.2, 3.4),
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
+        "dataset": "R2R",
     }
     batch = {
         "input_ids": torch.ones((1, 2), dtype=torch.long),
@@ -764,6 +770,87 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
     assert batch["example_ids"] == ["R2R_train_42"]
 
 
+def test_grid_collate_disables_special_tokens_to_match_filter_counts():
+    class BosTokenizer(_ChatTokenizer):
+        bos_token_id = 777
+
+        def __call__(
+            self,
+            texts,
+            max_length,
+            padding,
+            truncation,
+            return_tensors,
+            add_special_tokens=True,
+        ):
+            del padding, truncation, return_tensors
+            rows = [
+                self.encode(text, add_special_tokens=add_special_tokens)[:max_length]
+                for text in texts
+            ]
+            return {
+                "input_ids": torch.tensor(rows, dtype=torch.long),
+                "attention_mask": torch.ones((len(rows), len(rows[0])), dtype=torch.long),
+            }
+
+        def encode(self, text, add_special_tokens=False):
+            tokens = list(range(10, 10 + len(text.split())))
+            return [self.bos_token_id, *tokens] if add_special_tokens else tokens
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        ):
+            del tokenize
+            text = " ".join(message["content"] for message in messages)
+            return (
+                f"{text} assistant-start"
+                if add_generation_prompt
+                else f"{text} assistant-start answer eos"
+            )
+
+    tokenizer = BosTokenizer()
+    item: llm_grid_train.LLMGridItem = {
+        "input_text": "user",
+        "target_text": "answer",
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
+        "example_id": "ex",
+        "instruction": "user",
+        "start_position": (0.0, 0.0),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene",
+        "dataset": "R2R",
+    }
+    prompt = llm_grid_train._render_chat_prompt(tokenizer, "system", "user")
+    completion = llm_grid_train._render_chat_completion(
+        tokenizer, "system", "user", "answer"
+    )
+    counts = llm_grid_train.rendered_token_counts(tokenizer, prompt, completion)
+
+    filtered = llm_grid_train.filter_grid_training_items(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+    )
+    collated = llm_grid_train.collate_llm_grid_batch(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+    )
+
+    assert filtered.kept == (item,)
+    assert collated["input_ids"].shape[-1] == counts.sequence_tokens
+    assert collated["prompt_lengths"] == [counts.prompt_tokens]
+    assert collated["labels"].tolist() == [[-100, -100, -100, 13, 14, 15]]
+
+
 def test_collate_llm_grid_rejects_prompt_over_input_budget():
     item: llm_grid_train.LLMGridItem = {
         "input_text": "instruction Go to the chair.",
@@ -1073,7 +1160,9 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             padding,
             truncation,
             return_tensors,
+            add_special_tokens=False,
         ):
+            assert add_special_tokens is False
             self.padding_side_during_call = self.padding_side
             return super().__call__(
                 texts,
@@ -1081,6 +1170,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
                 padding=padding,
                 truncation=truncation,
                 return_tensors=return_tensors,
+                add_special_tokens=add_special_tokens,
             )
 
         def batch_decode(self, rows, skip_special_tokens=True):
@@ -1133,6 +1223,11 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     assert metrics["direction_vector_cosine_support"] == pytest.approx(1.0)
     assert metrics["target_over_budget_rate"] == pytest.approx(0.0)
     assert metrics["generated_token_count"] > 0.0
+    assert metrics["combined/example_count"] == 1.0
+    assert metrics["r2r/example_count"] == 1.0
+    assert metrics["rxr/example_count"] == 0.0
+    assert metrics["r2r/json_valid"] == 1.0
+    assert metrics["rxr/json_valid"] == 0.0
     assert model.generation_kwargs is not None
     assert model.generation_kwargs["eos_token_id"] == 2
     assert model.generation_kwargs["pad_token_id"] == 0
@@ -1179,6 +1274,16 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         llm_grid_train,
+        "LLMGridDataset",
+        lambda *args, **kwargs: [
+            {
+                "example_id": "example",
+                "dataset": "R2R",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
         "DataLoader",
         lambda *args, **kwargs: [],
     )
@@ -1194,7 +1299,10 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
 
     metrics = llm_grid_train.evaluate_model(args)
 
-    assert metrics == {"example_count": 0.0}
+    assert metrics["example_count"] == 0.0
+    assert metrics["combined/example_count"] == 0.0
+    assert metrics["r2r_retained"] == 1.0
+    assert metrics["rxr_retained"] == 0.0
 
 
 def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):

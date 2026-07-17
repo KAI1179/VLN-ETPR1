@@ -39,6 +39,7 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
+    fixed_corpus_metrics,
     rendered_token_counts,
 )
 from .llm_boxes_train import (
@@ -439,6 +440,7 @@ def collate_llm_grid_batch(
     ]
     encoded = tokenizer(
         full_texts,
+        add_special_tokens=False,
         max_length=max_input_length + max_new_tokens,
         padding=True,
         truncation=True,
@@ -472,6 +474,7 @@ def collate_llm_grid_prompt_batch(
     ]
     encoded = tokenizer(
         prompt_texts,
+        add_special_tokens=False,
         max_length=max_input_length,
         padding=True,
         truncation=True,
@@ -957,9 +960,9 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    train_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
+    all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
     filtered = filter_grid_training_items(
-        train_items,
+        all_items,
         tokenizer=tokenizer,
         system_prompt=system_prompt,
         max_input_length=args.max_input_length,
@@ -1080,6 +1083,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "optimizer_steps": float(optimizer_steps),
         "training_example_count": float(len(train_items)),
         "skipped_over_budget_count": float(len(dropped_over_budget)),
+        **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
     }
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
@@ -1125,9 +1129,9 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
         model.to(device)
     model.eval()
 
-    dataset = LLMGridDataset(load_result.examples, scale=args.scale)
+    eval_items = tuple(LLMGridDataset(load_result.examples, scale=args.scale))
     loader = DataLoader(
-        dataset,
+        LLMGridItemsDataset(eval_items),
         batch_size=args.per_device_batch_size,
         shuffle=False,
         collate_fn=lambda batch: collate_llm_grid_prompt_batch(
@@ -1138,6 +1142,10 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
         ),
     )
     rows: List[Dict[str, float]] = []
+    rows_by_dataset: Dict[str, List[Dict[str, float]]] = {
+        "R2R": [],
+        "RxR": [],
+    }
     artifact_dir = Path(args.output_dir) / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
@@ -1174,6 +1182,7 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
                     )
                 )
                 rows.append(metrics)
+                rows_by_dataset[item["dataset"]].append(metrics)
                 _write_json(
                     artifact_dir / f"{item['example_id']}.json",
                     {
@@ -1186,6 +1195,28 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
                 )
     metrics = _aggregate_metrics(rows)
     metrics["example_count"] = float(len(rows))
+    for prefix, dataset_rows in (
+        ("combined", rows),
+        ("r2r", rows_by_dataset["R2R"]),
+        ("rxr", rows_by_dataset["RxR"]),
+    ):
+        group_metrics = {name: 0.0 for name in metrics if name != "example_count"}
+        group_metrics.update(_aggregate_metrics(dataset_rows))
+        group_metrics["example_count"] = float(len(dataset_rows))
+        metrics.update(
+            {f"{prefix}/{name}": value for name, value in group_metrics.items()}
+        )
+    metrics.update(
+        fixed_corpus_metrics(
+            load_result.by_dataset,
+            eval_items,
+            LengthFilterResult(
+                kept=eval_items,
+                dropped_prompt_example_ids=(),
+                dropped_completion_example_ids=(),
+            ),
+        )
+    )
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
 

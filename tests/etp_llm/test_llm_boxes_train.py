@@ -543,6 +543,7 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
         "start_direction": (0.0, 1.0),
         "start_position": (0.0, 0.0),
         "scene_id": "scene-a",
+        "dataset": "R2R",
     }
     batch = {
         "input_ids": torch.ones((1, 2), dtype=torch.long),
@@ -613,6 +614,72 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
         == collated["input_ids"][0][collated["prompt_lengths"][0] :]
     )
     assert collated["example_ids"] == ["ex"]
+
+
+def test_collate_disables_special_tokens_to_match_rendered_filter_counts():
+    class BosTokenizer(_ChatTokenizer):
+        bos_token_id = 777
+
+        def __call__(self, texts, add_special_tokens=True, **kwargs):
+            rows = [
+                self.encode(text, add_special_tokens=add_special_tokens)
+                for text in texts
+            ]
+            rows = [row[: kwargs["max_length"]] for row in rows]
+            return _BatchEncoding(
+                {
+                    "input_ids": rows,
+                    "attention_mask": [[1] * len(row) for row in rows],
+                }
+            )
+
+        def encode(self, text, add_special_tokens=False):
+            tokens = list(range(10, 10 + len(text.split())))
+            return [self.bos_token_id, *tokens] if add_special_tokens else tokens
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        ):
+            del tokenize
+            text = " ".join(message["content"] for message in messages)
+            return (
+                f"{text} assistant-start"
+                if add_generation_prompt
+                else f"{text} assistant-start answer eos"
+            )
+
+    tokenizer = BosTokenizer()
+    item = {"input_text": "user", "target_text": "answer", "example_id": "ex"}
+    prompt = llm_boxes_train._render_chat_prompt(tokenizer, "system", "user")
+    completion = llm_boxes_train._render_chat_completion(
+        tokenizer, "system", "user", "answer"
+    )
+    counts = llm_boxes_train.rendered_token_counts(
+        tokenizer, prompt, completion
+    )
+
+    filtered = llm_boxes_train.filter_llm_boxes_items_for_length(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+    )
+    collated = llm_boxes_train.collate_llm_boxes_batch(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+    )
+
+    assert filtered.kept == (item,)
+    assert len(collated["input_ids"][0]) == counts.sequence_tokens
+    assert collated["prompt_lengths"] == [counts.prompt_tokens]
+    assert collated["labels"][0] == [-100, -100, -100, 13, 14, 15]
 
 
 def test_collate_supervises_eos_when_eos_is_also_pad_token():
@@ -727,6 +794,7 @@ class _EvalDataset:
         target_spec = LLMBoxesSpec(objects=(), regions=())
         yield {
             "example_id": "valid/example",
+            "dataset": "R2R",
             "input_text": "valid prompt",
             "target_spec": target_spec,
             "target_relevant": target,
@@ -737,6 +805,7 @@ class _EvalDataset:
         }
         yield {
             "example_id": "invalid_schema/example",
+            "dataset": "RxR",
             "input_text": "invalid schema prompt",
             "target_spec": target_spec,
             "target_relevant": target,
@@ -747,6 +816,7 @@ class _EvalDataset:
         }
         yield {
             "example_id": "malformed/example",
+            "dataset": "RxR",
             "input_text": "invalid prompt",
             "target_spec": target_spec,
             "target_relevant": target,
@@ -757,6 +827,7 @@ class _EvalDataset:
         }
         yield {
             "example_id": "json_array/example",
+            "dataset": "RxR",
             "input_text": "array prompt",
             "target_spec": target_spec,
             "target_relevant": target,
@@ -767,6 +838,7 @@ class _EvalDataset:
         }
         yield {
             "example_id": "json_string/example",
+            "dataset": "RxR",
             "input_text": "string prompt",
             "target_spec": target_spec,
             "target_relevant": target,
@@ -850,6 +922,7 @@ def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
     dataset: List[llm_boxes_train.LLMBoxesItem] = [
         {
             "example_id": "target_leak/example",
+            "dataset": "R2R",
             "input_text": "find the target chair",
             "target_text": "obj chair 1 2 0.5 0.5 0",
             "target_spec": LLMBoxesSpec(objects=(), regions=()),
@@ -907,8 +980,8 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         {
             "desc": "eval LLM-Boxes",
             "disable": False,
-            "dynamic_ncols": True,
-            "total": None,
+                "dynamic_ncols": True,
+                "total": 3,
         }
     ]
 
@@ -969,6 +1042,11 @@ def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
     assert metrics["entity_valid_support_mean"] == pytest.approx(0.2)
     assert metrics["category_f1"] == pytest.approx(1 / 5)
     assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
+    assert metrics["r2r/examples"] == 1.0
+    assert metrics["rxr/examples"] == 4.0
+    assert metrics["combined/examples"] == 5.0
+    assert metrics["r2r/schema_valid_rate"] == 1.0
+    assert metrics["rxr/schema_valid_rate"] == 0.0
     assert "json_parse_rate" not in metrics
     assert "category_aware_raster_support" not in metrics
     assert tokenizer.padding_side == "left"
@@ -1293,6 +1371,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     tmp_path,
 ):
     calls = []
+    fake_item = {"example_id": "example", "dataset": "R2R"}
 
     def fake_load(
         splits,
@@ -1311,7 +1390,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
                 cognitive_map_namespace,
             )
         )
-        return _load_result(["example"])
+        return _load_result([fake_item])
 
     def fake_evaluate(model, tokenizer, dataset, args):
         calls.append(("eval", model, tokenizer, args.output_dir, list(dataset)))
@@ -1344,7 +1423,10 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     )
     metrics = llm_boxes_train.evaluate_model(args)
 
-    assert metrics == {"examples": 1.0}
+    assert metrics["examples"] == 1.0
+    assert metrics["combined_retained"] == 1.0
+    assert metrics["r2r_retained"] == 1.0
+    assert metrics["rxr_retained"] == 0.0
     assert calls == [
         (
             "load",
@@ -1355,9 +1437,9 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
             "gt.bbox.r1p5.path5.v1",
         ),
         ("load_model", "checkpoint/final", "auto"),
-        ("eval", "model", "tokenizer", str(tmp_path), ["example"]),
+        ("eval", "model", "tokenizer", str(tmp_path), [fake_item]),
     ]
-    assert json.loads((tmp_path / "metrics.json").read_text()) == {"examples": 1.0}
+    assert json.loads((tmp_path / "metrics.json").read_text()) == metrics
 
 
 def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
@@ -1494,6 +1576,7 @@ def test_train_parser_rejects_cache_mode():
 
 def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_path):
     calls = []
+    fake_item = {"example_id": "example", "dataset": "R2R"}
 
     def fake_load_model(path, device_map=None):
         calls.append((path, device_map))
@@ -1507,7 +1590,7 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
     monkeypatch.setattr(
         llm_boxes_train,
         "load_llm_boxes_examples",
-        lambda *args, **kwargs: _load_result(["example"]),
+        lambda *args, **kwargs: _load_result([fake_item]),
     )
     monkeypatch.setattr(
         llm_boxes_train, "_evaluate_loaded_model", lambda *args, **kwargs: {}
