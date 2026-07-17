@@ -28,7 +28,13 @@ def test_llm_training_launcher_uses_eight_rank_torchrun(relative_path):
     assert "--gradient-accumulation-steps 1" in text
     assert "--gradient-checkpointing" in text
     assert "--max-input-length 1152" in text
-    assert "--max-new-tokens 4096" in text
+    if relative_path.endswith("llm-grid-train-r1p5.sh"):
+        assert "export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512" in text
+        assert "--max-new-tokens 3072" in text
+        assert "--max-sequence-length 4096" in text
+        assert "--cuda-cache-clear-min-sequence-length 3072" in text
+    else:
+        assert "--max-new-tokens 4096" in text
     assert "--epochs 10" in text
     assert "--lora-r 32" in text
     assert "--lora-alpha 64" in text

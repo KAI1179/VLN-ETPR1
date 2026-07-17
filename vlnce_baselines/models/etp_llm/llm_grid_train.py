@@ -23,6 +23,7 @@ from typing import (
 )
 
 import numpy as np
+from accelerate import Accelerator
 from numpy.typing import NDArray
 from tap import Tap
 from torch.utils.data import DataLoader, Dataset
@@ -43,6 +44,7 @@ from .sft import (
     SourceLoadStats,
     TrainingManifest,
     TrainingIndex,
+    clear_cuda_cache_for_long_sequences,
     configure_peft_fsdp,
     distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
@@ -352,39 +354,18 @@ class LLMGridItemsDataset(Dataset):
         return self.items[index]
 
 
-def _completion_token_count(
-    item: LLMGridTrainingItem,
-    tokenizer: Any,
-    system_prompt: str,
-    prompt_length: int,
-) -> int:
-    prompt = _render_chat_prompt(
-        tokenizer,
-        system_prompt,
-        item["input_text"],
-    )
-    completion = _render_chat_completion(
-        tokenizer,
-        system_prompt,
-        item["input_text"],
-        item["target_text"],
-    )
-    counts = rendered_token_counts(tokenizer, prompt, completion)
-    if counts.prompt_tokens != prompt_length:
-        raise ValueError("prompt token count changed between renderings")
-    return counts.completion_tokens
-
-
 def filter_grid_training_items(
     items: Iterable[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
     max_input_length: int,
     max_new_tokens: int,
+    max_sequence_length: int,
 ) -> LengthFilterResult[LLMGridItem]:
     filtered: List[LLMGridItem] = []
     dropped_prompt: List[str] = []
     dropped_completion: List[str] = []
+    dropped_sequence: List[str] = []
     for item in items:
         prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         completion = _render_chat_completion(
@@ -396,16 +377,22 @@ def filter_grid_training_items(
         counts = rendered_token_counts(tokenizer, prompt, completion)
         prompt_over_budget = counts.prompt_tokens > max_input_length
         completion_over_budget = counts.completion_tokens > max_new_tokens
+        sequence_over_budget = counts.sequence_tokens > max_sequence_length
         if prompt_over_budget:
             dropped_prompt.append(item["example_id"])
         if completion_over_budget:
             dropped_completion.append(item["example_id"])
-        if not prompt_over_budget and not completion_over_budget:
+        if sequence_over_budget:
+            dropped_sequence.append(item["example_id"])
+        if not (
+            prompt_over_budget or completion_over_budget or sequence_over_budget
+        ):
             filtered.append(item)
     return LengthFilterResult(
         kept=tuple(filtered),
         dropped_prompt_example_ids=tuple(dropped_prompt),
         dropped_completion_example_ids=tuple(dropped_completion),
+        dropped_sequence_example_ids=tuple(dropped_sequence),
     )
 
 
@@ -415,6 +402,7 @@ def collate_llm_grid_batch(
     system_prompt: str,
     max_input_length: int,
     max_new_tokens: int,
+    max_sequence_length: int,
 ) -> Dict[str, Any]:
     training_weights = torch.tensor(
         [item["training_weight"] for item in batch],
@@ -439,24 +427,6 @@ def collate_llm_grid_batch(
             f"Prompt for {', '.join(oversized_prompts)} exceeds "
             f"max_input_length={max_input_length}"
         )
-    oversized_targets = [
-        f"{item['example_id']} ({completion_tokens} tokens)"
-        for item, prompt_length in zip(batch, prompt_lengths)
-        for completion_tokens in [
-            _completion_token_count(
-                item,
-                tokenizer,
-                system_prompt,
-                prompt_length,
-            )
-        ]
-        if completion_tokens > max_new_tokens
-    ]
-    if oversized_targets:
-        raise ValueError(
-            f"Target for {', '.join(oversized_targets)} exceeds "
-            f"max_new_tokens={max_new_tokens}"
-        )
     full_texts = [
         _render_chat_completion(
             tokenizer,
@@ -466,10 +436,34 @@ def collate_llm_grid_batch(
         )
         for item in batch
     ]
+    token_counts = [
+        rendered_token_counts(tokenizer, prompt, completion)
+        for prompt, completion in zip(prompt_texts, full_texts)
+    ]
+    oversized_targets = [
+        f"{item['example_id']} ({counts.completion_tokens} tokens)"
+        for item, counts in zip(batch, token_counts)
+        if counts.completion_tokens > max_new_tokens
+    ]
+    if oversized_targets:
+        raise ValueError(
+            f"Target for {', '.join(oversized_targets)} exceeds "
+            f"max_new_tokens={max_new_tokens}"
+        )
+    oversized_sequences = [
+        f"{item['example_id']} ({counts.sequence_tokens} tokens)"
+        for item, counts in zip(batch, token_counts)
+        if counts.sequence_tokens > max_sequence_length
+    ]
+    if oversized_sequences:
+        raise ValueError(
+            f"Sequence for {', '.join(oversized_sequences)} exceeds "
+            f"max_sequence_length={max_sequence_length}"
+        )
     encoded = tokenizer(
         full_texts,
         add_special_tokens=False,
-        max_length=max_input_length + max_new_tokens,
+        max_length=max_sequence_length,
         padding=True,
         truncation=True,
         return_tensors="pt",
@@ -823,7 +817,9 @@ class LLMGridArgs(Tap):
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
     max_input_length: int = 1152
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 3072
+    max_sequence_length: int = 4096
+    cuda_cache_clear_min_sequence_length: int = 3072
     finetune_method: Literal["lora", "full"] = "lora"
     per_device_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -884,6 +880,13 @@ def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
         )
     if not args.gradient_checkpointing:
         raise ValueError("--gradient-checkpointing is required for LLM-Grid training")
+    if args.max_sequence_length < 1:
+        raise ValueError("--max-sequence-length must be >= 1")
+    if not 1 <= args.cuda_cache_clear_min_sequence_length <= args.max_sequence_length:
+        raise ValueError(
+            "--cuda-cache-clear-min-sequence-length must be in "
+            "[1, --max-sequence-length]"
+        )
 
 
 def _grid_size_for_scale(scale: int) -> int:
@@ -978,6 +981,36 @@ def _text_diagnostics(
     }
 
 
+def _training_oom_message(
+    accelerator: Accelerator,
+    batch: Mapping[str, Any],
+    *,
+    stage: str,
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    sequence_tokens: int,
+    error: torch.cuda.OutOfMemoryError,
+) -> str:
+    memory = "cuda_memory=unavailable"
+    if accelerator.device.type == "cuda":
+        free_bytes, total_bytes = torch.cuda.mem_get_info(accelerator.device)
+        allocated_bytes = torch.cuda.memory_allocated(accelerator.device)
+        reserved_bytes = torch.cuda.memory_reserved(accelerator.device)
+        gib = 1024**3
+        memory = (
+            f"free_gib={free_bytes / gib:.2f},total_gib={total_bytes / gib:.2f},"
+            f"allocated_gib={allocated_bytes / gib:.2f},"
+            f"reserved_gib={reserved_bytes / gib:.2f}"
+        )
+    return (
+        f"LLM-Grid CUDA OOM during {stage}: epoch={epoch}, "
+        f"step_in_epoch={step_in_epoch}, global_step={global_step}, "
+        f"rank={accelerator.process_index}, example_ids={batch['example_ids']}, "
+        f"sequence_tokens={sequence_tokens}, {memory}; {error}"
+    )
+
+
 def train_model(args: LLMGridArgs) -> Dict[str, float]:
     _validate_llm_grid_training_args(args)
     if args.finetune_method == "full":
@@ -1037,6 +1070,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
             system_prompt,
             args.max_input_length,
             args.max_new_tokens,
+            args.max_sequence_length,
         ),
     )
     model = accelerator.prepare(model)
@@ -1065,6 +1099,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         system_prompt,
         args.max_input_length,
         args.max_new_tokens,
+        args.max_sequence_length,
     )
     run_backward_preflight(
         accelerator,
@@ -1080,65 +1115,94 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     optimizer_steps = 0
     for epoch_index in range(args.epochs):
         batch_sampler.set_epoch(epoch_index)
-        for batch in _progress(
+        progress_loader = _progress(
             loader,
-            desc="train LLM-Grid",
-            quiet=args.quiet,
-        ):
-            with accelerator.accumulate(model):
-                outputs = model(**_model_batch(batch, accelerator.device))
-                loss = outputs.loss
-                if not torch.isfinite(loss.detach()):
-                    raise FloatingPointError(
-                        _non_finite_step_message(
-                            "loss",
-                            epoch_index + 1,
-                            local_batch_count + 1,
-                            batch,
-                        )
-                    )
-                weighted_loss = scale_training_loss(
-                    loss,
-                    batch["training_weights"],
-                    batch["is_padding"],
-                )
-                accelerator.backward(weighted_loss)
-                grad_norm = None
-                if accelerator.sync_gradients and args.max_grad_norm > 0:
-                    grad_norm = accelerator.clip_grad_norm_(
-                        model.parameters(),
-                        args.max_grad_norm,
-                    )
-                    if not torch.isfinite(grad_norm.detach()):
+            desc=f"train LLM-Grid epoch {epoch_index + 1}/{args.epochs}",
+            quiet=args.quiet or not accelerator.is_main_process,
+        )
+        for step_in_epoch, batch in enumerate(progress_loader, start=1):
+            sequence_tokens = int(batch["input_ids"].shape[-1])
+            clear_cuda_cache_for_long_sequences(
+                accelerator,
+                local_sequence_tokens=sequence_tokens,
+                minimum_sequence_tokens=(
+                    args.cuda_cache_clear_min_sequence_length
+                ),
+            )
+            oom_stage = "forward"
+            try:
+                with accelerator.accumulate(model):
+                    loss = model(**_model_batch(batch, accelerator.device)).loss
+                    if not torch.isfinite(loss.detach()):
                         raise FloatingPointError(
                             _non_finite_step_message(
-                                "gradient norm",
+                                "loss",
                                 epoch_index + 1,
                                 local_batch_count + 1,
                                 batch,
-                                value=float(grad_norm.detach().cpu()),
                             )
                         )
-                optimizer.step()
-                optimizer.zero_grad()
-                if accelerator.sync_gradients:
-                    optimizer_steps += 1
-                    _validate_trainable_parameters_finite(
-                        model,
-                        context=_non_finite_step_message(
-                            "trainable parameter",
-                            epoch_index + 1,
-                            local_batch_count + 1,
-                            batch,
-                            value=(
-                                float(grad_norm.detach().cpu())
-                                if grad_norm is not None
-                                else None
-                            ),
-                        ),
+                    weighted_loss = scale_training_loss(
+                        loss,
+                        batch["training_weights"],
+                        batch["is_padding"],
                     )
+                    oom_stage = "backward"
+                    accelerator.backward(weighted_loss)
+                    del weighted_loss
+                    grad_norm = None
+                    if accelerator.sync_gradients and args.max_grad_norm > 0:
+                        oom_stage = "gradient clipping"
+                        grad_norm = accelerator.clip_grad_norm_(
+                            model.parameters(),
+                            args.max_grad_norm,
+                        )
+                        if not torch.isfinite(grad_norm.detach()):
+                            raise FloatingPointError(
+                                _non_finite_step_message(
+                                    "gradient norm",
+                                    epoch_index + 1,
+                                    local_batch_count + 1,
+                                    batch,
+                                    value=float(grad_norm.detach().cpu()),
+                                )
+                            )
+                    oom_stage = "optimizer step"
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    if accelerator.sync_gradients:
+                        optimizer_steps += 1
+                        oom_stage = "parameter validation"
+                        _validate_trainable_parameters_finite(
+                            model,
+                            context=_non_finite_step_message(
+                                "trainable parameter",
+                                epoch_index + 1,
+                                local_batch_count + 1,
+                                batch,
+                                value=(
+                                    float(grad_norm.detach().cpu())
+                                    if grad_norm is not None
+                                    else None
+                                ),
+                            ),
+                        )
+            except torch.cuda.OutOfMemoryError as error:
+                raise torch.cuda.OutOfMemoryError(
+                    _training_oom_message(
+                        accelerator,
+                        batch,
+                        stage=oom_stage,
+                        epoch=epoch_index + 1,
+                        step_in_epoch=step_in_epoch,
+                        global_step=local_batch_count + 1,
+                        sequence_tokens=sequence_tokens,
+                        error=error,
+                    )
+                ) from error
             real_example_count = int((~batch["is_padding"].bool()).sum().item())
             local_loss_sum += float(loss.detach().cpu()) * real_example_count
+            del loss
             local_example_count += real_example_count
             local_batch_count += 1
         save_peft_checkpoint(
@@ -1211,12 +1275,13 @@ def _build_grid_training_manifest(
         system_prompt=system_prompt,
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
+        max_sequence_length=args.max_sequence_length,
     )
     train_items = list(filtered.kept)
     validate_fixed_corpus(load_result.by_dataset, retained_items=train_items)
     dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
         filtered.dropped_completion_example_ids
-    )
+    ) | set(filtered.dropped_sequence_example_ids)
     if dropped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(dropped_over_budget)}")
 
@@ -1249,6 +1314,12 @@ def _build_grid_training_manifest(
     return TrainingManifest(
         metadata={
             "skipped_over_budget_count": len(dropped_over_budget),
+            "token_budgets": {
+                "max_input_length": args.max_input_length,
+                "max_new_tokens": args.max_new_tokens,
+                "max_sequence_length": args.max_sequence_length,
+            },
+            "dropped_sequence_example_ids": filtered.dropped_sequence_example_ids,
             "fixed_corpus_metrics": fixed_corpus_metrics(
                 load_result.by_dataset,
                 all_items,
@@ -1436,6 +1507,7 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
                 kept=eval_provenance,
                 dropped_prompt_example_ids=(),
                 dropped_completion_example_ids=(),
+                dropped_sequence_example_ids=(),
             ),
         )
     )

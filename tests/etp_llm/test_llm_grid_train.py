@@ -246,6 +246,8 @@ class _TrainingAccelerator:
     def reduce(self, totals, reduction):
         assert reduction == "sum"
         self.reduce_calls.append(totals.detach().cpu().tolist())
+        if totals.numel() == 1:
+            return totals * self.num_processes
         if self.reduced_totals is not None:
             return torch.tensor(
                 self.reduced_totals,
@@ -918,6 +920,7 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
         system_prompt="system",
         max_input_length=512,
         max_new_tokens=256,
+        max_sequence_length=768,
     )
 
     labels = batch["labels"][0]
@@ -999,6 +1002,7 @@ def test_grid_collate_disables_special_tokens_to_match_filter_counts():
         "system",
         max_input_length=counts.prompt_tokens,
         max_new_tokens=counts.completion_tokens,
+        max_sequence_length=counts.sequence_tokens,
     )
     collated = llm_grid_train.collate_llm_grid_batch(
         [item],
@@ -1006,6 +1010,7 @@ def test_grid_collate_disables_special_tokens_to_match_filter_counts():
         "system",
         max_input_length=counts.prompt_tokens,
         max_new_tokens=counts.completion_tokens,
+        max_sequence_length=counts.sequence_tokens,
     )
 
     assert filtered.kept == (item,)
@@ -1045,6 +1050,7 @@ def test_collate_llm_grid_rejects_prompt_over_input_budget():
             system_prompt="system",
             max_input_length=len(tokenizer.encode(prompt)) - 1,
             max_new_tokens=128,
+            max_sequence_length=10_000,
         )
 
 
@@ -1092,6 +1098,67 @@ def test_collate_llm_grid_rejects_target_over_completion_budget():
             system_prompt="system",
             max_input_length=len(tokenizer.encode(prompt)) + 100,
             max_new_tokens=max_new_tokens,
+            max_sequence_length=10_000,
+        )
+
+
+def test_grid_sequence_budget_is_inclusive_and_enforced_by_collate():
+    item: llm_grid_train.LLMGridItem = {
+        "input_text": "short instruction",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
+        "example_id": "sequence-budget",
+        "instruction": "short instruction",
+        "start_position": (0.0, 0.0),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+        "dataset": "R2R",
+        "training_weight": 1.0,
+        "is_padding": False,
+    }
+    tokenizer = _EosChatTokenizer()
+    prompt = llm_grid_train._render_chat_prompt(
+        tokenizer, "system", item["input_text"]
+    )
+    completion = llm_grid_train._render_chat_completion(
+        tokenizer,
+        "system",
+        item["input_text"],
+        item["target_text"],
+    )
+    counts = llm_grid_train.rendered_token_counts(tokenizer, prompt, completion)
+
+    kept = llm_grid_train.filter_grid_training_items(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+        max_sequence_length=counts.sequence_tokens,
+    )
+    dropped = llm_grid_train.filter_grid_training_items(
+        [item],
+        tokenizer,
+        "system",
+        max_input_length=counts.prompt_tokens,
+        max_new_tokens=counts.completion_tokens,
+        max_sequence_length=counts.sequence_tokens - 1,
+    )
+
+    assert kept.kept == (item,)
+    assert dropped.kept == ()
+    assert dropped.dropped_prompt_example_ids == ()
+    assert dropped.dropped_completion_example_ids == ()
+    assert dropped.dropped_sequence_example_ids == ("sequence-budget",)
+    with pytest.raises(ValueError, match="sequence-budget.*max_sequence_length"):
+        llm_grid_train.collate_llm_grid_batch(
+            [item],
+            tokenizer,
+            "system",
+            max_input_length=counts.prompt_tokens,
+            max_new_tokens=counts.completion_tokens,
+            max_sequence_length=counts.sequence_tokens - 1,
         )
 
 
@@ -1172,6 +1239,7 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
         system_prompt="system",
         max_input_length=10_000,
         max_new_tokens=max_new_tokens,
+        max_sequence_length=10_000,
     )
 
     assert [item["example_id"] for item in filtered.kept] == ["short"]
@@ -1219,6 +1287,7 @@ def test_training_items_dataset_resolves_training_index_metadata():
         system_prompt="system",
         max_input_length=128,
         max_new_tokens=128,
+        max_sequence_length=256,
     )
 
     assert collated["training_weights"].tolist() == [0.0]
@@ -1233,6 +1302,7 @@ def test_training_collator_rejects_missing_training_metadata():
             system_prompt="system",
             max_input_length=128,
             max_new_tokens=128,
+            max_sequence_length=256,
         )
 
 
@@ -1541,7 +1611,9 @@ def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     assert not hasattr(args, "dataset")
     assert args.limit_per_dataset is None
     assert args.max_input_length == 1152
-    assert args.max_new_tokens == 4096
+    assert args.max_new_tokens == 3072
+    assert args.max_sequence_length == 4096
+    assert args.cuda_cache_clear_min_sequence_length == 3072
     assert args.per_device_batch_size == 1
     assert args.seed == 42
     assert args.lora_r == 32
@@ -1550,6 +1622,34 @@ def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     assert args.gradient_accumulation_steps == 1
     assert args.gradient_checkpointing is True
     assert args.output_dir == "outputs/llm_grid"
+
+
+def test_training_oom_message_includes_step_and_example_context():
+    class _Accelerator:
+        device = torch.device("cpu")
+        process_index = 3
+
+    original_error = torch.cuda.OutOfMemoryError("requested 9 GiB")
+
+    message = llm_grid_train._training_oom_message(
+        _Accelerator(),
+        {"example_ids": ["rxr-example"]},
+        stage="backward",
+        epoch=2,
+        step_in_epoch=27,
+        global_step=103,
+        sequence_tokens=4012,
+        error=original_error,
+    )
+
+    assert "during backward" in message
+    assert "epoch=2" in message
+    assert "step_in_epoch=27" in message
+    assert "global_step=103" in message
+    assert "rank=3" in message
+    assert "rxr-example" in message
+    assert "sequence_tokens=4012" in message
+    assert "requested 9 GiB" in message
 
 
 def test_llm_grid_args_rejects_dataset_selection():
@@ -2324,7 +2424,11 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
     metrics = llm_grid_train.train_model(args)
 
     assert accelerator.backward_losses == [1.0, 0.0]
-    assert accelerator.reduce_calls == [[1.0, 1.0, 2.0, 4.0]]
+    assert accelerator.reduce_calls == [
+        [0],
+        [0],
+        [1.0, 1.0, 2.0, 4.0],
+    ]
     assert metrics["train_loss"] == 1.0
     assert metrics["examples"] == 3.0
     assert metrics["steps"] == 2.0

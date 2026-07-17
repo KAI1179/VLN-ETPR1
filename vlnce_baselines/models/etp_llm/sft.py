@@ -55,6 +55,7 @@ class LengthFilterResult(Generic[ItemT]):
     kept: Tuple[ItemT, ...]
     dropped_prompt_example_ids: Tuple[str, ...]
     dropped_completion_example_ids: Tuple[str, ...]
+    dropped_sequence_example_ids: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,7 @@ def fixed_corpus_metrics(
     kept_ids = {str(item["example_id"]) for item in filtered.kept}
     prompt_dropped_ids = set(filtered.dropped_prompt_example_ids)
     completion_dropped_ids = set(filtered.dropped_completion_example_ids)
+    sequence_dropped_ids = set(filtered.dropped_sequence_example_ids)
     metrics: Dict[str, float] = {}
     for dataset, prefix in (("R2R", "r2r"), ("RxR", "rxr")):
         stats = load_stats[dataset]
@@ -282,6 +284,12 @@ def fixed_corpus_metrics(
                         for item_id in completion_dropped_ids
                     )
                 ),
+                f"{prefix}_sequence_dropped": float(
+                    sum(
+                        dataset_by_id[item_id] == dataset
+                        for item_id in sequence_dropped_ids
+                    )
+                ),
                 f"{prefix}_retained": float(
                     sum(dataset_by_id[item_id] == dataset for item_id in kept_ids)
                 ),
@@ -293,6 +301,7 @@ def fixed_corpus_metrics(
         "missing_cache",
         "prompt_dropped",
         "completion_dropped",
+        "sequence_dropped",
         "retained",
     ):
         metrics[f"combined_{name}"] = metrics[f"r2r_{name}"] + metrics[f"rxr_{name}"]
@@ -404,6 +413,29 @@ def run_backward_preflight(
             f"{example_id} ({sequence_tokens} tokens): {error}"
         ) from error
     optimizer.zero_grad(set_to_none=True)
+    del loss
+    if accelerator.device.type == "cuda":
+        torch.cuda.empty_cache()
+        log_cuda_memory(accelerator, stage="after_preflight_cleanup")
+
+
+def clear_cuda_cache_for_long_sequences(
+    accelerator: Accelerator,
+    *,
+    local_sequence_tokens: int,
+    minimum_sequence_tokens: int,
+) -> bool:
+    long_sequence = torch.tensor(
+        [int(local_sequence_tokens >= minimum_sequence_tokens)],
+        dtype=torch.int64,
+        device=accelerator.device,
+    )
+    any_long_sequence = bool(
+        accelerator.reduce(long_sequence, reduction="sum").item()
+    )
+    if any_long_sequence and accelerator.device.type == "cuda":
+        torch.cuda.empty_cache()
+    return any_long_sequence
 
 
 def log_cuda_memory(accelerator: Accelerator, *, stage: str) -> None:
@@ -574,26 +606,30 @@ class LengthGroupedBatchSampler(Sampler[List[TrainingIndex]]):
         self.epoch = epoch
 
     def __iter__(self) -> Iterator[List[TrainingIndex]]:
-        batches = [
-            self.sorted_indices[start : start + self.batch_size]
-            for start in range(0, len(self.sorted_indices), self.batch_size)
+        global_batch_size = self.batch_size * self.world_size
+        groups = [
+            self.sorted_indices[start : start + global_batch_size]
+            for start in range(0, len(self.sorted_indices), global_batch_size)
         ]
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
-        order = torch.randperm(len(batches), generator=generator).tolist()
-        shuffled_batches = [batches[index] for index in order]
-        for start in range(0, len(shuffled_batches), self.world_size):
-            rank_group = shuffled_batches[start : start + self.world_size]
-            real_rank_count = len(rank_group)
+        order = torch.randperm(len(groups), generator=generator).tolist()
+        for group_index in order:
+            group = groups[group_index]
+            rank_batches = [
+                group[start : start + self.batch_size]
+                for start in range(0, len(group), self.batch_size)
+            ]
+            real_rank_count = len(rank_batches)
             if self.rank < real_rank_count:
                 loss_scale = self.world_size / real_rank_count
                 yield [
                     TrainingIndex(index=index, loss_scale=loss_scale)
-                    for index in rank_group[self.rank]
+                    for index in rank_batches[self.rank]
                 ]
             else:
                 yield [
                     TrainingIndex(
-                        index=self.sorted_indices[0],
+                        index=group[0],
                         loss_scale=0.0,
                         is_padding=True,
                     )

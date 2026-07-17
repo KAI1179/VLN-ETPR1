@@ -11,6 +11,7 @@ from torch import nn
 from vlnce_baselines.models.etp_llm.sft import (
     LengthGroupedBatchSampler,
     TrainingManifest,
+    clear_cuda_cache_for_long_sequences,
     load_or_create_training_manifest,
     make_sft_accelerator,
     scale_training_loss,
@@ -37,6 +38,11 @@ class _TinyAdapterModel(nn.Module):
 def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
     accelerator = make_sft_accelerator(gradient_accumulation_steps=1)
     assert accelerator.num_processes == 2
+    assert clear_cuda_cache_for_long_sequences(
+        accelerator,
+        local_sequence_tokens=4096 if accelerator.process_index == 0 else 1,
+        minimum_sequence_tokens=3072,
+    )
 
     sampler = LengthGroupedBatchSampler(
         lengths=[1, 2, 3],

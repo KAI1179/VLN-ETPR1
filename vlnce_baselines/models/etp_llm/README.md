@@ -31,17 +31,25 @@ outputs/llm_boxes/r2r-rxr-bbox-r2p5-path5-no-dataset-tag
 outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag
 ```
 
-Training and token analysis use a 1,152-token rendered prompt budget and a
-4,096-token rendered completion budget. In the measured 19,954-example RxR
-training target set, LLM-Boxes completion lengths had
-mean/P95/P99/max 1,234/2,818/3,958/7,173 and 0.81% exceeded 4,096.
-LLM-Grid scale-2 lengths were 1,388/2,595/3,219/4,969 and 0.15% exceeded
-4,096. The chosen completion budget therefore retains more than 99% of each
-measured RxR target set; over-budget examples are reported and dropped rather
-than silently truncated.
+Both targets use a 1,152-token rendered prompt budget. LLM-Boxes keeps a
+4,096-token completion budget. In the measured 19,954-example RxR training
+target set, its completion lengths had mean/P95/P99/max
+1,234/2,818/3,958/7,173 and 0.81% exceeded 4,096. LLM-Grid scale 2 uses a
+3,072-token completion budget plus a 4,096-token total rendered-sequence
+budget. Its RxR completion lengths were 1,388/2,595/3,219/4,969 and 1.59%
+exceeded 3,072; no measured R2R completion exceeded that threshold. This Grid
+completion limit retains about 30,423 of 30,740 combined targets (98.97%). The
+total-sequence cap is enforced separately. Over-budget examples are reported
+and dropped rather than silently truncated.
 
 Before epoch one, every rank runs a backward preflight on the longest retained
-sequence. All ranks participate in FSDP state collection, then rank zero writes
+sequence and releases its temporary CUDA allocations. Grid training groups
+examples by rendered sequence length. Its maintained launcher sets
+`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512`, and all ranks synchronously
+clear their CUDA caches before a step if any rank has a sequence of at least
+3,072 tokens. A training OOM fails immediately with epoch, step, rank, example,
+sequence-width, and CUDA-memory context rather than retrying an unsafe partial
+FSDP step. All ranks participate in FSDP state collection, then rank zero writes
 metrics and exports portable PEFT adapters under `checkpoints/epoch-N` or
 `checkpoints/final`; navigation-cache consumers load those directories without
 FSDP. An epoch checkpoint is written after the epoch completes. Cancelling

@@ -10,14 +10,16 @@ artifact auditing, but prompts are tag-free. `--limit-per-dataset` is a
 debugging control applied independently to each source; it does not select a
 dataset.
 
-The default rendered-token budgets are 1,152 prompt tokens and 4,096 completion
-tokens. The RxR target analysis covered 19,954 examples per target. LLM-Boxes
-targets had mean/P95/P99/max lengths of 1,234/2,818/3,958/7,173 tokens, with
-0.81% over 4,096. LLM-Grid scale-2 targets had
-1,388/2,595/3,219/4,969, with 0.15% over 4,096. The 4,096 completion budget was
-chosen to retain more than 99% of each measured RxR target set while rejecting
-oversized examples explicitly; 1,152 is the measured prompt budget used by
-training and analysis.
+Both targets use a 1,152-token rendered prompt budget. LLM-Boxes keeps a
+4,096-token completion budget. Its measured 19,954-example RxR target set had
+mean/P95/P99/max completion lengths of 1,234/2,818/3,958/7,173 tokens, with
+0.81% over 4,096. LLM-Grid scale 2 instead uses a 3,072-token completion budget
+and a 4,096-token total rendered-sequence budget. Its RxR completion lengths
+were 1,388/2,595/3,219/4,969, with 1.59% over 3,072; no measured R2R completion
+exceeded that threshold. The Grid completion limit retains about 30,423 of
+30,740 combined targets (98.97%). The total-sequence cap is enforced separately;
+training reports and drops examples that exceed either applicable budget
+instead of silently truncating them.
 
 Production finetuning is one Slurm node and one task with eight visible GPUs.
 The launchers reject any allocation that does not expose exactly eight GPUs and
@@ -26,11 +28,17 @@ reject conflicting process-count overrides before starting
 accumulation 1, gradient checkpointing, ten epochs, and LoRA
 rank/alpha/dropout 32/64/0.05. Accelerate FSDP full-shards each PEFT-aware
 model across the eight ranks. Before epoch one, every rank runs a backward
-preflight on the longest retained sequence. Checkpoint state collection is
-collective, while only rank zero exports portable PEFT adapter directories and
-metrics. An epoch checkpoint appears only after that epoch completes; cancelling
-mid-epoch does not create an interruption checkpoint or preserve optimizer
-state. Wait for the required `checkpoints/epoch-N` directory before cancelling.
+preflight on the longest retained sequence and releases its temporary CUDA
+allocations before training. Grid training groups examples by rendered sequence
+length, uses `max_split_size_mb:512` in the maintained launcher, and
+synchronously clears every rank's CUDA cache before a step whenever any rank
+has a sequence of at least 3,072 tokens. A training OOM fails immediately with
+the epoch, step, rank, example identifiers, sequence width, and CUDA memory
+state; it is not retried under FSDP. Checkpoint state collection is collective,
+while only rank zero exports portable PEFT adapter directories and metrics. An
+epoch checkpoint appears only after that epoch completes; cancelling mid-epoch
+does not create an interruption checkpoint or preserve optimizer state. Wait
+for the required `checkpoints/epoch-N` directory before cancelling.
 Before model allocation, rank zero performs cache expansion, target
 serialization, length filtering, and token counting once. It atomically writes
 `artifacts/training_manifest.jsonl`; every rank reads that lightweight per-run

@@ -537,6 +537,7 @@ def _boxes_training_corpus_from_manifest(
         dropped_completion_example_ids=_manifest_string_tuple(
             metadata, "dropped_completion_example_ids"
         ),
+        dropped_sequence_example_ids=(),
     )
     return _PreparedBoxesTrainingCorpus(
         load_stats=load_stats,
@@ -1006,6 +1007,7 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
                 kept=eval_items,
                 dropped_prompt_example_ids=(),
                 dropped_completion_example_ids=(),
+                dropped_sequence_example_ids=(),
             ),
         )
     )
@@ -1409,6 +1411,7 @@ def filter_llm_boxes_items_for_length(
         kept=tuple(kept),
         dropped_prompt_example_ids=tuple(dropped_prompt),
         dropped_completion_example_ids=tuple(dropped_completion),
+        dropped_sequence_example_ids=(),
     )
 
 

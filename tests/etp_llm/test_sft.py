@@ -63,6 +63,7 @@ def test_fixed_corpus_metrics_reports_asymmetric_sources():
             kept=(items[0],),
             dropped_prompt_example_ids=("r2r-prompt", "rxr-both"),
             dropped_completion_example_ids=("rxr-both",),
+            dropped_sequence_example_ids=("rxr-both",),
         ),
     )
 
@@ -72,18 +73,21 @@ def test_fixed_corpus_metrics_reports_asymmetric_sources():
         "combined_missing_cache": 3.0,
         "combined_prompt_dropped": 2.0,
         "combined_completion_dropped": 1.0,
+        "combined_sequence_dropped": 1.0,
         "combined_retained": 1.0,
         "r2r_discovered": 4.0,
         "r2r_loaded": 2.0,
         "r2r_missing_cache": 2.0,
         "r2r_prompt_dropped": 1.0,
         "r2r_completion_dropped": 0.0,
+        "r2r_sequence_dropped": 0.0,
         "r2r_retained": 1.0,
         "rxr_discovered": 3.0,
         "rxr_loaded": 1.0,
         "rxr_missing_cache": 1.0,
         "rxr_prompt_dropped": 1.0,
         "rxr_completion_dropped": 1.0,
+        "rxr_sequence_dropped": 1.0,
         "rxr_retained": 0.0,
     }
 
@@ -171,13 +175,21 @@ def test_length_grouped_sampler_partitions_real_indices_without_duplication():
 
 def test_length_grouped_sampler_scales_real_tail_and_zeros_padding():
     batches_by_rank = _distributed_batches()
-    tail = [rank_batches[-1][0] for rank_batches in batches_by_rank]
+    incomplete_step = next(
+        [rank_batches[step][0] for rank_batches in batches_by_rank]
+        for step in range(len(batches_by_rank[0]))
+        if any(rank_batches[step][0].is_padding for rank_batches in batches_by_rank)
+    )
 
     real_tail = [
-        training_index for training_index in tail if not training_index.is_padding
+        training_index
+        for training_index in incomplete_step
+        if not training_index.is_padding
     ]
     padding_tail = [
-        training_index for training_index in tail if training_index.is_padding
+        training_index
+        for training_index in incomplete_step
+        if training_index.is_padding
     ]
 
     assert len(real_tail) == 1
@@ -197,13 +209,22 @@ def test_length_grouped_sampler_scales_intermediate_tail_group():
         )
         for rank in range(8)
     ]
-    tail = [[*sampler][-1][0] for sampler in samplers]
+    batches_by_rank = [[*sampler] for sampler in samplers]
+    incomplete_step = next(
+        [rank_batches[step][0] for rank_batches in batches_by_rank]
+        for step in range(len(batches_by_rank[0]))
+        if any(rank_batches[step][0].is_padding for rank_batches in batches_by_rank)
+    )
 
     real_tail = [
-        training_index for training_index in tail if not training_index.is_padding
+        training_index
+        for training_index in incomplete_step
+        if not training_index.is_padding
     ]
     padding_tail = [
-        training_index for training_index in tail if training_index.is_padding
+        training_index
+        for training_index in incomplete_step
+        if training_index.is_padding
     ]
 
     assert len(real_tail) == 3
@@ -218,6 +239,29 @@ def test_length_grouped_sampler_epoch_shuffle_is_reproducible():
 
     assert epoch_one != epoch_zero
     assert _distributed_batches(epoch=0) == epoch_zero
+
+
+def test_length_grouped_sampler_keeps_each_global_step_length_local():
+    lengths = [80, 10, 60, 30, 70, 20, 50, 40, 90]
+    samplers = [
+        LengthGroupedBatchSampler(
+            lengths=lengths,
+            batch_size=1,
+            rank=rank,
+            world_size=4,
+            seed=17,
+        )
+        for rank in range(4)
+    ]
+    batches_by_rank = [[*sampler] for sampler in samplers]
+
+    for step in range(len(batches_by_rank[0])):
+        step_lengths = [
+            lengths[training_index.index]
+            for rank_batches in batches_by_rank
+            for training_index in rank_batches[step]
+        ]
+        assert max(step_lengths) - min(step_lengths) <= 30
 
 
 def test_length_grouped_sampler_rejects_large_distributed_batches():
@@ -477,9 +521,12 @@ def test_run_backward_preflight_clears_cuda_cache_and_logs_memory(monkeypatch):
         "memory",
         "backward",
         "zero_grad",
+        "empty_cache",
+        "memory",
     ]
     assert calls[2] == ("memory", "after_empty_cache")
     assert calls[4] == ("memory", "after_forward")
+    assert calls[8] == ("memory", "after_preflight_cleanup")
 
 
 def test_run_backward_preflight_wraps_cuda_oom_with_example_context():
@@ -698,6 +745,22 @@ def test_reduce_training_totals_uses_global_support_weighted_loss():
         "example_count": 4.0,
         "batch_count": 2.0,
     }
+
+
+def test_long_sequence_cache_clear_uses_global_rank_decision():
+    class _Accelerator:
+        device = torch.device("cpu")
+
+        def reduce(self, values, reduction):
+            assert values.tolist() == [0]
+            assert reduction == "sum"
+            return torch.tensor([1])
+
+    assert sft.clear_cuda_cache_for_long_sequences(
+        _Accelerator(),
+        local_sequence_tokens=100,
+        minimum_sequence_tokens=200,
+    )
 
 
 def test_reduce_training_totals_rejects_asymmetric_rank_batch_counts():

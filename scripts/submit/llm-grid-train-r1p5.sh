@@ -10,6 +10,7 @@ set -eo pipefail
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 torchrun --standalone \
   --nnodes=1 \
@@ -20,7 +21,9 @@ torchrun --standalone \
   --gradient-checkpointing \
   --device-map none \
   --max-input-length 1152 \
-  --max-new-tokens 4096 \
+  --max-new-tokens 3072 \
+  --max-sequence-length 4096 \
+  --cuda-cache-clear-min-sequence-length 3072 \
   --epochs 10 \
   --lora-r 32 \
   --lora-alpha 64 \
