@@ -395,6 +395,7 @@ def collate_llm_boxes_prompt_batch(
 
 def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Fine-tune a causal language model on LLM-Boxes examples."""
+    _validate_llm_boxes_training_args(args)
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
 
@@ -747,54 +748,49 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Load eval data/model, generate predictions, and write eval metrics."""
     accelerator = make_sft_accelerator(1)
     validate_distributed_device_map(accelerator, args.device_map)
-    accelerator.wait_for_everyone()
     if not accelerator.is_main_process:
-        accelerator.wait_for_everyone()
         return {}
 
-    try:
-        load_result = load_llm_boxes_examples(
-            EVAL_SPLITS,
-            limit_per_dataset=args.limit_per_dataset,
-            quiet=args.quiet,
-            skip_missing_cache=True,
-            cognitive_map_namespace=args.cognitive_map_namespace,
-        )
-        if not load_result.examples:
-            raise ValueError("No LLM-Boxes eval examples were loaded")
+    load_result = load_llm_boxes_examples(
+        EVAL_SPLITS,
+        limit_per_dataset=args.limit_per_dataset,
+        quiet=args.quiet,
+        skip_missing_cache=True,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+    )
+    if not load_result.examples:
+        raise ValueError("No LLM-Boxes eval examples were loaded")
 
-        model_path = args.checkpoint_path or args.model_name_or_path
-        model, tokenizer = _load_causal_lm_model_and_tokenizer(
-            model_path,
-            device_map=(
-                None
-                if accelerator.num_processes > 1
-                else _normalize_device_map(args.device_map)
+    model_path = args.checkpoint_path or args.model_name_or_path
+    model, tokenizer = _load_causal_lm_model_and_tokenizer(
+        model_path,
+        device_map=(
+            None
+            if accelerator.num_processes > 1
+            else _normalize_device_map(args.device_map)
+        ),
+    )
+    eval_items = tuple(LLMBoxesDataset(load_result.examples))
+    metrics = _evaluate_loaded_model(
+        model,
+        tokenizer,
+        eval_items,
+        args,
+        device=accelerator.device,
+    )
+    metrics.update(
+        fixed_corpus_metrics(
+            load_result.by_dataset,
+            eval_items,
+            LengthFilterResult(
+                kept=eval_items,
+                dropped_prompt_example_ids=(),
+                dropped_completion_example_ids=(),
             ),
         )
-        eval_items = tuple(LLMBoxesDataset(load_result.examples))
-        metrics = _evaluate_loaded_model(
-            model,
-            tokenizer,
-            eval_items,
-            args,
-            device=accelerator.device,
-        )
-        metrics.update(
-            fixed_corpus_metrics(
-                load_result.by_dataset,
-                eval_items,
-                LengthFilterResult(
-                    kept=eval_items,
-                    dropped_prompt_example_ids=(),
-                    dropped_completion_example_ids=(),
-                ),
-            )
-        )
-        _write_json(Path(args.output_dir) / "metrics.json", metrics)
-        return metrics
-    finally:
-        accelerator.wait_for_everyone()
+    )
+    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    return metrics
 
 
 def save_llm_boxes_checkpoint(
@@ -899,18 +895,23 @@ class LLMBoxesArgs(Tap):
     def process_args(self) -> None:
         if not self.device:
             self.device = _default_device()
-        if self.gradient_accumulation_steps < 1:
-            raise ValueError("--gradient-accumulation-steps must be >= 1")
-        if self.mode == "train" and self.gradient_accumulation_steps != 1:
-            raise ValueError(
-                "LLM-Boxes training requires "
-                "--gradient-accumulation-steps 1 because its pre-partitioned "
-                "loader cannot flush partial accumulation windows"
-            )
-        if self.mode == "train" and not self.gradient_checkpointing:
-            raise ValueError(
-                "--gradient-checkpointing is required for LLM-Boxes training"
-            )
+        if self.mode == "train":
+            _validate_llm_boxes_training_args(self)
+
+
+def _validate_llm_boxes_training_args(args: LLMBoxesArgs) -> None:
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("--gradient-accumulation-steps must be >= 1")
+    if args.gradient_accumulation_steps != 1:
+        raise ValueError(
+            "LLM-Boxes training requires "
+            "--gradient-accumulation-steps 1 because its pre-partitioned "
+            "loader cannot flush partial accumulation windows"
+        )
+    if not args.gradient_checkpointing:
+        raise ValueError(
+            "--gradient-checkpointing is required for LLM-Boxes training"
+        )
 
 
 def _default_device() -> str:

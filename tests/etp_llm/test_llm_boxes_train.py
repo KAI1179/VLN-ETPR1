@@ -1831,7 +1831,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
         ),
         ("write", tmp_path / "metrics.json", metrics),
     ]
-    assert accelerator.wait_for_everyone_calls == 2
+    assert accelerator.wait_for_everyone_calls == 0
 
 
 def test_evaluate_model_non_main_rank_skips_all_work(monkeypatch, tmp_path):
@@ -1871,7 +1871,7 @@ def test_evaluate_model_non_main_rank_skips_all_work(monkeypatch, tmp_path):
     metrics = llm_boxes_train.evaluate_model(args)
 
     assert metrics == {}
-    assert accelerator.wait_for_everyone_calls == 2
+    assert accelerator.wait_for_everyone_calls == 0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -1897,6 +1897,41 @@ def test_evaluate_model_rejects_sharded_device_map_in_multiprocess(
         llm_boxes_train.evaluate_model(args)
 
     assert accelerator.wait_for_everyone_calls == 0
+
+
+def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
+    monkeypatch,
+):
+    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args.gradient_accumulation_steps = 2
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("invalid training arguments reached runtime setup")
+
+    monkeypatch.setattr(llm_boxes_train, "make_sft_accelerator", unexpected)
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
+
+    with pytest.raises(
+        ValueError,
+        match="requires --gradient-accumulation-steps 1",
+    ):
+        llm_boxes_train.train_model(args)
+
+
+def test_train_model_direct_call_requires_gradient_checkpointing(
+    monkeypatch,
+):
+    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args.gradient_checkpointing = False
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("invalid training arguments reached runtime setup")
+
+    monkeypatch.setattr(llm_boxes_train, "make_sft_accelerator", unexpected)
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
+
+    with pytest.raises(ValueError, match="--gradient-checkpointing is required"):
+        llm_boxes_train.train_model(args)
 
 
 def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
