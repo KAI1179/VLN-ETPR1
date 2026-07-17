@@ -54,12 +54,15 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     TrainingIndex,
+    configure_peft_fsdp,
     distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
     make_sft_accelerator,
     reduce_training_totals,
     rendered_token_counts,
+    run_backward_preflight,
+    save_peft_checkpoint,
     scale_training_loss,
     validate_fixed_corpus,
     validate_distributed_device_map,
@@ -120,9 +123,7 @@ class LLMBoxesExample:
 @dataclass
 class _BoxesEvaluationAccumulator:
     metric_sums: Dict[str, float] = field(
-        default_factory=lambda: {
-            key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()
-        }
+        default_factory=lambda: {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
     )
     example_count: int = 0
     schema_valid_count: int = 0
@@ -132,10 +133,7 @@ class _BoxesEvaluationAccumulator:
 
     def metrics(self) -> Dict[str, float]:
         metrics = (
-            {
-                key: value / self.example_count
-                for key, value in self.metric_sums.items()
-            }
+            {key: value / self.example_count for key, value in self.metric_sums.items()}
             if self.example_count
             else {key: 0.0 for key in self.metric_sums}
         )
@@ -184,9 +182,7 @@ def load_llm_boxes_examples(
         ),
         desc="load LLM-Boxes examples",
         quiet=quiet,
-        total=(
-            limit_per_dataset * 2 if limit_per_dataset is not None else None
-        ),
+        total=(limit_per_dataset * 2 if limit_per_dataset is not None else None),
     )
     for episode in episodes:
         dataset = _episode_dataset(episode.dataset, "LLM-Boxes")
@@ -432,6 +428,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     _cast_trainable_parameters_to_float32(model)
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
+    configure_peft_fsdp(accelerator, model)
 
     all_items = tuple(LLMBoxesDataset(load_result.examples))
     filtered = filter_llm_boxes_items_for_length(
@@ -453,8 +450,13 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
+    sequence_lengths = _training_sequence_lengths(
+        filtered.kept,
+        tokenizer,
+        system_prompt,
+    )
     batch_sampler = LengthGroupedBatchSampler(
-        _training_sequence_lengths(filtered.kept, tokenizer, system_prompt),
+        sequence_lengths,
         batch_size=args.per_device_batch_size,
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
@@ -471,13 +473,39 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
             args.max_new_tokens,
         ),
     )
+    model = accelerator.prepare(model)
     trainable_parameters = [
         param for param in model.parameters() if param.requires_grad
     ]
     optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate)
-    model, optimizer = accelerator.prepare(model, optimizer)
+    optimizer = accelerator.prepare(optimizer)
 
     model.train()
+    longest_index = max(
+        range(len(sequence_lengths)),
+        key=lambda index: sequence_lengths[index],
+    )
+    longest_item = filtered_dataset[TrainingIndex(longest_index)]
+    if accelerator.is_main_process and not quiet:
+        print(
+            "preflight_longest_sequence="
+            f"{longest_item['example_id']}:{sequence_lengths[longest_index]}"
+        )
+    preflight_batch = collate_llm_boxes_batch(
+        [longest_item],
+        tokenizer,
+        system_prompt,
+        args.max_input_length,
+        args.max_new_tokens,
+    )
+    run_backward_preflight(
+        accelerator,
+        model,
+        optimizer,
+        _model_batch(preflight_batch, accelerator.device),
+        example_id=longest_item["example_id"],
+        sequence_tokens=sequence_lengths[longest_index],
+    )
     local_loss_sum = 0.0
     local_example_count = 0
     local_batch_count = 0
@@ -512,7 +540,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
                 grad_norm = None
                 if accelerator.sync_gradients and args.max_grad_norm > 0:
                     grad_norm = accelerator.clip_grad_norm_(
-                        trainable_parameters,
+                        model.parameters(),
                         args.max_grad_norm,
                     )
                     if not torch.isfinite(grad_norm.detach()):
@@ -550,14 +578,14 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
             set_postfix = getattr(progress_loader, "set_postfix", None)
             if callable(set_postfix):
                 set_postfix(loss=float(loss.detach().cpu()))
-        _save_llm_boxes_checkpoint_on_main(
+        save_peft_checkpoint(
             accelerator,
             model,
             tokenizer,
             _checkpoint_dir(args.output_dir, f"epoch-{epoch + 1}"),
         )
 
-    _save_llm_boxes_checkpoint_on_main(
+    save_peft_checkpoint(
         accelerator,
         model,
         tokenizer,
@@ -578,13 +606,9 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         "optimizer_steps_per_epoch": float(optimizer_steps) / args.epochs,
         "world_size": float(batch_metrics.world_size),
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
-        "gradient_accumulation_steps": float(
-            batch_metrics.gradient_accumulation_steps
-        ),
+        "gradient_accumulation_steps": float(batch_metrics.gradient_accumulation_steps),
         "global_batch_size": float(batch_metrics.global_batch_size),
-        "dropped_prompt_examples": float(
-            len(filtered.dropped_prompt_example_ids)
-        ),
+        "dropped_prompt_examples": float(len(filtered.dropped_prompt_example_ids)),
         "dropped_completion_examples": float(
             len(filtered.dropped_completion_example_ids)
         ),
@@ -800,31 +824,6 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
     return metrics
 
 
-def save_llm_boxes_checkpoint(
-    model: Any, tokenizer: Any, output_dir: str | Path
-) -> None:
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(output_path)
-    tokenizer.save_pretrained(output_path)
-
-
-def _save_llm_boxes_checkpoint_on_main(
-    accelerator: Any,
-    model: Any,
-    tokenizer: Any,
-    output_dir: str | Path,
-) -> None:
-    accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        save_llm_boxes_checkpoint(
-            accelerator.unwrap_model(model),
-            tokenizer,
-            output_dir,
-        )
-    accelerator.wait_for_everyone()
-
-
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -918,9 +917,7 @@ def _validate_llm_boxes_training_args(args: LLMBoxesArgs) -> None:
             "loader cannot flush partial accumulation windows"
         )
     if not args.gradient_checkpointing:
-        raise ValueError(
-            "--gradient-checkpointing is required for LLM-Boxes training"
-        )
+        raise ValueError("--gradient-checkpointing is required for LLM-Boxes training")
 
 
 def _default_device() -> str:

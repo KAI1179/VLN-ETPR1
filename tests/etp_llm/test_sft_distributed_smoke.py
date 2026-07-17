@@ -44,8 +44,12 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
         seed=42,
     )
     model = _TinyAdapterModel()
-    optimizer = torch.optim.SGD(model.adapter.parameters(), lr=0.01)
-    model, optimizer = accelerator.prepare(model, optimizer)
+    model = accelerator.prepare(model)
+    optimizer = torch.optim.SGD(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=0.01,
+    )
+    optimizer = accelerator.prepare(optimizer)
     seen_example_ids = []
     padding_participation = 0
 
@@ -69,6 +73,7 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
                 ),
             )
             accelerator.backward(weighted_loss)
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
         if not training_index.is_padding:
@@ -89,19 +94,17 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
     assert gathered_padding.cpu().tolist().count(1) == 1
     assert gathered_padding.cpu().tolist().count(0) == 1
 
-    adapter_state = (
-        accelerator.unwrap_model(model).adapter.weight.detach().reshape(-1)
-    )
-    gathered_adapter_state = accelerator.gather(adapter_state)
-    assert gathered_adapter_state.shape == (2,)
-    assert torch.equal(
-        gathered_adapter_state[:1],
-        gathered_adapter_state[1:],
-    )
+    full_state_dict = accelerator.get_state_dict(model)
+    if accelerator.is_main_process:
+        assert not torch.equal(
+            full_state_dict["adapter.weight"],
+            torch.tensor([[0.5]]),
+        )
+    else:
+        assert full_state_dict == {}
 
     artifact_dir = (
-        Path(".pytest_cache")
-        / f"sft-distributed-smoke-{os.environ['MASTER_PORT']}"
+        Path(".pytest_cache") / f"sft-distributed-smoke-{os.environ['MASTER_PORT']}"
     )
     if accelerator.is_main_process:
         shutil.rmtree(artifact_dir, ignore_errors=True)

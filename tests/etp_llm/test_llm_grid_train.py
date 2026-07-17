@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import numpy as np
 import pytest
 import torch
+from accelerate.utils import DistributedType
 
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import llm_grid_train
@@ -168,7 +169,7 @@ class _TrainingModel(torch.nn.Module):
     def enable_input_require_grads(self):
         self.input_require_grads_enabled = True
 
-    def save_pretrained(self, output_dir):
+    def save_pretrained(self, output_dir, *, state_dict, is_main_process):
         return None
 
 
@@ -181,9 +182,12 @@ class _PreparedOptimizer:
         if self.accelerator.sync_gradients:
             self.optimizer.step()
 
-    def zero_grad(self):
+    def zero_grad(self, *, set_to_none=False):
         if self.accelerator.sync_gradients:
-            self.optimizer.zero_grad()
+            if set_to_none:
+                self.optimizer.zero_grad(set_to_none=True)
+            else:
+                self.optimizer.zero_grad()
 
 
 class _TrainingAccelerator:
@@ -197,6 +201,7 @@ class _TrainingAccelerator:
         reduced_totals=None,
     ):
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.distributed_type = DistributedType.NO
         self.is_main_process = is_main_process
         self.num_processes = num_processes
         self.process_index = process_index
@@ -210,11 +215,14 @@ class _TrainingAccelerator:
         self.clip_grad_norm_calls = 0
         self.reduce_calls = []
         self.unwrap_model_calls = 0
+        self.get_state_dict_calls = 0
         self.wait_for_everyone_calls = 0
 
-    def prepare(self, model, optimizer):
+    def prepare(self, value):
         self.prepare_calls += 1
-        return model, _PreparedOptimizer(optimizer, self)
+        if isinstance(value, torch.optim.Optimizer):
+            return _PreparedOptimizer(value, self)
+        return value
 
     @contextmanager
     def accumulate(self, model):
@@ -249,6 +257,10 @@ class _TrainingAccelerator:
         self.unwrap_model_calls += 1
         return model
 
+    def get_state_dict(self, model):
+        self.get_state_dict_calls += 1
+        return model.state_dict()
+
     def wait_for_everyone(self):
         self.wait_for_everyone_calls += 1
 
@@ -279,7 +291,11 @@ def _save_box_payload(path, object_mentions=(), region_mentions=()):
         )
     for category_id in region_mentions:
         regions[category_id].append(
-            {"min": [0.0, 0.0], "max": [1.0, 1.0], "mentioned": True}
+            {
+                "min": [0.0, 0.0],
+                "max": [1.0, 1.0],
+                "mentioned": True,
+            }
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -353,6 +369,11 @@ def _patch_training_dependencies(
         "_apply_grid_lora",
         lambda loaded_model, args: loaded_model,
         raising=False,
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "run_backward_preflight",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -909,7 +930,9 @@ def test_grid_collate_disables_special_tokens_to_match_filter_counts():
             ]
             return {
                 "input_ids": torch.tensor(rows, dtype=torch.long),
-                "attention_mask": torch.ones((len(rows), len(rows[0])), dtype=torch.long),
+                "attention_mask": torch.ones(
+                    (len(rows), len(rows[0])), dtype=torch.long
+                ),
             }
 
         def encode(self, text, add_special_tokens=False):
@@ -1237,9 +1260,81 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert "shuffle" not in captured
     assert captured["batch_sampler"].rank == accelerator.process_index
     assert captured["batch_sampler"].world_size == accelerator.num_processes
-    assert accelerator.prepare_calls == 1
+    assert accelerator.prepare_calls == 2
     assert metrics["world_size"] == 8.0
     assert metrics["global_batch_size"] == 8.0
+
+
+def test_train_model_preflights_globally_longest_example_after_prepare(
+    monkeypatch,
+    tmp_path,
+):
+    model = _TrainingModel(1.0)
+    accelerator = _patch_training_dependencies(monkeypatch, model)
+    calls = []
+    monkeypatch.setattr(
+        llm_grid_train,
+        "_training_sequence_lengths",
+        lambda *args, **kwargs: [2, 9],
+    )
+
+    def record_preflight(
+        accelerator_arg,
+        prepared_model,
+        prepared_optimizer,
+        inputs,
+        *,
+        example_id,
+        sequence_tokens,
+    ):
+        calls.append(
+            (
+                accelerator_arg,
+                prepared_model,
+                prepared_optimizer,
+                len(inputs["input_ids"]),
+                example_id,
+                sequence_tokens,
+                accelerator.prepare_calls,
+            )
+        )
+
+    monkeypatch.setattr(llm_grid_train, "run_backward_preflight", record_preflight)
+    args = llm_grid_train.LLMGridArgs().parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    llm_grid_train.train_model(args)
+
+    assert len(calls) == 1
+    (
+        accelerator_arg,
+        prepared_model,
+        prepared_optimizer,
+        batch_size,
+        example_id,
+        sequence_tokens,
+        prepare_calls,
+    ) = calls[0]
+    assert accelerator_arg is accelerator
+    assert prepared_model is model
+    assert isinstance(prepared_optimizer, _PreparedOptimizer)
+    assert batch_size == 1
+    assert example_id == "rxr-train-example"
+    assert sequence_tokens == 9
+    assert prepare_calls == 2
 
 
 def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
@@ -1279,7 +1374,10 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
 
 def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     args = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--gradient-checkpointing"]
+        [
+            "train",
+            "--gradient-checkpointing",
+        ]
     )
 
     assert args.mode == "train"
@@ -1306,7 +1404,12 @@ def test_llm_grid_args_rejects_dataset_selection():
 
 def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
     scale_1 = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--scale", "1", "--gradient-checkpointing"]
+        [
+            "train",
+            "--scale",
+            "1",
+            "--gradient-checkpointing",
+        ]
     )
 
     assert scale_1.scale == 1
@@ -1316,7 +1419,12 @@ def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
 
 def test_train_model_rejects_full_finetuning():
     args = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--finetune-method", "full", "--gradient-checkpointing"]
+        [
+            "train",
+            "--finetune-method",
+            "full",
+            "--gradient-checkpointing",
+        ]
     )
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
@@ -1579,7 +1687,10 @@ def test_evaluate_model_keeps_grid_targets_lazy_and_counts_lightweight_provenanc
         llm_grid_train,
         "load_llm_grid_examples",
         lambda *args, **kwargs: _load_result(
-            [Example("r2r-example", "R2R"), Example("rxr-example", "RxR")]
+            [
+                Example("r2r-example", "R2R"),
+                Example("rxr-example", "RxR"),
+            ]
         ),
     )
     monkeypatch.setattr(
@@ -1680,7 +1791,10 @@ def test_evaluate_model_reports_r2r_rxr_and_combined_examples(
         llm_grid_train,
         "load_llm_grid_examples",
         lambda *args, **kwargs: _load_result(
-            [Example("r2r-example", "R2R"), Example("rxr-example", "RxR")]
+            [
+                Example("r2r-example", "R2R"),
+                Example("rxr-example", "RxR"),
+            ]
         ),
     )
     monkeypatch.setattr(
@@ -1934,7 +2048,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
     assert metrics["optimizer_steps"] == pytest.approx(3.0)
     assert metrics["batches_per_epoch"] == pytest.approx(3.0)
     assert metrics["optimizer_steps_per_epoch"] == pytest.approx(3.0)
-    assert accelerator.prepare_calls == 1
+    assert accelerator.prepare_calls == 2
     assert accelerator.backward_calls == 3
     assert accelerator.clip_grad_norm_calls == 3
 
@@ -1962,7 +2076,12 @@ def test_train_args_require_gradient_checkpointing():
 def test_train_args_require_positive_epochs():
     with pytest.raises(ValueError, match="--epochs must be >= 1"):
         llm_grid_train.LLMGridArgs().parse_args(
-            ["train", "--epochs", "0", "--gradient-checkpointing"]
+            [
+                "train",
+                "--epochs",
+                "0",
+                "--gradient-checkpointing",
+            ]
         )
 
 
@@ -2060,7 +2179,10 @@ def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
     monkeypatch,
 ):
     args = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--gradient-checkpointing"]
+        [
+            "train",
+            "--gradient-checkpointing",
+        ]
     )
     args.gradient_accumulation_steps = 2
 
@@ -2083,7 +2205,10 @@ def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
 
 def test_train_model_direct_call_requires_gradient_checkpointing(monkeypatch):
     args = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--gradient-checkpointing"]
+        [
+            "train",
+            "--gradient-checkpointing",
+        ]
     )
     args.gradient_checkpointing = False
 
@@ -2103,7 +2228,10 @@ def test_train_model_direct_call_requires_gradient_checkpointing(monkeypatch):
 
 def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
     args = llm_grid_train.LLMGridArgs().parse_args(
-        ["train", "--gradient-checkpointing"]
+        [
+            "train",
+            "--gradient-checkpointing",
+        ]
     )
     args.epochs = 0
 
@@ -2155,7 +2283,12 @@ def test_main_dispatches_train_and_eval(monkeypatch):
     )
 
     assert llm_grid_train.main(
-        ["train", "--device", "cpu", "--gradient-checkpointing"]
+        [
+            "train",
+            "--device",
+            "cpu",
+            "--gradient-checkpointing",
+        ]
     ) == {"train_loss": 1.0}
     assert llm_grid_train.main(["eval", "--device", "cpu"]) == {"json_valid": 1.0}
     assert calls == [("train", "cpu"), ("eval", "cpu")]

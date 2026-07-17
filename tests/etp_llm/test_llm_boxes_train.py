@@ -6,6 +6,7 @@ from typing import List
 
 import pytest
 import torch
+from accelerate.utils import DistributedType
 
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 import prior.bbox as bbox
@@ -110,9 +111,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     )
     monkeypatch.setattr(llm_boxes_train.RelevantSemanticBoxes, "load", fake_load)
 
-    result = llm_boxes_train.load_llm_boxes_examples(
-        ["train"], limit_per_dataset=1
-    )
+    result = llm_boxes_train.load_llm_boxes_examples(["train"], limit_per_dataset=1)
 
     assert _EpisodeSource.calls == [(("train",), 1)]
     assert cache_calls == [("scene-a", "R2R_train_42", "gt.bbox.r1p5.path5.v1")]
@@ -180,9 +179,7 @@ def test_load_llm_boxes_examples_respects_zero_limit(monkeypatch):
         lambda *args, **kwargs: cache_calls.append((args, kwargs)),
     )
 
-    result = llm_boxes_train.load_llm_boxes_examples(
-        ["train"], limit_per_dataset=0
-    )
+    result = llm_boxes_train.load_llm_boxes_examples(["train"], limit_per_dataset=0)
 
     assert result.examples == ()
     assert cache_calls == []
@@ -215,9 +212,7 @@ def test_load_llm_boxes_examples_skips_missing_cached_boxes_when_requested(
     assert result.examples == ()
     assert result.by_dataset["R2R"].discovered == 1
     assert result.by_dataset["R2R"].loaded == 0
-    assert result.by_dataset["R2R"].missing_cache_example_ids == (
-        "R2R_train_42",
-    )
+    assert result.by_dataset["R2R"].missing_cache_example_ids == ("R2R_train_42",)
     assert result.by_dataset["RxR"].discovered == 0
     output = capsys.readouterr().out
     assert "skipped_missing_cache=1" in output
@@ -325,7 +320,7 @@ def test_load_llm_boxes_examples_wraps_episode_iterator_with_progress(monkeypatc
             "desc": "load LLM-Boxes examples",
             "disable": False,
             "dynamic_ncols": True,
-                "total": 2,
+            "total": 2,
         }
     ]
 
@@ -345,9 +340,7 @@ def test_load_llm_boxes_examples_disables_progress_when_quiet(monkeypatch):
     )
     monkeypatch.setattr(llm_boxes_train, "tqdm", fake_progress)
 
-    llm_boxes_train.load_llm_boxes_examples(
-        ["train"], limit_per_dataset=1, quiet=True
-    )
+    llm_boxes_train.load_llm_boxes_examples(["train"], limit_per_dataset=1, quiet=True)
 
     assert progress_calls[0]["disable"] is True
 
@@ -524,7 +517,7 @@ class _TrainingModel(torch.nn.Module):
     def enable_input_require_grads(self):
         self.input_require_grads_enabled = True
 
-    def save_pretrained(self, output_dir):
+    def save_pretrained(self, output_dir, *, state_dict, is_main_process):
         return None
 
 
@@ -537,9 +530,12 @@ class _PreparedOptimizer:
         if self.accelerator.sync_gradients:
             self.optimizer.step()
 
-    def zero_grad(self):
+    def zero_grad(self, *, set_to_none=False):
         if self.accelerator.sync_gradients:
-            self.optimizer.zero_grad()
+            if set_to_none:
+                self.optimizer.zero_grad(set_to_none=True)
+            else:
+                self.optimizer.zero_grad()
 
 
 class _TrainingAccelerator:
@@ -553,6 +549,7 @@ class _TrainingAccelerator:
         reduced_totals=None,
     ):
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.distributed_type = DistributedType.NO
         self.is_main_process = is_main_process
         self.num_processes = num_processes
         self.process_index = process_index
@@ -566,11 +563,14 @@ class _TrainingAccelerator:
         self.clip_grad_norm_calls = 0
         self.reduce_calls = []
         self.unwrap_model_calls = 0
+        self.get_state_dict_calls = 0
         self.wait_for_everyone_calls = 0
 
-    def prepare(self, model, optimizer):
+    def prepare(self, value):
         self.prepare_calls += 1
-        return model, _PreparedOptimizer(optimizer, self)
+        if isinstance(value, torch.optim.Optimizer):
+            return _PreparedOptimizer(value, self)
+        return value
 
     @contextmanager
     def accumulate(self, model):
@@ -604,6 +604,10 @@ class _TrainingAccelerator:
     def unwrap_model(self, model):
         self.unwrap_model_calls += 1
         return model
+
+    def get_state_dict(self, model):
+        self.get_state_dict_calls += 1
+        return model.state_dict()
 
     def wait_for_everyone(self):
         self.wait_for_everyone_calls += 1
@@ -682,6 +686,11 @@ def _patch_training_dependencies(
         llm_boxes_train,
         "_apply_lora",
         lambda loaded_model, args: loaded_model,
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "run_backward_preflight",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(llm_boxes_train, "DataLoader", lambda *args, **kwargs: batches)
     return accelerator
@@ -822,9 +831,7 @@ def test_collate_disables_special_tokens_to_match_rendered_filter_counts():
     completion = llm_boxes_train._render_chat_completion(
         tokenizer, "system", "user", "answer"
     )
-    counts = llm_boxes_train.rendered_token_counts(
-        tokenizer, prompt, completion
-    )
+    counts = llm_boxes_train.rendered_token_counts(tokenizer, prompt, completion)
 
     filtered = llm_boxes_train.filter_llm_boxes_items_for_length(
         [item],
@@ -1160,8 +1167,8 @@ def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
         {
             "desc": "eval LLM-Boxes",
             "disable": False,
-                "dynamic_ncols": True,
-                "total": 3,
+            "dynamic_ncols": True,
+            "total": 3,
         }
     ]
 
@@ -1393,9 +1400,81 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     assert "shuffle" not in captured
     assert captured["batch_sampler"].rank == accelerator.process_index
     assert captured["batch_sampler"].world_size == accelerator.num_processes
-    assert accelerator.prepare_calls == 1
+    assert accelerator.prepare_calls == 2
     assert metrics["world_size"] == 8.0
     assert metrics["global_batch_size"] == 8.0
+
+
+def test_train_model_preflights_globally_longest_example_after_prepare(
+    monkeypatch,
+    tmp_path,
+):
+    model = _TrainingModel(1.0)
+    accelerator = _patch_training_dependencies(monkeypatch, model)
+    calls = []
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "_training_sequence_lengths",
+        lambda *args, **kwargs: [2, 9],
+    )
+
+    def record_preflight(
+        accelerator_arg,
+        prepared_model,
+        prepared_optimizer,
+        inputs,
+        *,
+        example_id,
+        sequence_tokens,
+    ):
+        calls.append(
+            (
+                accelerator_arg,
+                prepared_model,
+                prepared_optimizer,
+                len(inputs["input_ids"]),
+                example_id,
+                sequence_tokens,
+                accelerator.prepare_calls,
+            )
+        )
+
+    monkeypatch.setattr(llm_boxes_train, "run_backward_preflight", record_preflight)
+    args = llm_boxes_train.parse_args(
+        [
+            "train",
+            "--output-dir",
+            str(tmp_path / "run"),
+            "--device",
+            "cpu",
+            "--device-map",
+            "none",
+            "--epochs",
+            "1",
+            "--quiet",
+            "--gradient-checkpointing",
+        ]
+    )
+
+    llm_boxes_train.train_model(args)
+
+    assert len(calls) == 1
+    (
+        accelerator_arg,
+        prepared_model,
+        prepared_optimizer,
+        batch_size,
+        example_id,
+        sequence_tokens,
+        prepare_calls,
+    ) = calls[0]
+    assert accelerator_arg is accelerator
+    assert prepared_model is model
+    assert isinstance(prepared_optimizer, _PreparedOptimizer)
+    assert batch_size == 1
+    assert example_id == "rxr-train-example"
+    assert sequence_tokens == 9
+    assert prepare_calls == 2
 
 
 def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
@@ -1495,7 +1574,7 @@ def test_train_model_uses_accelerator_for_each_batch(
     assert metrics["optimizer_steps_per_epoch"] == pytest.approx(3.0)
     assert metrics["world_size"] == 8.0
     assert metrics["global_batch_size"] == 8.0
-    assert accelerator.prepare_calls == 1
+    assert accelerator.prepare_calls == 2
     assert accelerator.backward_calls == len(batches)
     assert accelerator.clip_grad_norm_calls == 3
     assert json.loads((output_dir / "metrics.json").read_text()) == metrics
@@ -1524,7 +1603,12 @@ def test_train_args_require_gradient_checkpointing():
 def test_train_args_require_positive_epochs():
     with pytest.raises(ValueError, match="--epochs must be >= 1"):
         llm_boxes_train.parse_args(
-            ["train", "--epochs", "0", "--gradient-checkpointing"]
+            [
+                "train",
+                "--epochs",
+                "0",
+                "--gradient-checkpointing",
+            ]
         )
 
 
@@ -1784,9 +1868,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     )
 
     def fake_evaluate(model, tokenizer, dataset, args, device=None):
-        calls.append(
-            ("eval", model, tokenizer, args.output_dir, list(dataset), device)
-        )
+        calls.append(("eval", model, tokenizer, args.output_dir, list(dataset), device))
         return {"examples": 1.0}
 
     def fake_load_model(path, device_map=None):
@@ -1973,9 +2055,7 @@ def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
     calls = []
 
     def fake_evaluate(args):
-        calls.append(
-            (args.mode, args.output_dir, args.limit_per_dataset, args.quiet)
-        )
+        calls.append((args.mode, args.output_dir, args.limit_per_dataset, args.quiet))
         return {"examples": 1.0}
 
     monkeypatch.setattr(llm_boxes_train, "evaluate_model", fake_evaluate)
@@ -2038,7 +2118,13 @@ def test_cli_parser_supports_train_and_eval_modes():
         ]
     )
     eval_args = llm_boxes_train.parse_args(
-        ["eval", "--output-dir", "eval-out", "--device-map", "none"]
+        [
+            "eval",
+            "--output-dir",
+            "eval-out",
+            "--device-map",
+            "none",
+        ]
     )
 
     assert train_args.mode == "train"
@@ -2130,7 +2216,14 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
     )
 
     args = llm_boxes_train.parse_args(
-        ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]
+        [
+            "eval",
+            "--output-dir",
+            str(tmp_path),
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
     )
     llm_boxes_train.evaluate_model(args)
 

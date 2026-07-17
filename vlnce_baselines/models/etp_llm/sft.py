@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
 from typing import (
     Any,
     Dict,
@@ -13,10 +15,13 @@ from typing import (
     Sequence,
     Tuple,
     TypeVar,
+    cast,
 )
 
 import torch
-from accelerate import Accelerator
+from accelerate import Accelerator, FullyShardedDataParallelPlugin
+from accelerate.utils import DistributedType
+from torch.distributed.fsdp import ShardingStrategy
 from torch.utils.data import Sampler
 
 ItemT = TypeVar("ItemT")
@@ -71,9 +76,7 @@ def rendered_token_counts(
     completion_text: str,
 ) -> RenderedTokenCounts:
     prompt_tokens = len(tokenizer.encode(prompt_text, add_special_tokens=False))
-    sequence_tokens = len(
-        tokenizer.encode(completion_text, add_special_tokens=False)
-    )
+    sequence_tokens = len(tokenizer.encode(completion_text, add_special_tokens=False))
     if sequence_tokens < prompt_tokens:
         raise ValueError("completion rendering is shorter than prompt rendering")
     return RenderedTokenCounts(
@@ -88,9 +91,7 @@ def fixed_corpus_metrics(
     items: Sequence[MetricItemT],
     filtered: LengthFilterResult[MetricItemT],
 ) -> Dict[str, float]:
-    dataset_by_id = {
-        str(item["example_id"]): str(item["dataset"]) for item in items
-    }
+    dataset_by_id = {str(item["example_id"]): str(item["dataset"]) for item in items}
     kept_ids = {str(item["example_id"]) for item in filtered.kept}
     prompt_dropped_ids = set(filtered.dropped_prompt_example_ids)
     completion_dropped_ids = set(filtered.dropped_completion_example_ids)
@@ -101,11 +102,12 @@ def fixed_corpus_metrics(
             {
                 f"{prefix}_discovered": float(stats.discovered),
                 f"{prefix}_loaded": float(stats.loaded),
-                f"{prefix}_missing_cache": float(
-                    len(stats.missing_cache_example_ids)
-                ),
+                f"{prefix}_missing_cache": float(len(stats.missing_cache_example_ids)),
                 f"{prefix}_prompt_dropped": float(
-                    sum(dataset_by_id[item_id] == dataset for item_id in prompt_dropped_ids)
+                    sum(
+                        dataset_by_id[item_id] == dataset
+                        for item_id in prompt_dropped_ids
+                    )
                 ),
                 f"{prefix}_completion_dropped": float(
                     sum(
@@ -126,9 +128,7 @@ def fixed_corpus_metrics(
         "completion_dropped",
         "retained",
     ):
-        metrics[f"combined_{name}"] = metrics[f"r2r_{name}"] + metrics[
-            f"rxr_{name}"
-        ]
+        metrics[f"combined_{name}"] = metrics[f"r2r_{name}"] + metrics[f"rxr_{name}"]
     return metrics
 
 
@@ -141,9 +141,7 @@ def validate_fixed_corpus(
     for dataset in ("R2R", "RxR"):
         stats = load_stats.get(dataset)
         if stats is None or stats.discovered == 0:
-            raise ValueError(
-                f"fixed corpus source {dataset} discovered zero examples"
-            )
+            raise ValueError(f"fixed corpus source {dataset} discovered zero examples")
         if stats.loaded == 0:
             raise ValueError(f"fixed corpus source {dataset} loaded zero examples")
     if retained_items is None:
@@ -151,15 +149,88 @@ def validate_fixed_corpus(
     retained_datasets = {str(item["dataset"]) for item in retained_items}
     for dataset in ("R2R", "RxR"):
         if dataset not in retained_datasets:
-            raise ValueError(
-                f"fixed corpus source {dataset} retained zero examples"
-            )
+            raise ValueError(f"fixed corpus source {dataset} retained zero examples")
 
 
 def make_sft_accelerator(gradient_accumulation_steps: int) -> Accelerator:
+    accelerator_kwargs: Dict[str, Any] = {}
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        fsdp_plugin = FullyShardedDataParallelPlugin(
+            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            limit_all_gathers=True,
+            use_orig_params=False,
+            sync_module_states=True,
+            activation_checkpointing=False,
+        )
+        expected = {
+            "sharding_strategy": ShardingStrategy.FULL_SHARD,
+            "limit_all_gathers": True,
+            "use_orig_params": False,
+            "sync_module_states": True,
+            "activation_checkpointing": False,
+        }
+        conflicts = [
+            name
+            for name, value in expected.items()
+            if getattr(fsdp_plugin, name) != value
+        ]
+        if conflicts:
+            raise ValueError(
+                "conflicting FSDP environment configuration: " + ", ".join(conflicts)
+            )
+        accelerator_kwargs["fsdp_plugin"] = fsdp_plugin
     return Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
+        **accelerator_kwargs,
     )
+
+
+def configure_peft_fsdp(accelerator: Accelerator, model: Any) -> None:
+    if accelerator.distributed_type != DistributedType.FSDP:
+        return
+    from peft.utils.other import fsdp_auto_wrap_policy
+
+    plugin = cast(FullyShardedDataParallelPlugin, accelerator.state.fsdp_plugin)
+    plugin.auto_wrap_policy = fsdp_auto_wrap_policy(model)
+
+
+def save_peft_checkpoint(
+    accelerator: Accelerator,
+    model: Any,
+    tokenizer: Any,
+    output_dir: str | Path,
+) -> None:
+    output_path = Path(output_dir)
+    accelerator.wait_for_everyone()
+    state_dict = accelerator.get_state_dict(model)
+    if accelerator.is_main_process:
+        output_path.mkdir(parents=True, exist_ok=True)
+        accelerator.unwrap_model(model).save_pretrained(
+            output_path,
+            state_dict=state_dict,
+            is_main_process=True,
+        )
+        tokenizer.save_pretrained(output_path)
+    accelerator.wait_for_everyone()
+
+
+def run_backward_preflight(
+    accelerator: Accelerator,
+    model: Any,
+    optimizer: Any,
+    model_inputs: Mapping[str, Any],
+    *,
+    example_id: str,
+    sequence_tokens: int,
+) -> None:
+    try:
+        accelerator.backward(model(**model_inputs).loss)
+    except torch.OutOfMemoryError as error:
+        raise torch.OutOfMemoryError(
+            "longest-sequence preflight failed for "
+            f"{example_id} ({sequence_tokens} tokens): {error}"
+        ) from error
+    optimizer.zero_grad(set_to_none=True)
 
 
 def validate_distributed_device_map(
@@ -178,17 +249,14 @@ def distributed_batch_metrics(
     world_size = int(accelerator.num_processes)
     if world_size > 1 and per_device_batch_size != 1:
         raise ValueError(
-            "distributed LLM finetuning currently requires "
-            "--per-device-batch-size 1"
+            "distributed LLM finetuning currently requires --per-device-batch-size 1"
         )
     return SFTBatchMetrics(
         world_size=world_size,
         per_device_batch_size=per_device_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         global_batch_size=(
-            world_size
-            * per_device_batch_size
-            * gradient_accumulation_steps
+            world_size * per_device_batch_size * gradient_accumulation_steps
         ),
     )
 
@@ -219,17 +287,12 @@ def reduce_training_totals(
         global_device_batch_count_squared,
     ) = (float(value.item()) for value in global_totals)
     world_size = int(accelerator.num_processes)
-    if (
-        global_device_batch_count_squared * world_size
-        != global_device_batch_count**2
-    ):
+    if global_device_batch_count_squared * world_size != global_device_batch_count**2:
         raise ValueError("all ranks must report equal local batch counts")
     synchronized_batch_count = global_device_batch_count / world_size
     return {
         "loss": (
-            global_loss_sum / global_example_count
-            if global_example_count
-            else 0.0
+            global_loss_sum / global_example_count if global_example_count else 0.0
         ),
         "loss_sum": global_loss_sum,
         "example_count": global_example_count,

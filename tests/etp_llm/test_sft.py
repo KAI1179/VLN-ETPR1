@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from accelerate.utils import DistributedType
+from torch.distributed.fsdp import ShardingStrategy
 
 from vlnce_baselines.models.etp_llm import sft
 from vlnce_baselines.models.etp_llm.sft import (
@@ -171,8 +173,12 @@ def test_length_grouped_sampler_scales_real_tail_and_zeros_padding():
     batches_by_rank = _distributed_batches()
     tail = [rank_batches[-1][0] for rank_batches in batches_by_rank]
 
-    real_tail = [training_index for training_index in tail if not training_index.is_padding]
-    padding_tail = [training_index for training_index in tail if training_index.is_padding]
+    real_tail = [
+        training_index for training_index in tail if not training_index.is_padding
+    ]
+    padding_tail = [
+        training_index for training_index in tail if training_index.is_padding
+    ]
 
     assert len(real_tail) == 1
     assert real_tail[0].loss_scale == 8.0
@@ -193,8 +199,12 @@ def test_length_grouped_sampler_scales_intermediate_tail_group():
     ]
     tail = [[*sampler][-1][0] for sampler in samplers]
 
-    real_tail = [training_index for training_index in tail if not training_index.is_padding]
-    padding_tail = [training_index for training_index in tail if training_index.is_padding]
+    real_tail = [
+        training_index for training_index in tail if not training_index.is_padding
+    ]
+    padding_tail = [
+        training_index for training_index in tail if training_index.is_padding
+    ]
 
     assert len(real_tail) == 3
     assert all(training_index.loss_scale == 8 / 3 for training_index in real_tail)
@@ -213,8 +223,7 @@ def test_length_grouped_sampler_epoch_shuffle_is_reproducible():
 def test_length_grouped_sampler_rejects_large_distributed_batches():
     with pytest.raises(
         ValueError,
-        match="distributed LLM finetuning currently requires "
-        "--per-device-batch-size 1",
+        match="distributed LLM finetuning currently requires --per-device-batch-size 1",
     ):
         LengthGroupedBatchSampler(
             lengths=range(9),
@@ -244,8 +253,7 @@ def test_distributed_batch_metrics_rejects_large_per_device_batch():
 
     with pytest.raises(
         ValueError,
-        match="distributed LLM finetuning currently requires "
-        "--per-device-batch-size 1",
+        match="distributed LLM finetuning currently requires --per-device-batch-size 1",
     ):
         sft.distributed_batch_metrics(
             accelerator,
@@ -281,6 +289,136 @@ def test_make_sft_accelerator_configures_gradient_accumulation(monkeypatch):
 
     assert sft.make_sft_accelerator(2) is not None
     assert captured["gradient_accumulation_steps"] == 2
+
+
+def test_make_sft_accelerator_uses_peft_safe_full_sharding(monkeypatch):
+    captured = {}
+
+    def fake_accelerator(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(sft, "Accelerator", fake_accelerator)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+
+    sft.make_sft_accelerator(1)
+
+    plugin = captured["fsdp_plugin"]
+    assert plugin.sharding_strategy is ShardingStrategy.FULL_SHARD
+    assert plugin.use_orig_params is False
+    assert plugin.limit_all_gathers is True
+    assert plugin.sync_module_states is True
+    assert plugin.activation_checkpointing is False
+
+
+def test_make_sft_accelerator_does_not_require_fsdp_for_one_process(monkeypatch):
+    captured = {}
+
+    def fake_accelerator(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(sft, "Accelerator", fake_accelerator)
+    monkeypatch.setenv("WORLD_SIZE", "1")
+
+    sft.make_sft_accelerator(1)
+
+    assert "fsdp_plugin" not in captured
+
+
+def test_configure_peft_fsdp_uses_peft_auto_wrap_policy(monkeypatch):
+    model = object()
+    policy = object()
+    plugin = SimpleNamespace(auto_wrap_policy=None)
+    accelerator = SimpleNamespace(
+        distributed_type=DistributedType.FSDP,
+        state=SimpleNamespace(fsdp_plugin=plugin),
+    )
+    monkeypatch.setattr(
+        "peft.utils.other.fsdp_auto_wrap_policy",
+        lambda configured_model: policy if configured_model is model else None,
+    )
+
+    sft.configure_peft_fsdp(accelerator, model)
+
+    assert plugin.auto_wrap_policy is policy
+
+
+def test_save_peft_checkpoint_collects_then_exports_portable_adapter(tmp_path):
+    calls = []
+    full_state_dict = {"adapter.weight": torch.tensor([1.0])}
+
+    class Model:
+        def save_pretrained(self, output_dir, *, state_dict, is_main_process):
+            calls.append(("model", output_dir, state_dict, is_main_process))
+
+    class Tokenizer:
+        def save_pretrained(self, output_dir):
+            calls.append(("tokenizer", output_dir))
+
+    class Accelerator:
+        is_main_process = True
+
+        def wait_for_everyone(self):
+            calls.append(("wait",))
+
+        def get_state_dict(self, model):
+            calls.append(("state_dict", model))
+            return full_state_dict
+
+        def unwrap_model(self, model):
+            calls.append(("unwrap", model))
+            return model
+
+    model = Model()
+    output_dir = tmp_path / "checkpoint"
+
+    sft.save_peft_checkpoint(Accelerator(), model, Tokenizer(), output_dir)
+
+    assert calls == [
+        ("wait",),
+        ("state_dict", model),
+        ("unwrap", model),
+        ("model", output_dir, full_state_dict, True),
+        ("tokenizer", output_dir),
+        ("wait",),
+    ]
+
+
+def test_run_backward_preflight_checks_memory_without_optimizer_step():
+    calls = []
+    parameter = torch.nn.Parameter(torch.tensor(2.0))
+
+    class Model:
+        def __call__(self, **model_inputs):
+            calls.append(("forward", model_inputs))
+            return SimpleNamespace(loss=parameter.square())
+
+    class Accelerator:
+        def backward(self, loss):
+            calls.append(("backward", loss))
+            loss.backward()
+
+    class Optimizer:
+        def zero_grad(self, *, set_to_none):
+            calls.append(("zero_grad", set_to_none))
+            parameter.grad = None
+
+        def step(self):
+            raise AssertionError("preflight must not update parameters")
+
+    sft.run_backward_preflight(
+        Accelerator(),
+        Model(),
+        Optimizer(),
+        {"input_ids": torch.tensor([[1, 2, 3]])},
+        example_id="longest",
+        sequence_tokens=3,
+    )
+
+    assert [call[0] for call in calls] == ["forward", "backward", "zero_grad"]
+    assert parameter.item() == 2.0
+    assert parameter.grad is None
 
 
 def test_reduce_training_totals_uses_global_support_weighted_loss():

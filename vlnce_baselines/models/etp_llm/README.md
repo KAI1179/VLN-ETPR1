@@ -14,8 +14,8 @@ The maintained Slurm launchers allocate one node, one task, and eight GPUs.
 Slurm controls GPU visibility, and the launchers run
 `torchrun --standalone --nnodes=1 --nproc-per-node=8`, with per-device batch
 size 1, gradient accumulation 1, gradient checkpointing, `device_map=none`,
-ten epochs, and LoRA rank/alpha/dropout 32/64/0.05. Submit from the repository
-root:
+ten epochs, and LoRA rank/alpha/dropout 32/64/0.05. Accelerate FSDP uses
+PEFT-aware full sharding across the eight ranks. Submit from the repository root:
 
 ```shell
 sbatch scripts/submit/llm-boxes-train-r1p5.sh
@@ -40,10 +40,13 @@ LLM-Grid scale-2 lengths were 1,388/2,595/3,219/4,969 and 0.15% exceeded
 measured RxR target set; over-budget examples are reported and dropped rather
 than silently truncated.
 
-Only rank zero writes metrics and `checkpoints/epoch-N` or
-`checkpoints/final`. An epoch checkpoint is written after the epoch completes.
-Cancelling mid-epoch does not create an interruption checkpoint or save
-optimizer state, so wait for the desired epoch directory before cancelling.
+Before epoch one, every rank runs a backward preflight on the longest retained
+sequence. All ranks participate in FSDP state collection, then rank zero writes
+metrics and exports portable PEFT adapters under `checkpoints/epoch-N` or
+`checkpoints/final`; navigation-cache consumers load those directories without
+FSDP. An epoch checkpoint is written after the epoch completes. Cancelling
+mid-epoch does not create an interruption checkpoint or save optimizer state,
+so wait for the desired epoch directory before cancelling.
 
 ## LLM-Boxes Evaluation
 

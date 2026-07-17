@@ -41,12 +41,15 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     TrainingIndex,
+    configure_peft_fsdp,
     distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
     make_sft_accelerator,
     reduce_training_totals,
     rendered_token_counts,
+    run_backward_preflight,
+    save_peft_checkpoint,
     scale_training_loss,
     validate_fixed_corpus,
     validate_distributed_device_map,
@@ -879,9 +882,7 @@ def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
             "loader cannot flush partial accumulation windows"
         )
     if not args.gradient_checkpointing:
-        raise ValueError(
-            "--gradient-checkpointing is required for LLM-Grid training"
-        )
+        raise ValueError("--gradient-checkpointing is required for LLM-Grid training")
 
 
 def _grid_size_for_scale(scale: int) -> int:
@@ -1012,6 +1013,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     _cast_trainable_parameters_to_float32(model)
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
+    configure_peft_fsdp(accelerator, model)
 
     all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
     filtered = filter_grid_training_items(
@@ -1032,8 +1034,13 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if dropped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(dropped_over_budget)}")
     dataset = LLMGridItemsDataset(train_items)
+    sequence_lengths = _training_sequence_lengths(
+        train_items,
+        tokenizer,
+        system_prompt,
+    )
     batch_sampler = LengthGroupedBatchSampler(
-        _training_sequence_lengths(train_items, tokenizer, system_prompt),
+        sequence_lengths,
         batch_size=args.per_device_batch_size,
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
@@ -1050,6 +1057,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
             args.max_new_tokens,
         ),
     )
+    model = accelerator.prepare(model)
     trainable_parameters = [
         parameter for parameter in model.parameters() if parameter.requires_grad
     ]
@@ -1057,8 +1065,33 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         trainable_parameters,
         lr=args.learning_rate,
     )
-    model, optimizer = accelerator.prepare(model, optimizer)
+    optimizer = accelerator.prepare(optimizer)
     model.train()
+    longest_index = max(
+        range(len(sequence_lengths)),
+        key=lambda index: sequence_lengths[index],
+    )
+    longest_item = dataset[TrainingIndex(longest_index)]
+    if accelerator.is_main_process and not args.quiet:
+        print(
+            "preflight_longest_sequence="
+            f"{longest_item['example_id']}:{sequence_lengths[longest_index]}"
+        )
+    preflight_batch = collate_llm_grid_batch(
+        [longest_item],
+        tokenizer,
+        system_prompt,
+        args.max_input_length,
+        args.max_new_tokens,
+    )
+    run_backward_preflight(
+        accelerator,
+        model,
+        optimizer,
+        _model_batch(preflight_batch, accelerator.device),
+        example_id=longest_item["example_id"],
+        sequence_tokens=sequence_lengths[longest_index],
+    )
     local_loss_sum = 0.0
     local_example_count = 0
     local_batch_count = 0
@@ -1091,7 +1124,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
                 grad_norm = None
                 if accelerator.sync_gradients and args.max_grad_norm > 0:
                     grad_norm = accelerator.clip_grad_norm_(
-                        trainable_parameters,
+                        model.parameters(),
                         args.max_grad_norm,
                     )
                     if not torch.isfinite(grad_norm.detach()):
@@ -1126,16 +1159,14 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
             local_loss_sum += float(loss.detach().cpu()) * real_example_count
             local_example_count += real_example_count
             local_batch_count += 1
-        _save_llm_grid_checkpoint_on_main(
+        save_peft_checkpoint(
             accelerator,
             model,
             tokenizer,
-            Path(args.output_dir)
-            / "checkpoints"
-            / f"epoch-{epoch_index + 1}",
+            Path(args.output_dir) / "checkpoints" / f"epoch-{epoch_index + 1}",
         )
 
-    _save_llm_grid_checkpoint_on_main(
+    save_peft_checkpoint(
         accelerator,
         model,
         tokenizer,
@@ -1156,9 +1187,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "optimizer_steps_per_epoch": float(optimizer_steps) / args.epochs,
         "world_size": float(batch_metrics.world_size),
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
-        "gradient_accumulation_steps": float(
-            batch_metrics.gradient_accumulation_steps
-        ),
+        "gradient_accumulation_steps": float(batch_metrics.gradient_accumulation_steps),
         "global_batch_size": float(batch_metrics.global_batch_size),
         "skipped_over_budget_count": float(len(dropped_over_budget)),
         **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
@@ -1166,20 +1195,6 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if accelerator.is_main_process:
         _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
-
-
-def _save_llm_grid_checkpoint_on_main(
-    accelerator: Any,
-    model: Any,
-    tokenizer: Any,
-    output_dir: Path,
-) -> None:
-    accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        accelerator.unwrap_model(model).save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-    accelerator.wait_for_everyone()
 
 
 def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
