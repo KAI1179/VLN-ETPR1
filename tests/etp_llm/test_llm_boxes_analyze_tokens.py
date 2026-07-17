@@ -99,6 +99,49 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
     }
 
 
+def test_analyze_llm_boxes_tokens_rejects_missing_source_before_measurement(
+    monkeypatch,
+):
+    monkeypatch.setattr(llm_boxes_analyze_tokens, "AutoTokenizer", _AutoTokenizer)
+    monkeypatch.setattr(
+        llm_boxes_analyze_tokens,
+        "load_llm_boxes_examples",
+        lambda *args, **kwargs: type(
+            "Result",
+            (),
+            {
+                "examples": ("r2r-example",),
+                "by_dataset": {
+                    "R2R": llm_boxes_analyze_tokens.SourceLoadStats(1, 1, ()),
+                    "RxR": llm_boxes_analyze_tokens.SourceLoadStats(0, 0, ()),
+                },
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        llm_boxes_analyze_tokens,
+        "LLMBoxesDataset",
+        lambda examples: (_ for _ in ()).throw(
+            AssertionError("invalid corpus reached token measurement")
+        ),
+    )
+    monkeypatch.setattr(
+        llm_boxes_analyze_tokens,
+        "load_system_prompt",
+        lambda: "system prompt",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="fixed corpus source RxR discovered zero examples",
+    ):
+        llm_boxes_analyze_tokens.analyze_llm_boxes_tokens(
+            llm_boxes_analyze_tokens.TokenAnalysisArgs().parse_args(
+                ["--model-name-or-path", "tiny-tokenizer", "--quiet"]
+            )
+        )
+
+
 def test_llm_boxes_analyze_tokens_main_prints_json(monkeypatch, capsys):
     monkeypatch.setattr(
         llm_boxes_analyze_tokens,

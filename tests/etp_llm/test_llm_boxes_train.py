@@ -1521,6 +1521,13 @@ def test_train_args_require_gradient_checkpointing():
         llm_boxes_train.parse_args(["train"])
 
 
+def test_train_args_require_positive_epochs():
+    with pytest.raises(ValueError, match="--epochs must be >= 1"):
+        llm_boxes_train.parse_args(
+            ["train", "--epochs", "0", "--gradient-checkpointing"]
+        )
+
+
 def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
     accelerator = _TrainingAccelerator(
         1,
@@ -1945,6 +1952,20 @@ def test_train_model_direct_call_requires_gradient_checkpointing(
     monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
 
     with pytest.raises(ValueError, match="--gradient-checkpointing is required"):
+        llm_boxes_train.train_model(args)
+
+
+def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
+    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args.epochs = 0
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("invalid training arguments reached runtime setup")
+
+    monkeypatch.setattr(llm_boxes_train, "make_sft_accelerator", unexpected)
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
+
+    with pytest.raises(ValueError, match="--epochs must be >= 1"):
         llm_boxes_train.train_model(args)
 
 

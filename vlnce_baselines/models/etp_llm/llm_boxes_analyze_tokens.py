@@ -29,7 +29,7 @@ from .llm_boxes_train import (
     load_llm_boxes_examples,
     load_system_prompt,
 )
-from .sft import SourceLoadStats, rendered_token_counts
+from .sft import SourceLoadStats, rendered_token_counts, validate_fixed_corpus
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,7 @@ def analyze_llm_boxes_tokens(args: TokenAnalysisArgs) -> Dict[str, Any]:
             skip_missing_cache=True,
             cognitive_map_namespace=args.cognitive_map_namespace,
         )
+    validate_fixed_corpus(load_result.by_dataset)
 
     measurements = _measure_llm_boxes_items(
         LLMBoxesDataset(load_result.examples),

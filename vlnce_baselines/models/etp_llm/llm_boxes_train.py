@@ -907,6 +907,8 @@ class LLMBoxesArgs(Tap):
 
 
 def _validate_llm_boxes_training_args(args: LLMBoxesArgs) -> None:
+    if args.epochs < 1:
+        raise ValueError("--epochs must be >= 1")
     if args.gradient_accumulation_steps < 1:
         raise ValueError("--gradient-accumulation-steps must be >= 1")
     if args.gradient_accumulation_steps != 1:
