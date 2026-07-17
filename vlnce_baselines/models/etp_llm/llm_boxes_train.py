@@ -19,6 +19,7 @@ from typing import (
     Sequence,
     Tuple,
     TypedDict,
+    Union,
 )
 
 import torch
@@ -52,6 +53,7 @@ from .sft import (
     LengthFilterResult,
     LengthGroupedBatchSampler,
     SourceLoadStats,
+    TrainingIndex,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
     rendered_token_counts,
@@ -85,6 +87,8 @@ class LLMBoxesItem(TypedDict, total=False):
     start_position: Sequence[float]
     scene_id: str
     dataset: Literal["R2R", "RxR"]
+    training_weight: float
+    is_padding: bool
 
 
 @dataclass
@@ -284,7 +288,12 @@ class LLMBoxesItemDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, index: int) -> LLMBoxesItem:
+    def __getitem__(self, index: Union[int, TrainingIndex]) -> LLMBoxesItem:
+        if isinstance(index, TrainingIndex):
+            item = self.items[index.index].copy()
+            item["training_weight"] = index.loss_scale
+            item["is_padding"] = index.is_padding
+            return item
         return self.items[index]
 
     def __iter__(self) -> Iterator[LLMBoxesItem]:
@@ -340,6 +349,14 @@ def collate_llm_boxes_batch(
     encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
+    encoded["training_weights"] = torch.tensor(
+        [item.get("training_weight", 1.0) for item in batch],
+        dtype=torch.float32,
+    )
+    encoded["is_padding"] = torch.tensor(
+        [item.get("is_padding", False) for item in batch],
+        dtype=torch.bool,
+    )
     return encoded
 
 
@@ -420,7 +437,9 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(filtered.kept, tokenizer, system_prompt),
         batch_size=args.per_device_batch_size,
-        generator=torch.Generator().manual_seed(args.seed),
+        rank=0,
+        world_size=1,
+        seed=args.seed,
     )
     loader = DataLoader(
         filtered_dataset,

@@ -17,6 +17,7 @@ from typing import (
     Sequence,
     Tuple,
     TypedDict,
+    Union,
     cast,
 )
 
@@ -25,6 +26,7 @@ from numpy.typing import NDArray
 from tap import Tap
 from torch.utils.data import DataLoader, Dataset
 import torch
+from typing_extensions import NotRequired
 
 from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_CATEGORIES
@@ -38,6 +40,7 @@ from .sft import (
     LengthFilterResult,
     LengthGroupedBatchSampler,
     SourceLoadStats,
+    TrainingIndex,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
     rendered_token_counts,
@@ -98,6 +101,8 @@ class LLMGridItem(TypedDict):
     start_direction: Sequence[float]
     scene_id: str
     dataset: Literal["R2R", "RxR"]
+    training_weight: NotRequired[float]
+    is_padding: NotRequired[bool]
 
 
 class LLMGridValidationError(ValueError):
@@ -311,7 +316,12 @@ class LLMGridItemsDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, index: int) -> LLMGridItem:
+    def __getitem__(self, index: Union[int, TrainingIndex]) -> LLMGridItem:
+        if isinstance(index, TrainingIndex):
+            item = self.items[index.index].copy()
+            item["training_weight"] = index.loss_scale
+            item["is_padding"] = index.is_padding
+            return item
         return self.items[index]
 
 
@@ -459,6 +469,14 @@ def collate_llm_grid_batch(
     encoded["prompt_lengths"] = prompt_lengths
     encoded["example_ids"] = [item["example_id"] for item in batch]
     encoded["items"] = list(batch)
+    encoded["training_weights"] = torch.tensor(
+        [item.get("training_weight", 1.0) for item in batch],
+        dtype=torch.float32,
+    )
+    encoded["is_padding"] = torch.tensor(
+        [item.get("is_padding", False) for item in batch],
+        dtype=torch.bool,
+    )
     return encoded
 
 
@@ -980,7 +998,9 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(train_items, tokenizer, system_prompt),
         batch_size=args.per_device_batch_size,
-        generator=torch.Generator().manual_seed(args.seed),
+        rank=0,
+        world_size=1,
+        seed=args.seed,
     )
     loader = DataLoader(
         dataset,

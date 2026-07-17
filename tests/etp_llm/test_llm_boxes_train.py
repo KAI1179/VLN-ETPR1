@@ -583,7 +583,15 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
     tokenizer = _ChatTokenizer()
 
     collated = llm_boxes_train.collate_llm_boxes_batch(
-        [{"input_text": "input", "target_text": "target", "example_id": "ex"}],
+        [
+            {
+                "input_text": "input",
+                "target_text": "target",
+                "example_id": "ex",
+                "training_weight": 8 / 3,
+                "is_padding": False,
+            }
+        ],
         tokenizer,
         system_prompt="system prompt",
         max_input_length=11,
@@ -609,11 +617,29 @@ def test_collate_builds_chat_completion_and_masks_prompt_tokens():
         collated["labels"][0][: collated["prompt_lengths"][0]]
         == [-100] * collated["prompt_lengths"][0]
     )
+    assert collated["training_weights"].tolist() == pytest.approx([8 / 3])
+    assert collated["is_padding"].tolist() == [False]
     assert (
         collated["labels"][0][collated["prompt_lengths"][0] :]
         == collated["input_ids"][0][collated["prompt_lengths"][0] :]
     )
     assert collated["example_ids"] == ["ex"]
+
+
+def test_training_item_dataset_resolves_training_index_metadata():
+    item = {"input_text": "input", "target_text": "target", "example_id": "ex"}
+    dataset = llm_boxes_train.LLMBoxesItemDataset([item])
+
+    training_item = dataset[
+        llm_boxes_train.TrainingIndex(
+            index=0,
+            loss_scale=8 / 3,
+            is_padding=False,
+        )
+    ]
+
+    assert training_item["training_weight"] == 8 / 3
+    assert training_item["is_padding"] is False
 
 
 def test_collate_disables_special_tokens_to_match_rendered_filter_counts():
@@ -1178,6 +1204,7 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         captured["batch_sampler"],
         llm_boxes_train.LengthGroupedBatchSampler,
     )
+    assert not hasattr(captured["batch_sampler"], "legacy_integer_indices")
     assert "batch_size" not in captured
     assert "shuffle" not in captured
 

@@ -139,6 +139,28 @@ def test_length_grouped_sampler_scales_real_tail_and_zeros_padding():
     assert all(training_index.loss_scale == 0.0 for training_index in padding_tail)
 
 
+def test_length_grouped_sampler_scales_intermediate_tail_group():
+    samplers = [
+        LengthGroupedBatchSampler(
+            lengths=range(11),
+            batch_size=1,
+            rank=rank,
+            world_size=8,
+            seed=17,
+        )
+        for rank in range(8)
+    ]
+    tail = [[*sampler][-1][0] for sampler in samplers]
+
+    real_tail = [training_index for training_index in tail if not training_index.is_padding]
+    padding_tail = [training_index for training_index in tail if training_index.is_padding]
+
+    assert len(real_tail) == 3
+    assert all(training_index.loss_scale == 8 / 3 for training_index in real_tail)
+    assert len(padding_tail) == 5
+    assert all(training_index.loss_scale == 0.0 for training_index in padding_tail)
+
+
 def test_length_grouped_sampler_epoch_shuffle_is_reproducible():
     epoch_zero = _distributed_batches(epoch=0)
     epoch_one = _distributed_batches(epoch=1)
@@ -223,10 +245,57 @@ def test_make_sft_accelerator_configures_gradient_accumulation(monkeypatch):
 def test_reduce_training_totals_uses_global_support_weighted_loss():
     class _Accelerator:
         device = torch.device("cpu")
+        num_processes = 2
 
         def reduce(self, values, reduction):
             assert reduction == "sum"
-            return values + torch.tensor([6.0, 3.0, 2.0])
+            return values + torch.tensor([6.0, 3.0, 2.0, 4.0])
+
+    metrics = sft.reduce_training_totals(
+        _Accelerator(),
+        loss_sum=2.0,
+        example_count=1,
+        batch_count=2,
+    )
+
+    assert metrics == {
+        "loss": 2.0,
+        "loss_sum": 8.0,
+        "example_count": 4.0,
+        "batch_count": 2.0,
+    }
+
+
+def test_reduce_training_totals_rejects_asymmetric_rank_batch_counts():
+    class _Accelerator:
+        device = torch.device("cpu")
+        num_processes = 2
+
+        def reduce(self, values, reduction):
+            assert reduction == "sum"
+            return torch.tensor([8.0, 4.0, 3.0, 5.0])
+
+    with pytest.raises(
+        ValueError,
+        match="all ranks must report equal local batch counts",
+    ):
+        sft.reduce_training_totals(
+            _Accelerator(),
+            loss_sum=2.0,
+            example_count=1,
+            batch_count=1,
+        )
+
+
+def test_reduce_training_totals_excludes_tail_scaling_and_padding_support():
+    class _Accelerator:
+        device = torch.device("cpu")
+        num_processes = 8
+
+        def reduce(self, values, reduction):
+            assert reduction == "sum"
+            assert values.tolist() == [2.0, 1.0, 1.0, 1.0]
+            return torch.tensor([12.0, 3.0, 8.0, 8.0])
 
     metrics = sft.reduce_training_totals(
         _Accelerator(),
@@ -236,10 +305,10 @@ def test_reduce_training_totals_uses_global_support_weighted_loss():
     )
 
     assert metrics == {
-        "loss": 2.0,
-        "loss_sum": 8.0,
-        "example_count": 4.0,
-        "batch_count": 3.0,
+        "loss": 4.0,
+        "loss_sum": 12.0,
+        "example_count": 3.0,
+        "batch_count": 1.0,
     }
 
 

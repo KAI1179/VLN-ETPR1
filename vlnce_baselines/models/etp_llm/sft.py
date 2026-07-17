@@ -10,11 +10,9 @@ from typing import (
     Iterator,
     List,
     Mapping,
-    Optional,
     Sequence,
     Tuple,
     TypeVar,
-    Union,
 )
 
 import torch
@@ -177,15 +175,32 @@ def reduce_training_totals(
     example_count: int,
     batch_count: int,
 ) -> Dict[str, float]:
+    """Reduce unscaled real-example loss/support and synchronized batch count.
+
+    ``loss_sum`` must exclude synthetic padding and must not include
+    ``TrainingIndex.loss_scale``. ``example_count`` must count only real
+    examples. ``batch_count`` is the local device-batch count and must match on
+    every rank.
+    """
     local_totals = torch.tensor(
-        [loss_sum, example_count, batch_count],
+        [loss_sum, example_count, batch_count, batch_count**2],
         dtype=torch.float64,
         device=accelerator.device,
     )
     global_totals = accelerator.reduce(local_totals, reduction="sum")
-    global_loss_sum, global_example_count, global_batch_count = (
-        float(value.item()) for value in global_totals
-    )
+    (
+        global_loss_sum,
+        global_example_count,
+        global_device_batch_count,
+        global_device_batch_count_squared,
+    ) = (float(value.item()) for value in global_totals)
+    world_size = int(accelerator.num_processes)
+    if (
+        global_device_batch_count_squared * world_size
+        != global_device_batch_count**2
+    ):
+        raise ValueError("all ranks must report equal local batch counts")
+    synchronized_batch_count = global_device_batch_count / world_size
     return {
         "loss": (
             global_loss_sum / global_example_count
@@ -194,7 +209,7 @@ def reduce_training_totals(
         ),
         "loss_sum": global_loss_sum,
         "example_count": global_example_count,
-        "batch_count": global_batch_count,
+        "batch_count": synchronized_batch_count,
     }
 
 
@@ -214,7 +229,7 @@ def scale_training_loss(
     return loss * weights[0].to(device=loss.device, dtype=loss.dtype)
 
 
-class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
+class LengthGroupedBatchSampler(Sampler[List[TrainingIndex]]):
     def __init__(
         self,
         lengths: Sequence[int],
@@ -223,7 +238,6 @@ class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
         rank: int = 0,
         world_size: int = 1,
         seed: int = 42,
-        generator: Optional[torch.Generator] = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
@@ -231,10 +245,6 @@ class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
             raise ValueError("world_size must be at least 1")
         if rank < 0 or rank >= world_size:
             raise ValueError("rank must be in [0, world_size)")
-        if generator is not None and world_size != 1:
-            raise ValueError(
-                "generator is only supported for legacy single-process sampling"
-            )
         if world_size > 1 and batch_size != 1:
             raise ValueError(
                 "distributed LLM finetuning currently requires "
@@ -243,8 +253,7 @@ class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
         self.batch_size = batch_size
         self.rank = rank
         self.world_size = world_size
-        self.seed = seed if generator is None else int(generator.initial_seed())
-        self.legacy_integer_indices = generator is not None
+        self.seed = seed
         self.epoch = 0
         self.sorted_indices = sorted(
             range(len(lengths)), key=lambda index: lengths[index]
@@ -253,7 +262,7 @@ class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
-    def __iter__(self) -> Iterator[List[Union[int, TrainingIndex]]]:
+    def __iter__(self) -> Iterator[List[TrainingIndex]]:
         batches = [
             self.sorted_indices[start : start + self.batch_size]
             for start in range(0, len(self.sorted_indices), self.batch_size)
@@ -265,9 +274,6 @@ class LengthGroupedBatchSampler(Sampler[List[Union[int, TrainingIndex]]]):
             rank_group = shuffled_batches[start : start + self.world_size]
             real_rank_count = len(rank_group)
             if self.rank < real_rank_count:
-                if self.legacy_integer_indices:
-                    yield rank_group[self.rank]
-                    continue
                 loss_scale = self.world_size / real_rank_count
                 yield [
                     TrainingIndex(index=index, loss_scale=loss_scale)

@@ -753,6 +753,8 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
         "start_position": (1.2, 3.4),
         "start_direction": (0.0, 1.0),
         "scene_id": "scene-a",
+        "training_weight": 8 / 3,
+        "is_padding": False,
     }
 
     batch = llm_grid_train.collate_llm_grid_batch(
@@ -768,6 +770,8 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
     assert torch.all(labels[:prompt_length] == -100)
     assert torch.any(labels[prompt_length:] != -100)
     assert batch["example_ids"] == ["R2R_train_42"]
+    assert batch["training_weights"].tolist() == pytest.approx([8 / 3])
+    assert batch["is_padding"].tolist() == [False]
 
 
 def test_grid_collate_disables_special_tokens_to_match_filter_counts():
@@ -1016,12 +1020,39 @@ def test_length_grouped_batch_sampler_batches_similar_lengths():
     sampler = llm_grid_train.LengthGroupedBatchSampler(
         lengths=[100, 10, 20, 105],
         batch_size=2,
-        generator=torch.Generator().manual_seed(0),
+        rank=0,
+        world_size=1,
+        seed=0,
     )
 
-    batches = [sorted(batch) for batch in sampler]
+    batches = [sorted(index.index for index in batch) for batch in sampler]
 
     assert sorted(batches) == [[0, 3], [1, 2]]
+
+
+def test_length_grouped_batch_sampler_rejects_removed_generator_alias():
+    with pytest.raises(TypeError, match="generator"):
+        llm_grid_train.LengthGroupedBatchSampler(
+            lengths=[1],
+            batch_size=1,
+            generator=torch.Generator(),
+        )
+
+
+def test_training_items_dataset_resolves_training_index_metadata():
+    item = {"input_text": "input", "target_text": "target", "example_id": "ex"}
+    dataset = llm_grid_train.LLMGridItemsDataset([item])
+
+    training_item = dataset[
+        llm_grid_train.TrainingIndex(
+            index=0,
+            loss_scale=8 / 3,
+            is_padding=False,
+        )
+    ]
+
+    assert training_item["training_weight"] == 8 / 3
+    assert training_item["is_padding"] is False
 
 
 def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
@@ -1059,6 +1090,7 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         captured["batch_sampler"],
         llm_grid_train.LengthGroupedBatchSampler,
     )
+    assert not hasattr(captured["batch_sampler"], "legacy_integer_indices")
     assert "batch_size" not in captured
     assert "shuffle" not in captured
 
