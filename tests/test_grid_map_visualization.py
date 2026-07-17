@@ -5,9 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from prior.analyze.batch_vis import _sample_prediction_paths, render_comparisons
+from prior.analyze.batch_vis import (
+    BatchVisualizationArgs,
+    _sample_prediction_paths,
+    render_comparisons,
+)
 from prior.grid_map import BaseGridMap
 from prior.grid_map._visualize import _MapOverlay, _grid_bounds
+
+
+def test_batch_visualization_defaults_to_mixed_tag_free_grid_cache():
+    assert (
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+        in str(BatchVisualizationArgs().prediction_root)
+    )
 
 
 def test_visualize_comparison_converts_context_to_grid_coordinates(

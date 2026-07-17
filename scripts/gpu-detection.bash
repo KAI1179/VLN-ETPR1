@@ -69,6 +69,39 @@ configure_distributed_gpu_vars() {
   export GPU_IDS
 }
 
+configure_exact_distributed_gpu_vars() {
+  local expected_gpu_count="$1"
+  local detected_gpu_count
+  detected_gpu_count="$(detect_gpu_count)"
+
+  if [ "${detected_gpu_count}" != "${expected_gpu_count}" ]; then
+    echo \
+      "exactly ${expected_gpu_count} visible GPUs required; detected ${detected_gpu_count}" \
+      >&2
+    return 1
+  fi
+  if [ -n "${NPROC_PER_NODE:-}" ] \
+    && [ "${NPROC_PER_NODE}" != "${expected_gpu_count}" ]; then
+    echo \
+      "NPROC_PER_NODE must be ${expected_gpu_count}; got ${NPROC_PER_NODE}" \
+      >&2
+    return 1
+  fi
+  if [ -n "${GPU_NUMBERS:-}" ] \
+    && [ "${GPU_NUMBERS}" != "${expected_gpu_count}" ]; then
+    echo "GPU_NUMBERS must be ${expected_gpu_count}; got ${GPU_NUMBERS}" >&2
+    return 1
+  fi
+
+  NPROC_PER_NODE="${expected_gpu_count}"
+  GPU_NUMBERS="${expected_gpu_count}"
+  GPU_IDS="$(make_local_gpu_ids "${expected_gpu_count}")"
+
+  export NPROC_PER_NODE
+  export GPU_NUMBERS
+  export GPU_IDS
+}
+
 configure_pretrain_gpu_vars() {
   NUM_GPUS="${NUM_GPUS:-$(detect_gpu_count)}"
   export NUM_GPUS

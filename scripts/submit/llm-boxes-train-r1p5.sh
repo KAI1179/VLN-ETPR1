@@ -9,15 +9,15 @@ set -eo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${REPO_ROOT}/scripts/gpu-detection.bash"
+configure_exact_distributed_gpu_vars 8
 
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
-configure_distributed_gpu_vars
 set -u
 
 torchrun --standalone \
   --nnodes=1 \
-  --nproc-per-node="${NPROC_PER_NODE}" \
+  --nproc-per-node=8 \
   -m vlnce_baselines.models.etp_llm.llm_boxes_train train \
   --per-device-batch-size 1 \
   --gradient-accumulation-steps 1 \

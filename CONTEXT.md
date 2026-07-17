@@ -20,8 +20,10 @@ oversized examples explicitly; 1,152 is the measured prompt budget used by
 training and analysis.
 
 Production finetuning is one Slurm node and one task with eight visible GPUs.
-The launchers start one `torchrun` rank per visible GPU, using per-device batch
-size 1, gradient accumulation 1, gradient checkpointing, ten epochs, and LoRA
+The launchers reject any allocation that does not expose exactly eight GPUs and
+reject conflicting process-count overrides before starting
+`torchrun --nproc-per-node=8`. They use per-device batch size 1, gradient
+accumulation 1, gradient checkpointing, ten epochs, and LoRA
 rank/alpha/dropout 32/64/0.05. Only rank zero writes metrics and checkpoints.
 An epoch checkpoint appears only after that epoch completes; cancelling
 mid-epoch does not create an interruption checkpoint or preserve optimizer

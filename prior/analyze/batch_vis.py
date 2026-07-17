@@ -15,10 +15,10 @@ from prior.grid_map import BaseGridMap
 class BatchVisualizationArgs(Tap):
     prediction_root: Path = Path(
         "data/llm_navigation/"
-        "llm-grid-r2r-legacy-r1p5-direction5-scale2/"
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree/"
         "r2r/val_unseen/cognitive_maps/raster"
     )
-    # Use --prediction-root data/llm_navigation/llm-grid-r2r-legacy-r1p5-direction5-scale2/r2r/train/cognitive_maps/raster to sample training
+    # Use the same cache key under r2r/train to sample training predictions.
     """Prediction raster directory containing one directory per scene."""
     ground_truth_root: Path = Path(
         "data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1"

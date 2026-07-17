@@ -1,58 +1,111 @@
+from __future__ import annotations
+
 import os
+from pathlib import Path
+import shutil
 
 import pytest
 import torch
-import torch.distributed as dist
 from torch import nn
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 
-
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="requires two CUDA devices",
+from vlnce_baselines.models.etp_llm.sft import (
+    LengthGroupedBatchSampler,
+    make_sft_accelerator,
+    scale_training_loss,
 )
+
+
+class _TinyAdapterModel(nn.Module):
+    """Frozen scalar base plus one trainable adapter projection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("base_weight", torch.ones(1, 1))
+        self.adapter = nn.Linear(1, 1, bias=False)
+        nn.init.constant_(self.adapter.weight, 0.5)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs @ self.base_weight + self.adapter(inputs)
+
+
 @pytest.mark.skipif(
     int(os.environ.get("WORLD_SIZE", "1")) != 2,
     reason="run with torchrun --nproc-per-node=2",
 )
-def test_two_rank_adapter_training_and_rank_zero_artifacts():
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl")
-    try:
-        device = torch.device("cuda", local_rank)
-        model = DistributedDataParallel(nn.Linear(1, 1, bias=False).to(device))
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        dataset = TensorDataset(
-            torch.arange(4, dtype=torch.float32).unsqueeze(1),
-            torch.arange(4, dtype=torch.long),
+def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
+    accelerator = make_sft_accelerator(gradient_accumulation_steps=1)
+    assert accelerator.num_processes == 2
+
+    sampler = LengthGroupedBatchSampler(
+        lengths=[1, 2, 3, 4],
+        batch_size=1,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
+        seed=42,
+    )
+    model = _TinyAdapterModel()
+    optimizer = torch.optim.SGD(model.adapter.parameters(), lr=0.01)
+    model, optimizer = accelerator.prepare(model, optimizer)
+    seen_example_ids = []
+
+    for batch_indices in sampler:
+        training_index = batch_indices[0]
+        inputs = torch.tensor(
+            [[float(training_index.index + 1)]],
+            device=accelerator.device,
         )
-        sampler = DistributedSampler(dataset, shuffle=False)
-        seen_example_ids = []
-
-        for inputs, example_ids in DataLoader(dataset, batch_size=1, sampler=sampler):
-            optimizer.zero_grad()
-            loss = model(inputs.to(device)).square().mean()
-            loss.backward()
+        with accelerator.accumulate(model):
+            loss = model(inputs).square().mean()
+            weighted_loss = scale_training_loss(
+                loss,
+                torch.tensor(
+                    [training_index.loss_scale],
+                    device=accelerator.device,
+                ),
+                torch.tensor(
+                    [training_index.is_padding],
+                    device=accelerator.device,
+                ),
+            )
+            accelerator.backward(weighted_loss)
             optimizer.step()
-            seen_example_ids.extend(example_ids.tolist())
+            optimizer.zero_grad()
+        if not training_index.is_padding:
+            seen_example_ids.append(training_index.index)
 
-        adapter_state = next(model.module.parameters()).detach()
-        gathered_states = [torch.empty_like(adapter_state) for _ in range(2)]
-        dist.all_gather(gathered_states, adapter_state)
-        assert torch.equal(gathered_states[0], gathered_states[1])
+    gathered_ids = accelerator.gather_for_metrics(
+        torch.tensor(seen_example_ids, device=accelerator.device)
+    )
+    assert sorted(gathered_ids.cpu().tolist()) == [0, 1, 2, 3]
 
-        writer_lists = [[], []]
-        dist.all_gather_object(writer_lists, [local_rank] if local_rank == 0 else [])
-        artifact_writers = [rank for ranks in writer_lists for rank in ranks]
-        assert artifact_writers == [0]
+    adapter_state = (
+        accelerator.unwrap_model(model).adapter.weight.detach().reshape(-1)
+    )
+    gathered_adapter_state = accelerator.gather(adapter_state)
+    assert gathered_adapter_state.shape == (2,)
+    assert torch.equal(
+        gathered_adapter_state[:1],
+        gathered_adapter_state[1:],
+    )
 
-        seen_lists = [[], []]
-        dist.all_gather_object(seen_lists, seen_example_ids)
-        all_seen_example_ids = [
-            example_id for rank_ids in seen_lists for example_id in rank_ids
-        ]
-        assert sorted(all_seen_example_ids) == list(range(4))
-    finally:
-        dist.destroy_process_group()
+    artifact_dir = (
+        Path(".pytest_cache")
+        / f"sft-distributed-smoke-{os.environ['MASTER_PORT']}"
+    )
+    if accelerator.is_main_process:
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        artifact_dir.mkdir(parents=True)
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        (artifact_dir / f"artifact-rank-{accelerator.process_index}.txt").write_text(
+            "main-process artifact",
+            encoding="utf-8",
+        )
+    accelerator.wait_for_everyone()
+
+    assert sorted(path.name for path in artifact_dir.iterdir()) == [
+        "artifact-rank-0.txt"
+    ]
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        shutil.rmtree(artifact_dir)

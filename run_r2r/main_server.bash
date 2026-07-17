@@ -45,12 +45,12 @@ IMAGINED_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/imagined/ckpts/model_step_100000
 IMAGINED_DAGGER_CKPT="data/logs/checkpoints/release_r2r_imagined_dagger/store/ckpt.iter30000.pth"
 IMAGINED_GRPO_CKPT="data/logs/checkpoints/release_r2r_imagined_grpo/store/ckpt.iter270.pth"
 
-LLM_BOXES_CURRENT_MODEL_KEY="llm-boxes-r1p5-path5"
+LLM_BOXES_CURRENT_MODEL_KEY="llm-boxes-r2r-rxr-r1p5-path5-tagfree"
 LLM_BOXES_CURRENT_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_boxes_current/ckpts/model_step_425000.pt"
 LLM_BOXES_CURRENT_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_boxes_current_dagger/store/ckpt.iter30000.pth"
 LLM_BOXES_CURRENT_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_boxes_current_grpo/store/ckpt.iter500.pth"
 
-LLM_GRID_TRY5_MODEL_KEY="llm-grid-r2r-legacy-r1p5-direction5-scale2"
+LLM_GRID_TRY5_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
 LLM_GRID_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_365000.pt"
 LLM_GRID_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_dagger/store/ckpt.iter30000.pth"
 LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter500.pth"

@@ -11,9 +11,11 @@ artifacts. `--limit-per-dataset N` optionally limits each source independently
 for a small debugging run.
 
 The maintained Slurm launchers allocate one node, one task, and eight GPUs.
-They use `torchrun --standalone` with one rank per Slurm-visible GPU,
-per-device batch size 1, gradient accumulation 1, gradient checkpointing,
-`device_map=none`, ten epochs, and LoRA rank/alpha/dropout 32/64/0.05:
+They fail before environment activation unless exactly eight GPUs are visible
+and no process-count override conflicts with eight. The final command is
+`torchrun --standalone --nnodes=1 --nproc-per-node=8`, with per-device batch
+size 1, gradient accumulation 1, gradient checkpointing, `device_map=none`, ten
+epochs, and LoRA rank/alpha/dropout 32/64/0.05:
 
 ```shell
 sbatch scripts/submit/llm-boxes-train-r1p5.sh
@@ -55,25 +57,30 @@ accepts `--limit-per-dataset` for bounded checks.
 
 ## LLM-Navigation Scaffold
 
-The LLM-Navigation scaffold registers:
+The maintained LLM-Navigation paths register:
 
-- Policy: `LLMPolicy`
+- Policies: `LLMBoxesCurrentPolicy` and `LLMGridTry5Policy`
 - DAgger trainer: `SS-ETP-LLM`
 - GRPO trainer: `GRPO-ETP-LLM`
-- Pretraining flag: `--use_llm`
 
-Pretraining checkpoints are routed under:
-
-```text
-pretrained/r2r_rxr_ce/llm/
-```
-
-Launcher modes:
+Pretraining launchers:
 
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash pretrain_src/run_pt/run_mix_server.bash pretrained/r2r_rxr_ce/llm --use_llm --checkpoint pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_dagger
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grpo
+sbatch scripts/submit/llm-boxes-current-pretrain.sh
+sbatch scripts/submit/llm-grid-try5-pretrain.sh
+```
+
+Maintained navigation modes:
+
+```shell
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_boxes_current_dagger
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_boxes_current_grpo
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_boxes_current_eval_dagger
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_boxes_current_eval_grpo
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grid_try5_dagger
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grid_try5_grpo
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grid_try5_eval_dagger
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash run_r2r/main_server.bash llm_grid_try5_eval_grpo
 ```
 
 These paths consume precomputed LLM-derived cognitive-map caches. They should not
