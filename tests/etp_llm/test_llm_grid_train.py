@@ -752,6 +752,7 @@ def test_aggregate_metrics_weights_direction_vector_support():
 
 def test_load_llm_grid_examples_loads_raster_paths(monkeypatch, tmp_path):
     _EpisodeSource.calls = []
+    progress_calls = []
     raster_path = tmp_path / "scene-a" / "R2R_train_42.npz"
     raster_path.parent.mkdir()
     np.savez_compressed(
@@ -768,6 +769,12 @@ def test_load_llm_grid_examples_loads_raster_paths(monkeypatch, tmp_path):
         lambda scene_id, cache_id, namespace: raster_path,
     )
 
+    def record_progress(iterable, *, desc, quiet, total=None):
+        progress_calls.append((desc, quiet, total))
+        return iterable
+
+    monkeypatch.setattr(llm_grid_train, "_progress", record_progress)
+
     result = llm_grid_train.load_llm_grid_examples(
         ["train"],
         limit_per_dataset=1,
@@ -775,6 +782,7 @@ def test_load_llm_grid_examples_loads_raster_paths(monkeypatch, tmp_path):
     )
 
     assert _EpisodeSource.calls == [(("train",), 1)]
+    assert progress_calls == [("load LLM-Grid examples", False, 2)]
     assert len(result.examples) == 1
     assert result.examples[0].example_id == "R2R_train_42"
     assert result.examples[0].dataset == "R2R"
@@ -1230,6 +1238,7 @@ def test_training_collator_rejects_missing_training_metadata():
 def test_build_training_manifest_keeps_only_text_and_token_metadata(
     monkeypatch,
 ):
+    progress_calls = []
     item: llm_grid_train.LLMGridItem = {
         "input_text": "map input",
         "target_text": EMPTY_GRID_TEXT,
@@ -1250,13 +1259,19 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
     monkeypatch.setattr(
         llm_grid_train,
         "load_llm_grid_examples",
-        lambda *args, **kwargs: _load_result([object()]),
+        lambda *args, **kwargs: _load_result([object(), object()]),
     )
     monkeypatch.setattr(
         llm_grid_train,
         "LLMGridDataset",
         lambda *args, **kwargs: [item, rxr_item],
     )
+
+    def record_progress(iterable, *, desc, quiet, total=None):
+        progress_calls.append((desc, quiet, total))
+        return iterable
+
+    monkeypatch.setattr(llm_grid_train, "_progress", record_progress)
     args = llm_grid_train.LLMGridArgs().parse_args(
         [
             "train",
@@ -1272,6 +1287,11 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
     )
 
     assert len(manifest.items) == 2
+    assert progress_calls == [
+        ("serialize LLM-Grid targets", True, 2),
+        ("filter LLM-Grid token lengths", True, 2),
+        ("assemble LLM-Grid manifest", True, 2),
+    ]
     assert set(manifest.items[0]) == {
         "input_text",
         "target_text",

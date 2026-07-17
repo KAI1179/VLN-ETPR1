@@ -165,10 +165,16 @@ def load_llm_grid_examples(
     discovered = {"R2R": 0, "RxR": 0}
     loaded = {"R2R": 0, "RxR": 0}
     missing: Dict[str, List[str]] = {"R2R": [], "RxR": []}
-    for episode in VLNCEEpisodeEntry.iter_r2r_rxr(
-        splits=splits,
-        limit_per_dataset=limit_per_dataset,
-    ):
+    episodes = _progress(
+        VLNCEEpisodeEntry.iter_r2r_rxr(
+            splits=splits,
+            limit_per_dataset=limit_per_dataset,
+        ),
+        desc="load LLM-Grid examples",
+        quiet=quiet,
+        total=(limit_per_dataset * 2 if limit_per_dataset is not None else None),
+    )
+    for episode in episodes:
         episode_dataset = _episode_dataset(episode.dataset)
         discovered[episode_dataset] += 1
         raster_path = cognitive_map_cache_path(
@@ -370,7 +376,7 @@ def _completion_token_count(
 
 
 def filter_grid_training_items(
-    items: Sequence[LLMGridItem],
+    items: Iterable[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
     max_input_length: int,
@@ -1186,9 +1192,21 @@ def _build_grid_training_manifest(
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     validate_fixed_corpus(load_result.by_dataset)
-    all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
+    all_items = list(
+        _progress(
+            LLMGridDataset(load_result.examples, scale=args.scale),
+            desc="serialize LLM-Grid targets",
+            quiet=args.quiet,
+            total=len(load_result.examples),
+        )
+    )
     filtered = filter_grid_training_items(
-        all_items,
+        _progress(
+            all_items,
+            desc="filter LLM-Grid token lengths",
+            quiet=args.quiet,
+            total=len(all_items),
+        ),
         tokenizer=tokenizer,
         system_prompt=system_prompt,
         max_input_length=args.max_input_length,
@@ -1203,7 +1221,12 @@ def _build_grid_training_manifest(
         print(f"skipped_over_budget={len(dropped_over_budget)}")
 
     manifest_items = []
-    for item in train_items:
+    for item in _progress(
+        train_items,
+        desc="assemble LLM-Grid manifest",
+        quiet=args.quiet,
+        total=len(train_items),
+    ):
         prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         completion = _render_chat_completion(
             tokenizer,

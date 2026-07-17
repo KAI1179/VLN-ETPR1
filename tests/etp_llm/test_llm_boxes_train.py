@@ -1514,6 +1514,18 @@ def test_boxes_training_manifest_contains_only_lightweight_text_and_token_rows(
     tmp_path,
 ):
     _patch_training_dependencies(monkeypatch, _TrainingModel(1.0))
+    progress_calls = []
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "load_llm_boxes_examples",
+        lambda *args, **kwargs: _load_result([object(), object()]),
+    )
+
+    def record_progress(iterable, *, desc, quiet, total=None):
+        progress_calls.append((desc, quiet, total))
+        return iterable
+
+    monkeypatch.setattr(llm_boxes_train, "_progress", record_progress)
     args = llm_boxes_train.parse_args(
         [
             "train",
@@ -1533,6 +1545,12 @@ def test_boxes_training_manifest_contains_only_lightweight_text_and_token_rows(
     )
 
     assert manifest.metadata["candidate"] == "llm_boxes"
+    assert progress_calls == [
+        ("serialize LLM-Boxes targets", True, 2),
+        ("filter LLM-Boxes token lengths", True, 2),
+        ("assemble LLM-Boxes manifest", True, 2),
+        ("summarize LLM-Boxes text", True, 2),
+    ]
     assert len(manifest.items) == 2
     assert set(manifest.items[0]) == {
         "example_id",

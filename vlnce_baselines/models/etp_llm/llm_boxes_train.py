@@ -417,9 +417,21 @@ def _build_boxes_training_manifest(
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     validate_fixed_corpus(load_result.by_dataset)
-    all_items = tuple(LLMBoxesDataset(load_result.examples))
+    all_items = tuple(
+        _progress(
+            LLMBoxesDataset(load_result.examples),
+            desc="serialize LLM-Boxes targets",
+            quiet=quiet,
+            total=len(load_result.examples),
+        )
+    )
     filtered = filter_llm_boxes_items_for_length(
-        all_items,
+        _progress(
+            all_items,
+            desc="filter LLM-Boxes token lengths",
+            quiet=quiet,
+            total=len(all_items),
+        ),
         tokenizer,
         system_prompt,
         max_input_length=args.max_input_length,
@@ -427,7 +439,12 @@ def _build_boxes_training_manifest(
     )
     validate_fixed_corpus(load_result.by_dataset, retained_items=filtered.kept)
     rows = []
-    for item in all_items:
+    for item in _progress(
+        all_items,
+        desc="assemble LLM-Boxes manifest",
+        quiet=quiet,
+        total=len(all_items),
+    ):
         prompt_text = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         completion_text = _render_chat_completion(
             tokenizer,
@@ -448,7 +465,12 @@ def _build_boxes_training_manifest(
             }
         )
     text_stats = compute_llm_text_stats(
-        filtered.kept,
+        _progress(
+            filtered.kept,
+            desc="summarize LLM-Boxes text",
+            quiet=quiet,
+            total=len(filtered.kept),
+        ),
         tokenizer,
         system_prompt,
         max_input_length=args.max_input_length,
