@@ -41,9 +41,14 @@ from .sft import (
     LengthGroupedBatchSampler,
     SourceLoadStats,
     TrainingIndex,
+    distributed_batch_metrics,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
     fixed_corpus_metrics,
+    make_sft_accelerator,
+    reduce_training_totals,
     rendered_token_counts,
+    scale_training_loss,
+    validate_distributed_device_map,
 )
 from .llm_boxes_train import (
     _causal_lm_labels,
@@ -857,8 +862,23 @@ class LLMGridArgs(Tap):
             self.device = _default_device()
         if self.scale not in GRID_SIZE_BY_SCALE:
             raise ValueError("LLM-Grid v1 only supports --scale 1 or 2")
-        if self.gradient_accumulation_steps < 1:
-            raise ValueError("--gradient-accumulation-steps must be >= 1")
+        if self.mode == "train":
+            _validate_llm_grid_training_args(self)
+
+
+def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("--gradient-accumulation-steps must be >= 1")
+    if args.gradient_accumulation_steps != 1:
+        raise ValueError(
+            "LLM-Grid training requires "
+            "--gradient-accumulation-steps 1 because its pre-partitioned "
+            "loader cannot flush partial accumulation windows"
+        )
+    if not args.gradient_checkpointing:
+        raise ValueError(
+            "--gradient-checkpointing is required for LLM-Grid training"
+        )
 
 
 def _grid_size_for_scale(scale: int) -> int:
@@ -954,8 +974,17 @@ def _text_diagnostics(
 
 
 def train_model(args: LLMGridArgs) -> Dict[str, float]:
+    _validate_llm_grid_training_args(args)
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Grid")
+
+    accelerator = make_sft_accelerator(args.gradient_accumulation_steps)
+    validate_distributed_device_map(accelerator, args.device_map)
+    batch_metrics = distributed_batch_metrics(
+        accelerator,
+        args.per_device_batch_size,
+        args.gradient_accumulation_steps,
+    )
     load_result = load_llm_grid_examples(
         TRAIN_SPLITS,
         limit_per_dataset=args.limit_per_dataset,
@@ -967,18 +996,20 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         raise ValueError("No LLM-Grid training examples were loaded")
 
     system_prompt = load_system_prompt(scale=args.scale)
-    _write_run_system_prompt(args.output_dir, system_prompt)
+    if accelerator.is_main_process:
+        _write_run_system_prompt(args.output_dir, system_prompt)
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         args.model_name_or_path,
-        device_map=_normalize_device_map(args.device_map),
+        device_map=(
+            None
+            if accelerator.num_processes > 1
+            else _normalize_device_map(args.device_map)
+        ),
     )
     model = _apply_grid_lora(model, args)
     _cast_trainable_parameters_to_float32(model)
     if args.gradient_checkpointing:
         _enable_gradient_checkpointing(model)
-    device = torch.device(args.device)
-    if not _model_uses_device_map(model):
-        model.to(device)
 
     all_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
     filtered = filter_grid_training_items(
@@ -1000,8 +1031,8 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(train_items, tokenizer, system_prompt),
         batch_size=args.per_device_batch_size,
-        rank=0,
-        world_size=1,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
         seed=args.seed,
     )
     loader = DataLoader(
@@ -1022,94 +1053,127 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         trainable_parameters,
         lr=args.learning_rate,
     )
+    model, optimizer = accelerator.prepare(model, optimizer)
     model.train()
-    total_loss = 0.0
-    steps = 0
+    local_loss_sum = 0.0
+    local_example_count = 0
+    local_batch_count = 0
     optimizer_steps = 0
-    optimizer.zero_grad()
     for epoch_index in range(args.epochs):
         batch_sampler.set_epoch(epoch_index)
-        batch_count = len(loader)
-        for batch_index, batch in enumerate(
-            _progress(
-                loader,
-                desc="train LLM-Grid",
-                quiet=args.quiet,
-            ),
-            start=1,
+        for batch in _progress(
+            loader,
+            desc="train LLM-Grid",
+            quiet=args.quiet,
         ):
-            outputs = model(**_model_batch(batch, device))
-            loss = outputs.loss
-            if not torch.isfinite(loss.detach()):
-                raise FloatingPointError(
-                    _non_finite_step_message(
-                        "loss",
-                        epoch_index + 1,
-                        steps + 1,
-                        batch,
+            with accelerator.accumulate(model):
+                outputs = model(**_model_batch(batch, accelerator.device))
+                loss = outputs.loss
+                if not torch.isfinite(loss.detach()):
+                    raise FloatingPointError(
+                        _non_finite_step_message(
+                            "loss",
+                            epoch_index + 1,
+                            local_batch_count + 1,
+                            batch,
+                        )
                     )
+                weighted_loss = scale_training_loss(
+                    loss,
+                    batch["training_weights"],
+                    batch["is_padding"],
                 )
-            (loss / args.gradient_accumulation_steps).backward()
-            should_step_optimizer = (
-                batch_index % args.gradient_accumulation_steps == 0
-                or batch_index == batch_count
-            )
-            if should_step_optimizer:
+                accelerator.backward(weighted_loss)
                 grad_norm = None
-                if args.max_grad_norm > 0:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                if accelerator.sync_gradients and args.max_grad_norm > 0:
+                    grad_norm = accelerator.clip_grad_norm_(
                         trainable_parameters,
                         args.max_grad_norm,
-                        error_if_nonfinite=False,
                     )
                     if not torch.isfinite(grad_norm.detach()):
                         raise FloatingPointError(
                             _non_finite_step_message(
                                 "gradient norm",
                                 epoch_index + 1,
-                                steps + 1,
+                                local_batch_count + 1,
                                 batch,
                                 value=float(grad_norm.detach().cpu()),
                             )
                         )
                 optimizer.step()
-                optimizer_steps += 1
                 optimizer.zero_grad()
-                _validate_trainable_parameters_finite(
-                    model,
-                    context=_non_finite_step_message(
-                        "trainable parameter",
-                        epoch_index + 1,
-                        steps + 1,
-                        batch,
-                        value=(
-                            float(grad_norm.detach().cpu())
-                            if grad_norm is not None
-                            else None
+                if accelerator.sync_gradients:
+                    optimizer_steps += 1
+                    _validate_trainable_parameters_finite(
+                        model,
+                        context=_non_finite_step_message(
+                            "trainable parameter",
+                            epoch_index + 1,
+                            local_batch_count + 1,
+                            batch,
+                            value=(
+                                float(grad_norm.detach().cpu())
+                                if grad_norm is not None
+                                else None
+                            ),
                         ),
-                    ),
-                )
-            total_loss += float(loss.detach().cpu())
-            steps += 1
-        epoch_dir = Path(args.output_dir) / "checkpoints" / f"epoch-{epoch_index + 1}"
-        epoch_dir.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(epoch_dir)
-        tokenizer.save_pretrained(epoch_dir)
+                    )
+            real_example_count = int((~batch["is_padding"].bool()).sum().item())
+            local_loss_sum += float(loss.detach().cpu()) * real_example_count
+            local_example_count += real_example_count
+            local_batch_count += 1
+        _save_llm_grid_checkpoint_on_main(
+            accelerator,
+            model,
+            tokenizer,
+            Path(args.output_dir)
+            / "checkpoints"
+            / f"epoch-{epoch_index + 1}",
+        )
 
-    checkpoint_dir = Path(args.output_dir) / "checkpoints" / "final"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(checkpoint_dir)
-    tokenizer.save_pretrained(checkpoint_dir)
+    _save_llm_grid_checkpoint_on_main(
+        accelerator,
+        model,
+        tokenizer,
+        Path(args.output_dir) / "checkpoints" / "final",
+    )
+    training_totals = reduce_training_totals(
+        accelerator,
+        local_loss_sum,
+        local_example_count,
+        local_batch_count,
+    )
     metrics = {
-        "train_loss": total_loss / steps if steps else 0.0,
-        "steps": float(steps),
+        "train_loss": training_totals["loss"],
+        "examples": training_totals["example_count"],
+        "steps": training_totals["batch_count"],
         "optimizer_steps": float(optimizer_steps),
-        "training_example_count": float(len(train_items)),
+        "world_size": float(batch_metrics.world_size),
+        "per_device_batch_size": float(batch_metrics.per_device_batch_size),
+        "gradient_accumulation_steps": float(
+            batch_metrics.gradient_accumulation_steps
+        ),
+        "global_batch_size": float(batch_metrics.global_batch_size),
         "skipped_over_budget_count": float(len(dropped_over_budget)),
         **fixed_corpus_metrics(load_result.by_dataset, all_items, filtered),
     }
-    _write_json(Path(args.output_dir) / "metrics.json", metrics)
+    if accelerator.is_main_process:
+        _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
+
+
+def _save_llm_grid_checkpoint_on_main(
+    accelerator: Any,
+    model: Any,
+    tokenizer: Any,
+    output_dir: Path,
+) -> None:
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        accelerator.unwrap_model(model).save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+    accelerator.wait_for_everyone()
 
 
 def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
@@ -1129,6 +1193,11 @@ def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
 
 
 def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
+    accelerator = make_sft_accelerator(1)
+    validate_distributed_device_map(accelerator, args.device_map)
+    if not accelerator.is_main_process:
+        return {}
+
     load_result = load_llm_grid_examples(
         EVAL_SPLITS,
         limit_per_dataset=args.limit_per_dataset,
@@ -1144,10 +1213,14 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
     model_path = args.checkpoint_path or args.model_name_or_path
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
         model_path,
-        device_map=_normalize_device_map(args.device_map),
+        device_map=(
+            None
+            if accelerator.num_processes > 1
+            else _normalize_device_map(args.device_map)
+        ),
     )
     tokenizer.padding_side = "left"
-    device = torch.device(args.device)
+    device = accelerator.device
     if not _model_uses_device_map(model):
         model.to(device)
     model.eval()
@@ -1224,15 +1297,15 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
                     },
                 )
     metrics = _aggregate_metrics(rows)
-    metrics["example_count"] = float(len(rows))
+    metrics["examples"] = float(len(rows))
     for prefix, dataset_rows in (
         ("combined", rows),
         ("r2r", rows_by_dataset["R2R"]),
         ("rxr", rows_by_dataset["RxR"]),
     ):
-        group_metrics = {name: 0.0 for name in metrics if name != "example_count"}
+        group_metrics = {name: 0.0 for name in metrics if name != "examples"}
         group_metrics.update(_aggregate_metrics(dataset_rows))
-        group_metrics["example_count"] = float(len(dataset_rows))
+        group_metrics["examples"] = float(len(dataset_rows))
         metrics.update(
             {f"{prefix}/{name}": value for name, value in group_metrics.items()}
         )
