@@ -284,6 +284,10 @@ Main reading:
     - -> ?
 - LLM-Grid 1: 逐网格预测，JSON 格式
 - LLM-Boxes 1: 逐 bbox 预测，JSON 格式
+    - Train: 28,713 / 11,802 (70.9%)
+    - R2R val-unseen: 2,089 / 260 (88.9%)
+    - RxR val-unseen, English: 2,932 / 1,620 (64.4%)
+    - Total: 33,734 / 13,682 (71.1%)
 
 ### 基于 LLM 的 pipeline
 
@@ -303,6 +307,8 @@ Main reading:
     - 未完整运行 - 检查点丢失
 - Nav 2: Try 9 + LLM 5
     - 未完整运行 - 中断，运行 try5-r1p5
+- LLM-Grid 1，Try 5 架构
+- LLM-Boxes 1，Try 10 架构
 
 ## 阶段
 
@@ -1108,7 +1114,8 @@ Drop Rate By `max_new_tokens`:
 - [x] Try 5 repro (半径 1.5, on-the-fly) @ 超算
 - [x] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
 - [x] 2x "Blurred", r=1.5 LLM-Grid 微调 (r2r-legacy-r1p5-direction5-scale2) @ 超算
-- [x] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
-- [ ] 2x "Blurred", r=1.5 LLM-Grid 导航 @ 超算
+- [ ] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
+    - [ ] 2x "Blurred", r=1.5 LLM-Grid, Try 5 架构 导航 @ 超算
 - [x] LLM-Boxes 微调 @ 超算
-- [ ] LLM-Boxes 导航缓存生成 @ 超算
+- [x] LLM-Boxes 导航缓存生成 @ 超算
+- [ ] LLM-Boxes, Try 10 架构 导航 @ 超算
