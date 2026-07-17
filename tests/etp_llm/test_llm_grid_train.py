@@ -1262,10 +1262,15 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
         def to(self, device):
             raise AssertionError("device-mapped model must not be moved")
 
+    example = type(
+        "Example",
+        (),
+        {"example_id": "example", "dataset": "R2R"},
+    )()
     monkeypatch.setattr(
         llm_grid_train,
         "load_llm_grid_examples",
-        lambda *args, **kwargs: _load_result([object()]),
+        lambda *args, **kwargs: _load_result([example]),
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -1303,6 +1308,80 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
     assert metrics["combined/example_count"] == 0.0
     assert metrics["r2r_retained"] == 1.0
     assert metrics["rxr_retained"] == 0.0
+
+
+def test_evaluate_model_keeps_grid_targets_lazy_and_counts_lightweight_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    class Example:
+        def __init__(self, example_id, dataset):
+            self.example_id = example_id
+            self.dataset = dataset
+
+    class GuardedDataset:
+        def __iter__(self):
+            raise AssertionError("evaluation must not eagerly iterate grid targets")
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):
+            raise AssertionError("DataLoader is stubbed and must not load targets")
+
+    class Model:
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+    guarded_dataset = GuardedDataset()
+    captured = {}
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: _load_result(
+            [Example("r2r-example", "R2R"), Example("rxr-example", "RxR")]
+        ),
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "LLMGridDataset",
+        lambda *args, **kwargs: guarded_dataset,
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *args, **kwargs: (Model(), _ChatTokenizer()),
+    )
+
+    def fake_data_loader(dataset, **kwargs):
+        captured["dataset"] = dataset
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(llm_grid_train, "DataLoader", fake_data_loader)
+
+    metrics = llm_grid_train.evaluate_model(
+        llm_grid_train.LLMGridArgs().parse_args(
+            [
+                "eval",
+                "--output-dir",
+                str(tmp_path / "run"),
+                "--device",
+                "cpu",
+                "--device-map",
+                "none",
+                "--quiet",
+            ]
+        )
+    )
+
+    assert captured["dataset"] is guarded_dataset
+    assert metrics["combined_retained"] == 2.0
+    assert metrics["r2r_retained"] == 1.0
+    assert metrics["rxr_retained"] == 1.0
 
 
 def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):

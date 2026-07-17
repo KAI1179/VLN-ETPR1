@@ -1129,9 +1129,16 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
         model.to(device)
     model.eval()
 
-    eval_items = tuple(LLMGridDataset(load_result.examples, scale=args.scale))
+    eval_dataset = LLMGridDataset(load_result.examples, scale=args.scale)
+    eval_provenance = tuple(
+        {
+            "example_id": example.example_id,
+            "dataset": example.dataset,
+        }
+        for example in load_result.examples
+    )
     loader = DataLoader(
-        LLMGridItemsDataset(eval_items),
+        eval_dataset,
         batch_size=args.per_device_batch_size,
         shuffle=False,
         collate_fn=lambda batch: collate_llm_grid_prompt_batch(
@@ -1209,9 +1216,9 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
     metrics.update(
         fixed_corpus_metrics(
             load_result.by_dataset,
-            eval_items,
+            eval_provenance,
             LengthFilterResult(
-                kept=eval_items,
+                kept=eval_provenance,
                 dropped_prompt_example_ids=(),
                 dropped_completion_example_ids=(),
             ),
