@@ -750,6 +750,9 @@ def test_load_vlnce_cache_items_uses_ground_truth_trajectory(monkeypatch):
     assert items[0]["example_id"] == "R2R_train_42"
     assert items[0]["scene_id"] == "scene-a"
     assert "instruction Find the chair." in items[0]["input_text"]
+    assert "dataset" not in items[0]["input_text"]
+    assert "R2R" not in items[0]["input_text"]
+    assert "RxR" not in items[0]["input_text"]
 
 
 def test_load_vlnce_cache_items_skips_existing_map_before_scene_boxes(

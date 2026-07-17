@@ -4,15 +4,54 @@ ETP-LLM is the LLM-based variant of PriorGT.
 
 ## LLM-Boxes Training
 
+LLM-Boxes and LLM-Grid always train on the fixed mixed corpus of R2R `train`
+and English RxR `train`. Prompts contain the instruction and start metadata but
+no source tag. Dataset provenance remains in example identifiers, metrics, and
+artifacts. `--limit-per-dataset N` optionally limits each source independently
+for a small debugging run.
+
+The maintained Slurm launchers allocate one node, one task, and eight GPUs.
+They use `torchrun --standalone` with one rank per Slurm-visible GPU,
+per-device batch size 1, gradient accumulation 1, gradient checkpointing,
+`device_map=none`, ten epochs, and LoRA rank/alpha/dropout 32/64/0.05:
+
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.llm_boxes_train train
+sbatch scripts/submit/llm-boxes-train-r1p5.sh
+sbatch scripts/submit/llm-boxes-train-r2p5.sh
+sbatch scripts/submit/llm-grid-train-r1p5.sh
 ```
 
-## LLM-Boxes Evaluating
+The corresponding output directories are:
+
+```text
+outputs/llm_boxes/r2r-rxr-bbox-r1p5-path5-no-dataset-tag
+outputs/llm_boxes/r2r-rxr-bbox-r2p5-path5-no-dataset-tag
+outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag
+```
+
+Training and token analysis use a 1,152-token rendered prompt budget and a
+4,096-token rendered completion budget. In the measured 19,954-example RxR
+training target set, LLM-Boxes completion lengths had
+mean/P95/P99/max 1,234/2,818/3,958/7,173 and 0.81% exceeded 4,096.
+LLM-Grid scale-2 lengths were 1,388/2,595/3,219/4,969 and 0.15% exceeded
+4,096. The chosen completion budget therefore retains more than 99% of each
+measured RxR target set; over-budget examples are reported and dropped rather
+than silently truncated.
+
+Only rank zero writes metrics and `checkpoints/epoch-N` or
+`checkpoints/final`. An epoch checkpoint is written after the epoch completes.
+Cancelling mid-epoch does not create an interruption checkpoint or save
+optimizer state, so wait for the desired epoch directory before cancelling.
+
+## LLM-Boxes Evaluation
 
 ```shell
-CUDA_VISIBLE_DEVICES=4,5,6,7 python -m vlnce_baselines.models.etp_llm.llm_boxes_train eval --model-name-or-path ./data/logs/llm/checkpoints/final/
+python -m vlnce_baselines.models.etp_llm.llm_boxes_train eval \
+  --checkpoint-path outputs/llm_boxes/r2r-rxr-bbox-r1p5-path5-no-dataset-tag/checkpoints/final
 ```
+
+The evaluation command uses the same fixed R2R-plus-English-RxR corpus and
+accepts `--limit-per-dataset` for bounded checks.
 
 ## LLM-Navigation Scaffold
 
@@ -90,11 +129,16 @@ in per-entry `status` JSON files, and aggregate failure rates are written to
 Generate all LLM-Navigation caches with one command:
 
 ```shell
-python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
-  --model-name-or-path ./data/logs/llm/checkpoints/final/ \
-  --cache-model-key llama-3.1-8b-instruct \
-  --batch-size 8
+sbatch scripts/submit/llm-boxes-nav-cache-r1p5.sh
+sbatch scripts/submit/llm-grid-nav-cache-r1p5.sh
 ```
+
+These launchers use the mixed, tag-free checkpoints and write under cache keys
+`llm-boxes-r2r-rxr-r1p5-path5-tagfree` and
+`llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree`. The matching navigation
+pretraining consumers are `scripts/submit/llm-boxes-current-pretrain.sh` and
+`scripts/submit/llm-grid-try5-pretrain.sh`. New keys intentionally prevent
+resume from mixing these caches with older source-tagged or R2R-only artifacts.
 
 By default, `--parallel-workers auto` launches one worker process per visible CUDA
 device. With `CUDA_VISIBLE_DEVICES=4,5,6,7`, the parent process starts four
@@ -106,8 +150,8 @@ Use a smaller per-worker batch size when a single model copy nearly fills a GPU:
 
 ```shell
 python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
-  --model-name-or-path ./data/logs/llm/checkpoints/final/ \
-  --cache-model-key llama-3.1-8b-instruct \
+  --model-name-or-path outputs/llm_boxes/r2r-rxr-bbox-r1p5-path5-no-dataset-tag/checkpoints/final \
+  --cache-model-key llm-boxes-r2r-rxr-r1p5-path5-tagfree \
   --batch-size 1
 ```
 
@@ -115,8 +159,8 @@ Force single-process generation when debugging or when only one model copy fits:
 
 ```shell
 python -m vlnce_baselines.models.etp_llm.llm_boxes_navigation_cache \
-  --model-name-or-path ./data/logs/llm/checkpoints/final/ \
-  --cache-model-key llama-3.1-8b-instruct \
+  --model-name-or-path outputs/llm_boxes/r2r-rxr-bbox-r1p5-path5-no-dataset-tag/checkpoints/final \
+  --cache-model-key llm-boxes-r2r-rxr-r1p5-path5-tagfree \
   --parallel-workers 1
 ```
 
@@ -141,8 +185,8 @@ data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/status/<scene>/<instr_i
 It generates R2R `train`, `val_seen`, and `val_unseen`, plus the mixed pretraining
 cache. Standalone RxR VLN-CE splits are excluded because navigation does not consume
 them; `pretrain/mixed` still includes RxR-derived pretraining records. The cache
-generator intentionally has no `--dataset`, `--split`, or `--annotation-file`
-selector; a complete cache should be generated as one reproducible artifact set.
+generator has no source, split, or annotation-file selector; a complete cache
+should be generated as one reproducible artifact set.
 
 Generation resumes by default. If the cognitive-map `.npz` already exists for an
 item, that item is skipped before tokenization, LLM generation, and scene-box

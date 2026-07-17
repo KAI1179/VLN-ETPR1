@@ -11,8 +11,8 @@ conda activate etpr1-uv
 set -u
 
 python -m vlnce_baselines.models.etp_llm.llm_grid_navigation_cache \
-  --model-name-or-path outputs/llm_grid/r2r-legacy-r1p5-direction5-scale2/checkpoints/final \
-  --cache-model-key llm-grid-r2r-legacy-r1p5-direction5-scale2 \
+  --model-name-or-path outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag/checkpoints/final \
+  --cache-model-key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree \
   --scale 2 \
   --batch-size 8 \
-  --max-new-tokens 2048
+  --max-new-tokens 4096

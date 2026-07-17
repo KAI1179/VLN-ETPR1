@@ -2,6 +2,48 @@
 
 This context describes the navigation-model variants and map concepts used in this repo. It exists so engineering work uses consistent language when discussing VLN-CE model candidates.
 
+## LLM finetuning operation
+
+LLM-Boxes and LLM-Grid finetuning use one fixed corpus: R2R `train` plus
+English RxR `train`. Dataset provenance remains available for metrics and
+artifact auditing, but prompts are tag-free. `--limit-per-dataset` is a
+debugging control applied independently to each source; it does not select a
+dataset.
+
+The default rendered-token budgets are 1,152 prompt tokens and 4,096 completion
+tokens. The RxR target analysis covered 19,954 examples per target. LLM-Boxes
+targets had mean/P95/P99/max lengths of 1,234/2,818/3,958/7,173 tokens, with
+0.81% over 4,096. LLM-Grid scale-2 targets had
+1,388/2,595/3,219/4,969, with 0.15% over 4,096. The 4,096 completion budget was
+chosen to retain more than 99% of each measured RxR target set while rejecting
+oversized examples explicitly; 1,152 is the measured prompt budget used by
+training and analysis.
+
+Production finetuning is one Slurm node and one task with eight visible GPUs.
+The launchers start one `torchrun` rank per visible GPU, using per-device batch
+size 1, gradient accumulation 1, gradient checkpointing, ten epochs, and LoRA
+rank/alpha/dropout 32/64/0.05. Only rank zero writes metrics and checkpoints.
+An epoch checkpoint appears only after that epoch completes; cancelling
+mid-epoch does not create an interruption checkpoint or preserve optimizer
+state. Wait for the required `checkpoints/epoch-N` directory before cancelling.
+
+Submit the maintained training commands with:
+
+```text
+sbatch scripts/submit/llm-boxes-train-r1p5.sh
+sbatch scripts/submit/llm-boxes-train-r2p5.sh
+sbatch scripts/submit/llm-grid-train-r1p5.sh
+```
+
+Generate and consume the mixed, tag-free navigation artifacts with:
+
+```text
+sbatch scripts/submit/llm-boxes-nav-cache-r1p5.sh
+sbatch scripts/submit/llm-grid-nav-cache-r1p5.sh
+sbatch scripts/submit/llm-boxes-current-pretrain.sh
+sbatch scripts/submit/llm-grid-try5-pretrain.sh
+```
+
 ## Language
 
 **ETP-R1**:
@@ -95,10 +137,6 @@ _Avoid_: LLM-Grid when `direction_vectors` and other required candidate map inpu
 **Mentioned-only LLM-Boxes target**:
 The LLM-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.
 _Avoid_: full relevant boxes when unmentioned context entities are excluded
-
-**Dataset tag**:
-A prompt-side label identifying the instruction source, such as R2R, RxR, or Gemini-augmented Prevalent data.
-_Avoid_: task type when referring to generated text prompts
 
 **LLM-Navigation**:
 The navigation-integrated milestone for evaluating an LLM-derived cognitive map inside ETP-R1 finetuning and evaluation.
@@ -220,7 +258,7 @@ Domain expert: "No. The current LLM-Boxes target is mentioned-only so the genera
 
 Developer: "Should LLM-Boxes include the instruction source?"
 
-Domain expert: "Yes. LLM-Boxes should include a dataset tag in the prompt, mirroring the existing task-type encoding side channel."
+Domain expert: "No. Dataset provenance is retained for metrics and artifacts, but it is excluded from the model prompt so the predictor cannot specialize on a dataset identity side channel."
 
 Developer: "Should LLM-Boxes include scene identity?"
 
