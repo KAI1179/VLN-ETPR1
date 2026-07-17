@@ -2,10 +2,68 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator, List, Optional, Sequence
+from dataclasses import dataclass
+from typing import (
+    Any,
+    Generic,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+)
 
 import torch
 from torch.utils.data import BatchSampler
+
+ItemT = TypeVar("ItemT")
+
+
+@dataclass(frozen=True)
+class RenderedTokenCounts:
+    prompt_tokens: int
+    completion_tokens: int
+    sequence_tokens: int
+
+
+@dataclass(frozen=True)
+class SourceLoadStats:
+    discovered: int
+    loaded: int
+    missing_cache_example_ids: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExampleLoadResult(Generic[ItemT]):
+    examples: Tuple[ItemT, ...]
+    by_dataset: Mapping[str, SourceLoadStats]
+
+
+@dataclass(frozen=True)
+class LengthFilterResult(Generic[ItemT]):
+    kept: Tuple[ItemT, ...]
+    dropped_prompt_example_ids: Tuple[str, ...]
+    dropped_completion_example_ids: Tuple[str, ...]
+
+
+def rendered_token_counts(
+    tokenizer: Any,
+    prompt_text: str,
+    completion_text: str,
+) -> RenderedTokenCounts:
+    prompt_tokens = len(tokenizer.encode(prompt_text, add_special_tokens=False))
+    sequence_tokens = len(
+        tokenizer.encode(completion_text, add_special_tokens=False)
+    )
+    if sequence_tokens < prompt_tokens:
+        raise ValueError("completion rendering is shorter than prompt rendering")
+    return RenderedTokenCounts(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=sequence_tokens - prompt_tokens,
+        sequence_tokens=sequence_tokens,
+    )
 
 
 class LengthGroupedBatchSampler(BatchSampler):

@@ -34,8 +34,12 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_pa
 
 from .boxes_schema import build_llm_map_input
 from .sft import (
+    ExampleLoadResult,
+    LengthFilterResult,
     LengthGroupedBatchSampler,
+    SourceLoadStats,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
+    rendered_token_counts,
 )
 from .llm_boxes_train import (
     _causal_lm_labels,
@@ -92,6 +96,7 @@ class LLMGridItem(TypedDict):
     start_position: Sequence[float]
     start_direction: Sequence[float]
     scene_id: str
+    dataset: Literal["R2R", "RxR"]
 
 
 class LLMGridValidationError(ValueError):
@@ -122,24 +127,23 @@ class LLMGridExample:
 
 
 def load_llm_grid_examples(
-    dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
-    limit: Optional[int] = None,
+    limit_per_dataset: Optional[int] = None,
     quiet: bool = False,
     skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE,
-) -> List[LLMGridExample]:
-    if limit == 0:
-        return []
+) -> ExampleLoadResult[LLMGridExample]:
     examples: List[LLMGridExample] = []
     skipped_missing_cache: List[Tuple[str, str]] = []
-    for episode in VLNCEEpisodeEntry.iter_from(dataset, splits=splits):
-        if episode.dataset == "R2R":
-            episode_dataset: Literal["R2R", "RxR"] = "R2R"
-        elif episode.dataset == "RxR":
-            episode_dataset = "RxR"
-        else:
-            raise ValueError(f"unsupported LLM-Grid dataset: {episode.dataset}")
+    discovered = {"R2R": 0, "RxR": 0}
+    loaded = {"R2R": 0, "RxR": 0}
+    missing: Dict[str, List[str]] = {"R2R": [], "RxR": []}
+    for episode in VLNCEEpisodeEntry.iter_r2r_rxr(
+        splits=splits,
+        limit_per_dataset=limit_per_dataset,
+    ):
+        episode_dataset = _episode_dataset(episode.dataset)
+        discovered[episode_dataset] += 1
         raster_path = cognitive_map_cache_path(
             episode.scene_id,
             episode.unique_id,
@@ -154,6 +158,7 @@ def load_llm_grid_examples(
                 stacklevel=2,
             )
             skipped_missing_cache.append((episode.unique_id, str(raster_path)))
+            missing[episode_dataset].append(episode.unique_id)
             continue
         examples.append(
             LLMGridExample(
@@ -166,13 +171,30 @@ def load_llm_grid_examples(
                 raster_path=raster_path,
             )
         )
-        if limit is not None and len(examples) >= limit:
-            break
+        loaded[episode_dataset] += 1
     if skipped_missing_cache and not quiet:
         print(f"skipped_missing_cache={len(skipped_missing_cache)}")
         for example_id, path in skipped_missing_cache:
             print(f"  {example_id}: {path}")
-    return examples
+    return ExampleLoadResult(
+        examples=tuple(examples),
+        by_dataset={
+            dataset: SourceLoadStats(
+                discovered=discovered[dataset],
+                loaded=loaded[dataset],
+                missing_cache_example_ids=tuple(missing[dataset]),
+            )
+            for dataset in ("R2R", "RxR")
+        },
+    )
+
+
+def _episode_dataset(dataset: str) -> Literal["R2R", "RxR"]:
+    if dataset == "R2R":
+        return "R2R"
+    if dataset == "RxR":
+        return "RxR"
+    raise ValueError(f"unsupported LLM-Grid dataset: {dataset}")
 
 
 def _load_raster_target(
@@ -273,6 +295,7 @@ class LLMGridDataset(Dataset):
             "start_position": start_position,
             "start_direction": start_direction,
             "scene_id": example.scene_id,
+            "dataset": example.dataset,
         }
 
     def __iter__(self) -> Iterator[LLMGridItem]:
@@ -297,36 +320,55 @@ def _completion_token_count(
     system_prompt: str,
     prompt_length: int,
 ) -> int:
+    prompt = _render_chat_prompt(
+        tokenizer,
+        system_prompt,
+        item["input_text"],
+    )
     completion = _render_chat_completion(
         tokenizer,
         system_prompt,
         item["input_text"],
         item["target_text"],
     )
-    return _token_count(tokenizer, completion) - prompt_length
+    counts = rendered_token_counts(tokenizer, prompt, completion)
+    if counts.prompt_tokens != prompt_length:
+        raise ValueError("prompt token count changed between renderings")
+    return counts.completion_tokens
 
 
 def filter_grid_training_items(
     items: Sequence[LLMGridItem],
     tokenizer: Any,
     system_prompt: str,
+    max_input_length: int,
     max_new_tokens: int,
-) -> Tuple[List[LLMGridItem], List[str]]:
+) -> LengthFilterResult[LLMGridItem]:
     filtered: List[LLMGridItem] = []
-    skipped: List[str] = []
+    dropped_prompt: List[str] = []
+    dropped_completion: List[str] = []
     for item in items:
         prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
-        completion_tokens = _completion_token_count(
-            item,
+        completion = _render_chat_completion(
             tokenizer,
             system_prompt,
-            _token_count(tokenizer, prompt),
+            item["input_text"],
+            item["target_text"],
         )
-        if completion_tokens > max_new_tokens:
-            skipped.append(item["example_id"])
-            continue
-        filtered.append(item)
-    return filtered, skipped
+        counts = rendered_token_counts(tokenizer, prompt, completion)
+        prompt_over_budget = counts.prompt_tokens > max_input_length
+        completion_over_budget = counts.completion_tokens > max_new_tokens
+        if prompt_over_budget:
+            dropped_prompt.append(item["example_id"])
+        if completion_over_budget:
+            dropped_completion.append(item["example_id"])
+        if not prompt_over_budget and not completion_over_budget:
+            filtered.append(item)
+    return LengthFilterResult(
+        kept=tuple(filtered),
+        dropped_prompt_example_ids=tuple(dropped_prompt),
+        dropped_completion_example_ids=tuple(dropped_completion),
+    )
 
 
 def _training_sequence_lengths(
@@ -335,15 +377,13 @@ def _training_sequence_lengths(
     system_prompt: str,
 ) -> List[int]:
     return [
-        _token_count(
+        rendered_token_counts(
             tokenizer,
+            _render_chat_prompt(tokenizer, system_prompt, item["input_text"]),
             _render_chat_completion(
-                tokenizer,
-                system_prompt,
-                item["input_text"],
-                item["target_text"],
+                tokenizer, system_prompt, item["input_text"], item["target_text"]
             ),
-        )
+        ).sequence_tokens
         for item in items
     ]
 
@@ -747,13 +787,12 @@ class LLMGridArgs(Tap):
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     checkpoint_path: Optional[str] = None
     output_dir: str = "outputs/llm_grid"
-    dataset: Literal["R2R", "RxR"] = "R2R"
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
-    max_input_length: int = 1024
-    max_new_tokens: int = 2048
+    max_input_length: int = 1152
+    max_new_tokens: int = 4096
     finetune_method: Literal["lora", "full"] = "lora"
-    batch_size: int = 2
+    per_device_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     epochs: int = 10
@@ -771,7 +810,8 @@ class LLMGridArgs(Tap):
         "up_proj",
         "down_proj",
     )
-    limit: Optional[int] = None
+    limit_per_dataset: Optional[int] = None
+    seed: int = 42
     device: str = ""
     device_map: Literal[
         "auto",
@@ -870,20 +910,20 @@ def _text_diagnostics(
     generated_text: str,
     max_new_tokens: int,
 ) -> Dict[str, float]:
-    target_tokens = _token_count(tokenizer, item["target_text"])
     prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
-    target_completion_tokens = _completion_token_count(
-        item,
+    completion = _render_chat_completion(
         tokenizer,
         system_prompt,
-        _token_count(tokenizer, prompt),
+        item["input_text"],
+        item["target_text"],
     )
+    counts = rendered_token_counts(tokenizer, prompt, completion)
     generated_tokens = _token_count(tokenizer, generated_text)
     return {
-        "target_token_count": float(target_tokens),
-        "target_completion_token_count": float(target_completion_tokens),
+        "target_token_count": float(counts.completion_tokens),
+        "target_completion_token_count": float(counts.completion_tokens),
         "target_over_budget_rate": (
-            1.0 if target_completion_tokens > max_new_tokens else 0.0
+            1.0 if counts.completion_tokens > max_new_tokens else 0.0
         ),
         "generated_token_count": float(generated_tokens),
         "generated_char_count": float(len(generated_text)),
@@ -893,15 +933,14 @@ def _text_diagnostics(
 def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Grid")
-    examples = load_llm_grid_examples(
-        args.dataset,
+    load_result = load_llm_grid_examples(
         TRAIN_SPLITS,
-        limit=args.limit,
+        limit_per_dataset=args.limit_per_dataset,
         quiet=args.quiet,
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not examples:
+    if not load_result.examples:
         raise ValueError("No LLM-Grid training examples were loaded")
 
     system_prompt = load_system_prompt(scale=args.scale)
@@ -918,21 +957,27 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    train_items = list(LLMGridDataset(examples, scale=args.scale))
-    train_items, skipped_over_budget = filter_grid_training_items(
+    train_items = list(LLMGridDataset(load_result.examples, scale=args.scale))
+    filtered = filter_grid_training_items(
         train_items,
         tokenizer=tokenizer,
         system_prompt=system_prompt,
+        max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
+    train_items = list(filtered.kept)
     if not train_items:
-        raise ValueError("No LLM-Grid training examples fit max_new_tokens")
-    if skipped_over_budget and not args.quiet:
-        print(f"skipped_over_budget={len(skipped_over_budget)}")
+        raise ValueError("No LLM-Grid training examples fit the length budgets")
+    dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
+        filtered.dropped_completion_example_ids
+    )
+    if dropped_over_budget and not args.quiet:
+        print(f"skipped_over_budget={len(dropped_over_budget)}")
     dataset = LLMGridItemsDataset(train_items)
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(train_items, tokenizer, system_prompt),
-        batch_size=args.batch_size,
+        batch_size=args.per_device_batch_size,
+        generator=torch.Generator().manual_seed(args.seed),
     )
     loader = DataLoader(
         dataset,
@@ -1034,7 +1079,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "steps": float(steps),
         "optimizer_steps": float(optimizer_steps),
         "training_example_count": float(len(train_items)),
-        "skipped_over_budget_count": float(len(skipped_over_budget)),
+        "skipped_over_budget_count": float(len(dropped_over_budget)),
     }
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
     return metrics
@@ -1057,15 +1102,14 @@ def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
 
 
 def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
-    examples = load_llm_grid_examples(
-        args.dataset,
+    load_result = load_llm_grid_examples(
         EVAL_SPLITS,
-        limit=args.limit,
+        limit_per_dataset=args.limit_per_dataset,
         quiet=args.quiet,
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not examples:
+    if not load_result.examples:
         raise ValueError("No LLM-Grid eval examples were loaded")
 
     system_prompt = load_system_prompt(scale=args.scale)
@@ -1081,10 +1125,10 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
         model.to(device)
     model.eval()
 
-    dataset = LLMGridDataset(examples, scale=args.scale)
+    dataset = LLMGridDataset(load_result.examples, scale=args.scale)
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=args.per_device_batch_size,
         shuffle=False,
         collate_fn=lambda batch: collate_llm_grid_prompt_batch(
             batch,

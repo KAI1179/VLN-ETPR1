@@ -7,7 +7,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence
 
 from tap import Tap
 from transformers import AutoTokenizer
@@ -22,17 +22,20 @@ from .llm_boxes_train import (
     LLMBoxesItem,
     _compact_entity_count,
     _percentile,
+    _render_chat_completion,
     _render_chat_prompt,
     _target_text,
     _token_count,
     load_llm_boxes_examples,
     load_system_prompt,
 )
+from .sft import SourceLoadStats, rendered_token_counts
 
 
 @dataclass(frozen=True)
 class TokenMeasurement:
     example_id: str
+    dataset: Literal["R2R", "RxR"]
     split: str
     prompt_tokens: int
     input_tokens: int
@@ -42,13 +45,13 @@ class TokenMeasurement:
 
 class TokenAnalysisArgs(Tap):
     target: Literal["llm-boxes"] = "llm-boxes"
-    dataset: Literal["R2R", "RxR"] = "R2R"
     splits: str = "train,val_seen,val_unseen"
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
-    max_input_length: int = 1024
-    max_new_tokens: int = 2048
+    max_input_length: int = 1152
+    max_new_tokens: int = 4096
     budgets: str = "1024,1152,1280,1408,1536,1664,1792,2048,2304,2560,3072"
-    limit: Optional[int] = None
+    limit_per_dataset: Optional[int] = None
+    seed: int = 42
     cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE
     output_json: Optional[str] = None
     quiet: bool = False
@@ -67,23 +70,21 @@ def analyze_llm_boxes_tokens(args: TokenAnalysisArgs) -> Dict[str, Any]:
     system_prompt = load_system_prompt()
 
     with contextlib.redirect_stdout(sys.stderr):
-        examples = load_llm_boxes_examples(
-            args.dataset,
+        load_result = load_llm_boxes_examples(
             splits,
-            limit=args.limit,
+            limit_per_dataset=args.limit_per_dataset,
             quiet=args.quiet,
             skip_missing_cache=True,
             cognitive_map_namespace=args.cognitive_map_namespace,
         )
 
     measurements = _measure_llm_boxes_items(
-        LLMBoxesDataset(examples),
+        LLMBoxesDataset(load_result.examples),
         tokenizer=tokenizer,
         system_prompt=system_prompt,
     )
     return {
         "target": args.target,
-        "dataset": args.dataset,
         "splits": splits,
         "example_count": len(measurements),
         "configured_budget": {
@@ -92,7 +93,7 @@ def analyze_llm_boxes_tokens(args: TokenAnalysisArgs) -> Dict[str, Any]:
             "prompt_over_budget_count": sum(
                 item.prompt_tokens > args.max_input_length for item in measurements
             ),
-            "target_over_budget_count": sum(
+            "completion_over_budget_count": sum(
                 item.target_tokens > args.max_new_tokens for item in measurements
             ),
         },
@@ -106,6 +107,11 @@ def analyze_llm_boxes_tokens(args: TokenAnalysisArgs) -> Dict[str, Any]:
         ),
         "over_budget": _over_budget(measurements, budgets),
         "by_split": _summarize_by_split(measurements, budgets),
+        "by_dataset": _summarize_by_dataset(
+            measurements,
+            budgets,
+            load_result.by_dataset,
+        ),
         "largest_targets": [
             {
                 "example_id": item.example_id,
@@ -141,13 +147,21 @@ def _measure_llm_boxes_items(
     for item in items:
         target_text = _target_text(item)
         prompt_text = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
+        completion_text = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            target_text,
+        )
+        counts = rendered_token_counts(tokenizer, prompt_text, completion_text)
         measurements.append(
             TokenMeasurement(
                 example_id=item["example_id"],
+                dataset=item["dataset"],
                 split=str(item.get("split", "")),
-                prompt_tokens=_token_count(tokenizer, prompt_text),
+                prompt_tokens=counts.prompt_tokens,
                 input_tokens=_token_count(tokenizer, item["input_text"]),
-                target_tokens=_token_count(tokenizer, target_text),
+                target_tokens=counts.completion_tokens,
                 target_entities=_compact_entity_count(target_text),
             )
         )
@@ -204,6 +218,34 @@ def _summarize_by_split(
             ),
         }
         for split in split_names
+    }
+
+
+def _summarize_by_dataset(
+    measurements: Sequence[TokenMeasurement],
+    budgets: Sequence[int],
+    load_stats: Mapping[str, SourceLoadStats],
+) -> Dict[str, Dict[str, Any]]:
+    return {
+        dataset: {
+            "example_count": len(dataset_measurements),
+            "discovered": load_stats[dataset].discovered,
+            "loaded": load_stats[dataset].loaded,
+            "missing_cache_example_ids": list(
+                load_stats[dataset].missing_cache_example_ids
+            ),
+            "prompt_tokens": _summarize(
+                [item.prompt_tokens for item in dataset_measurements]
+            ),
+            "target_tokens": _summarize(
+                [item.target_tokens for item in dataset_measurements]
+            ),
+            "over_budget": _over_budget(dataset_measurements, budgets),
+        }
+        for dataset in ("R2R", "RxR")
+        for dataset_measurements in [
+            [item for item in measurements if item.dataset == dataset]
+        ]
     }
 
 

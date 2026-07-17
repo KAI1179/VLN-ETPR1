@@ -48,8 +48,12 @@ from .boxes_schema import (
     write_prediction_artifact,
 )
 from .sft import (
+    ExampleLoadResult,
+    LengthFilterResult,
     LengthGroupedBatchSampler,
+    SourceLoadStats,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
+    rendered_token_counts,
 )
 
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
@@ -79,12 +83,7 @@ class LLMBoxesItem(TypedDict, total=False):
     start_direction: Sequence[float]
     start_position: Sequence[float]
     scene_id: str
-
-
-@dataclass
-class LLMBoxesLengthFilterResult:
-    kept: Sequence[LLMBoxesItem]
-    dropped_example_ids: Sequence[str]
+    dataset: Literal["R2R", "RxR"]
 
 
 @dataclass
@@ -108,26 +107,32 @@ class LLMBoxesExample:
 
 
 def load_llm_boxes_examples(
-    dataset: Literal["R2R", "RxR"],
     splits: Iterable[str],
-    limit: Optional[int] = None,
+    limit_per_dataset: Optional[int] = None,
     quiet: bool = False,
     skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
-) -> List[LLMBoxesExample]:
+) -> ExampleLoadResult[LLMBoxesExample]:
     """Load VLN-CE episodes and attach cached target relevant semantic boxes."""
-    if limit == 0:
-        return []
-
     examples: List[LLMBoxesExample] = []
     skipped_missing_cache: List[Tuple[str, str]] = []
+    discovered = {"R2R": 0, "RxR": 0}
+    loaded = {"R2R": 0, "RxR": 0}
+    missing = {"R2R": [], "RxR": []}
     episodes = _progress(
-        VLNCEEpisodeEntry.iter_from(dataset, splits=splits),
+        VLNCEEpisodeEntry.iter_r2r_rxr(
+            splits=splits,
+            limit_per_dataset=limit_per_dataset,
+        ),
         desc="load LLM-Boxes examples",
         quiet=quiet,
-        total=limit,
+        total=(
+            limit_per_dataset * 2 if limit_per_dataset is not None else None
+        ),
     )
     for episode in episodes:
+        dataset = _episode_dataset(episode.dataset, "LLM-Boxes")
+        discovered[dataset] += 1
         try:
             target_relevant = RelevantSemanticBoxes.load(
                 cognitive_map_boxes_cache_path(
@@ -145,11 +150,12 @@ def load_llm_boxes_examples(
                 stacklevel=2,
             )
             skipped_missing_cache.append((episode.unique_id, str(error.filename)))
+            missing[dataset].append(episode.unique_id)
             continue
         examples.append(
             LLMBoxesExample(
                 example_id=episode.unique_id,
-                dataset=episode.dataset,
+                dataset=dataset,
                 split=episode.split,
                 scene_id=episode.scene_id,
                 episode_id=episode.episode_id,
@@ -160,13 +166,33 @@ def load_llm_boxes_examples(
                 target_relevant=target_relevant,
             )
         )
-        if limit is not None and len(examples) >= limit:
-            break
+        loaded[dataset] += 1
     if skipped_missing_cache and not quiet:
         print(f"skipped_missing_cache={len(skipped_missing_cache)}")
         for example_id, path in skipped_missing_cache:
             print(f"  {example_id}: {path}")
-    return examples
+    return ExampleLoadResult(
+        examples=tuple(examples),
+        by_dataset={
+            dataset: SourceLoadStats(
+                discovered=discovered[dataset],
+                loaded=loaded[dataset],
+                missing_cache_example_ids=tuple(missing[dataset]),
+            )
+            for dataset in ("R2R", "RxR")
+        },
+    )
+
+
+def _episode_dataset(
+    dataset: str,
+    target: str,
+) -> Literal["R2R", "RxR"]:
+    if dataset == "R2R":
+        return "R2R"
+    if dataset == "RxR":
+        return "RxR"
+    raise ValueError(f"unsupported {target} dataset: {dataset}")
 
 
 class LLMBoxesDataset(Dataset):
@@ -195,6 +221,7 @@ class LLMBoxesDataset(Dataset):
             "start_direction": example.start_direction,
             "start_position": _level_local_start_position(example),
             "scene_id": example.scene_id,
+            "dataset": example.dataset,
         }
 
     def __iter__(self) -> Iterator[LLMBoxesItem]:
@@ -298,15 +325,14 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Boxes")
 
     quiet = bool(getattr(args, "quiet", False))
-    examples = load_llm_boxes_examples(
-        args.dataset,
+    load_result = load_llm_boxes_examples(
         TRAIN_SPLITS,
-        limit=args.limit,
+        limit_per_dataset=args.limit_per_dataset,
         quiet=quiet,
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not examples:
+    if not load_result.examples:
         raise ValueError("No LLM-Boxes training examples were loaded")
 
     system_prompt = load_system_prompt()
@@ -323,7 +349,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     if not _model_uses_device_map(model):
         model.to(device)
 
-    dataset = LLMBoxesDataset(examples)
+    dataset = LLMBoxesDataset(load_result.examples)
     filtered = filter_llm_boxes_items_for_length(
         dataset,
         tokenizer,
@@ -337,12 +363,14 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     text_stats = compute_llm_text_stats(
         filtered_dataset,
         tokenizer,
+        system_prompt,
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
     batch_sampler = LengthGroupedBatchSampler(
         _training_sequence_lengths(filtered.kept, tokenizer, system_prompt),
-        batch_size=args.batch_size,
+        batch_size=args.per_device_batch_size,
+        generator=torch.Generator().manual_seed(args.seed),
     )
     loader = DataLoader(
         filtered_dataset,
@@ -440,7 +468,12 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         "train_loss": total_loss / steps if steps else 0.0,
         "steps": float(steps),
         "optimizer_steps": float(optimizer_steps),
-        "dropped_truncated_examples": float(len(filtered.dropped_example_ids)),
+        "dropped_prompt_examples": float(
+            len(filtered.dropped_prompt_example_ids)
+        ),
+        "dropped_completion_examples": float(
+            len(filtered.dropped_completion_example_ids)
+        ),
         **text_stats,
     }
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
@@ -464,7 +497,7 @@ def _evaluate_loaded_model(
     _write_run_system_prompt(args.output_dir, system_prompt)
     loader = _iter_collated_batches(
         dataset,
-        args.batch_size,
+        args.per_device_batch_size,
         lambda batch: collate_llm_boxes_prompt_batch(
             batch,
             tokenizer,
@@ -475,6 +508,7 @@ def _evaluate_loaded_model(
     text_stats = compute_llm_text_stats(
         dataset,
         tokenizer,
+        system_prompt,
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
@@ -482,7 +516,7 @@ def _evaluate_loaded_model(
         loader,
         desc="eval LLM-Boxes",
         quiet=bool(getattr(args, "quiet", False)),
-        total=_batch_count(dataset, args.batch_size),
+        total=_batch_count(dataset, args.per_device_batch_size),
     )
 
     metric_sums: Dict[str, float] = {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
@@ -594,15 +628,14 @@ def _evaluate_loaded_model(
 
 def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Load eval data/model, generate predictions, and write eval metrics."""
-    examples = load_llm_boxes_examples(
-        args.dataset,
+    load_result = load_llm_boxes_examples(
         EVAL_SPLITS,
-        limit=args.limit,
+        limit_per_dataset=args.limit_per_dataset,
         quiet=args.quiet,
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not examples:
+    if not load_result.examples:
         raise ValueError("No LLM-Boxes eval examples were loaded")
 
     model_path = args.checkpoint_path or args.model_name_or_path
@@ -613,7 +646,7 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
     metrics = _evaluate_loaded_model(
         model,
         tokenizer,
-        LLMBoxesDataset(examples),
+        LLMBoxesDataset(load_result.examples),
         args,
     )
     _write_json(Path(args.output_dir) / "metrics.json", metrics)
@@ -662,11 +695,10 @@ class LLMBoxesArgs(Tap):
     """Pretrained or checkpoint path for the causal language model."""
     checkpoint_path: Optional[str] = None
     output_dir: str = "outputs/llm_boxes"
-    dataset: Literal["R2R", "RxR"] = "R2R"
-    max_input_length: int = 1024
-    max_new_tokens: int = 2048
+    max_input_length: int = 1152
+    max_new_tokens: int = 4096
     finetune_method: Literal["lora", "full"] = "lora"
-    batch_size: int = 2
+    per_device_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     epochs: int = 10
@@ -685,7 +717,8 @@ class LLMBoxesArgs(Tap):
         "up_proj",
         "down_proj",
     )
-    limit: Optional[int] = None
+    limit_per_dataset: Optional[int] = None
+    seed: int = 42
     device: str = ""
     device_map: Literal["auto", "balanced", "balanced_low_0", "sequential", "none"] = (
         "auto"
@@ -969,22 +1002,32 @@ def filter_llm_boxes_items_for_length(
     system_prompt: str,
     max_input_length: int,
     max_new_tokens: int,
-) -> LLMBoxesLengthFilterResult:
+) -> LengthFilterResult[LLMBoxesItem]:
     """Drop items whose rendered prompt or target would be truncated."""
     kept: List[LLMBoxesItem] = []
-    dropped: List[str] = []
+    dropped_prompt: List[str] = []
+    dropped_completion: List[str] = []
     for item in dataset:
         prompt_text = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
-        target_text = _target_text(item)
-        if (
-            _token_count(tokenizer, prompt_text) > max_input_length
-            or _token_count(tokenizer, target_text) > max_new_tokens
-        ):
-            dropped.append(item["example_id"])
-            continue
-        kept.append(item)
-    return LLMBoxesLengthFilterResult(
-        kept=tuple(kept), dropped_example_ids=tuple(dropped)
+        completion_text = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            _target_text(item),
+        )
+        counts = rendered_token_counts(tokenizer, prompt_text, completion_text)
+        prompt_over_budget = counts.prompt_tokens > max_input_length
+        completion_over_budget = counts.completion_tokens > max_new_tokens
+        if prompt_over_budget:
+            dropped_prompt.append(item["example_id"])
+        if completion_over_budget:
+            dropped_completion.append(item["example_id"])
+        if not prompt_over_budget and not completion_over_budget:
+            kept.append(item)
+    return LengthFilterResult(
+        kept=tuple(kept),
+        dropped_prompt_example_ids=tuple(dropped_prompt),
+        dropped_completion_example_ids=tuple(dropped_completion),
     )
 
 
@@ -994,15 +1037,13 @@ def _training_sequence_lengths(
     system_prompt: str,
 ) -> List[int]:
     return [
-        _token_count(
+        rendered_token_counts(
             tokenizer,
+            _render_chat_prompt(tokenizer, system_prompt, item["input_text"]),
             _render_chat_completion(
-                tokenizer,
-                system_prompt,
-                item["input_text"],
-                _target_text(item),
+                tokenizer, system_prompt, item["input_text"], _target_text(item)
             ),
-        )
+        ).sequence_tokens
         for item in items
     ]
 
@@ -1010,6 +1051,7 @@ def _training_sequence_lengths(
 def compute_llm_text_stats(
     dataset: Iterable[LLMBoxesItem],
     tokenizer: Any,
+    system_prompt: str,
     max_input_length: int,
     max_new_tokens: int,
 ) -> Dict[str, float]:
@@ -1022,10 +1064,21 @@ def compute_llm_text_stats(
 
     for item in dataset:
         examples += 1
-        input_text = item["input_text"]
         target_text = _target_text(item)
-        input_length = _token_count(tokenizer, input_text)
-        target_length = _token_count(tokenizer, target_text)
+        prompt_text = _render_chat_prompt(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+        )
+        completion_text = _render_chat_completion(
+            tokenizer,
+            system_prompt,
+            item["input_text"],
+            target_text,
+        )
+        counts = rendered_token_counts(tokenizer, prompt_text, completion_text)
+        input_length = counts.prompt_tokens
+        target_length = counts.completion_tokens
         input_lengths.append(input_length)
         target_lengths.append(target_length)
         target_entity_counts.append(_compact_entity_count(target_text))

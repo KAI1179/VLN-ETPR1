@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from vlnce_baselines.models.etp_llm import llm_boxes_analyze_tokens
 
 
@@ -37,18 +39,30 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
             "input_text": "short input",
             "target_text": "one two",
             "example_id": "a",
+            "dataset": "R2R",
         },
         {
             "input_text": "longer input text",
             "target_text": "one two three four",
             "example_id": "b",
+            "dataset": "RxR",
         },
     ]
     monkeypatch.setattr(llm_boxes_analyze_tokens, "AutoTokenizer", _AutoTokenizer)
     monkeypatch.setattr(
         llm_boxes_analyze_tokens,
         "load_llm_boxes_examples",
-        lambda *args, **kwargs: ["example-a", "example-b"],
+        lambda *args, **kwargs: type(
+            "Result",
+            (),
+            {
+                "examples": ("example-a", "example-b"),
+                "by_dataset": {
+                    "R2R": llm_boxes_analyze_tokens.SourceLoadStats(1, 1, ()),
+                    "RxR": llm_boxes_analyze_tokens.SourceLoadStats(1, 1, ()),
+                },
+            },
+        )(),
     )
     monkeypatch.setattr(llm_boxes_analyze_tokens, "LLMBoxesDataset", lambda examples: items)
     monkeypatch.setattr(llm_boxes_analyze_tokens, "load_system_prompt", lambda: "system prompt")
@@ -59,10 +73,6 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
             "tiny-tokenizer",
             "--splits",
             "train,val_seen",
-            "--max-input-length",
-            "4",
-            "--max-new-tokens",
-            "3",
             "--budgets",
             "2,4",
             "--quiet",
@@ -72,16 +82,21 @@ def test_analyze_llm_boxes_tokens_reports_distribution(monkeypatch):
     report = llm_boxes_analyze_tokens.analyze_llm_boxes_tokens(args)
 
     assert _AutoTokenizer.calls == ["tiny-tokenizer"]
-    assert report["dataset"] == "R2R"
+    assert "dataset" not in report
     assert report["splits"] == ["train", "val_seen"]
     assert report["example_count"] == 2
     assert report["target_tokens"]["p50"] == 3.0
     assert report["target_tokens"]["max"] == 4.0
     assert report["over_budget"]["2"] == {"count": 1, "rate": 0.5}
     assert report["over_budget"]["4"] == {"count": 0, "rate": 0.0}
-    assert report["configured_budget"]["max_input_length"] == 4
-    assert report["configured_budget"]["max_new_tokens"] == 3
-    assert report["configured_budget"]["target_over_budget_count"] == 1
+    assert report["by_dataset"]["R2R"]["example_count"] == 1
+    assert report["by_dataset"]["RxR"]["example_count"] == 1
+    assert report["configured_budget"] == {
+        "max_input_length": 1152,
+        "max_new_tokens": 4096,
+        "prompt_over_budget_count": 0,
+        "completion_over_budget_count": 0,
+    }
 
 
 def test_llm_boxes_analyze_tokens_main_prints_json(monkeypatch, capsys):
@@ -94,3 +109,17 @@ def test_llm_boxes_analyze_tokens_main_prints_json(monkeypatch, capsys):
     llm_boxes_analyze_tokens.main(["--max-new-tokens", "2048"])
 
     assert json.loads(capsys.readouterr().out) == {"max_new_tokens": 2048}
+
+
+def test_token_analysis_args_defaults_and_rejects_dataset():
+    args = llm_boxes_analyze_tokens.TokenAnalysisArgs().parse_args([])
+
+    assert not hasattr(args, "dataset")
+    assert args.limit_per_dataset is None
+    assert args.max_input_length == 1152
+    assert args.max_new_tokens == 4096
+    assert args.seed == 42
+    with pytest.raises(SystemExit):
+        llm_boxes_analyze_tokens.TokenAnalysisArgs().parse_args(
+            ["--dataset", "R2R"]
+        )

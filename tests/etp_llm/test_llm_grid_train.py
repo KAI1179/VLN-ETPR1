@@ -30,9 +30,19 @@ class _EpisodeSource:
     calls = []
 
     @staticmethod
-    def iter_from(dataset, splits):
-        _EpisodeSource.calls.append((dataset, tuple(splits)))
+    def iter_r2r_rxr(splits, limit_per_dataset):
+        _EpisodeSource.calls.append((tuple(splits), limit_per_dataset))
         yield _Episode()
+
+
+def _load_result(examples=()):
+    return llm_grid_train.ExampleLoadResult(
+        examples=tuple(examples),
+        by_dataset={
+            dataset: llm_grid_train.SourceLoadStats(0, 0, ())
+            for dataset in ("R2R", "RxR")
+        },
+    )
 
 
 class _ChatTokenizer:
@@ -201,12 +211,17 @@ def _patch_training_dependencies(monkeypatch, model, batches=None):
     monkeypatch.setattr(
         llm_grid_train,
         "load_llm_grid_examples",
-        lambda *args, **kwargs: [object()],
+        lambda *args, **kwargs: _load_result([object()]),
     )
     monkeypatch.setattr(
         llm_grid_train,
         "LLMGridDataset",
         lambda *args, **kwargs: [item],
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_system_prompt",
+        lambda scale: "system",
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -601,17 +616,17 @@ def test_load_llm_grid_examples_loads_raster_paths(monkeypatch, tmp_path):
         lambda scene_id, cache_id, namespace: raster_path,
     )
 
-    examples = llm_grid_train.load_llm_grid_examples(
-        "R2R",
+    result = llm_grid_train.load_llm_grid_examples(
         ["train"],
-        limit=1,
+        limit_per_dataset=1,
         cognitive_map_namespace="gt.legacy.r1p5.direction5.v1",
     )
 
-    assert _EpisodeSource.calls == [("R2R", ("train",))]
-    assert len(examples) == 1
-    assert examples[0].example_id == "R2R_train_42"
-    assert examples[0].raster_path == raster_path
+    assert _EpisodeSource.calls == [(("train",), 1)]
+    assert len(result.examples) == 1
+    assert result.examples[0].example_id == "R2R_train_42"
+    assert result.examples[0].dataset == "R2R"
+    assert result.examples[0].raster_path == raster_path
 
 
 def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
@@ -897,15 +912,17 @@ def test_filter_training_items_excludes_targets_over_completion_budget():
         tokenizer.encode(prompt)
     )
 
-    filtered, skipped = llm_grid_train.filter_grid_training_items(
+    filtered = llm_grid_train.filter_grid_training_items(
         [short, long],
         tokenizer=tokenizer,
         system_prompt="system",
+        max_input_length=10_000,
         max_new_tokens=max_new_tokens,
     )
 
-    assert [item["example_id"] for item in filtered] == ["short"]
-    assert skipped == ["long"]
+    assert [item["example_id"] for item in filtered.kept] == ["short"]
+    assert filtered.dropped_prompt_example_ids == ()
+    assert filtered.dropped_completion_example_ids == ("long",)
 
 
 def test_length_grouped_batch_sampler_batches_similar_lengths():
@@ -965,13 +982,23 @@ def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
     assert args.mode == "train"
     assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
     assert args.scale == 2
-    assert args.max_new_tokens == 2048
+    assert not hasattr(args, "dataset")
+    assert args.limit_per_dataset is None
+    assert args.max_input_length == 1152
+    assert args.max_new_tokens == 4096
+    assert args.per_device_batch_size == 1
+    assert args.seed == 42
     assert args.lora_r == 32
     assert args.lora_alpha == 64
     assert args.lora_dropout == 0.05
     assert args.gradient_accumulation_steps == 1
     assert args.gradient_checkpointing is False
     assert args.output_dir == "outputs/llm_grid"
+
+
+def test_llm_grid_args_rejects_dataset_selection():
+    with pytest.raises(SystemExit):
+        llm_grid_train.LLMGridArgs().parse_args(["train", "--dataset", "R2R"])
 
 
 def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
@@ -1075,7 +1102,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     monkeypatch.setattr(
         llm_grid_train,
         "load_llm_grid_examples",
-        lambda *args, **kwargs: [example],
+        lambda *args, **kwargs: _load_result([example]),
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -1089,7 +1116,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             "eval",
             "--output-dir",
             str(tmp_path / "run"),
-            "--limit",
+            "--limit-per-dataset",
             "1",
             "--device",
             "cpu",
@@ -1143,7 +1170,7 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
     monkeypatch.setattr(
         llm_grid_train,
         "load_llm_grid_examples",
-        lambda *args, **kwargs: [object()],
+        lambda *args, **kwargs: _load_result([object()]),
     )
     monkeypatch.setattr(
         llm_grid_train,
