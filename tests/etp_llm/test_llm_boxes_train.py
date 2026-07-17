@@ -537,7 +537,8 @@ class _PreparedOptimizer:
             self.optimizer.step()
 
     def zero_grad(self):
-        self.optimizer.zero_grad()
+        if self.accelerator.sync_gradients:
+            self.optimizer.zero_grad()
 
 
 class _TrainingAccelerator:
@@ -545,14 +546,12 @@ class _TrainingAccelerator:
         self,
         gradient_accumulation_steps,
         *,
-        batch_count=1,
         is_main_process=True,
         num_processes=8,
         process_index=0,
         reduced_totals=None,
     ):
         self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.batch_count = batch_count
         self.is_main_process = is_main_process
         self.num_processes = num_processes
         self.process_index = process_index
@@ -578,7 +577,6 @@ class _TrainingAccelerator:
         self.accumulate_calls += 1
         self.sync_gradients = (
             self.accumulate_calls % self.gradient_accumulation_steps == 0
-            or self.accumulate_calls == self.batch_count
         )
         yield
 
@@ -605,6 +603,18 @@ class _TrainingAccelerator:
     def unwrap_model(self, model):
         self.unwrap_model_calls += 1
         return model
+
+    def wait_for_everyone(self):
+        self.wait_for_everyone_calls += 1
+
+
+class _EvaluationAccelerator:
+    def __init__(self, *, is_main_process, num_processes, process_index):
+        self.is_main_process = is_main_process
+        self.num_processes = num_processes
+        self.process_index = process_index
+        self.device = torch.device("cpu")
+        self.wait_for_everyone_calls = 0
 
     def wait_for_everyone(self):
         self.wait_for_everyone_calls += 1
@@ -645,7 +655,7 @@ def _patch_training_dependencies(
     if batches is None:
         batches = [batch]
     if accelerator is None:
-        accelerator = _TrainingAccelerator(1, batch_count=len(batches))
+        accelerator = _TrainingAccelerator(1)
     monkeypatch.setattr(
         llm_boxes_train,
         "make_sft_accelerator",
@@ -917,6 +927,7 @@ def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
             "--device",
             "cpu",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1319,6 +1330,7 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
             "--device",
             "cpu",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1357,6 +1369,7 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
             "--epochs",
             "1",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1402,6 +1415,7 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
             "--epochs",
             "2",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1410,7 +1424,7 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
     assert epochs == [0, 1]
 
 
-def test_train_model_accumulates_gradients_before_optimizer_step(
+def test_train_model_uses_accelerator_for_each_batch(
     monkeypatch,
     tmp_path,
 ):
@@ -1425,7 +1439,7 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
         }
         for index in range(3)
     ]
-    accelerator = _TrainingAccelerator(2, batch_count=len(batches))
+    accelerator = _TrainingAccelerator(1)
     _patch_training_dependencies(
         monkeypatch,
         _TrainingModel(1.0),
@@ -1459,22 +1473,41 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             "--epochs",
             "1",
             "--quiet",
-            "--gradient-accumulation-steps",
-            "2",
+            "--gradient-checkpointing",
         ]
     )
 
     metrics = llm_boxes_train.train_model(args)
 
-    assert calls == {"step": 2, "zero_grad": 3}
+    assert calls == {"step": 3, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
-    assert metrics["optimizer_steps"] == pytest.approx(2.0)
+    assert metrics["optimizer_steps"] == pytest.approx(3.0)
     assert metrics["world_size"] == 8.0
-    assert metrics["global_batch_size"] == 16.0
+    assert metrics["global_batch_size"] == 8.0
     assert accelerator.prepare_calls == 1
     assert accelerator.backward_calls == len(batches)
-    assert accelerator.clip_grad_norm_calls == 2
+    assert accelerator.clip_grad_norm_calls == 3
     assert json.loads((output_dir / "metrics.json").read_text()) == metrics
+
+
+def test_train_args_reject_gradient_accumulation_above_one():
+    with pytest.raises(
+        ValueError,
+        match="requires --gradient-accumulation-steps 1",
+    ):
+        llm_boxes_train.parse_args(
+            [
+                "train",
+                "--gradient-accumulation-steps",
+                "2",
+                "--gradient-checkpointing",
+            ]
+        )
+
+
+def test_train_args_require_gradient_checkpointing():
+    with pytest.raises(ValueError, match="--gradient-checkpointing is required"):
+        llm_boxes_train.parse_args(["train"])
 
 
 def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
@@ -1500,6 +1533,7 @@ def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
             "--epochs",
             "1",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1534,7 +1568,6 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
     ]
     accelerator = _TrainingAccelerator(
         1,
-        batch_count=2,
         num_processes=2,
         reduced_totals=(3.0, 3.0, 4.0, 8.0),
     )
@@ -1554,6 +1587,7 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
             "--epochs",
             "1",
             "--quiet",
+            "--gradient-checkpointing",
         ]
     )
 
@@ -1722,8 +1756,16 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
         )
         return _load_result([fake_item])
 
-    def fake_evaluate(model, tokenizer, dataset, args):
-        calls.append(("eval", model, tokenizer, args.output_dir, list(dataset)))
+    accelerator = _EvaluationAccelerator(
+        is_main_process=True,
+        num_processes=2,
+        process_index=0,
+    )
+
+    def fake_evaluate(model, tokenizer, dataset, args, device=None):
+        calls.append(
+            ("eval", model, tokenizer, args.output_dir, list(dataset), device)
+        )
         return {"examples": 1.0}
 
     def fake_load_model(path, device_map=None):
@@ -1738,6 +1780,16 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", fake_load)
     monkeypatch.setattr(llm_boxes_train, "_evaluate_loaded_model", fake_evaluate)
     monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "make_sft_accelerator",
+        lambda gradient_accumulation_steps: accelerator,
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "_write_json",
+        lambda path, payload: calls.append(("write", path, payload.copy())),
+    )
 
     args = llm_boxes_train.parse_args(
         [
@@ -1749,6 +1801,8 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
             "--limit-per-dataset",
             "1",
             "--quiet",
+            "--device-map",
+            "none",
         ]
     )
     metrics = llm_boxes_train.evaluate_model(args)
@@ -1766,10 +1820,83 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
             True,
             "gt.bbox.r1p5.path5.v1",
         ),
-        ("load_model", "checkpoint/final", "auto"),
-        ("eval", "model", "tokenizer", str(tmp_path), [fake_item]),
+        ("load_model", "checkpoint/final", None),
+        (
+            "eval",
+            "model",
+            "tokenizer",
+            str(tmp_path),
+            [fake_item],
+            torch.device("cpu"),
+        ),
+        ("write", tmp_path / "metrics.json", metrics),
     ]
-    assert json.loads((tmp_path / "metrics.json").read_text()) == metrics
+    assert accelerator.wait_for_everyone_calls == 2
+
+
+def test_evaluate_model_non_main_rank_skips_all_work(monkeypatch, tmp_path):
+    accelerator = _EvaluationAccelerator(
+        is_main_process=False,
+        num_processes=2,
+        process_index=1,
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "make_sft_accelerator",
+        lambda gradient_accumulation_steps: accelerator,
+    )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("non-main evaluation rank performed work")
+
+    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "_load_causal_lm_model_and_tokenizer",
+        unexpected,
+    )
+    monkeypatch.setattr(llm_boxes_train, "_evaluate_loaded_model", unexpected)
+    monkeypatch.setattr(llm_boxes_train, "_write_json", unexpected)
+    args = llm_boxes_train.parse_args(
+        [
+            "eval",
+            "--output-dir",
+            str(tmp_path),
+            "--device-map",
+            "none",
+            "--quiet",
+        ]
+    )
+
+    metrics = llm_boxes_train.evaluate_model(args)
+
+    assert metrics == {}
+    assert accelerator.wait_for_everyone_calls == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_evaluate_model_rejects_sharded_device_map_in_multiprocess(
+    monkeypatch,
+):
+    accelerator = _EvaluationAccelerator(
+        is_main_process=True,
+        num_processes=2,
+        process_index=0,
+    )
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "make_sft_accelerator",
+        lambda gradient_accumulation_steps: accelerator,
+    )
+    args = llm_boxes_train.parse_args(["eval", "--device-map", "auto"])
+
+    with pytest.raises(
+        ValueError,
+        match="--device-map must be none when WORLD_SIZE > 1",
+    ):
+        llm_boxes_train.evaluate_model(args)
+
+    assert accelerator.wait_for_everyone_calls == 0
 
 
 def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
@@ -1821,7 +1948,7 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--max-grad-norm",
             "0.5",
             "--gradient-accumulation-steps",
-            "2",
+            "1",
             "--gradient-checkpointing",
             "--lora-r",
             "8",
@@ -1856,7 +1983,7 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.epochs == 2
     assert train_args.learning_rate == 0.001
     assert train_args.max_grad_norm == 0.5
-    assert train_args.gradient_accumulation_steps == 2
+    assert train_args.gradient_accumulation_steps == 1
     assert train_args.gradient_checkpointing is True
     assert train_args.lora_r == 8
     assert train_args.lora_alpha == 16

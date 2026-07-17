@@ -596,10 +596,12 @@ def _evaluate_loaded_model(
     tokenizer: Any,
     dataset: Iterable[LLMBoxesItem],
     args: Any,
+    device: Any = None,
 ) -> Dict[str, float]:
     """Generate, validate, artifact, and score LLM-Boxes predictions."""
+    evaluation_device = args.device if device is None else device
     if hasattr(model, "to") and not _model_uses_device_map(model):
-        model.to(args.device)
+        model.to(evaluation_device)
     if hasattr(model, "eval"):
         model.eval()
     tokenizer.padding_side = "left"
@@ -632,7 +634,11 @@ def _evaluate_loaded_model(
 
     with torch.no_grad():
         for batch in progress_loader:
-            model_inputs = _model_batch(batch, args.device, include_labels=False)
+            model_inputs = _model_batch(
+                batch,
+                evaluation_device,
+                include_labels=False,
+            )
             generated = model.generate(
                 **model_inputs,
                 **_generation_kwargs(tokenizer, args.max_new_tokens),
@@ -739,41 +745,56 @@ def _evaluate_loaded_model(
 
 def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
     """Load eval data/model, generate predictions, and write eval metrics."""
-    load_result = load_llm_boxes_examples(
-        EVAL_SPLITS,
-        limit_per_dataset=args.limit_per_dataset,
-        quiet=args.quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    if not load_result.examples:
-        raise ValueError("No LLM-Boxes eval examples were loaded")
+    accelerator = make_sft_accelerator(1)
+    validate_distributed_device_map(accelerator, args.device_map)
+    accelerator.wait_for_everyone()
+    if not accelerator.is_main_process:
+        accelerator.wait_for_everyone()
+        return {}
 
-    model_path = args.checkpoint_path or args.model_name_or_path
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
-        model_path,
-        device_map=_normalize_device_map(args.device_map),
-    )
-    eval_items = tuple(LLMBoxesDataset(load_result.examples))
-    metrics = _evaluate_loaded_model(
-        model,
-        tokenizer,
-        eval_items,
-        args,
-    )
-    metrics.update(
-        fixed_corpus_metrics(
-            load_result.by_dataset,
-            eval_items,
-            LengthFilterResult(
-                kept=eval_items,
-                dropped_prompt_example_ids=(),
-                dropped_completion_example_ids=(),
+    try:
+        load_result = load_llm_boxes_examples(
+            EVAL_SPLITS,
+            limit_per_dataset=args.limit_per_dataset,
+            quiet=args.quiet,
+            skip_missing_cache=True,
+            cognitive_map_namespace=args.cognitive_map_namespace,
+        )
+        if not load_result.examples:
+            raise ValueError("No LLM-Boxes eval examples were loaded")
+
+        model_path = args.checkpoint_path or args.model_name_or_path
+        model, tokenizer = _load_causal_lm_model_and_tokenizer(
+            model_path,
+            device_map=(
+                None
+                if accelerator.num_processes > 1
+                else _normalize_device_map(args.device_map)
             ),
         )
-    )
-    _write_json(Path(args.output_dir) / "metrics.json", metrics)
-    return metrics
+        eval_items = tuple(LLMBoxesDataset(load_result.examples))
+        metrics = _evaluate_loaded_model(
+            model,
+            tokenizer,
+            eval_items,
+            args,
+            device=accelerator.device,
+        )
+        metrics.update(
+            fixed_corpus_metrics(
+                load_result.by_dataset,
+                eval_items,
+                LengthFilterResult(
+                    kept=eval_items,
+                    dropped_prompt_example_ids=(),
+                    dropped_completion_example_ids=(),
+                ),
+            )
+        )
+        _write_json(Path(args.output_dir) / "metrics.json", metrics)
+        return metrics
+    finally:
+        accelerator.wait_for_everyone()
 
 
 def save_llm_boxes_checkpoint(
@@ -880,6 +901,16 @@ class LLMBoxesArgs(Tap):
             self.device = _default_device()
         if self.gradient_accumulation_steps < 1:
             raise ValueError("--gradient-accumulation-steps must be >= 1")
+        if self.mode == "train" and self.gradient_accumulation_steps != 1:
+            raise ValueError(
+                "LLM-Boxes training requires "
+                "--gradient-accumulation-steps 1 because its pre-partitioned "
+                "loader cannot flush partial accumulation windows"
+            )
+        if self.mode == "train" and not self.gradient_checkpointing:
+            raise ValueError(
+                "--gradient-checkpointing is required for LLM-Boxes training"
+            )
 
 
 def _default_device() -> str:
