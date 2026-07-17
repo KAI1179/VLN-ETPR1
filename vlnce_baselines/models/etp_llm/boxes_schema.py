@@ -79,21 +79,15 @@ class LLMBoxesPartialParse:
     dropped_entity_count: int
 
 
-def build_llm_boxes_input(
-    dataset_tag: str,
+def build_llm_map_input(
     instruction: str,
     start_position: Sequence[float],
     start_direction: Sequence[float],
 ) -> str:
-    """Build the scene-anonymous LLM-Boxes input text.
-
-    ``start_position`` may be level-local ``(x, z)`` or scene-style
-    ``(x, y, z)``; the text always stores level-local/projected ``(x, z)``.
-    """
+    """Build a source-agnostic cognitive-map predictor input."""
     start_x, start_z = _xz_point(start_position, "start_position")
     direction_x, direction_z = _point2(start_direction)
     return (
-        f"dataset {dataset_tag} | "
         f"start x = {_round_coord(start_x)} | "
         f"start z = {_round_coord(start_z)} | "
         f"direction x = {_round_rotation(direction_x)} | "

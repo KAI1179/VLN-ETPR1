@@ -32,7 +32,7 @@ from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from prior.vlnce import VLNCEEpisodeEntry
 from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_path
 
-from .boxes_schema import build_llm_boxes_input
+from .boxes_schema import build_llm_map_input
 from .sft import (
     LengthGroupedBatchSampler,
     enable_gradient_checkpointing as _enable_gradient_checkpointing,
@@ -113,7 +113,7 @@ class ParsedGrid:
 @dataclass(frozen=True)
 class LLMGridExample:
     example_id: str
-    dataset_tag: str
+    dataset: Literal["R2R", "RxR"]
     split: str
     scene_id: str
     episode_id: int
@@ -134,6 +134,12 @@ def load_llm_grid_examples(
     examples: List[LLMGridExample] = []
     skipped_missing_cache: List[Tuple[str, str]] = []
     for episode in VLNCEEpisodeEntry.iter_from(dataset, splits=splits):
+        if episode.dataset == "R2R":
+            episode_dataset: Literal["R2R", "RxR"] = "R2R"
+        elif episode.dataset == "RxR":
+            episode_dataset = "RxR"
+        else:
+            raise ValueError(f"unsupported LLM-Grid dataset: {episode.dataset}")
         raster_path = cognitive_map_cache_path(
             episode.scene_id,
             episode.unique_id,
@@ -152,7 +158,7 @@ def load_llm_grid_examples(
         examples.append(
             LLMGridExample(
                 example_id=episode.unique_id,
-                dataset_tag=episode.dataset,
+                dataset=episode_dataset,
                 split=episode.split,
                 scene_id=episode.scene_id,
                 episode_id=episode.episode_id,
@@ -248,8 +254,7 @@ class LLMGridDataset(Dataset):
         mentioned_objects, mentioned_regions = _load_grid_mentions(example.raster_path)
         target_grid = downsample_grid(full_grid, self.scale)
         return {
-            "input_text": build_llm_boxes_input(
-                example.dataset_tag,
+            "input_text": build_llm_map_input(
                 example.instruction,
                 start_position,
                 start_direction,

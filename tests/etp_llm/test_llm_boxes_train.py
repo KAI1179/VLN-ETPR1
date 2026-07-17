@@ -103,7 +103,7 @@ def test_load_llm_boxes_examples_loads_vln_episodes_with_targets(monkeypatch):
     assert len(examples) == 1
     example = examples[0]
     assert example.example_id == "R2R_train_42"
-    assert example.dataset_tag == "R2R"
+    assert example.dataset == "R2R"
     assert example.episode_id == 42
     assert example.instruction == "Go to the chair."
     assert example.start_position == [1.24, 0.0, 2.96]
@@ -136,7 +136,7 @@ def test_llm_boxes_example_targets_only_mentioned_entities():
 
     example = llm_boxes_train.LLMBoxesExample(
         example_id="R2R_train_mentioned",
-        dataset_tag="R2R",
+        dataset="R2R",
         split="train",
         scene_id="scene-a",
         episode_id=99,
@@ -331,7 +331,7 @@ def test_load_llm_boxes_examples_disables_progress_when_quiet(monkeypatch):
 def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
     example = llm_boxes_train.LLMBoxesExample(
         example_id="RxR_val_seen_9",
-        dataset_tag="RxR",
+        dataset="RxR",
         split="val_seen",
         scene_id="scene-a",
         episode_id=9,
@@ -346,7 +346,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
 
     assert item["example_id"] == "RxR_val_seen_9"
     assert item["input_text"] == (
-        "dataset RxR | start x = 0.0 | start z = 0.0 | "
+        "start x = 0.0 | start z = 0.0 | "
         "direction x = 1.0 | direction z = 0.0 | "
         "instruction Walk into the living room."
     )
@@ -375,7 +375,7 @@ def test_llm_boxes_dataset_item_uses_level_local_start_position():
     ]
     example = llm_boxes_train.LLMBoxesExample(
         example_id="R2R_train_offset",
-        dataset_tag="R2R",
+        dataset="R2R",
         split="train",
         scene_id="scene-a",
         episode_id=10,

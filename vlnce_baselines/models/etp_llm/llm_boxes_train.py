@@ -39,7 +39,7 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 from .boxes_metrics import evaluate_llm_boxes_prediction
 from .boxes_schema import (
     LLMBoxesSpec,
-    build_llm_boxes_input,
+    build_llm_map_input,
     parse_llm_boxes_text,
     parse_llm_boxes_text_partial,
     relevant_semantic_boxes_to_mentioned_spec,
@@ -90,7 +90,7 @@ class LLMBoxesLengthFilterResult:
 @dataclass
 class LLMBoxesExample:
     example_id: str
-    dataset_tag: str
+    dataset: Literal["R2R", "RxR"]
     split: str
     scene_id: str
     episode_id: int
@@ -149,7 +149,7 @@ def load_llm_boxes_examples(
         examples.append(
             LLMBoxesExample(
                 example_id=episode.unique_id,
-                dataset_tag=episode.dataset,
+                dataset=episode.dataset,
                 split=episode.split,
                 scene_id=episode.scene_id,
                 episode_id=episode.episode_id,
@@ -179,8 +179,7 @@ class LLMBoxesDataset(Dataset):
     def __getitem__(self, index: int) -> LLMBoxesItem:
         example = self.examples[index]
         return {
-            "input_text": build_llm_boxes_input(
-                example.dataset_tag,
+            "input_text": build_llm_map_input(
                 example.instruction,
                 _level_local_start_position(example),
                 example.start_direction,

@@ -726,8 +726,9 @@ def test_load_pretrain_cache_items_decodes_annotation_entries(monkeypatch):
     assert items[0]["example_id"] == "prevalent_1_0"
     assert items[0]["scene_id"] == "scene-a"
     assert items[0]["start_position"] == (1.2, 3.0)
-    assert "dataset Prevalent" in items[0]["input_text"]
-    assert "instruction Find the chair." in items[0]["input_text"]
+    assert items[0]["input_text"].startswith("start x = ")
+    assert "dataset" not in items[0]["input_text"]
+    assert "Prevalent" not in items[0]["input_text"]
 
 
 def test_load_vlnce_cache_items_uses_ground_truth_trajectory(monkeypatch):

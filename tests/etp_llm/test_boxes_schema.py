@@ -9,7 +9,7 @@ from vlnce_baselines.models.etp_llm.boxes_schema import (
     RegionBoxSpec,
     LLMBoxesSpec,
     LLMBoxesValidationError,
-    build_llm_boxes_input,
+    build_llm_map_input,
     parse_llm_boxes_text,
     parse_llm_boxes_text_partial,
     relevant_semantic_boxes_to_mentioned_spec,
@@ -30,33 +30,30 @@ def _empty_level():
 KEYPOINTS = ((0.0, 0.0), (1.2, 3.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
 
 
-def test_build_llm_boxes_input_includes_metadata_but_not_scene_id():
-    prompt = build_llm_boxes_input(
-        "R2R",
-        "Turn left at the chair.",
-        start_position=(1.24, 2.96),
-        start_direction=(0.123, -0.987),
+def test_build_llm_map_input_includes_navigation_metadata_without_source():
+    prompt = build_llm_map_input(
+        instruction="Walk to the chair.",
+        start_position=(1.24, 3.04),
+        start_direction=(0.0, -1.0),
     )
 
     assert prompt == (
-        "dataset R2R | start x = 1.2 | start z = 3.0 | "
-        "direction x = 0.12 | direction z = -0.99 | "
-        "instruction Turn left at the chair."
+        "start x = 1.2 | start z = 3.0 | "
+        "direction x = 0.0 | direction z = -1.0 | "
+        "instruction Walk to the chair."
     )
-    assert "scene" not in prompt.lower()
-    assert "{" not in prompt
-    assert "}" not in prompt
+    assert "dataset" not in prompt
+    assert "R2R" not in prompt
+    assert "RxR" not in prompt
 
 
-def test_build_llm_boxes_input_accepts_3d_start_position_as_xz_projection():
-    prompt_from_2d = build_llm_boxes_input(
-        "RxR",
+def test_build_llm_map_input_accepts_3d_start_position_as_xz_projection():
+    prompt_from_2d = build_llm_map_input(
         "Go ahead.",
         start_position=(1.24, 2.96),
         start_direction=(0.0, 1.0),
     )
-    prompt_from_3d = build_llm_boxes_input(
-        "RxR",
+    prompt_from_3d = build_llm_map_input(
         "Go ahead.",
         start_position=(1.24, 99.0, 2.96),
         start_direction=(0.0, 1.0),
@@ -397,8 +394,7 @@ def test_write_prediction_artifact_sanitizes_example_id_path_components(tmp_path
 
 
 def test_llm_boxes_direction_and_rotation_follow_xz_convention():
-    prompt = build_llm_boxes_input(
-        dataset_tag="R2R",
+    prompt = build_llm_map_input(
         instruction="Face east.",
         start_position=(10.0, 20.0),
         start_direction=(1.0, 0.0),

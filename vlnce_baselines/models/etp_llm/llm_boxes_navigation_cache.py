@@ -24,7 +24,7 @@ from prior.etp_r1 import (
 
 from .boxes_schema import (
     LLMBoxesSpec,
-    build_llm_boxes_input,
+    build_llm_map_input,
     parse_llm_boxes_text,
     spec_to_llm_boxes_text,
     spec_to_relevant_semantic_boxes,
@@ -293,7 +293,6 @@ def load_pretrain_cache_items(
             quiet=quiet,
             total=limit,
         )
-        dataset_tag = _pretrain_dataset_tag(annotation_file)
         try:
             for entry in entries:
                 if args is not None and not _belongs_to_worker(entry.instr_id, args):
@@ -342,8 +341,7 @@ def load_pretrain_cache_items(
                 target_spec = LLMBoxesSpec(objects=(), regions=())
                 items.append(
                     {
-                        "input_text": build_llm_boxes_input(
-                            dataset_tag,
+                        "input_text": build_llm_map_input(
                             entry.instruction,
                             start_position,
                             entry.start_direction_vector,
@@ -451,8 +449,7 @@ def load_vlnce_cache_items(
         target_spec = LLMBoxesSpec(objects=(), regions=())
         items.append(
             {
-                "input_text": build_llm_boxes_input(
-                    episode.dataset,
+                "input_text": build_llm_map_input(
                     episode.instruction,
                     start_position,
                     episode.start_direction_vector,
@@ -734,17 +731,6 @@ def _belongs_to_worker(cache_id: str, args: argparse.Namespace) -> bool:
 
 def _new_worker_shard_seed() -> str:
     return secrets.token_hex(16)
-
-
-def _pretrain_dataset_tag(annotation_file: str) -> str:
-    name = Path(annotation_file).name.lower()
-    if name.startswith("rxr_"):
-        return "RxR"
-    if "gemini" in name:
-        return "Gemini"
-    if "prevalent" in name:
-        return "Prevalent"
-    return "R2R"
 
 
 def _cache_complete(

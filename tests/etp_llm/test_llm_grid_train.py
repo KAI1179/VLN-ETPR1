@@ -643,7 +643,7 @@ def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     )
     example = llm_grid_train.LLMGridExample(
         example_id="R2R_train_42",
-        dataset_tag="R2R",
+        dataset="R2R",
         split="train",
         scene_id="scene-a",
         episode_id=42,
@@ -654,7 +654,7 @@ def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     item = llm_grid_train.LLMGridDataset([example])[0]
 
     assert item["input_text"] == (
-        "dataset R2R | start x = 1.2 | start z = 3.4 | "
+        "start x = 1.2 | start z = 3.4 | "
         "direction x = 0.0 | direction z = 1.0 | instruction Go to the chair."
     )
     assert json.loads(item["target_text"]) == {
@@ -700,7 +700,7 @@ def test_llm_grid_dataset_rejects_bad_direction_vector_shape(tmp_path):
     )
     example = llm_grid_train.LLMGridExample(
         example_id="R2R_train_42",
-        dataset_tag="R2R",
+        dataset="R2R",
         split="train",
         scene_id="scene-a",
         episode_id=42,
@@ -717,7 +717,7 @@ def test_llm_grid_dataset_rejects_bad_direction_vector_shape(tmp_path):
 
 def test_collate_llm_grid_masks_prompt_and_padding_tokens():
     item: llm_grid_train.LLMGridItem = {
-        "input_text": "dataset R2R | instruction Go to the chair.",
+        "input_text": "instruction Go to the chair.",
         "target_text": (
             '{"predicted_regions":[],"predicted_objects":["chair"],'
             '"regions":{},"objects":{"chair":{"cells":[[0,0]],'
@@ -751,7 +751,7 @@ def test_collate_llm_grid_masks_prompt_and_padding_tokens():
 
 def test_collate_llm_grid_rejects_prompt_over_input_budget():
     item: llm_grid_train.LLMGridItem = {
-        "input_text": "dataset R2R | instruction Go to the chair.",
+        "input_text": "instruction Go to the chair.",
         "target_text": EMPTY_GRID_TEXT,
         "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
         "target_direction_vectors": ZERO_DIRECTION_VECTORS,
@@ -1012,7 +1012,7 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
     )
     example = llm_grid_train.LLMGridExample(
         example_id="R2R_val_seen_42",
-        dataset_tag="R2R",
+        dataset="R2R",
         split="val_seen",
         scene_id="scene-a",
         episode_id=42,
