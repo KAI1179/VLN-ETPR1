@@ -132,6 +132,30 @@ def fixed_corpus_metrics(
     return metrics
 
 
+def validate_fixed_corpus(
+    load_stats: Mapping[str, SourceLoadStats],
+    *,
+    retained_items: Sequence[Mapping[str, Any]] | None = None,
+) -> None:
+    """Require both fixed corpus sources at every completed data stage."""
+    for dataset in ("R2R", "RxR"):
+        stats = load_stats.get(dataset)
+        if stats is None or stats.discovered == 0:
+            raise ValueError(
+                f"fixed corpus source {dataset} discovered zero examples"
+            )
+        if stats.loaded == 0:
+            raise ValueError(f"fixed corpus source {dataset} loaded zero examples")
+    if retained_items is None:
+        return
+    retained_datasets = {str(item["dataset"]) for item in retained_items}
+    for dataset in ("R2R", "RxR"):
+        if dataset not in retained_datasets:
+            raise ValueError(
+                f"fixed corpus source {dataset} retained zero examples"
+            )
+
+
 def make_sft_accelerator(gradient_accumulation_steps: int) -> Accelerator:
     return Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,

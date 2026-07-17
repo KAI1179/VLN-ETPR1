@@ -92,7 +92,7 @@ LLM-Navigation consumes precomputed LLM-derived cognitive maps. The cache layout
 
 ```text
 data/llm_navigation/
-  llama-3.1-8b-instruct/
+  <cache-model-key>/
     r2r/
       train/
         predictions/<scene>/<cache_id>.txt
@@ -178,15 +178,15 @@ usually only helps when the model is small enough for multiple workers per GPU.
 The command writes:
 
 ```text
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/predictions/<scene>/<cache_id>.txt
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/cognitive_maps/<scene>/<cache_id>.npz
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/status/<scene>/<cache_id>.json
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/manifest.json
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/metrics.json
-data/llm_navigation/llama-3.1-8b-instruct/r2r/<split>/worker_metrics/worker_<index>.json
-data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
-data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
-data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/status/<scene>/<instr_id>.json
+data/llm_navigation/<cache-model-key>/r2r/<split>/predictions/<scene>/<cache_id>.txt
+data/llm_navigation/<cache-model-key>/r2r/<split>/cognitive_maps/<scene>/<cache_id>.npz
+data/llm_navigation/<cache-model-key>/r2r/<split>/status/<scene>/<cache_id>.json
+data/llm_navigation/<cache-model-key>/r2r/<split>/manifest.json
+data/llm_navigation/<cache-model-key>/r2r/<split>/metrics.json
+data/llm_navigation/<cache-model-key>/r2r/<split>/worker_metrics/worker_<index>.json
+data/llm_navigation/<cache-model-key>/pretrain/mixed/predictions/<scene>/<instr_id>.txt
+data/llm_navigation/<cache-model-key>/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
+data/llm_navigation/<cache-model-key>/pretrain/mixed/status/<scene>/<instr_id>.json
 ```
 
 It generates R2R `train`, `val_seen`, and `val_unseen`, plus the mixed pretraining
@@ -239,8 +239,8 @@ ranges.
 Pretraining consumers use this namespace:
 
 ```text
-data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/predictions/<scene>/<instr_id>.txt
-data/llm_navigation/llama-3.1-8b-instruct/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
+data/llm_navigation/<cache-model-key>/pretrain/mixed/predictions/<scene>/<instr_id>.txt
+data/llm_navigation/<cache-model-key>/pretrain/mixed/cognitive_maps/<scene>/<instr_id>.npz
 ```
 
 The pretraining loader does not use `VLNCEEpisodeEntry` or `AnnotationEntry`; it

@@ -37,7 +37,7 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
     assert accelerator.num_processes == 2
 
     sampler = LengthGroupedBatchSampler(
-        lengths=[1, 2, 3, 4],
+        lengths=[1, 2, 3],
         batch_size=1,
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
@@ -47,6 +47,7 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
     optimizer = torch.optim.SGD(model.adapter.parameters(), lr=0.01)
     model, optimizer = accelerator.prepare(model, optimizer)
     seen_example_ids = []
+    padding_participation = 0
 
     for batch_indices in sampler:
         training_index = batch_indices[0]
@@ -72,11 +73,21 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
             optimizer.zero_grad()
         if not training_index.is_padding:
             seen_example_ids.append(training_index.index)
+        else:
+            padding_participation += 1
 
-    gathered_ids = accelerator.gather_for_metrics(
-        torch.tensor(seen_example_ids, device=accelerator.device)
+    coverage = torch.zeros(4, dtype=torch.long, device=accelerator.device)
+    for example_id in seen_example_ids:
+        coverage[example_id] += 1
+    coverage[3] = padding_participation
+    gathered_coverage = accelerator.gather(coverage).reshape(2, 4).sum(dim=0)
+    assert gathered_coverage.cpu().tolist() == [1, 1, 1, 1]
+
+    gathered_padding = accelerator.gather(
+        torch.tensor([padding_participation], device=accelerator.device)
     )
-    assert sorted(gathered_ids.cpu().tolist()) == [0, 1, 2, 3]
+    assert gathered_padding.cpu().tolist().count(1) == 1
+    assert gathered_padding.cpu().tolist().count(0) == 1
 
     adapter_state = (
         accelerator.unwrap_model(model).adapter.weight.detach().reshape(-1)
@@ -101,6 +112,8 @@ def test_shared_sft_runtime_partitions_syncs_and_gates_artifacts():
             "main-process artifact",
             encoding="utf-8",
         )
+    else:
+        assert not (artifact_dir / "artifact-rank-1.txt").exists()
     accelerator.wait_for_everyone()
 
     assert sorted(path.name for path in artifact_dir.iterdir()) == [

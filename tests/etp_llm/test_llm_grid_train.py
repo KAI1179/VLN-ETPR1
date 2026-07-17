@@ -37,10 +37,11 @@ class _EpisodeSource:
 
 
 def _load_result(examples=()):
+    count = int(bool(examples))
     return llm_grid_train.ExampleLoadResult(
         examples=tuple(examples),
         by_dataset={
-            dataset: llm_grid_train.SourceLoadStats(0, 0, ())
+            dataset: llm_grid_train.SourceLoadStats(count, count, ())
             for dataset in ("R2R", "RxR")
         },
     )
@@ -305,6 +306,11 @@ def _patch_training_dependencies(
         "scene_id": "scene-a",
         "dataset": "R2R",
     }
+    rxr_item: llm_grid_train.LLMGridItem = {
+        **item,
+        "example_id": "rxr-train-example",
+        "dataset": "RxR",
+    }
     batch = {
         "input_ids": torch.ones((1, 2), dtype=torch.long),
         "attention_mask": torch.ones((1, 2), dtype=torch.long),
@@ -330,7 +336,7 @@ def _patch_training_dependencies(
     monkeypatch.setattr(
         llm_grid_train,
         "LLMGridDataset",
-        lambda *args, **kwargs: [item],
+        lambda *args, **kwargs: [item, rxr_item],
     )
     monkeypatch.setattr(
         llm_grid_train,
@@ -1421,6 +1427,11 @@ def test_evaluate_model_writes_metrics_and_prediction_artifact(monkeypatch, tmp_
             process_index=0,
         ),
     )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "validate_fixed_corpus",
+        lambda *args, **kwargs: None,
+    )
 
     args = llm_grid_train.LLMGridArgs().parse_args(
         [
@@ -1512,6 +1523,11 @@ def test_evaluate_model_does_not_move_device_mapped_model(monkeypatch, tmp_path)
         llm_grid_train,
         "DataLoader",
         lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "validate_fixed_corpus",
+        lambda *args, **kwargs: None,
     )
     args = llm_grid_train.LLMGridArgs().parse_args(
         [
@@ -1916,6 +1932,8 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
     assert calls == {"step": 3, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
     assert metrics["optimizer_steps"] == pytest.approx(3.0)
+    assert metrics["batches_per_epoch"] == pytest.approx(3.0)
+    assert metrics["optimizer_steps_per_epoch"] == pytest.approx(3.0)
     assert accelerator.prepare_calls == 1
     assert accelerator.backward_calls == 3
     assert accelerator.clip_grad_norm_calls == 3

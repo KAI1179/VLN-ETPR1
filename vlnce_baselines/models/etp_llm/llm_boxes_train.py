@@ -61,6 +61,7 @@ from .sft import (
     reduce_training_totals,
     rendered_token_counts,
     scale_training_loss,
+    validate_fixed_corpus,
     validate_distributed_device_map,
 )
 
@@ -414,8 +415,7 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not load_result.examples:
-        raise ValueError("No LLM-Boxes training examples were loaded")
+    validate_fixed_corpus(load_result.by_dataset)
 
     system_prompt = load_system_prompt()
     if accelerator.is_main_process:
@@ -441,8 +441,10 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         max_input_length=args.max_input_length,
         max_new_tokens=args.max_new_tokens,
     )
-    if not filtered.kept:
-        raise ValueError("No LLM-Boxes training examples remain after length filtering")
+    validate_fixed_corpus(
+        load_result.by_dataset,
+        retained_items=filtered.kept,
+    )
     filtered_dataset = LLMBoxesItemDataset(filtered.kept)
     text_stats = compute_llm_text_stats(
         filtered_dataset,
@@ -572,6 +574,8 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
         "examples": training_totals["example_count"],
         "steps": training_totals["batch_count"],
         "optimizer_steps": float(optimizer_steps),
+        "batches_per_epoch": training_totals["batch_count"] / args.epochs,
+        "optimizer_steps_per_epoch": float(optimizer_steps) / args.epochs,
         "world_size": float(batch_metrics.world_size),
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
         "gradient_accumulation_steps": float(
@@ -758,8 +762,7 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not load_result.examples:
-        raise ValueError("No LLM-Boxes eval examples were loaded")
+    validate_fixed_corpus(load_result.by_dataset)
 
     model_path = args.checkpoint_path or args.model_name_or_path
     model, tokenizer = _load_causal_lm_model_and_tokenizer(
@@ -771,6 +774,10 @@ def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
         ),
     )
     eval_items = tuple(LLMBoxesDataset(load_result.examples))
+    validate_fixed_corpus(
+        load_result.by_dataset,
+        retained_items=eval_items,
+    )
     metrics = _evaluate_loaded_model(
         model,
         tokenizer,

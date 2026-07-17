@@ -10,6 +10,7 @@ from vlnce_baselines.models.etp_llm.sft import (
     SourceLoadStats,
     fixed_corpus_metrics,
     rendered_token_counts,
+    validate_fixed_corpus,
 )
 
 
@@ -83,6 +84,46 @@ def test_fixed_corpus_metrics_reports_asymmetric_sources():
         "rxr_completion_dropped": 1.0,
         "rxr_retained": 0.0,
     }
+
+
+def test_validate_fixed_corpus_rejects_missing_annotation_source():
+    with pytest.raises(
+        ValueError,
+        match="fixed corpus source RxR discovered zero examples",
+    ):
+        validate_fixed_corpus(
+            {
+                "R2R": SourceLoadStats(1, 1, ()),
+                "RxR": SourceLoadStats(0, 0, ()),
+            }
+        )
+
+
+def test_validate_fixed_corpus_rejects_source_with_all_caches_missing():
+    with pytest.raises(
+        ValueError,
+        match="fixed corpus source RxR loaded zero examples",
+    ):
+        validate_fixed_corpus(
+            {
+                "R2R": SourceLoadStats(1, 1, ()),
+                "RxR": SourceLoadStats(2, 0, ("rxr-a", "rxr-b")),
+            }
+        )
+
+
+def test_validate_fixed_corpus_rejects_source_with_all_examples_over_budget():
+    with pytest.raises(
+        ValueError,
+        match="fixed corpus source RxR retained zero examples",
+    ):
+        validate_fixed_corpus(
+            {
+                "R2R": SourceLoadStats(1, 1, ()),
+                "RxR": SourceLoadStats(1, 1, ()),
+            },
+            retained_items=({"example_id": "r2r-a", "dataset": "R2R"},),
+        )
 
 
 def _distributed_batches(epoch=0):

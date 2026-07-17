@@ -82,10 +82,11 @@ class _EpisodeSource:
 
 
 def _load_result(examples=()):
+    count = int(bool(examples))
     return llm_boxes_train.ExampleLoadResult(
         examples=tuple(examples),
         by_dataset={
-            dataset: llm_boxes_train.SourceLoadStats(0, 0, ())
+            dataset: llm_boxes_train.SourceLoadStats(count, count, ())
             for dataset in ("R2R", "RxR")
         },
     )
@@ -644,6 +645,7 @@ def _patch_training_dependencies(
         "scene_id": "scene-a",
         "dataset": "R2R",
     }
+    rxr_item = {**item, "example_id": "rxr-train-example", "dataset": "RxR"}
     batch = {
         "input_ids": torch.ones((1, 2), dtype=torch.long),
         "attention_mask": torch.ones((1, 2), dtype=torch.long),
@@ -666,7 +668,11 @@ def _patch_training_dependencies(
         "load_llm_boxes_examples",
         lambda *args, **kwargs: _load_result([object()]),
     )
-    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: [item])
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "LLMBoxesDataset",
+        lambda examples: [item, rxr_item],
+    )
     monkeypatch.setattr(
         llm_boxes_train,
         "_load_causal_lm_model_and_tokenizer",
@@ -1334,7 +1340,10 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
         ]
     )
 
-    with pytest.raises(ValueError, match="No LLM-Boxes training examples"):
+    with pytest.raises(
+        ValueError,
+        match="fixed corpus source R2R discovered zero examples",
+    ):
         llm_boxes_train.train_model(args)
     assert list(calls[0][0][0]) == ["train"]
 
@@ -1482,6 +1491,8 @@ def test_train_model_uses_accelerator_for_each_batch(
     assert calls == {"step": 3, "zero_grad": 3}
     assert metrics["steps"] == pytest.approx(3.0)
     assert metrics["optimizer_steps"] == pytest.approx(3.0)
+    assert metrics["batches_per_epoch"] == pytest.approx(3.0)
+    assert metrics["optimizer_steps_per_epoch"] == pytest.approx(3.0)
     assert metrics["world_size"] == 8.0
     assert metrics["global_batch_size"] == 8.0
     assert accelerator.prepare_calls == 1
@@ -1735,7 +1746,10 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     tmp_path,
 ):
     calls = []
-    fake_item = {"example_id": "example", "dataset": "R2R"}
+    fake_items = [
+        {"example_id": "r2r-example", "dataset": "R2R"},
+        {"example_id": "rxr-example", "dataset": "RxR"},
+    ]
 
     def fake_load(
         splits,
@@ -1754,7 +1768,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
                 cognitive_map_namespace,
             )
         )
-        return _load_result([fake_item])
+        return _load_result(fake_items)
 
     accelerator = _EvaluationAccelerator(
         is_main_process=True,
@@ -1808,9 +1822,9 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
     metrics = llm_boxes_train.evaluate_model(args)
 
     assert metrics["examples"] == 1.0
-    assert metrics["combined_retained"] == 1.0
+    assert metrics["combined_retained"] == 2.0
     assert metrics["r2r_retained"] == 1.0
-    assert metrics["rxr_retained"] == 0.0
+    assert metrics["rxr_retained"] == 1.0
     assert calls == [
         (
             "load",
@@ -1826,7 +1840,7 @@ def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
             "model",
             "tokenizer",
             str(tmp_path),
-            [fake_item],
+            fake_items,
             torch.device("cpu"),
         ),
         ("write", tmp_path / "metrics.json", metrics),
@@ -2088,6 +2102,11 @@ def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_pa
         llm_boxes_train, "_evaluate_loaded_model", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
+    monkeypatch.setattr(
+        llm_boxes_train,
+        "validate_fixed_corpus",
+        lambda *args, **kwargs: None,
+    )
 
     args = llm_boxes_train.parse_args(
         ["eval", "--output-dir", str(tmp_path), "--device-map", "none", "--quiet"]

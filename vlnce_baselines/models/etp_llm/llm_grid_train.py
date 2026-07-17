@@ -48,6 +48,7 @@ from .sft import (
     reduce_training_totals,
     rendered_token_counts,
     scale_training_loss,
+    validate_fixed_corpus,
     validate_distributed_device_map,
 )
 from .llm_boxes_train import (
@@ -992,8 +993,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not load_result.examples:
-        raise ValueError("No LLM-Grid training examples were loaded")
+    validate_fixed_corpus(load_result.by_dataset)
 
     system_prompt = load_system_prompt(scale=args.scale)
     if accelerator.is_main_process:
@@ -1020,8 +1020,10 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         max_new_tokens=args.max_new_tokens,
     )
     train_items = list(filtered.kept)
-    if not train_items:
-        raise ValueError("No LLM-Grid training examples fit the length budgets")
+    validate_fixed_corpus(
+        load_result.by_dataset,
+        retained_items=train_items,
+    )
     dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
         filtered.dropped_completion_example_ids
     )
@@ -1148,6 +1150,8 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "examples": training_totals["example_count"],
         "steps": training_totals["batch_count"],
         "optimizer_steps": float(optimizer_steps),
+        "batches_per_epoch": training_totals["batch_count"] / args.epochs,
+        "optimizer_steps_per_epoch": float(optimizer_steps) / args.epochs,
         "world_size": float(batch_metrics.world_size),
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
         "gradient_accumulation_steps": float(
@@ -1205,8 +1209,7 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
         skip_missing_cache=True,
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
-    if not load_result.examples:
-        raise ValueError("No LLM-Grid eval examples were loaded")
+    validate_fixed_corpus(load_result.by_dataset)
 
     system_prompt = load_system_prompt(scale=args.scale)
     _write_run_system_prompt(args.output_dir, system_prompt)
@@ -1232,6 +1235,10 @@ def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
             "dataset": example.dataset,
         }
         for example in load_result.examples
+    )
+    validate_fixed_corpus(
+        load_result.by_dataset,
+        retained_items=eval_provenance,
     )
     loader = DataLoader(
         eval_dataset,
