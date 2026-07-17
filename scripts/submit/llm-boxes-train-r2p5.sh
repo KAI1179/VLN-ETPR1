@@ -7,10 +7,6 @@
 #SBATCH -p vip_gpu_scze096
 set -eo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "${REPO_ROOT}/scripts/gpu-detection.bash"
-configure_exact_distributed_gpu_vars 8
-
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u

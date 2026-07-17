@@ -11,11 +11,11 @@ artifacts. `--limit-per-dataset N` optionally limits each source independently
 for a small debugging run.
 
 The maintained Slurm launchers allocate one node, one task, and eight GPUs.
-They fail before environment activation unless exactly eight GPUs are visible
-and no process-count override conflicts with eight. The final command is
+Slurm controls GPU visibility, and the launchers run
 `torchrun --standalone --nnodes=1 --nproc-per-node=8`, with per-device batch
-size 1, gradient accumulation 1, gradient checkpointing, `device_map=none`, ten
-epochs, and LoRA rank/alpha/dropout 32/64/0.05:
+size 1, gradient accumulation 1, gradient checkpointing, `device_map=none`,
+ten epochs, and LoRA rank/alpha/dropout 32/64/0.05. Submit from the repository
+root:
 
 ```shell
 sbatch scripts/submit/llm-boxes-train-r1p5.sh
