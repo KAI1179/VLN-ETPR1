@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from gzip import open as gzip_open
+from itertools import islice
 from json import load
 from pathlib import Path
 from typing import Iterable, Iterator, Literal, Sequence, Tuple
@@ -14,6 +15,7 @@ from prior.trajectory import WorldTrajectory3D
 
 
 DEFAULT_SPLITS = ("train", "val_seen", "val_unseen")
+VLNCE_DATASETS: Tuple[Literal["R2R", "RxR"], ...] = ("R2R", "RxR")
 
 
 @dataclass
@@ -72,6 +74,20 @@ class VLNCEEpisodeEntry:
                     ground_truth_trajectory=_world_trajectory_3d(gt_entry["locations"]),
                 )
 
+    @staticmethod
+    def iter_r2r_rxr(
+        splits: Iterable[str] = DEFAULT_SPLITS,
+        limit_per_dataset: int | None = None,
+    ) -> Iterator["VLNCEEpisodeEntry"]:
+        if limit_per_dataset is not None and limit_per_dataset < 0:
+            raise ValueError("limit_per_dataset must be >= 0")
+        split_names = tuple(splits)
+        for dataset in VLNCE_DATASETS:
+            entries = VLNCEEpisodeEntry.iter_from(dataset, splits=split_names)
+            if limit_per_dataset is not None:
+                entries = islice(entries, limit_per_dataset)
+            yield from entries
+
     @property
     def unique_id(self) -> str:
         """Return a dataset-wide unique id for file names and cache keys."""
@@ -110,7 +126,7 @@ def _files_for_split(dataset: Literal["R2R", "RxR"], split: str) -> Tuple[Path, 
     raise ValueError(f"Unsupported dataset: {dataset}")
 
 
-__all__ = ["DEFAULT_SPLITS", "VLNCEEpisodeEntry"]
+__all__ = ["DEFAULT_SPLITS", "VLNCE_DATASETS", "VLNCEEpisodeEntry"]
 
 
 if __name__ == "__main__":

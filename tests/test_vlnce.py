@@ -179,3 +179,75 @@ def test_vlnce_episode_entry_keeps_dataset_split_and_episode_explicit():
     assert entry.split == "val_unseen"
     assert entry.episode_id == 184
     assert entry.unique_id == "R2R_val_unseen_184"
+
+
+def test_iter_r2r_rxr_chains_both_english_sources(monkeypatch):
+    from prior import vlnce
+
+    calls = []
+
+    def fake_iter_from(dataset, splits):
+        calls.append((dataset, tuple(splits)))
+        yield vlnce.VLNCEEpisodeEntry(
+            dataset=dataset,
+            split="train",
+            scene_id=f"scene-{dataset}",
+            episode_id=1,
+            instruction=f"{dataset} instruction",
+            start_position=[0.0, 0.0, 0.0],
+            start_rotation=[0.0, 0.0, 0.0, 1.0],
+            instruction_tokens=[],
+            ground_truth_trajectory=[],
+        )
+
+    monkeypatch.setattr(vlnce.VLNCEEpisodeEntry, "iter_from", fake_iter_from)
+
+    entries = list(
+        vlnce.VLNCEEpisodeEntry.iter_r2r_rxr(
+            splits=("train",),
+            limit_per_dataset=None,
+        )
+    )
+
+    assert calls == [("R2R", ("train",)), ("RxR", ("train",))]
+    assert [entry.dataset for entry in entries] == ["R2R", "RxR"]
+
+
+def test_iter_r2r_rxr_applies_limit_to_each_dataset(monkeypatch):
+    from prior import vlnce
+
+    def fake_iter_from(dataset, splits):
+        del splits
+        for episode_id in range(3):
+            yield vlnce.VLNCEEpisodeEntry(
+                dataset=dataset,
+                split="train",
+                scene_id=f"scene-{dataset}",
+                episode_id=episode_id,
+                instruction="go",
+                start_position=[0.0, 0.0, 0.0],
+                start_rotation=[0.0, 0.0, 0.0, 1.0],
+                instruction_tokens=[],
+                ground_truth_trajectory=[],
+            )
+
+    monkeypatch.setattr(vlnce.VLNCEEpisodeEntry, "iter_from", fake_iter_from)
+
+    entries = list(
+        vlnce.VLNCEEpisodeEntry.iter_r2r_rxr(
+            splits=("train",),
+            limit_per_dataset=1,
+        )
+    )
+
+    assert [(entry.dataset, entry.episode_id) for entry in entries] == [
+        ("R2R", 0),
+        ("RxR", 0),
+    ]
+
+
+def test_iter_r2r_rxr_rejects_negative_limit():
+    from prior import vlnce
+
+    with pytest.raises(ValueError, match="limit_per_dataset must be >= 0"):
+        list(vlnce.VLNCEEpisodeEntry.iter_r2r_rxr(limit_per_dataset=-1))
