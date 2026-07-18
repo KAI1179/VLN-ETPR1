@@ -71,6 +71,7 @@
 | LLM 5       | `42c16c8` | 95.24%  | 1.76%  | 23.06% | 29.42% |
 | LLM-Grid 1  | `6a2623b` | -       | -      | -      | -      |
 | LLM-Boxes 1 | `d7a0205` | -       | -      | -      | -      |
+| LLM-Grid 2  | `ad1049f` | -       | -      | -      | -      |
 
 - LLM 1: Tell2Design-style
     - e.g. `[ object appliances | center x = 14.0 | center z = 26.9 | half x = 1.2 | half z = 0.3 | rotation = -2.55 ]`
@@ -93,6 +94,7 @@
     - R2R val-unseen: 2,089 / 260 (88.9%)
     - RxR val-unseen, English: 2,932 / 1,620 (64.4%)
     - Total: 33,734 / 13,682 (71.1%)
+- LLM-Grid 2: 分布式训练，加上 RxR 数据
 
 ### 基于 LLM 的 pipeline
 
@@ -754,10 +756,10 @@ Drop Rate By `max_new_tokens`:
     - 读论文？
 - 后续
     - [ ] bbox sample 比对
-    - [ ] 用上 RxR 数据 (数据不够 (~1w) -> 过拟合)
-        - [ ] RxR 会不会爆 OOM? 统计 max token 后调整
-        - [ ] 加快训练速度？多卡调小 rank 调大并行度？
-    - [ ] 去除 dataset 标记
+    - [x] 用上 RxR 数据 (数据不够 (~1w) -> 过拟合)
+        - [x] RxR 会不会爆 OOM? 统计 max token 后调整
+        - [x] 加快训练速度？多卡调小 rank 调大并行度？
+    - [x] 去除 dataset 标记
     - [ ] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
     - [ ] LLM 定量评估：IoU; obj 召回率 (mentioned / unmentioned) / F-score; 方向向量的定量评价
     - [ ] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
@@ -785,8 +787,9 @@ Drop Rate By `max_new_tokens`:
 - [x] Try 5 repro (半径 1.5, on-the-fly) @ 超算
 - [x] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
 - [x] 2x "Blurred", r=1.5 LLM-Grid 微调 (r2r-legacy-r1p5-direction5-scale2) @ 超算
-- [ ] 2x "Blurred", r=1.5 LLM-Grid 导航缓存生成 @ 超算
-    - [ ] 2x "Blurred", r=1.5 LLM-Grid, Try 5 架构 导航 @ 超算
+- [x] 2x "Blurred", r=1.5 LLM-Grid 预训练导航缓存生成 @ 超算
+- [ ] 2x "Blurred", r=1.5 LLM-Grid, Try 5 架构 导航 @ 超算
 - [x] LLM-Boxes 微调 @ 超算
 - [x] LLM-Boxes 导航缓存生成 @ 超算
-- [ ] LLM-Boxes, Try 10 架构 导航 @ 超算
+- ~~LLM-Boxes, Try 10 架构 导航 @ 超算~~
+- [ ] LLM-Grid 2 大模型微调 @ 超算
