@@ -755,7 +755,7 @@ Drop Rate By `max_new_tokens`:
     - boxes 开始预训练了，使用当前架构，预训练缓存生成率 ~70%
     - 读论文？
 - 后续
-    - [ ] bbox sample 比对
+    - [x] bbox sample 比对
     - [x] 用上 RxR 数据 (数据不够 (~1w) -> 过拟合)
         - [x] RxR 会不会爆 OOM? 统计 max token 后调整
         - [x] 加快训练速度？多卡调小 rank 调大并行度？
@@ -771,6 +771,15 @@ Drop Rate By `max_new_tokens`:
 | ----------------- | -------- | ----- | ----- | ----- | ----- | --------- | --------- | --------- |
 | LLM-Boxes         | 19,954   | 1,234 | 2,818 | 3,958 | 7,173 | 14.83%    | 3.37%     | 0.81%     |
 | LLM-Grid, scale 2 | 19,954   | 1,388 | 2,595 | 3,219 | 4,969 | 15.80%    | 1.59%     | 0.15%     |
+
+## 07/18
+
+- 分析 LLM-Grid 1 的结果 (`e9b6cbc`): `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/train/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`, `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/val_unseen/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`
+    - 同样过拟合
+        - 部分训练数据上关键路径点基本一致 (`R2R_train_2883`, `R2R_train_3356`)
+        - 物体基本乱预测
+        - 区域/物体有时候预测为空 (`R2R_val_unseen_162`, `R2R_val_unseen_802`)
+    - 模型更容易关注细节信息 (token 占比大)
 
 # 实验
 
