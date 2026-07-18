@@ -47,7 +47,7 @@ REGION_COLORMAP = mcolors.ListedColormap(MAPPED_REGION_COLORS)
 
 def _grid_bounds(
     grid_maps: Sequence[BaseGridMap],
-    overlay: _MapOverlay,
+    overlays: Sequence[_MapOverlay],
     *,
     auto_crop: bool,
     crop_margin: int,
@@ -64,9 +64,10 @@ def _grid_bounds(
             rows.extend(map_rows.tolist())
             cols.extend(map_cols.tolist())
 
-    for row, col in (*overlay.trajectory, *overlay.keypoints):
-        rows.append(row)
-        cols.append(col)
+    for overlay in overlays:
+        for row, col in (*overlay.trajectory, *overlay.keypoints):
+            rows.append(row)
+            cols.append(col)
 
     if not rows:
         return 0, ROWS - 1, 0, COLS - 1
@@ -236,7 +237,7 @@ def visualize(
         start_direction_vector=start_direction_vector,
     )
     bounds = _grid_bounds(
-        [grid_map], overlay, auto_crop=auto_crop, crop_margin=crop_margin
+        [grid_map], [overlay], auto_crop=auto_crop, crop_margin=crop_margin
     )
     fig, axes = plt.subplots(1, 2, figsize=figsize, squeeze=False)
     _draw_grid_map((axes[0, 0], axes[0, 1]), grid_map, bounds, overlay)
@@ -257,21 +258,27 @@ def visualize_comparison(
     *,
     instruction: str,
     ground_truth_trajectory: Sequence[GridPoint],
-    trajectory_keypoints: Sequence[GridPoint],
+    predicted_trajectory_keypoints: Sequence[GridPoint],
+    ground_truth_trajectory_keypoints: Sequence[GridPoint],
     start_direction_vector: Tuple[float, float],
     figsize: tuple[int, int] = (24, 14),
     auto_crop: bool = True,
     crop_margin: int = 5,
 ) -> None:
     """Visualize predicted and ground-truth maps with shared episode context."""
-    overlay = _MapOverlay(
+    predicted_overlay = _MapOverlay(
+        trajectory=tuple(predicted_trajectory_keypoints),
+        keypoints=tuple(predicted_trajectory_keypoints),
+        start_direction_vector=start_direction_vector,
+    )
+    ground_truth_overlay = _MapOverlay(
         trajectory=tuple(ground_truth_trajectory),
-        keypoints=tuple(trajectory_keypoints),
+        keypoints=tuple(ground_truth_trajectory_keypoints),
         start_direction_vector=start_direction_vector,
     )
     bounds = _grid_bounds(
         [predicted_map, ground_truth_map],
-        overlay,
+        [predicted_overlay, ground_truth_overlay],
         auto_crop=auto_crop,
         crop_margin=crop_margin,
     )
@@ -280,14 +287,14 @@ def visualize_comparison(
         (axes[0, 0], axes[1, 0]),
         predicted_map,
         bounds,
-        overlay,
+        predicted_overlay,
         label="Predicted",
     )
     _draw_grid_map(
         (axes[0, 1], axes[1, 1]),
         ground_truth_map,
         bounds,
-        overlay,
+        ground_truth_overlay,
         label="Ground truth",
     )
     fig.suptitle(instruction, fontsize=14, fontweight="bold", wrap=True)

@@ -39,6 +39,35 @@ def _trim_zero_padded_points(points: Sequence[Point2D]) -> Sequence[Point2D]:
     return points[: last_nonzero_index + 1]
 
 
+def _validated_coordinate_array(
+    value: object,
+    *,
+    name: str,
+    expected_shape: tuple[int, ...],
+) -> NDArray[np.float32]:
+    try:
+        array = np.asarray(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{name} must be a numeric array with shape {expected_shape}"
+        ) from error
+    if array.shape != expected_shape:
+        raise ValueError(
+            f"{name} must have shape {expected_shape}, got {array.shape}"
+        )
+    if (
+        not np.issubdtype(array.dtype, np.number)
+        or np.issubdtype(array.dtype, np.bool_)
+        or np.issubdtype(array.dtype, np.complexfloating)
+    ):
+        raise ValueError(
+            f"{name} must contain real numeric values, got dtype {array.dtype}"
+        )
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{name} must contain only finite values")
+    return array.astype(np.float32, copy=False)
+
+
 class BaseGridMap:
     """
     Base class for grid-based spatial representations of object and region categories.
@@ -218,7 +247,8 @@ class BaseGridMap:
         *,
         instruction: str,
         ground_truth_trajectory: Sequence[Point2D],
-        trajectory_keypoints: Sequence[Point2D],
+        predicted_trajectory_keypoints: Optional[Sequence[Point2D]],
+        ground_truth_trajectory_keypoints: Sequence[Point2D],
         start_direction_vector: DirectionVector,
         figsize: tuple[int, int] = (24, 14),
         auto_crop: bool = True,
@@ -227,7 +257,14 @@ class BaseGridMap:
         """Compare this predicted map with ground truth in one shared frame."""
         from ._visualize import visualize_comparison
 
-        visible_keypoints = _trim_zero_padded_points(trajectory_keypoints)
+        visible_predicted_keypoints = (
+            ()
+            if predicted_trajectory_keypoints is None
+            else _trim_zero_padded_points(predicted_trajectory_keypoints)
+        )
+        visible_ground_truth_keypoints = _trim_zero_padded_points(
+            ground_truth_trajectory_keypoints
+        )
         visualize_comparison(
             self,
             ground_truth_map,
@@ -237,9 +274,13 @@ class BaseGridMap:
                 meters_to_grid(float(position[0]), float(position[1]))
                 for position in ground_truth_trajectory
             ],
-            trajectory_keypoints=[
+            predicted_trajectory_keypoints=[
                 meters_to_grid(float(position[0]), float(position[1]))
-                for position in visible_keypoints
+                for position in visible_predicted_keypoints
+            ],
+            ground_truth_trajectory_keypoints=[
+                meters_to_grid(float(position[0]), float(position[1]))
+                for position in visible_ground_truth_keypoints
             ],
             start_direction_vector=start_direction_vector,
             figsize=figsize,
@@ -374,22 +415,22 @@ class CognitiveGridMap(BaseGridMap):
 
     def save(self, save_path: str | PathLike[str] | np._SupportsWrite[bytes]):
         """Save cognitive map data with trajectory keypoints."""
-        trajectory_keypoints = np.asarray(self.trajectory_keypoints, dtype=np.float32)
-        expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
-        if trajectory_keypoints.shape != expected_shape:
-            raise ValueError(
-                "trajectory_keypoints must have shape "
-                f"{expected_shape}, got {trajectory_keypoints.shape}"
-            )
+        trajectory_keypoints = _validated_coordinate_array(
+            self.trajectory_keypoints,
+            name="trajectory_keypoints",
+            expected_shape=(TRAJECTORY_KEYPOINT_COUNT, 2),
+        )
+        start_direction_vector = _validated_coordinate_array(
+            self.start_direction_vector,
+            name="start_direction_vector",
+            expected_shape=(2,),
+        )
         np.savez_compressed(
             save_path,
             grid=self.grid,
             range_y=np.asarray(self.range_y, dtype=object),
             trajectory_keypoints=trajectory_keypoints,
-            start_direction_vector=np.asarray(
-                self.start_direction_vector,
-                dtype=np.float32,
-            ),
+            start_direction_vector=start_direction_vector,
         )
 
     @classmethod
@@ -402,18 +443,24 @@ class CognitiveGridMap(BaseGridMap):
         grid_map = cls()
         grid_map.grid = data["grid"]
         grid_map.range_y = list(data["range_y"].tolist())
-        trajectory_keypoints = data["trajectory_keypoints"]
-        expected_shape = (TRAJECTORY_KEYPOINT_COUNT, 2)
-        if trajectory_keypoints.shape != expected_shape:
-            raise ValueError(
-                "trajectory_keypoints must have shape "
-                f"{expected_shape}, got {trajectory_keypoints.shape}"
-            )
+        trajectory_keypoints = _validated_coordinate_array(
+            data["trajectory_keypoints"],
+            name="trajectory_keypoints",
+            expected_shape=(TRAJECTORY_KEYPOINT_COUNT, 2),
+        )
+        start_direction_vector = _validated_coordinate_array(
+            data["start_direction_vector"],
+            name="start_direction_vector",
+            expected_shape=(2,),
+        )
         grid_map.trajectory_keypoints = [
             (float(position[0]), float(position[1]))
             for position in trajectory_keypoints
         ]
-        grid_map.start_direction_vector = tuple(data["start_direction_vector"])
+        grid_map.start_direction_vector = (
+            float(start_direction_vector[0]),
+            float(start_direction_vector[1]),
+        )
         return grid_map
 
     def validate(self) -> bool:

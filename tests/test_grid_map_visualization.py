@@ -3,14 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from prior.analyze.batch_vis import (
     BatchVisualizationArgs,
+    _load_prediction_map,
     _sample_prediction_paths,
     render_comparisons,
 )
-from prior.grid_map import BaseGridMap
+from prior.grid_map import BaseGridMap, CognitiveGridMap
 from prior.grid_map._visualize import _MapOverlay, _grid_bounds
 
 
@@ -41,8 +43,15 @@ def test_visualize_comparison_converts_context_to_grid_coordinates(
         ground_truth_map,
         tmp_path / "comparison.png",
         instruction="Walk to the chair.",
+        predicted_trajectory_keypoints=[
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
         ground_truth_trajectory=[(1.0, 2.0), (2.0, 3.0)],
-        trajectory_keypoints=[
+        ground_truth_trajectory_keypoints=[
             (0.0, 0.0),
             (1.0, 2.0),
             (0.0, 0.0),
@@ -53,8 +62,36 @@ def test_visualize_comparison_converts_context_to_grid_coordinates(
     )
 
     assert captured["instruction"] == "Walk to the chair."
+    assert captured["predicted_trajectory_keypoints"] == [(2.0, 2.0), (4.0, 4.0)]
     assert captured["ground_truth_trajectory"] == [(2.0, 4.0), (4.0, 6.0)]
-    assert captured["trajectory_keypoints"] == [(0.0, 0.0), (2.0, 4.0)]
+    assert captured["ground_truth_trajectory_keypoints"] == [
+        (0.0, 0.0),
+        (2.0, 4.0),
+    ]
+
+
+def test_visualize_comparison_does_not_fallback_to_ground_truth_waypoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "prior.grid_map._visualize.visualize_comparison",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+
+    BaseGridMap().visualize_comparison(
+        BaseGridMap(),
+        tmp_path / "comparison.png",
+        instruction="Walk to the chair.",
+        predicted_trajectory_keypoints=None,
+        ground_truth_trajectory=[(1.0, 2.0), (2.0, 3.0)],
+        ground_truth_trajectory_keypoints=[(1.0, 2.0)] * 5,
+        start_direction_vector=(1.0, 0.0),
+    )
+
+    assert captured["predicted_trajectory_keypoints"] == []
+    assert captured["ground_truth_trajectory_keypoints"] == [(2.0, 4.0)] * 5
 
 
 def test_grid_bounds_cover_both_maps_and_episode_overlay() -> None:
@@ -66,7 +103,7 @@ def test_grid_bounds_cover_both_maps_and_episode_overlay() -> None:
 
     bounds = _grid_bounds(
         [predicted_map, ground_truth_map],
-        overlay,
+        [overlay],
         auto_crop=True,
         crop_margin=2,
     )
@@ -93,7 +130,7 @@ def test_render_comparisons_loads_paired_context(
 
     def fake_load(path: Path) -> BaseGridMap:
         loaded_paths.append(Path(path))
-        return predicted_map if Path(path) == prediction_path else BaseGridMap()
+        return BaseGridMap()
 
     context = SimpleNamespace(
         instruction="Walk to the chair.",
@@ -112,6 +149,14 @@ def test_render_comparisons_loads_paired_context(
         captured.update(kwargs)
         captured["save_path"] = save_path
 
+    def fake_load_prediction(path: Path):
+        loaded_paths.append(Path(path))
+        return predicted_map, [(4.0, 5.0)]
+
+    monkeypatch.setattr(
+        "prior.analyze.batch_vis._load_prediction_map",
+        fake_load_prediction,
+    )
     monkeypatch.setattr(BaseGridMap, "load", staticmethod(fake_load))
     monkeypatch.setattr(
         "prior.analyze.batch_vis.RelevantSemanticBoxes.load",
@@ -128,7 +173,12 @@ def test_render_comparisons_loads_paired_context(
     assert rendered == 1
     assert loaded_paths == [prediction_path, ground_truth_path]
     assert captured["instruction"] == context.instruction
+    assert captured["predicted_trajectory_keypoints"] == [(4.0, 5.0)]
     assert captured["ground_truth_trajectory"] == context.ground_truth_trajectory
+    assert (
+        captured["ground_truth_trajectory_keypoints"]
+        == context.trajectory_keypoints
+    )
     assert captured["save_path"] == output_root / "scene" / "R2R_val_unseen_1.png"
 
 
@@ -145,6 +195,61 @@ def test_render_comparisons_rejects_missing_boxes(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="Missing paired boxes"):
         render_comparisons(prediction_root, ground_truth_root, tmp_path / "output")
+
+
+def test_load_prediction_map_detects_waypoint_capability(tmp_path: Path) -> None:
+    grid_path = tmp_path / "grid.npz"
+    boxes_path = tmp_path / "boxes.npz"
+    BaseGridMap().save(grid_path)
+    boxes_map = CognitiveGridMap()
+    boxes_map.trajectory_keypoints = [
+        (1.0, 2.0),
+        (3.0, 4.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]
+    boxes_map.start_direction_vector = (1.0, 0.0)
+    boxes_map.save(boxes_path)
+
+    _, grid_keypoints = _load_prediction_map(grid_path)
+    loaded_boxes, boxes_keypoints = _load_prediction_map(boxes_path)
+
+    assert grid_keypoints is None
+    assert isinstance(loaded_boxes, CognitiveGridMap)
+    assert boxes_keypoints == boxes_map.trajectory_keypoints
+
+
+@pytest.mark.parametrize(
+    ("trajectory_keypoints", "start_direction_vector", "message"),
+    [
+        (np.zeros((4, 2), dtype=np.float32), (1.0, 0.0), "must have shape"),
+        (np.zeros((5, 2), dtype=np.bool_), (1.0, 0.0), "real numeric values"),
+        (
+            np.full((5, 2), np.nan, dtype=np.float32),
+            (1.0, 0.0),
+            "only finite values",
+        ),
+        (np.zeros((5, 2), dtype=np.float32), (1.0,), "must have shape"),
+    ],
+)
+def test_load_prediction_map_rejects_malformed_waypoints(
+    tmp_path: Path,
+    trajectory_keypoints: np.ndarray,
+    start_direction_vector: tuple[float, ...],
+    message: str,
+) -> None:
+    path = tmp_path / "malformed.npz"
+    np.savez_compressed(
+        path,
+        grid=BaseGridMap().grid,
+        range_y=np.asarray([None, None], dtype=object),
+        trajectory_keypoints=trajectory_keypoints,
+        start_direction_vector=np.asarray(start_direction_vector, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _load_prediction_map(path)
 
 
 def test_sample_prediction_paths_is_deterministic(tmp_path: Path) -> None:

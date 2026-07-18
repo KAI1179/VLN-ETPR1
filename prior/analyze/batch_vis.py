@@ -1,4 +1,4 @@
-"""Render paired LLM-Grid and ground-truth cognitive-map samples."""
+"""Render paired predicted and ground-truth cognitive-map samples."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ import random
 from pathlib import Path
 from typing import Optional, Sequence
 
+import numpy as np
 from tap import Tap
 
 from prior.bbox import RelevantSemanticBoxes
-from prior.grid_map import BaseGridMap
+from prior.grid_map import BaseGridMap, CognitiveGridMap
+from prior.trajectory import Point2D
 
 
 class BatchVisualizationArgs(Tap):
@@ -51,6 +53,17 @@ def _sample_prediction_paths(
     return sorted(random.Random(seed).sample(paths, count))
 
 
+def _load_prediction_map(
+    path: Path,
+) -> tuple[BaseGridMap, Optional[Sequence[Point2D]]]:
+    with np.load(path) as data:
+        has_trajectory_keypoints = "trajectory_keypoints" in data.files
+    if not has_trajectory_keypoints:
+        return BaseGridMap.load(path), None
+    cognitive_map = CognitiveGridMap.load(path)
+    return cognitive_map, cognitive_map.trajectory_keypoints
+
+
 def render_comparisons(
     prediction_root: Path,
     ground_truth_root: Path,
@@ -80,7 +93,9 @@ def render_comparisons(
         if not boxes_path.is_file():
             raise FileNotFoundError(f"Missing paired boxes: {boxes_path}")
 
-        predicted_map = BaseGridMap.load(prediction_path)
+        predicted_map, predicted_trajectory_keypoints = _load_prediction_map(
+            prediction_path
+        )
         ground_truth_map = BaseGridMap.load(ground_truth_path)
         boxes = RelevantSemanticBoxes.load(boxes_path)
         output_path = output_root / scene_id / f"{prediction_path.stem}.png"
@@ -89,8 +104,9 @@ def render_comparisons(
             ground_truth_map,
             output_path,
             instruction=boxes.instruction,
+            predicted_trajectory_keypoints=predicted_trajectory_keypoints,
             ground_truth_trajectory=boxes.ground_truth_trajectory,
-            trajectory_keypoints=boxes.trajectory_keypoints,
+            ground_truth_trajectory_keypoints=boxes.trajectory_keypoints,
             start_direction_vector=boxes.start_direction_vector,
         )
         rendered += 1
