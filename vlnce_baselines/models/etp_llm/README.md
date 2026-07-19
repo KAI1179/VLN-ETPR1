@@ -62,15 +62,25 @@ over-budget examples, and counts tokens. It atomically writes the per-run
 text/token rows after a barrier, avoiding eight copies of heavy R2R/RxR
 preprocessing.
 
-## LLM-Boxes Evaluation
+## Predictor-Quality Evaluation
 
 ```shell
-python -m vlnce_baselines.models.etp_llm.llm_boxes_train eval \
-  --checkpoint-path outputs/llm_boxes/r2r-rxr-bbox-r1p5-path5-no-dataset-tag/checkpoints/final
+python -m vlnce_baselines.models.etp_llm.llm_boxes_eval \
+  --cache-model-key llm-boxes-r2r-rxr-r1p5-path5-tagfree \
+  --output-dir outputs/llm_boxes_eval/r1p5
+
+python -m vlnce_baselines.models.etp_llm.llm_grid_eval \
+  --cache-model-key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree \
+  --output-dir outputs/llm_grid_eval/r1p5
 ```
 
-The evaluation command uses the same fixed R2R-plus-English-RxR corpus and
-accepts `--limit-per-dataset` for bounded checks.
+These reference diagnostics score cached raw predictions for R2R `val_seen`
+and `val_unseen`; they do not load the trained LLM or run inference again.
+Missing and invalid predictions remain in the denominator. RxR validation is
+intentionally excluded because LLM-Navigation does not generate or consume an
+RxR navigation cache. Use `--limit N` for a bounded check. Derived predictor
+metrics are written to the selected output directory and do not overwrite the
+cache generator's operational `metrics.json`.
 
 ## LLM-Navigation Scaffold
 
@@ -217,6 +227,9 @@ item, that item is skipped before tokenization, LLM generation, and scene-box
 preprocessing. The prediction text stores raw decoded model output for auditability,
 but navigation consumes the `.npz`, so a map is sufficient for resume. To regenerate
 existing cache entries, remove the target cache directory and run generation again.
+The existing split manifest must match the requested model path, cache key,
+prompt hash, token limits, dataset, split, generator, and scale where applicable;
+a mismatch fails with instructions to use a new key or remove the stale cache.
 
 Per-entry `status` JSON files record generation attempt outcomes only:
 `complete`, `parse_failed`, `conversion_failed`, or `skipped_input`. Resume skips

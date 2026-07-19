@@ -15,6 +15,6 @@ def test_llm_boxes_uses_shared_default_model_path():
     import model_paths
     from vlnce_baselines.models.etp_llm import llm_boxes_train
 
-    args = llm_boxes_train.parse_args(["train"])
+    args = llm_boxes_train.parse_args(["--gradient-checkpointing"])
 
     assert args.model_name_or_path == model_paths.LLAMA_3_1_8B_INSTRUCT_MODEL

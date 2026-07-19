@@ -1,4 +1,4 @@
-"""Dataset, training, and evaluation CLI for the LLM-Boxes milestone."""
+"""Dataset and training CLI for the LLM-Boxes milestone."""
 
 from __future__ import annotations
 
@@ -38,16 +38,12 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cognitive_map_boxes_cache_path,
 )
 
-from .boxes_metrics import evaluate_llm_boxes_prediction
 from .boxes_schema import (
     LLMBoxesSpec,
     build_llm_map_input,
-    parse_llm_boxes_text,
     parse_llm_boxes_text_partial,
     relevant_semantic_boxes_to_mentioned_spec,
     spec_to_llm_boxes_text,
-    spec_to_relevant_semantic_boxes,
-    write_prediction_artifact,
 )
 from .sft import (
     ExampleLoadResult,
@@ -74,16 +70,7 @@ from .sft import (
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_boxes_system.md"
 TRAIN_SPLITS = ("train",)
-EVAL_SPLITS = ("val_seen", "val_unseen")
 TRAINING_MANIFEST_NAME = "training_manifest.jsonl"
-AGGREGATE_METRIC_KEYS: Dict[str, str] = {
-    "category_precision": "category_precision",
-    "category_recall": "category_recall",
-    "category_f1": "category_f1",
-    "category_aware_raster_iou": "category_aware_raster_iou",
-    "category_aware_raster_recall": "category_aware_raster_recall",
-    "category_aware_raster_support": "category_aware_raster_support_mean",
-}
 
 
 class LLMBoxesItem(TypedDict, total=False):
@@ -133,54 +120,13 @@ class _PreparedBoxesTrainingCorpus:
     corpus_metrics: Mapping[str, float]
 
 
-@dataclass
-class _BoxesEvaluationAccumulator:
-    metric_sums: Dict[str, float] = field(
-        default_factory=lambda: {key: 0.0 for key in AGGREGATE_METRIC_KEYS.values()}
-    )
-    example_count: int = 0
-    schema_valid_count: int = 0
-    partial_schema_valid_count: int = 0
-    entity_valid_rate_sum: float = 0.0
-    entity_valid_support_sum: float = 0.0
-
-    def metrics(self) -> Dict[str, float]:
-        metrics = (
-            {key: value / self.example_count for key, value in self.metric_sums.items()}
-            if self.example_count
-            else {key: 0.0 for key in self.metric_sums}
-        )
-        metrics["examples"] = float(self.example_count)
-        metrics["schema_valid_rate"] = _safe_rate(
-            self.schema_valid_count, self.example_count
-        )
-        metrics["format_parse_rate"] = metrics["schema_valid_rate"]
-        metrics["partial_schema_valid_rate"] = _safe_rate(
-            self.partial_schema_valid_count, self.example_count
-        )
-        metrics["entity_valid_rate"] = (
-            self.entity_valid_rate_sum / self.example_count
-            if self.example_count
-            else 0.0
-        )
-        metrics["entity_valid_support_mean"] = (
-            self.entity_valid_support_sum / self.example_count
-            if self.example_count
-            else 0.0
-        )
-        return metrics
-
-
-def _safe_rate(numerator: int, denominator: int) -> float:
-    return float(numerator) / float(denominator) if denominator else 0.0
-
-
 def load_llm_boxes_examples(
     splits: Iterable[str],
     limit_per_dataset: Optional[int] = None,
     quiet: bool = False,
     skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_COGNITIVE_MAP_NAMESPACE,
+    datasets: Iterable[Literal["R2R", "RxR"]] = ("R2R", "RxR"),
 ) -> ExampleLoadResult[LLMBoxesExample]:
     """Load VLN-CE episodes and attach cached target relevant semantic boxes."""
     examples: List[LLMBoxesExample] = []
@@ -189,7 +135,8 @@ def load_llm_boxes_examples(
     loaded = {"R2R": 0, "RxR": 0}
     missing = {"R2R": [], "RxR": []}
     episodes = _progress(
-        VLNCEEpisodeEntry.iter_r2r_rxr(
+        VLNCEEpisodeEntry.iter_datasets(
+            datasets=datasets,
             splits=splits,
             limit_per_dataset=limit_per_dataset,
         ),
@@ -810,211 +757,6 @@ def train_model(args: LLMBoxesArgs) -> Dict[str, float]:
     return metrics
 
 
-def _evaluate_loaded_model(
-    model: Any,
-    tokenizer: Any,
-    dataset: Iterable[LLMBoxesItem],
-    args: Any,
-    device: Any = None,
-) -> Dict[str, float]:
-    """Generate, validate, artifact, and score LLM-Boxes predictions."""
-    evaluation_device = args.device if device is None else device
-    if hasattr(model, "to") and not _model_uses_device_map(model):
-        model.to(evaluation_device)
-    if hasattr(model, "eval"):
-        model.eval()
-    tokenizer.padding_side = "left"
-
-    system_prompt = getattr(args, "system_prompt", None) or load_system_prompt()
-    _write_run_system_prompt(args.output_dir, system_prompt)
-    items = tuple(dataset)
-    loader = _iter_collated_batches(
-        items,
-        args.per_device_batch_size,
-        lambda batch: collate_llm_boxes_prompt_batch(
-            batch,
-            tokenizer,
-            system_prompt,
-            args.max_input_length,
-        ),
-    )
-    progress_loader = _progress(
-        loader,
-        desc="eval LLM-Boxes",
-        quiet=bool(getattr(args, "quiet", False)),
-        total=_batch_count(items, args.per_device_batch_size),
-    )
-
-    accumulators = {
-        "combined": _BoxesEvaluationAccumulator(),
-        "r2r": _BoxesEvaluationAccumulator(),
-        "rxr": _BoxesEvaluationAccumulator(),
-    }
-
-    with torch.no_grad():
-        for batch in progress_loader:
-            model_inputs = _model_batch(
-                batch,
-                evaluation_device,
-                include_labels=False,
-            )
-            generated = model.generate(
-                **model_inputs,
-                **_generation_kwargs(tokenizer, args.max_new_tokens),
-            )
-            decoded = [
-                decode_generated_completion(tokenizer, sequence, prompt_length)
-                for sequence, prompt_length in zip(generated, batch["prompt_lengths"])
-            ]
-
-            for item, generated_text in zip(batch["items"], decoded):
-                item_accumulators = (
-                    accumulators["combined"],
-                    accumulators[item["dataset"].lower()],
-                )
-                entity_valid_rate, entity_valid_support = _entity_valid_stats(
-                    generated_text
-                )
-                for accumulator in item_accumulators:
-                    accumulator.example_count += 1
-                    accumulator.entity_valid_rate_sum += entity_valid_rate
-                    accumulator.entity_valid_support_sum += entity_valid_support
-
-                try:
-                    pred_spec = parse_llm_boxes_text(
-                        generated_text,
-                        allow_trailing_incomplete=True,
-                    )
-                except Exception as exc:
-                    write_prediction_artifact(
-                        _artifact_dir(args.output_dir),
-                        item["example_id"],
-                        invalid_text=generated_text,
-                        error=exc,
-                    )
-                    continue
-
-                if not pred_spec.trajectory_keypoints:
-                    write_prediction_artifact(
-                        _artifact_dir(args.output_dir),
-                        item["example_id"],
-                        invalid_text=generated_text,
-                        error=ValueError("trajectory keypoints are required"),
-                    )
-                    continue
-
-                for accumulator in item_accumulators:
-                    accumulator.partial_schema_valid_count += 1
-                try:
-                    parse_llm_boxes_text(generated_text)
-                except Exception:
-                    pass
-                else:
-                    for accumulator in item_accumulators:
-                        accumulator.schema_valid_count += 1
-
-                pred_relevant = spec_to_relevant_semantic_boxes(
-                    pred_spec,
-                    instruction=item["instruction"],
-                    level_idx=item["level_idx"],
-                    start_direction_vector=item["start_direction"],
-                    range_y=item["target_relevant"].level.range_y,
-                )
-                write_prediction_artifact(
-                    _artifact_dir(args.output_dir),
-                    item["example_id"],
-                    valid_spec=pred_spec,
-                )
-                metrics = evaluate_llm_boxes_prediction(
-                    pred_spec,
-                    item["target_spec"],
-                    pred_relevant,
-                    item["target_relevant"],
-                )
-                for key, value in metrics.items():
-                    if isinstance(value, (int, float)):
-                        metric_key = AGGREGATE_METRIC_KEYS.get(key)
-                        if metric_key is not None:
-                            for accumulator in item_accumulators:
-                                accumulator.metric_sums[metric_key] += float(value)
-
-    metrics = accumulators["combined"].metrics()
-    for prefix, dataset_items in (
-        ("combined", items),
-        ("r2r", tuple(item for item in items if item["dataset"] == "R2R")),
-        ("rxr", tuple(item for item in items if item["dataset"] == "RxR")),
-    ):
-        group_metrics = accumulators[prefix].metrics()
-        group_metrics.update(
-            compute_llm_text_stats(
-                dataset_items,
-                tokenizer,
-                system_prompt,
-                max_input_length=args.max_input_length,
-                max_new_tokens=args.max_new_tokens,
-            )
-        )
-        metrics.update(
-            {f"{prefix}/{name}": value for name, value in group_metrics.items()}
-        )
-        if prefix == "combined":
-            metrics.update(group_metrics)
-    return metrics
-
-
-def evaluate_model(args: LLMBoxesArgs) -> Dict[str, float]:
-    """Load eval data/model, generate predictions, and write eval metrics."""
-    accelerator = make_sft_accelerator(1)
-    validate_distributed_device_map(accelerator, args.device_map)
-    if not accelerator.is_main_process:
-        return {}
-
-    load_result = load_llm_boxes_examples(
-        EVAL_SPLITS,
-        limit_per_dataset=args.limit_per_dataset,
-        quiet=args.quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    validate_fixed_corpus(load_result.by_dataset)
-
-    model_path = args.checkpoint_path or args.model_name_or_path
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
-        model_path,
-        device_map=(
-            None
-            if accelerator.num_processes > 1
-            else _normalize_device_map(args.device_map)
-        ),
-    )
-    eval_items = tuple(LLMBoxesDataset(load_result.examples))
-    validate_fixed_corpus(
-        load_result.by_dataset,
-        retained_items=eval_items,
-    )
-    metrics = _evaluate_loaded_model(
-        model,
-        tokenizer,
-        eval_items,
-        args,
-        device=accelerator.device,
-    )
-    metrics.update(
-        fixed_corpus_metrics(
-            load_result.by_dataset,
-            eval_items,
-            LengthFilterResult(
-                kept=eval_items,
-                dropped_prompt_example_ids=(),
-                dropped_completion_example_ids=(),
-                dropped_sequence_example_ids=(),
-            ),
-        )
-    )
-    _write_json(Path(args.output_dir) / "metrics.json", metrics)
-    return metrics
-
-
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1057,11 +799,8 @@ def _load_causal_lm_model(
 
 
 class LLMBoxesArgs(Tap):
-    mode: Literal["train", "eval"]
-    """Run mode."""
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     """Pretrained or checkpoint path for the causal language model."""
-    checkpoint_path: Optional[str] = None
     output_dir: str = "outputs/llm_boxes"
     max_input_length: int = 1152
     max_new_tokens: int = 4096
@@ -1101,14 +840,10 @@ class LLMBoxesArgs(Tap):
         kwargs.setdefault("underscores_to_dashes", True)
         super().__init__(*args, **kwargs)
 
-    def configure(self) -> None:
-        self.add_argument("mode")
-
     def process_args(self) -> None:
         if not self.device:
             self.device = _default_device()
-        if self.mode == "train":
-            _validate_llm_boxes_training_args(self)
+        _validate_llm_boxes_training_args(self)
 
 
 def _validate_llm_boxes_training_args(args: LLMBoxesArgs) -> None:
@@ -1136,9 +871,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> LLMBoxesArgs:
 
 def main(argv: Optional[Sequence[str]] = None) -> Dict[str, float]:
     args = parse_args(argv)
-    if args.mode == "train":
-        return train_model(args)
-    return evaluate_model(args)
+    return train_model(args)
 
 
 def load_system_prompt() -> str:
@@ -1513,15 +1246,6 @@ def _batch_count(dataset: Iterable[Any], batch_size: int) -> Optional[int]:
         return None
     item_count = len(dataset)
     return (item_count + batch_size - 1) // batch_size
-
-
-def _entity_valid_stats(text: str) -> Tuple[float, int]:
-    try:
-        spec = parse_llm_boxes_text(text)
-    except Exception:
-        return 0.0, 0
-    entity_count = len(spec.objects) + len(spec.regions)
-    return (1.0 if entity_count else 0.0), entity_count
 
 
 def _token_count(tokenizer: Any, text: str) -> int:

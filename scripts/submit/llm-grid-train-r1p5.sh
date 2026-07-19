@@ -15,7 +15,7 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 torchrun --standalone \
   --nnodes=1 \
   --nproc-per-node=8 \
-  -m vlnce_baselines.models.etp_llm.llm_grid_train train \
+  -m vlnce_baselines.models.etp_llm.llm_grid_train \
   --per-device-batch-size 1 \
   --gradient-accumulation-steps 1 \
   --gradient-checkpointing \

@@ -1,4 +1,3 @@
-import argparse
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,7 +7,6 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from model_paths import LLAMA_3_1_8B_INSTRUCT_MODEL
 import prior.bbox as bbox
 from vlnce_baselines.models.etp_llm.boxes_schema import (
     ObjectBoxSpec,
@@ -75,7 +73,7 @@ class _EpisodeSource:
     calls = []
 
     @staticmethod
-    def iter_r2r_rxr(splits, limit_per_dataset):
+    def iter_datasets(datasets, splits, limit_per_dataset):
         _EpisodeSource.calls.append((tuple(splits), limit_per_dataset))
         if limit_per_dataset == 0:
             return
@@ -265,7 +263,7 @@ def test_load_llm_boxes_examples_raises_missing_cached_boxes_by_default(monkeypa
 def test_load_llm_boxes_examples_loads_scene_boxes_per_episode(monkeypatch):
     class TwoEpisodeSource:
         @staticmethod
-        def iter_r2r_rxr(splits, limit_per_dataset):
+        def iter_datasets(datasets, splits, limit_per_dataset):
             del splits, limit_per_dataset
             yield _EpisodeSameSceneA()
             yield _EpisodeSameSceneB()
@@ -614,18 +612,6 @@ class _TrainingAccelerator:
         self.wait_for_everyone_calls += 1
 
 
-class _EvaluationAccelerator:
-    def __init__(self, *, is_main_process, num_processes, process_index):
-        self.is_main_process = is_main_process
-        self.num_processes = num_processes
-        self.process_index = process_index
-        self.device = torch.device("cpu")
-        self.wait_for_everyone_calls = 0
-
-    def wait_for_everyone(self):
-        self.wait_for_everyone_calls += 1
-
-
 def _patch_training_dependencies(
     monkeypatch,
     model,
@@ -946,7 +932,6 @@ def test_decode_generated_completion_strips_prompt_tokens():
 def test_train_model_rejects_full_finetuning_before_loading_data(tmp_path):
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--model-name-or-path",
             "unused",
             "--output-dir",
@@ -991,352 +976,6 @@ def test_validate_trainable_parameters_finite_reports_bad_parameter():
         )
 
 
-class _EvalDataset:
-    def __iter__(self):
-        target = _empty_relevant()
-        target_spec = LLMBoxesSpec(objects=(), regions=())
-        yield {
-            "example_id": "valid/example",
-            "dataset": "R2R",
-            "input_text": "valid prompt",
-            "target_spec": target_spec,
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-        yield {
-            "example_id": "invalid_schema/example",
-            "dataset": "RxR",
-            "input_text": "invalid schema prompt",
-            "target_spec": target_spec,
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-        yield {
-            "example_id": "malformed/example",
-            "dataset": "RxR",
-            "input_text": "invalid prompt",
-            "target_spec": target_spec,
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-        yield {
-            "example_id": "json_array/example",
-            "dataset": "RxR",
-            "input_text": "array prompt",
-            "target_spec": target_spec,
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-        yield {
-            "example_id": "json_string/example",
-            "dataset": "RxR",
-            "input_text": "string prompt",
-            "target_spec": target_spec,
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-
-
-class _EvalTokenizer(_ChatTokenizer):
-    def __init__(self):
-        super().__init__()
-        self.padding_side = "right"
-        self.padding_side_during_call = None
-        self._decoded = [
-            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
-            '"predicted_regions":[],"predicted_objects":["chair"],'
-            '"regions":{},"objects":{"chair":{"boxes":[{"center":[1,2],'
-            '"half":[0.5,0.5],"rotation":0}]}}}',
-            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
-            '"predicted_regions":[],"predicted_objects":["alien"],'
-            '"regions":{},"objects":{"alien":{"boxes":[{"center":[1,2],'
-            '"half":[0.5,0.5],"rotation":0}]}}}',
-            "not parseable",
-            "[]",
-            '{"keypoints":[[0,0],[1,1],[0,0],[0,0],[0,0]],'
-            '"predicted_regions":["circulation"],"predicted_objects":[],'
-            '"regions":{"circulation":{"boxes":[{"min":[0,0],"max":[0,1]}]}},'
-            '"objects":{}}',
-        ]
-        self._decode_offset = 0
-
-    def __call__(self, texts, **kwargs):
-        self.padding_side_during_call = self.padding_side
-        return super().__call__(texts, **kwargs)
-
-    def batch_decode(self, sequences, skip_special_tokens=True):
-        assert skip_special_tokens is True
-        start = self._decode_offset
-        self._decode_offset += len(sequences)
-        return self._decoded[start : self._decode_offset]
-
-
-class _EvalModel:
-    def eval(self):
-        self.was_eval = True
-
-    def generate(self, **kwargs):
-        assert kwargs["max_new_tokens"] == 64
-        assert kwargs["do_sample"] is False
-        assert kwargs["eos_token_id"] == 9
-        assert kwargs["pad_token_id"] == 0
-        return [[10], [11]]
-
-
-class _DeviceMappedEvalModel(_EvalModel):
-    hf_device_map = {"model.layers.0": 0, "model.layers.1": 1}
-
-    def to(self, device):
-        raise AssertionError("device-mapped models must keep their dispatch map")
-
-
-class _PromptInspectingEvalModel:
-    def __init__(self):
-        self.input_texts = []
-
-    def eval(self):
-        pass
-
-    def generate(self, **kwargs):
-        self.input_texts.extend(
-            "".join(chr(token) for token in row if token != 0)
-            for row in kwargs["input_ids"]
-        )
-        return [[*row, ord("o"), ord("b"), ord("j")] for row in kwargs["input_ids"]]
-
-
-def test_evaluate_model_generates_from_prompt_without_gold_target(tmp_path):
-    target = _empty_relevant()
-    dataset: List[llm_boxes_train.LLMBoxesItem] = [
-        {
-            "example_id": "target_leak/example",
-            "dataset": "R2R",
-            "input_text": "find the target chair",
-            "target_text": "obj chair 1 2 0.5 0.5 0",
-            "target_spec": LLMBoxesSpec(objects=(), regions=()),
-            "target_relevant": target,
-            "instruction": "Go.",
-            "level_idx": 0,
-            "trajectory_keypoints": [(0.0, 0.0)],
-            "start_direction": (0.0, 1.0),
-        }
-    ]
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=1,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-    model = _PromptInspectingEvalModel()
-
-    llm_boxes_train._evaluate_loaded_model(model, _ChatTokenizer(), dataset, args)
-
-    assert len(model.input_texts) == 1
-    assert "find the target chair" in model.input_texts[0]
-    assert "obj chair 1 2 0.5 0.5 0" not in model.input_texts[0]
-
-
-def test_evaluate_model_wraps_batches_with_progress(tmp_path, monkeypatch):
-    progress_calls = []
-
-    def fake_progress(iterable, **kwargs):
-        progress_calls.append(kwargs)
-        return iterable
-
-    monkeypatch.setattr(llm_boxes_train, "tqdm", fake_progress)
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=2,
-        device="cpu",
-        quiet=False,
-        system_prompt="system prompt",
-    )
-
-    llm_boxes_train._evaluate_loaded_model(
-        _EvalModel(),
-        _EvalTokenizer(),
-        _EvalDataset(),
-        args,
-    )
-
-    assert progress_calls == [
-        {
-            "desc": "eval LLM-Boxes",
-            "disable": False,
-            "dynamic_ncols": True,
-            "total": 3,
-        }
-    ]
-
-
-def test_evaluate_model_does_not_move_device_mapped_model(tmp_path):
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=2,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-
-    llm_boxes_train._evaluate_loaded_model(
-        _DeviceMappedEvalModel(),
-        _EvalTokenizer(),
-        _EvalDataset(),
-        args,
-    )
-
-
-def test_evaluate_model_writes_artifacts_and_returns_validity_metrics(
-    tmp_path, monkeypatch
-):
-    def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
-        return {
-            "category_f1": float(len(pred_spec.objects)),
-            "category_aware_raster_support": 2 if pred_spec.objects else 0,
-        }
-
-    monkeypatch.setattr(llm_boxes_train, "evaluate_llm_boxes_prediction", fake_metrics)
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=2,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-
-    tokenizer = _EvalTokenizer()
-
-    metrics = llm_boxes_train._evaluate_loaded_model(
-        _EvalModel(),
-        tokenizer,
-        _EvalDataset(),
-        args,
-    )
-
-    assert metrics["examples"] == 5
-    assert metrics["format_parse_rate"] == pytest.approx(1 / 5)
-    assert metrics["schema_valid_rate"] == pytest.approx(1 / 5)
-    assert metrics["partial_schema_valid_rate"] == pytest.approx(1 / 5)
-    assert metrics["entity_valid_rate"] == pytest.approx(0.2)
-    assert metrics["entity_valid_support_mean"] == pytest.approx(0.2)
-    assert metrics["category_f1"] == pytest.approx(1 / 5)
-    assert metrics["category_aware_raster_support_mean"] == pytest.approx(2 / 5)
-    assert metrics["r2r/examples"] == 1.0
-    assert metrics["rxr/examples"] == 4.0
-    assert metrics["combined/examples"] == 5.0
-    assert metrics["r2r/schema_valid_rate"] == 1.0
-    assert metrics["rxr/schema_valid_rate"] == 0.0
-    assert "json_parse_rate" not in metrics
-    assert "category_aware_raster_support" not in metrics
-    assert tokenizer.padding_side == "left"
-    assert tokenizer.padding_side_during_call == "left"
-
-    artifact_dir = tmp_path / "artifacts"
-    valid_artifact = (artifact_dir / "valid_example.txt").read_text()
-    invalid_schema_artifact = (artifact_dir / "invalid_schema_example.txt").read_text()
-    malformed_artifact = (artifact_dir / "malformed_example.txt").read_text()
-    array_artifact = (artifact_dir / "json_array_example.txt").read_text()
-    string_artifact = (artifact_dir / "json_string_example.txt").read_text()
-    assert not (tmp_path / "valid_example.txt").exists()
-    assert valid_artifact.startswith('{"keypoints":')
-    assert valid_artifact.endswith("\n")
-    assert invalid_schema_artifact.startswith('{"keypoints":')
-    assert "# error: predicted_objects[0] is unknown: alien" in invalid_schema_artifact
-    assert "not parseable\n\n# error:" in malformed_artifact
-    assert array_artifact == ("[]\n\n# error: LLM-Boxes output must be a JSON object\n")
-    assert string_artifact.startswith('{"keypoints":')
-    assert "# error: region.max must be greater than min" in string_artifact
-
-
-def test_evaluate_model_reports_each_dataset_and_combined_support(tmp_path):
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=2,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-
-    metrics = llm_boxes_train._evaluate_loaded_model(
-        _EvalModel(),
-        _EvalTokenizer(),
-        tuple(_EvalDataset())[:2],
-        args,
-    )
-
-    assert metrics["r2r/examples"] == 1.0
-    assert metrics["rxr/examples"] == 1.0
-    assert metrics["combined/examples"] == 2.0
-
-
-def test_evaluate_model_returns_zero_metric_keys_when_all_predictions_invalid(
-    tmp_path, monkeypatch
-):
-    def fake_metrics(pred_spec, target_spec, pred_relevant, target_relevant):
-        raise AssertionError("invalid predictions must not be scored")
-
-    class InvalidTokenizer(_EvalTokenizer):
-        def __init__(self):
-            super().__init__()
-            self._decoded = ["not parseable"] * 5
-            self._decode_offset = 0
-
-    monkeypatch.setattr(llm_boxes_train, "evaluate_llm_boxes_prediction", fake_metrics)
-    args = argparse.Namespace(
-        output_dir=str(tmp_path),
-        max_input_length=32,
-        max_new_tokens=64,
-        per_device_batch_size=2,
-        device="cpu",
-        quiet=True,
-        system_prompt="system prompt",
-    )
-
-    metrics = llm_boxes_train._evaluate_loaded_model(
-        _EvalModel(),
-        InvalidTokenizer(),
-        _EvalDataset(),
-        args,
-    )
-
-    assert metrics["examples"] == 5
-    assert metrics["schema_valid_rate"] == 0.0
-    assert metrics["format_parse_rate"] == 0.0
-    assert metrics["partial_schema_valid_rate"] == 0.0
-    assert metrics["category_precision"] == 0.0
-    assert metrics["category_recall"] == 0.0
-    assert metrics["category_f1"] == 0.0
-    assert metrics["category_aware_raster_iou"] == 0.0
-    assert metrics["category_aware_raster_recall"] == 0.0
-    assert metrics["category_aware_raster_support_mean"] == 0.0
-
-
 def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp_path):
     calls = []
 
@@ -1352,7 +991,6 @@ def test_train_model_raises_clear_error_for_empty_training_data(monkeypatch, tmp
     )
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--model-name-or-path",
             "unused",
             "--output-dir",
@@ -1396,7 +1034,6 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_boxes_train, "DataLoader", fake_data_loader)
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device",
@@ -1475,7 +1112,6 @@ def test_train_model_preflights_globally_longest_example_after_prepare(
     monkeypatch.setattr(llm_boxes_train, "run_backward_preflight", record_preflight)
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device",
@@ -1529,7 +1165,6 @@ def test_boxes_training_manifest_contains_only_lightweight_text_and_token_rows(
     monkeypatch.setattr(llm_boxes_train, "_progress", record_progress)
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device-map",
@@ -1604,7 +1239,6 @@ def test_train_model_finishes_manifest_before_loading_model(monkeypatch, tmp_pat
     output_dir = tmp_path / "run"
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(output_dir),
             "--device-map",
@@ -1642,7 +1276,6 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
     )
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device",
@@ -1700,7 +1333,6 @@ def test_train_model_uses_accelerator_for_each_batch(
     output_dir = tmp_path / "run"
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(output_dir),
             "--device",
@@ -1736,7 +1368,6 @@ def test_train_args_reject_gradient_accumulation_above_one():
     ):
         llm_boxes_train.parse_args(
             [
-                "train",
                 "--gradient-accumulation-steps",
                 "2",
                 "--gradient-checkpointing",
@@ -1746,14 +1377,13 @@ def test_train_args_reject_gradient_accumulation_above_one():
 
 def test_train_args_require_gradient_checkpointing():
     with pytest.raises(ValueError, match="--gradient-checkpointing is required"):
-        llm_boxes_train.parse_args(["train"])
+        llm_boxes_train.parse_args([])
 
 
 def test_train_args_require_positive_epochs():
     with pytest.raises(ValueError, match="--epochs must be >= 1"):
         llm_boxes_train.parse_args(
             [
-                "train",
                 "--epochs",
                 "0",
                 "--gradient-checkpointing",
@@ -1776,7 +1406,6 @@ def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
     output_dir = tmp_path / "run"
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(output_dir),
             "--device-map",
@@ -1830,7 +1459,6 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
     )
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device-map",
@@ -1856,7 +1484,6 @@ def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
     _patch_training_dependencies(monkeypatch, model)
     args = llm_boxes_train.parse_args(
         [
-            "train",
             "--output-dir",
             str(tmp_path / "run"),
             "--device",
@@ -1981,180 +1608,10 @@ def test_llm_text_stats_report_lengths_and_truncation():
     }
 
 
-def test_evaluate_model_loads_validation_splits_checkpoint_and_writes_metrics(
-    monkeypatch,
-    tmp_path,
-):
-    calls = []
-    fake_items = [
-        {"example_id": "r2r-example", "dataset": "R2R"},
-        {"example_id": "rxr-example", "dataset": "RxR"},
-    ]
-
-    def fake_load(
-        splits,
-        limit_per_dataset=None,
-        quiet=False,
-        skip_missing_cache=False,
-        cognitive_map_namespace="gt.bbox.r1p5.path5.v1",
-    ):
-        calls.append(
-            (
-                "load",
-                list(splits),
-                limit_per_dataset,
-                quiet,
-                skip_missing_cache,
-                cognitive_map_namespace,
-            )
-        )
-        return _load_result(fake_items)
-
-    accelerator = _EvaluationAccelerator(
-        is_main_process=True,
-        num_processes=2,
-        process_index=0,
-    )
-
-    def fake_evaluate(model, tokenizer, dataset, args, device=None):
-        calls.append(("eval", model, tokenizer, args.output_dir, list(dataset), device))
-        return {"examples": 1.0}
-
-    def fake_load_model(path, device_map=None):
-        calls.append(("load_model", path, device_map))
-        return "model", "tokenizer"
-
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "_load_causal_lm_model_and_tokenizer",
-        fake_load_model,
-    )
-    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", fake_load)
-    monkeypatch.setattr(llm_boxes_train, "_evaluate_loaded_model", fake_evaluate)
-    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "make_sft_accelerator",
-        lambda gradient_accumulation_steps: accelerator,
-    )
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "_write_json",
-        lambda path, payload: calls.append(("write", path, payload.copy())),
-    )
-
-    args = llm_boxes_train.parse_args(
-        [
-            "eval",
-            "--checkpoint-path",
-            "checkpoint/final",
-            "--output-dir",
-            str(tmp_path),
-            "--limit-per-dataset",
-            "1",
-            "--quiet",
-            "--device-map",
-            "none",
-        ]
-    )
-    metrics = llm_boxes_train.evaluate_model(args)
-
-    assert metrics["examples"] == 1.0
-    assert metrics["combined_retained"] == 2.0
-    assert metrics["r2r_retained"] == 1.0
-    assert metrics["rxr_retained"] == 1.0
-    assert calls == [
-        (
-            "load",
-            ["val_seen", "val_unseen"],
-            1,
-            True,
-            True,
-            "gt.bbox.r1p5.path5.v1",
-        ),
-        ("load_model", "checkpoint/final", None),
-        (
-            "eval",
-            "model",
-            "tokenizer",
-            str(tmp_path),
-            fake_items,
-            torch.device("cpu"),
-        ),
-        ("write", tmp_path / "metrics.json", metrics),
-    ]
-    assert accelerator.wait_for_everyone_calls == 0
-
-
-def test_evaluate_model_non_main_rank_skips_all_work(monkeypatch, tmp_path):
-    accelerator = _EvaluationAccelerator(
-        is_main_process=False,
-        num_processes=2,
-        process_index=1,
-    )
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "make_sft_accelerator",
-        lambda gradient_accumulation_steps: accelerator,
-    )
-
-    def unexpected(*args, **kwargs):
-        raise AssertionError("non-main evaluation rank performed work")
-
-    monkeypatch.setattr(llm_boxes_train, "load_llm_boxes_examples", unexpected)
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "_load_causal_lm_model_and_tokenizer",
-        unexpected,
-    )
-    monkeypatch.setattr(llm_boxes_train, "_evaluate_loaded_model", unexpected)
-    monkeypatch.setattr(llm_boxes_train, "_write_json", unexpected)
-    args = llm_boxes_train.parse_args(
-        [
-            "eval",
-            "--output-dir",
-            str(tmp_path),
-            "--device-map",
-            "none",
-            "--quiet",
-        ]
-    )
-
-    metrics = llm_boxes_train.evaluate_model(args)
-
-    assert metrics == {}
-    assert accelerator.wait_for_everyone_calls == 0
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_evaluate_model_rejects_sharded_device_map_in_multiprocess(
-    monkeypatch,
-):
-    accelerator = _EvaluationAccelerator(
-        is_main_process=True,
-        num_processes=2,
-        process_index=0,
-    )
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "make_sft_accelerator",
-        lambda gradient_accumulation_steps: accelerator,
-    )
-    args = llm_boxes_train.parse_args(["eval", "--device-map", "auto"])
-
-    with pytest.raises(
-        ValueError,
-        match="--device-map must be none when WORLD_SIZE > 1",
-    ):
-        llm_boxes_train.evaluate_model(args)
-
-    assert accelerator.wait_for_everyone_calls == 0
-
-
 def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
     monkeypatch,
 ):
-    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args = llm_boxes_train.parse_args(["--gradient-checkpointing"])
     args.gradient_accumulation_steps = 2
 
     def unexpected(*args, **kwargs):
@@ -2173,7 +1630,7 @@ def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
 def test_train_model_direct_call_requires_gradient_checkpointing(
     monkeypatch,
 ):
-    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args = llm_boxes_train.parse_args(["--gradient-checkpointing"])
     args.gradient_checkpointing = False
 
     def unexpected(*args, **kwargs):
@@ -2187,7 +1644,7 @@ def test_train_model_direct_call_requires_gradient_checkpointing(
 
 
 def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
-    args = llm_boxes_train.parse_args(["train", "--gradient-checkpointing"])
+    args = llm_boxes_train.parse_args(["--gradient-checkpointing"])
     args.epochs = 0
 
     def unexpected(*args, **kwargs):
@@ -2200,34 +1657,9 @@ def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
         llm_boxes_train.train_model(args)
 
 
-def test_eval_main_delegates_to_evaluate_model(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_evaluate(args):
-        calls.append((args.mode, args.output_dir, args.limit_per_dataset, args.quiet))
-        return {"examples": 1.0}
-
-    monkeypatch.setattr(llm_boxes_train, "evaluate_model", fake_evaluate)
-
-    metrics = llm_boxes_train.main(
-        [
-            "eval",
-            "--output-dir",
-            str(tmp_path),
-            "--limit-per-dataset",
-            "1",
-            "--quiet",
-        ]
-    )
-
-    assert metrics == {"examples": 1.0}
-    assert calls == [("eval", str(tmp_path), 1, True)]
-
-
-def test_cli_parser_supports_train_and_eval_modes():
+def test_cli_parser_supports_training_options():
     train_args = llm_boxes_train.parse_args(
         [
-            "train",
             "--model-name-or-path",
             "tiny-llm",
             "--output-dir",
@@ -2266,17 +1698,6 @@ def test_cli_parser_supports_train_and_eval_modes():
             "--quiet",
         ]
     )
-    eval_args = llm_boxes_train.parse_args(
-        [
-            "eval",
-            "--output-dir",
-            "eval-out",
-            "--device-map",
-            "none",
-        ]
-    )
-
-    assert train_args.mode == "train"
     assert train_args.model_name_or_path == "tiny-llm"
     assert train_args.output_dir == "out"
     assert not hasattr(train_args, "dataset")
@@ -2299,36 +1720,11 @@ def test_cli_parser_supports_train_and_eval_modes():
     assert train_args.device_map == "auto"
     assert train_args.cognitive_map_namespace == "gt.legacy.r1p5.path5.v1"
     assert train_args.quiet is True
-    assert eval_args.mode == "eval"
-    assert eval_args.model_name_or_path == LLAMA_3_1_8B_INSTRUCT_MODEL
-    assert eval_args.output_dir == "eval-out"
-    assert eval_args.max_input_length == 1152
-    assert eval_args.max_new_tokens == 4096
-    assert eval_args.per_device_batch_size == 1
-    assert eval_args.learning_rate == 2e-4
-    assert eval_args.max_grad_norm == 1.0
-    assert eval_args.gradient_accumulation_steps == 1
-    assert eval_args.gradient_checkpointing is False
-    assert eval_args.lora_r == 32
-    assert eval_args.lora_alpha == 64
-    assert eval_args.lora_dropout == 0.05
-    assert eval_args.lora_target_modules == (
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    )
-    assert eval_args.device_map == "none"
-    assert eval_args.cognitive_map_namespace == "gt.bbox.r1p5.path5.v1"
-    assert eval_args.quiet is False
 
 
 def test_cli_parser_rejects_dataset_selection():
     with pytest.raises(SystemExit):
-        llm_boxes_train.parse_args(["train", "--dataset", "R2R"])
+        llm_boxes_train.parse_args(["--dataset", "R2R"])
 
 
 def test_train_parser_rejects_cache_mode():
@@ -2336,62 +1732,19 @@ def test_train_parser_rejects_cache_mode():
         llm_boxes_train.parse_args(["cache"])
 
 
-def test_device_map_none_normalizes_to_single_device_loading(monkeypatch, tmp_path):
-    calls = []
-    fake_item = {"example_id": "example", "dataset": "R2R"}
-
-    def fake_load_model(path, device_map=None):
-        calls.append((path, device_map))
-        return "model", "tokenizer"
-
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "_load_causal_lm_model_and_tokenizer",
-        fake_load_model,
-    )
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "load_llm_boxes_examples",
-        lambda *args, **kwargs: _load_result([fake_item]),
-    )
-    monkeypatch.setattr(
-        llm_boxes_train, "_evaluate_loaded_model", lambda *args, **kwargs: {}
-    )
-    monkeypatch.setattr(llm_boxes_train, "LLMBoxesDataset", lambda examples: examples)
-    monkeypatch.setattr(
-        llm_boxes_train,
-        "validate_fixed_corpus",
-        lambda *args, **kwargs: None,
-    )
-
-    args = llm_boxes_train.parse_args(
-        [
-            "eval",
-            "--output-dir",
-            str(tmp_path),
-            "--device-map",
-            "none",
-            "--quiet",
-        ]
-    )
-    llm_boxes_train.evaluate_model(args)
-
-    assert calls == [(LLAMA_3_1_8B_INSTRUCT_MODEL, None)]
-
-
 def test_cli_parser_rejects_torch_dtype_arg():
     with pytest.raises(SystemExit):
-        llm_boxes_train.parse_args(["train", "--torch-dtype", "float16"])
+        llm_boxes_train.parse_args(["--torch-dtype", "float16"])
 
 
 def test_cli_parser_rejects_splits_arg():
     with pytest.raises(SystemExit):
-        llm_boxes_train.parse_args(["train", "--splits", "train,val_seen"])
+        llm_boxes_train.parse_args(["--splits", "train,val_seen"])
 
 
 def test_cli_device_defaults_to_cuda_when_available_else_cpu(monkeypatch):
     monkeypatch.setattr(llm_boxes_train, "_default_device", lambda: "cpu")
 
-    args = llm_boxes_train.parse_args(["eval", "--output-dir", "eval-out"])
+    args = llm_boxes_train.parse_args(["--gradient-checkpointing"])
 
     assert args.device == "cpu"

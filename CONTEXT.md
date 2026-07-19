@@ -61,6 +61,13 @@ sbatch scripts/submit/llm-boxes-current-pretrain.sh
 sbatch scripts/submit/llm-grid-try5-pretrain.sh
 ```
 
+Predictor-quality evaluation is an R2R-only reference diagnostic over
+`val_seen` and `val_unseen`. It reads the raw predictions from the precomputed
+LLM-Navigation cache rather than loading the checkpoint or generating text a
+second time. RxR validation is intentionally excluded because LLM-Navigation
+does not consume an RxR navigation cache. Cache-generation metrics describe
+artifact production; predictor-quality metrics are separate derived artifacts.
+
 ## Language
 
 **ETP-R1**:
@@ -150,6 +157,10 @@ _Avoid_: LLM-Boxes when the target is not object and region boxes
 **LLM-Grid-Probe**:
 The earlier predictor-only milestone for evaluating whether an LLM can generate only the grid portion of a grid-native cognitive map while non-grid metadata is held outside the candidate comparison.
 _Avoid_: LLM-Grid when `direction_vectors` and other required candidate map inputs are predicted by the model
+
+**Predictor-quality evaluation**:
+An R2R-only reference diagnostic that scores cached raw LLM predictions against their cognitive-map targets without running another inference pass.
+_Avoid_: LLM-Navigation evaluation when navigation rollout metrics are meant, RxR evaluation
 
 **Mentioned-only LLM-Boxes target**:
 The LLM-Boxes training and evaluation target restricted to relevant semantic entities whose category is mentioned by the instruction.

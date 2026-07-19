@@ -29,7 +29,7 @@ def ensure_llm_navigation_manifest(
     """Create one cache manifest or reject incompatible resume settings."""
     manifest_path = split_dir / "manifest.json"
     if manifest_path.exists():
-        _validate_llm_navigation_manifest(manifest_path, expected)
+        validate_llm_navigation_manifest(split_dir, expected)
         return
 
     manifest = {
@@ -46,15 +46,19 @@ def ensure_llm_navigation_manifest(
     try:
         os.link(temporary_path, manifest_path)
     except FileExistsError:
-        _validate_llm_navigation_manifest(manifest_path, expected)
+        validate_llm_navigation_manifest(split_dir, expected)
     finally:
         temporary_path.unlink(missing_ok=True)
 
 
-def _validate_llm_navigation_manifest(
-    manifest_path: Path,
+def validate_llm_navigation_manifest(
+    split_dir: Path,
     expected: Mapping[str, object],
 ) -> None:
+    """Require an existing cache manifest to match selected provenance."""
+    manifest_path = split_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing LLM-Navigation manifest: {manifest_path}")
     try:
         actual = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as error:

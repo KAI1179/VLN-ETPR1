@@ -1,4 +1,4 @@
-"""Dataset, training, and evaluation CLI for the LLM-Grid milestone."""
+"""Dataset and training CLI for the LLM-Grid milestone."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from typing import (
     Tuple,
     TypedDict,
     Union,
-    cast,
 )
 
 import numpy as np
@@ -64,10 +63,7 @@ from .llm_boxes_train import (
     _cast_trainable_parameters_to_float32,
     _default_device,
     _encoded_width,
-    _generation_kwargs,
-    _load_causal_lm_model_and_tokenizer,
     _model_batch,
-    _model_uses_device_map,
     _non_finite_step_message,
     _normalize_device_map,
     _progress,
@@ -76,7 +72,6 @@ from .llm_boxes_train import (
     _token_count,
     _validate_trainable_parameters_finite,
     _validate_supervised_labels,
-    decode_generated_completion,
 )
 
 GRID_CHANNELS = 37
@@ -115,6 +110,7 @@ class LLMGridItem(TypedDict):
     start_direction: Sequence[float]
     scene_id: str
     dataset: Literal["R2R", "RxR"]
+    split: str
     training_weight: NotRequired[float]
     is_padding: NotRequired[bool]
 
@@ -161,6 +157,7 @@ def load_llm_grid_examples(
     quiet: bool = False,
     skip_missing_cache: bool = False,
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE,
+    datasets: Iterable[Literal["R2R", "RxR"]] = ("R2R", "RxR"),
 ) -> ExampleLoadResult[LLMGridExample]:
     examples: List[LLMGridExample] = []
     skipped_missing_cache: List[Tuple[str, str]] = []
@@ -168,7 +165,8 @@ def load_llm_grid_examples(
     loaded = {"R2R": 0, "RxR": 0}
     missing: Dict[str, List[str]] = {"R2R": [], "RxR": []}
     episodes = _progress(
-        VLNCEEpisodeEntry.iter_r2r_rxr(
+        VLNCEEpisodeEntry.iter_datasets(
+            datasets=datasets,
             splits=splits,
             limit_per_dataset=limit_per_dataset,
         ),
@@ -331,6 +329,7 @@ class LLMGridDataset(Dataset):
             "start_direction": start_direction,
             "scene_id": example.scene_id,
             "dataset": example.dataset,
+            "split": example.split,
         }
 
     def __iter__(self) -> Iterator[LLMGridItem]:
@@ -680,139 +679,8 @@ def _read_entity_cells(
     return len(cells), duplicates
 
 
-def _binary_grid(grid: NDArray[np.float32]) -> NDArray[np.bool_]:
-    return np.asarray(grid > 0, dtype=np.bool_)
-
-
-def _safe_div(numerator: int, denominator: int) -> float:
-    return float(numerator / denominator) if denominator else 0.0
-
-
-def _grid_metrics(
-    pred_grid: NDArray[np.float32],
-    target_grid: NDArray[np.float32],
-) -> Dict[str, float]:
-    pred = _binary_grid(pred_grid)
-    target = _binary_grid(target_grid)
-    intersection = int(np.logical_and(pred, target).sum())
-    pred_count = int(pred.sum())
-    target_count = int(target.sum())
-    union = int(np.logical_or(pred, target).sum())
-    precision = _safe_div(intersection, pred_count)
-    recall = _safe_div(intersection, target_count)
-    f1 = _safe_div(2 * intersection, pred_count + target_count)
-    return {
-        "cell_precision": precision,
-        "cell_recall": recall,
-        "cell_f1": f1,
-        "category_aware_raster_iou": _safe_div(intersection, union),
-        "category_aware_raster_recall": recall,
-        "category_aware_raster_support": float(target_count),
-        "predicted_cell_count": float(pred_count),
-        "target_cell_count": float(target_count),
-    }
-
-
-def _zero_direction_vector_metrics() -> Dict[str, float]:
-    return {
-        "direction_vector_valid_rate": 0.0,
-        "direction_vector_l2": 0.0,
-        "direction_vector_l2_support": 0.0,
-        "direction_vector_cosine": 0.0,
-        "direction_vector_cosine_support": 0.0,
-        "direction_vector_padding_accuracy": 0.0,
-    }
-
-
-def _direction_vector_metrics(
-    pred_vectors: NDArray[np.float32],
-    target_vectors: NDArray[np.float32],
-) -> Dict[str, float]:
-    pred_norms = np.linalg.norm(pred_vectors, axis=1)
-    target_norms = np.linalg.norm(target_vectors, axis=1)
-    pred_nonzero = pred_norms > 0.0
-    target_nonzero = target_norms > 0.0
-    non_padding_count = int(np.count_nonzero(target_nonzero))
-    if non_padding_count == 0:
-        cosine = 0.0
-    else:
-        dot_products = np.sum(
-            pred_vectors[target_nonzero] * target_vectors[target_nonzero],
-            axis=1,
-        )
-        denominators = pred_norms[target_nonzero] * target_norms[target_nonzero]
-        row_cosines = np.divide(
-            dot_products,
-            denominators,
-            out=np.zeros_like(dot_products, dtype=np.float32),
-            where=denominators > 0.0,
-        )
-        cosine = float(np.mean(row_cosines))
-    return {
-        "direction_vector_valid_rate": 1.0,
-        "direction_vector_l2": float(
-            np.mean(np.linalg.norm(pred_vectors - target_vectors, axis=1))
-        ),
-        "direction_vector_l2_support": 1.0,
-        "direction_vector_cosine": cosine,
-        "direction_vector_cosine_support": float(non_padding_count > 0),
-        "direction_vector_padding_accuracy": float(
-            np.mean(pred_nonzero == target_nonzero)
-        ),
-    }
-
-
-def evaluate_grid_prediction(
-    generated_text: str,
-    target_grid: NDArray[np.float32],
-    target_direction_vectors: NDArray[np.float32],
-) -> Dict[str, float]:
-    try:
-        shape = cast(Tuple[int, int, int], target_grid.shape)
-        parsed = parse_grid_text(generated_text, shape=shape)
-    except LLMGridValidationError as error:
-        return {
-            "json_valid": float(not isinstance(error, _LLMGridJSONError)),
-            "schema_valid": 0.0,
-            "record_count": 0.0,
-            "duplicate_record_count": 0.0,
-            "duplicate_record_rate": 0.0,
-            "cell_precision": 0.0,
-            "cell_recall": 0.0,
-            "cell_f1": 0.0,
-            "category_aware_raster_iou": 0.0,
-            "category_aware_raster_recall": 0.0,
-            "category_aware_raster_support": float(np.count_nonzero(target_grid > 0)),
-            "predicted_cell_count": 0.0,
-            "target_cell_count": float(np.count_nonzero(target_grid > 0)),
-            **_zero_direction_vector_metrics(),
-        }
-    metrics = _grid_metrics(parsed.grid, target_grid)
-    metrics.update(
-        _direction_vector_metrics(
-            parsed.direction_vectors,
-            target_direction_vectors,
-        )
-    )
-    metrics.update(
-        {
-            "json_valid": 1.0,
-            "schema_valid": 1.0,
-            "record_count": float(parsed.record_count),
-            "duplicate_record_count": float(parsed.duplicate_record_count),
-            "duplicate_record_rate": _safe_div(
-                parsed.duplicate_record_count,
-                parsed.record_count,
-            ),
-        }
-    )
-    return metrics
-
-
 class LLMGridArgs(Tap):
-    mode: Literal["train", "eval"]
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
-    checkpoint_path: Optional[str] = None
     output_dir: str = "outputs/llm_grid"
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     scale: int = GRID_SCALE
@@ -855,16 +723,12 @@ class LLMGridArgs(Tap):
         kwargs.setdefault("underscores_to_dashes", True)
         super().__init__(*args, **kwargs)
 
-    def configure(self) -> None:
-        self.add_argument("mode")
-
     def process_args(self) -> None:
         if not self.device:
             self.device = _default_device()
         if self.scale not in GRID_SIZE_BY_SCALE:
             raise ValueError("LLM-Grid v1 only supports --scale 1 or 2")
-        if self.mode == "train":
-            _validate_llm_grid_training_args(self)
+        _validate_llm_grid_training_args(self)
 
 
 def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
@@ -926,59 +790,6 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-
-
-def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
-    if not rows:
-        return {}
-    keys = sorted({key for row in rows for key in row})
-    weighted_keys = {
-        "direction_vector_l2": "direction_vector_l2_support",
-        "direction_vector_cosine": "direction_vector_cosine_support",
-    }
-    metrics: Dict[str, float] = {}
-    for key in keys:
-        support_key = weighted_keys.get(key)
-        if support_key is None:
-            metrics[key] = float(sum(row.get(key, 0.0) for row in rows) / len(rows))
-            continue
-        support = sum(row.get(support_key, 0.0) for row in rows)
-        metrics[key] = (
-            float(
-                sum(row.get(key, 0.0) * row.get(support_key, 0.0) for row in rows)
-                / support
-            )
-            if support
-            else 0.0
-        )
-    return metrics
-
-
-def _text_diagnostics(
-    tokenizer: Any,
-    system_prompt: str,
-    item: LLMGridItem,
-    generated_text: str,
-    max_new_tokens: int,
-) -> Dict[str, float]:
-    prompt = _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
-    completion = _render_chat_completion(
-        tokenizer,
-        system_prompt,
-        item["input_text"],
-        item["target_text"],
-    )
-    counts = rendered_token_counts(tokenizer, prompt, completion)
-    generated_tokens = _token_count(tokenizer, generated_text)
-    return {
-        "target_token_count": float(counts.completion_tokens),
-        "target_completion_token_count": float(counts.completion_tokens),
-        "target_over_budget_rate": (
-            1.0 if counts.completion_tokens > max_new_tokens else 0.0
-        ),
-        "generated_token_count": float(generated_tokens),
-        "generated_char_count": float(len(generated_text)),
-    }
 
 
 def _training_oom_message(
@@ -1379,147 +1190,9 @@ def _apply_grid_lora(model: Any, args: LLMGridArgs) -> Any:
     return get_peft_model(model, config)
 
 
-def evaluate_model(args: LLMGridArgs) -> Dict[str, float]:
-    accelerator = make_sft_accelerator(1)
-    validate_distributed_device_map(accelerator, args.device_map)
-    if not accelerator.is_main_process:
-        return {}
-
-    load_result = load_llm_grid_examples(
-        EVAL_SPLITS,
-        limit_per_dataset=args.limit_per_dataset,
-        quiet=args.quiet,
-        skip_missing_cache=True,
-        cognitive_map_namespace=args.cognitive_map_namespace,
-    )
-    validate_fixed_corpus(load_result.by_dataset)
-
-    system_prompt = load_system_prompt(scale=args.scale)
-    _write_run_system_prompt(args.output_dir, system_prompt)
-    model_path = args.checkpoint_path or args.model_name_or_path
-    model, tokenizer = _load_causal_lm_model_and_tokenizer(
-        model_path,
-        device_map=(
-            None
-            if accelerator.num_processes > 1
-            else _normalize_device_map(args.device_map)
-        ),
-    )
-    tokenizer.padding_side = "left"
-    device = accelerator.device
-    if not _model_uses_device_map(model):
-        model.to(device)
-    model.eval()
-
-    eval_dataset = LLMGridDataset(load_result.examples, scale=args.scale)
-    eval_provenance = tuple(
-        {
-            "example_id": example.example_id,
-            "dataset": example.dataset,
-        }
-        for example in load_result.examples
-    )
-    validate_fixed_corpus(
-        load_result.by_dataset,
-        retained_items=eval_provenance,
-    )
-    loader = DataLoader(
-        eval_dataset,
-        batch_size=args.per_device_batch_size,
-        shuffle=False,
-        collate_fn=lambda batch: collate_llm_grid_prompt_batch(
-            batch,
-            tokenizer,
-            system_prompt,
-            args.max_input_length,
-        ),
-    )
-    rows: List[Dict[str, float]] = []
-    rows_by_dataset: Dict[str, List[Dict[str, float]]] = {
-        "R2R": [],
-        "RxR": [],
-    }
-    artifact_dir = Path(args.output_dir) / "artifacts"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    with torch.no_grad():
-        for batch in _progress(
-            loader,
-            desc="eval LLM-Grid",
-            quiet=args.quiet,
-        ):
-            model_batch = _model_batch(batch, device, include_labels=False)
-            generated = model.generate(
-                **model_batch,
-                **_generation_kwargs(tokenizer, args.max_new_tokens),
-            )
-            completions = [
-                decode_generated_completion(tokenizer, sequence, prompt_length)
-                for sequence, prompt_length in zip(
-                    generated,
-                    batch["prompt_lengths"],
-                )
-            ]
-            for item, generated_text in zip(batch["items"], completions):
-                metrics = evaluate_grid_prediction(
-                    generated_text,
-                    item["target_grid"],
-                    item["target_direction_vectors"],
-                )
-                metrics.update(
-                    _text_diagnostics(
-                        tokenizer,
-                        system_prompt,
-                        item,
-                        generated_text,
-                        args.max_new_tokens,
-                    )
-                )
-                rows.append(metrics)
-                rows_by_dataset[item["dataset"]].append(metrics)
-                _write_json(
-                    artifact_dir / f"{item['example_id']}.json",
-                    {
-                        "example_id": item["example_id"],
-                        "input_text": item["input_text"],
-                        "target_text": item["target_text"],
-                        "generated_text": generated_text,
-                        "metrics": metrics,
-                    },
-                )
-    metrics = _aggregate_metrics(rows)
-    metrics["examples"] = float(len(rows))
-    for prefix, dataset_rows in (
-        ("combined", rows),
-        ("r2r", rows_by_dataset["R2R"]),
-        ("rxr", rows_by_dataset["RxR"]),
-    ):
-        group_metrics = {name: 0.0 for name in metrics if name != "examples"}
-        group_metrics.update(_aggregate_metrics(dataset_rows))
-        group_metrics["examples"] = float(len(dataset_rows))
-        metrics.update(
-            {f"{prefix}/{name}": value for name, value in group_metrics.items()}
-        )
-    metrics.update(
-        fixed_corpus_metrics(
-            load_result.by_dataset,
-            eval_provenance,
-            LengthFilterResult(
-                kept=eval_provenance,
-                dropped_prompt_example_ids=(),
-                dropped_completion_example_ids=(),
-                dropped_sequence_example_ids=(),
-            ),
-        )
-    )
-    _write_json(Path(args.output_dir) / "metrics.json", metrics)
-    return metrics
-
-
 def main(argv: Optional[List[str]] = None) -> Dict[str, float]:
     args = LLMGridArgs().parse_args(argv)
-    if args.mode == "train":
-        return train_model(args)
-    return evaluate_model(args)
+    return train_model(args)
 
 
 if __name__ == "__main__":

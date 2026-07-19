@@ -75,14 +75,15 @@ class VLNCEEpisodeEntry:
                 )
 
     @staticmethod
-    def iter_r2r_rxr(
+    def iter_datasets(
+        datasets: Iterable[Literal["R2R", "RxR"]] = VLNCE_DATASETS,
         splits: Iterable[str] = DEFAULT_SPLITS,
         limit_per_dataset: int | None = None,
     ) -> Iterator["VLNCEEpisodeEntry"]:
         if limit_per_dataset is not None and limit_per_dataset < 0:
             raise ValueError("limit_per_dataset must be >= 0")
         split_names = tuple(splits)
-        for dataset in VLNCE_DATASETS:
+        for dataset in datasets:
             entries = VLNCEEpisodeEntry.iter_from(dataset, splits=split_names)
             if limit_per_dataset is not None:
                 entries = islice(entries, limit_per_dataset)
