@@ -10,7 +10,6 @@ import secrets
 import subprocess
 import sys
 import warnings
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
@@ -32,6 +31,7 @@ from .boxes_schema import (
 from .generation import generate_with_oom_splitting
 from .navigation import (
     DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+    ensure_llm_navigation_manifest,
     llm_navigation_cache_complete,
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
@@ -778,8 +778,7 @@ def _write_navigation_cache_manifest(
     dataset_key: str,
     split: str,
 ) -> None:
-    manifest = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
+    ensure_llm_navigation_manifest(split_dir, {
         "dataset": dataset_key,
         "split": split,
         "model_name_or_path": args.model_name_or_path,
@@ -789,11 +788,7 @@ def _write_navigation_cache_manifest(
         "system_prompt_sha256": hashlib.sha256(
             system_prompt.encode("utf-8")
         ).hexdigest(),
-    }
-    (split_dir / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    })
 
 
 def _write_split_metrics(

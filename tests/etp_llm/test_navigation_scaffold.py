@@ -1,6 +1,8 @@
-import pytest
-from types import SimpleNamespace
 import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 class _StubClipModel:
@@ -19,6 +21,38 @@ def _stub_clip_load(monkeypatch):
         "load",
         lambda *args, **kwargs: (_StubClipModel(), None),
     )
+
+
+def test_navigation_manifest_preserves_compatible_cache(tmp_path: Path) -> None:
+    from vlnce_baselines.models.etp_llm.navigation import (
+        ensure_llm_navigation_manifest,
+    )
+
+    expected = {"dataset": "R2R", "split": "val_seen", "max_new_tokens": 64}
+    ensure_llm_navigation_manifest(tmp_path, expected)
+    manifest_path = tmp_path / "manifest.json"
+    original = manifest_path.read_text(encoding="utf-8")
+
+    ensure_llm_navigation_manifest(tmp_path, expected)
+
+    assert manifest_path.read_text(encoding="utf-8") == original
+
+
+def test_navigation_manifest_rejects_incompatible_resume(tmp_path: Path) -> None:
+    from vlnce_baselines.models.etp_llm.navigation import (
+        ensure_llm_navigation_manifest,
+    )
+
+    ensure_llm_navigation_manifest(
+        tmp_path,
+        {"dataset": "R2R", "split": "val_seen", "max_new_tokens": 64},
+    )
+
+    with pytest.raises(ValueError, match="manifest mismatch.*max_new_tokens"):
+        ensure_llm_navigation_manifest(
+            tmp_path,
+            {"dataset": "R2R", "split": "val_seen", "max_new_tokens": 128},
+        )
 
 
 def test_llm_navigation_policy_and_trainers_register(monkeypatch):

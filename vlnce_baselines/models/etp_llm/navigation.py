@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, Mapping, Optional, cast
 
 from prior import DATA_DIR
 from prior.vlnce import VLNCEEpisodeEntry
@@ -18,6 +20,61 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 
 DEFAULT_LLM_NAVIGATION_MODEL_KEY = "llama-3.1-8b-instruct"
 DEFAULT_LLM_NAVIGATION_CACHE_DIR = DATA_DIR / "llm_navigation"
+
+
+def ensure_llm_navigation_manifest(
+    split_dir: Path,
+    expected: Mapping[str, object],
+) -> None:
+    """Create one cache manifest or reject incompatible resume settings."""
+    manifest_path = split_dir / "manifest.json"
+    if manifest_path.exists():
+        _validate_llm_navigation_manifest(manifest_path, expected)
+        return
+
+    manifest = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **expected,
+    }
+    temporary_path = manifest_path.with_name(
+        f".{manifest_path.name}.{os.getpid()}.tmp"
+    )
+    temporary_path.write_text(
+        json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    try:
+        os.link(temporary_path, manifest_path)
+    except FileExistsError:
+        _validate_llm_navigation_manifest(manifest_path, expected)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _validate_llm_navigation_manifest(
+    manifest_path: Path,
+    expected: Mapping[str, object],
+) -> None:
+    try:
+        actual = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        raise ValueError(f"Invalid LLM-Navigation manifest: {manifest_path}") from error
+    if not isinstance(actual, dict):
+        raise ValueError(f"LLM-Navigation manifest must be an object: {manifest_path}")
+    mismatches = {
+        key: (actual.get(key), value)
+        for key, value in expected.items()
+        if actual.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}={old!r} (requested {new!r})"
+            for key, (old, new) in sorted(mismatches.items())
+        )
+        raise ValueError(
+            f"LLM-Navigation cache manifest mismatch at {manifest_path}: "
+            f"{details}. Use a new --cache-model-key or remove the stale cache."
+        )
 
 
 @dataclass(frozen=True)
