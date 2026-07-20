@@ -774,7 +774,7 @@ Drop Rate By `max_new_tokens`:
 
 ## 07/18
 
-- 分析 LLM-Grid 1 的结果 (`e9b6cbc`): `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/train/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`, `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/val_unseen/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`
+- 分析 LLM-Boxes 1 的结果 (`e9b6cbc`): `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/train/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`, `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-boxes-r1p5-path5-r2r-only/r2r/val_unseen/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.bbox.r1p5.path5.v1 --count 20 --seed 0`
     - 同样过拟合
         - 部分训练数据上关键路径点基本一致 (`R2R_train_2883`, `R2R_train_3356`)
         - 物体基本乱预测
