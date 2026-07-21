@@ -760,10 +760,10 @@ Drop Rate By `max_new_tokens`:
         - [x] RxR 会不会爆 OOM? 统计 max token 后调整
         - [x] 加快训练速度？多卡调小 rank 调大并行度？
     - [x] 去除 dataset 标记
-    - [ ] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
+    - [x] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
     - [ ] LLM 定量评估：IoU; obj 召回率 (mentioned / unmentioned) / F-score; 方向向量的定量评价
-    - [ ] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
-    - [ ] 验证工具网站数据的全面性
+    - [x] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
+    - [x] 验证工具网站数据的全面性
 
 加上 RxR 后的 token distribution：
 
@@ -780,6 +780,93 @@ Drop Rate By `max_new_tokens`:
         - 物体基本乱预测
         - 区域/物体有时候预测为空 (`R2R_val_unseen_162`, `R2R_val_unseen_802`)
     - 模型更容易关注细节信息 (token 占比大)
+
+## 07/21
+
+- 分析 LLM-Grid 2 的采样结果 (`7c9fbaf`):
+    - 采样 epoch 5, 10 的 train, val_unseen
+        - `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-grid-r2r-rxr-epoch-10/r2r/train/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1 --output-root data/samples/llm-grid-r2r-rxr-epoch-10 --count 20 --seed 0`
+        - `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-grid-r2r-rxr-epoch-10/r2r/val_unseen/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1 --output-root data/samples/llm-grid-r2r-rxr-epoch-10 --count 20 --seed 0`
+        - `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-grid-r2r-rxr-epoch-5/r2r/train/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1 --output-root data/samples/llm-grid-r2r-rxr-epoch-5 --count 20 --seed 0`
+        - `python -m prior.analyze.batch_vis --prediction-root data/llm_navigation/llm-grid-r2r-rxr-epoch-5/r2r/val_unseen/cognitive_maps/raster/ --ground-truth-root data/cognitive_maps/gt.legacy.r1p5.direction5.blurred.v1 --output-root data/samples/llm-grid-r2r-rxr-epoch-5 --count 20 --seed 0`
+    - Epoch=10
+        - train
+            - `7y3sRwLe3Va`
+                - `R2R_train_2` ❌ 输出为空
+            - `8WUmhLawc2A`
+                - `R2R_train_47` ✅ (不完整，但是不影响正确性)
+            - `82sE5b5pLXE`
+                - `R2R_train_24` ✅
+            - `cV4RVeZvu5T`
+                - `R2R_train_13` ❌ 不匹配，上下楼
+                - `R2R_train_15` ✅
+            - `GdvgFV5R1Z5`
+                - `R2R_train_55` ❌ 不匹配，偏移
+            - `i5noydFURQK`
+                - `R2R_train_71` ❌ 不匹配
+            - `JeFG25nYj2p`
+                - `R2R_train_54` ✅
+            - `kEZ7cmS4wCh`
+                - `R2R_train_26` ✅
+            - `mJXqzFtmKg4`
+                - `R2R_train_31` ✅
+                - `R2R_train_32` ✅
+            - `pRbA3pwrgk9`
+                - `R2R_train_34` ✅ (不完整，但是不影响正确性)
+                - `R2R_train_35` ✅ (不完整，但是不影响正确性)
+                - `R2R_train_61` ✅
+            - `PX4nDJXEHrG`
+                - `R2R_train_79` ✅
+                - `R2R_train_80` ✅
+            - `rPc6DW4iMge`
+                - `R2R_train_75` ✅
+            - `S9hNv5qa7GM`
+                - `R2R_train_95` ❌
+            - `VLzqgDo317F`
+                - `R2R_train_59` ✅
+            - `VzqfbhrpDEA`
+                - `R2R_train_12` ❌
+        - 训练集效果较好
+        - 验证集效果差，部分回答也有可能 (`R2R_val_unseen_89`, `R2R_val_unseen_84`, `R2R_val_unseen_36`, `R2R_val_unseen_2`)
+        - 可能有过拟合
+        - 许多指令没提及初始向哪转
+    - Epoch=5
+        - train
+            - `7y3sRwLe3Va`
+                - `R2R_train_2` ❌ 方向错误，但是仍然可能
+                - `R2R_train_9` ✅ 不完全匹配，但是可以认为正确
+            - `cV4RVeZvu5T/R2R_train_14` ✅ 完全匹配
+            - `kEZ7cmS4wCh/R2R_train_26` ✅ 完全匹配
+            - `pRbA3pwrgk9/R2R_train_34` ✅ 基本匹配
+        - 训练集 exact match 减少
+        - 验证集
+            - `oLBMNvg9in8/R2R_val_unseen_28`: 效果较好
+- 思路
+    - 认知地图 - 情境地图的不同/作用，如何融合才能起作用？
+        - 融合的结构/分支/策略？
+    - 证据/实验证明认知地图的作用（去除情境地图？）
+        - "认知地图是更好的媒介" - 证明
+- 实验
+    - 分析认知地图预测不准确的原因
+        - 任务不可解
+            - 输入：是否足够？
+                - 分析手段：量化哪些能预测，哪些不能预测？(类别的准确率、召回率、分 mentioned)
+                - 解决 -> 多模态大模型？
+            - 可能的解决方案
+                - 压缩输出
+                - 增加输入
+                - 增大模型
+                - 增加模态
+                - 本来就不可解？
+        - 预测器的问题
+            - 是否过拟合（训练集/验证集的可行比例，手动比较）
+    - 输出：问题是否可解？
+    - 需要了解为什么可行或不行
+- 本周回答问题
+    - 预测不准确的原因：任务的问题还是模型的问题？需要有结论，sample 或统计数据
+    - 得到结论 -> 进一步的分析，为讨论/下一步做铺垫
+    - 提出下一次讨论应该解决的具体问题
+
 
 # 实验
 
