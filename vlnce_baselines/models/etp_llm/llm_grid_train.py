@@ -79,7 +79,7 @@ GRID_SCALE = 2
 GRID_SHAPE = (GRID_CHANNELS, 50, 50)
 GRID_SIZE_BY_SCALE = {1: 100, 2: 50}
 DEFAULT_MODEL_NAME_OR_PATH = LLAMA_3_1_8B_INSTRUCT_MODEL
-DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
+DEFAULT_GRID_NAMESPACE = "gt.legacy.r1p5.direction5.v1"  # Will be scaled ("blurred") by `GRID_SCALE`, so using non-blurred cache is acceptable (identical to using blurred cache)
 DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).with_name("prompts") / "llm_grid_system.md"
 VECTOR_NORM_TOLERANCE = 1e-3
 GRID_TARGET_KEYS = (
@@ -383,9 +383,7 @@ def filter_grid_training_items(
             dropped_completion.append(item["example_id"])
         if sequence_over_budget:
             dropped_sequence.append(item["example_id"])
-        if not (
-            prompt_over_budget or completion_over_budget or sequence_over_budget
-        ):
+        if not (prompt_over_budget or completion_over_budget or sequence_over_budget):
             filtered.append(item)
     return LengthFilterResult(
         kept=tuple(filtered),
@@ -766,7 +764,8 @@ def load_system_prompt(
 ) -> str:
     grid_size = _grid_size_for_scale(scale)
     return (
-        path.read_text(encoding="utf-8")
+        path
+        .read_text(encoding="utf-8")
         .format(
             grid_size=grid_size,
             max_grid_index=grid_size - 1,
@@ -936,9 +935,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
             clear_cuda_cache_for_long_sequences(
                 accelerator,
                 local_sequence_tokens=sequence_tokens,
-                minimum_sequence_tokens=(
-                    args.cuda_cache_clear_min_sequence_length
-                ),
+                minimum_sequence_tokens=(args.cuda_cache_clear_min_sequence_length),
             )
             oom_stage = "forward"
             try:
@@ -1090,9 +1087,11 @@ def _build_grid_training_manifest(
     )
     train_items = list(filtered.kept)
     validate_fixed_corpus(load_result.by_dataset, retained_items=train_items)
-    dropped_over_budget = set(filtered.dropped_prompt_example_ids) | set(
-        filtered.dropped_completion_example_ids
-    ) | set(filtered.dropped_sequence_example_ids)
+    dropped_over_budget = (
+        set(filtered.dropped_prompt_example_ids)
+        | set(filtered.dropped_completion_example_ids)
+        | set(filtered.dropped_sequence_example_ids)
+    )
     if dropped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(dropped_over_budget)}")
 
@@ -1111,17 +1110,15 @@ def _build_grid_training_manifest(
             item["target_text"],
         )
         counts = rendered_token_counts(tokenizer, prompt, completion)
-        manifest_items.append(
-            {
-                "input_text": item["input_text"],
-                "target_text": item["target_text"],
-                "example_id": item["example_id"],
-                "dataset": item["dataset"],
-                "prompt_tokens": counts.prompt_tokens,
-                "completion_tokens": counts.completion_tokens,
-                "sequence_tokens": counts.sequence_tokens,
-            }
-        )
+        manifest_items.append({
+            "input_text": item["input_text"],
+            "target_text": item["target_text"],
+            "example_id": item["example_id"],
+            "dataset": item["dataset"],
+            "prompt_tokens": counts.prompt_tokens,
+            "completion_tokens": counts.completion_tokens,
+            "sequence_tokens": counts.sequence_tokens,
+        })
     return TrainingManifest(
         metadata={
             "skipped_over_budget_count": len(dropped_over_budget),
