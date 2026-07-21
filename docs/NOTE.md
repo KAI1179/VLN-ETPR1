@@ -784,7 +784,7 @@ Drop Rate By `max_new_tokens`:
 ## 07/21
 
 - [详细记录：LLM-Grid Epoch 5/10 泛化分析](daily/2026-07-21.md)
-- 定量结果：epoch 10 的 train IoU 从 0.290 提升到 0.595，`val_seen` 从 0.196 提升到 0.256，但 `val_unseen` 从 0.130 降到 0.114；模型基本完全学会格式，却没有改善 unseen scene 空间泛化。
+- 定量结果：完整 epoch 10 predictor-quality evaluation 覆盖 778 个 `val_seen` 和 1839 个 `val_unseen` episode，IoU 分别为 0.266 和 0.128，schema valid 分别为 98.7% 和 99.7%；结合 epoch 5/10 配对样本，模型基本完全学会格式，却没有改善 unseen scene 空间泛化。
 - 当前结论：精确 full-grid target 包含输入无法唯一恢复的 unseen-scene 几何，同时 epoch 10 存在明显训练集记忆，不能只归因于“任务不可解”或“模型太差”。
 - GT namespace 名称差异不是混淆因素：训练会对 non-blurred cache 做 scale-2 max pooling，与 blurred cache 的有效 50×50 target 相同；真正需要排查的是 system prompt 的 row/column 与 direction vector 语义和项目实现不一致。
 - 下一步：固定 episode IDs，记录 namespace、scale 和 target shape，修正 prompt 后短训，按 checkpoint 评价，分解 mentioned/unmentioned/direction 指标，并做 no-map、zero-map、shuffled-map、epoch 5/10、PriorGT 的下游导航对照。
