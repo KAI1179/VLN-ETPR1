@@ -3,10 +3,12 @@
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --gpus=8
 #SBATCH -p vip_gpu_scze096
-set -euo pipefail
+set -eo pipefail
 
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
+
+set -u
 
 checkpoint_root=outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag/checkpoints
 cache_key_prefix=llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch
