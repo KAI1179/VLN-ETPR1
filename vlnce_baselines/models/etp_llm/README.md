@@ -82,6 +82,26 @@ RxR navigation cache. Use `--limit N` for a bounded check. Derived predictor
 metrics are written to the selected output directory and do not overwrite the
 cache generator's operational `metrics.json`.
 
+Object/region category precision, recall, and F1 pool category-presence counts
+over each split (micro averaging); missing and invalid rows act as empty
+predictions. The sweep rejects incomplete prediction coverage and inconsistent
+split denominators.
+
+Compare an explicit ordered set of LLM-Grid caches with:
+
+```shell
+python -m vlnce_baselines.models.etp_llm.llm_grid_eval_sweep \
+  --run-manifest scripts/submit/llm-grid-eval-sweep-r1p5.json \
+  --output-dir outputs/llm_grid_eval/checkpoint-sweep-r1p5
+```
+
+The sweep writes per-run metrics plus aggregate JSON and CSV. Every listed
+cache must already contain R2R `val_seen` and `val_unseen` manifests. Generate
+only those predictor-evaluation splits with `llm_grid_navigation_cache --scope
+predictor-eval`; `scripts/submit/llm-grid-eval-sweep-r1p5.sh` generates the
+missing epoch 1-9 caches on eight GPUs and reuses the existing final/epoch-10
+cache.
+
 ## LLM-Navigation Scaffold
 
 The maintained LLM-Navigation paths register:

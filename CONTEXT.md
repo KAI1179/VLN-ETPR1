@@ -67,6 +67,12 @@ LLM-Navigation cache rather than loading the checkpoint or generating text a
 second time. RxR validation is intentionally excluded because LLM-Navigation
 does not consume an RxR navigation cache. Cache-generation metrics describe
 artifact production; predictor-quality metrics are separate derived artifacts.
+LLM-Grid cache generation accepts `--scope predictor-eval` to generate only
+those two R2R validation splits. Multi-checkpoint comparisons use an explicit
+ordered cache manifest and write per-run metrics plus aggregate JSON and CSV;
+partial sample caches are not valid inputs for a full-split checkpoint curve.
+Object/region category precision, recall, and F1 pool category-presence counts
+over each evaluation split.
 
 ## Language
 

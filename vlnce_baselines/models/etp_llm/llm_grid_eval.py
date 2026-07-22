@@ -10,6 +10,8 @@ import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
 
+from prior.constants import OBJECT_CATEGORIES
+
 from .llm_grid_train import (
     DEFAULT_GRID_NAMESPACE,
     GRID_SCALE,
@@ -38,6 +40,38 @@ def _safe_div(numerator: int, denominator: int) -> float:
     return float(numerator / denominator) if denominator else 0.0
 
 
+def _category_presence_metrics(
+    pred_grid: NDArray[np.float32],
+    target_grid: NDArray[np.float32],
+) -> Dict[str, float]:
+    pred_present = _binary_grid(pred_grid).reshape(pred_grid.shape[0], -1).any(axis=1)
+    target_present = (
+        _binary_grid(target_grid).reshape(target_grid.shape[0], -1).any(axis=1)
+    )
+    metrics: Dict[str, float] = {}
+    for name, channels in (
+        ("object", slice(None, OBJECT_CATEGORIES)),
+        ("region", slice(OBJECT_CATEGORIES, None)),
+    ):
+        pred = pred_present[channels]
+        target = target_present[channels]
+        intersection = int(np.logical_and(pred, target).sum())
+        pred_count = int(pred.sum())
+        target_count = int(target.sum())
+        metrics.update({
+            f"{name}_category_true_positive_count": float(intersection),
+            f"{name}_category_predicted_count": float(pred_count),
+            f"{name}_category_target_count": float(target_count),
+            f"{name}_category_precision": _safe_div(intersection, pred_count),
+            f"{name}_category_recall": _safe_div(intersection, target_count),
+            f"{name}_category_f1": _safe_div(
+                2 * intersection,
+                pred_count + target_count,
+            ),
+        })
+    return metrics
+
+
 def _grid_metrics(
     pred_grid: NDArray[np.float32],
     target_grid: NDArray[np.float32],
@@ -60,6 +94,7 @@ def _grid_metrics(
         "category_aware_raster_support": float(target_count),
         "predicted_cell_count": float(pred_count),
         "target_cell_count": float(target_count),
+        **_category_presence_metrics(pred_grid, target_grid),
     }
 
 
@@ -135,6 +170,7 @@ def evaluate_grid_prediction(
             "category_aware_raster_support": float(np.count_nonzero(target_grid > 0)),
             "predicted_cell_count": 0.0,
             "target_cell_count": float(np.count_nonzero(target_grid > 0)),
+            **_category_presence_metrics(np.zeros_like(target_grid), target_grid),
             **_zero_direction_vector_metrics(),
         }
     metrics = _grid_metrics(parsed.grid, target_grid)
@@ -203,6 +239,29 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 def _summarize_rows(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     metrics = _aggregate_metrics(rows)
     metrics.pop("missing_prediction", None)
+    for name in ("object", "region"):
+        true_positive_count = sum(
+            row[f"{name}_category_true_positive_count"] for row in rows
+        )
+        predicted_count = sum(row[f"{name}_category_predicted_count"] for row in rows)
+        target_count = sum(row[f"{name}_category_target_count"] for row in rows)
+        metrics.update({
+            f"{name}_category_true_positive_count": true_positive_count,
+            f"{name}_category_predicted_count": predicted_count,
+            f"{name}_category_target_count": target_count,
+            f"{name}_category_precision": _safe_div(
+                int(true_positive_count),
+                int(predicted_count),
+            ),
+            f"{name}_category_recall": _safe_div(
+                int(true_positive_count),
+                int(target_count),
+            ),
+            f"{name}_category_f1": _safe_div(
+                int(2 * true_positive_count),
+                int(predicted_count + target_count),
+            ),
+        })
     example_count = len(rows)
     missing_count = sum(row["missing_prediction"] for row in rows)
     metrics.update({

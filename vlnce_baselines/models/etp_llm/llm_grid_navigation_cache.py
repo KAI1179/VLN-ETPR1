@@ -60,6 +60,8 @@ from .llm_grid_train import (
 )
 
 GRID_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
+GridCacheScope = Literal["all", "predictor-eval"]
+PREDICTOR_EVAL_SPLITS = ("val_seen", "val_unseen")
 
 
 class LLMGridNavigationCacheArgs(Tap):
@@ -79,6 +81,7 @@ class LLMGridNavigationCacheArgs(Tap):
     worker_count: int = 1
     worker_index: int = 0
     worker_shard_seed: str = ""
+    scope: GridCacheScope = "all"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("underscores_to_dashes", True)
@@ -270,13 +273,13 @@ def generate_all_grid_navigation_caches(
     args: Any,
 ) -> Dict[str, Dict[str, float]]:
     metrics: Dict[str, Dict[str, float]] = {}
-    pretrain_items = load_pretrain_cache_items(
-        limit=args.limit,
-        quiet=args.quiet,
-        args=args,
-    )
-    metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = (
-        llm_grid_navigation_cache(
+    if args.scope == "all":
+        pretrain_items = load_pretrain_cache_items(
+            limit=args.limit,
+            quiet=args.quiet,
+            args=args,
+        )
+        metrics[f"{PRETRAIN_DATASET_KEY}/{PRETRAIN_SPLIT}"] = llm_grid_navigation_cache(
             model,
             tokenizer,
             pretrain_items,
@@ -284,15 +287,15 @@ def generate_all_grid_navigation_caches(
             dataset_key=PRETRAIN_DATASET_KEY,
             split=PRETRAIN_SPLIT,
         )
-    )
     for dataset_key in GRID_VLNCE_DATASETS:
-        for split in VLNCE_SPLITS:
+        for split in _vlnce_splits_for_scope(args.scope):
             items = load_vlnce_cache_items(
                 dataset_key,
                 split,
                 limit=args.limit,
                 quiet=args.quiet,
                 args=args,
+                require_navigation_cache=args.scope != "predictor-eval",
             )
             metrics[f"{dataset_key.lower()}/{split}"] = llm_grid_navigation_cache(
                 model,
@@ -323,7 +326,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Dict[str, Dict[str, float]]:
     metrics = generate_all_grid_navigation_caches(model, tokenizer, args)
     skipped = _skipped_cache_count(metrics)
     print(f"skipped={skipped}")
-    if skipped:
+    if skipped and args.scope != "predictor-eval":
         raise SystemExit(1)
     return metrics
 
@@ -364,6 +367,15 @@ def _cache_complete(
     split: str,
     args: Any,
 ) -> bool:
+    if args.scope == "predictor-eval":
+        return llm_navigation_prediction_path(
+            scene_id,
+            cache_id,
+            dataset_key,
+            split,
+            cache_dir=args.cache_dir,
+            model_key=args.cache_model_key,
+        ).is_file()
     return llm_navigation_cache_complete(
         scene_id,
         cache_id,
@@ -428,7 +440,7 @@ def _run_parallel_workers(
     if failed:
         raise SystemExit(f"LLM-Grid navigation cache workers failed: {failed}")
     metrics: Dict[str, Dict[str, float]] = {}
-    for dataset_key, split in _grid_cache_split_keys():
+    for dataset_key, split in _grid_cache_split_keys(args.scope):
         split_dir = llm_navigation_split_dir(
             dataset_key,
             split,
@@ -436,18 +448,28 @@ def _run_parallel_workers(
             model_key=args.cache_model_key,
         )
         metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(
-            split_dir
+            split_dir,
+            worker_count,
         )
     return metrics
 
 
-def _grid_cache_split_keys() -> List[Tuple[str, str]]:
+def _vlnce_splits_for_scope(scope: GridCacheScope) -> Tuple[str, ...]:
+    if scope == "all":
+        return VLNCE_SPLITS
+    if scope == "predictor-eval":
+        return PREDICTOR_EVAL_SPLITS
+    raise ValueError(f"unsupported LLM-Grid navigation cache scope: {scope}")
+
+
+def _grid_cache_split_keys(scope: GridCacheScope) -> List[Tuple[str, str]]:
     keys: List[Tuple[str, str]] = [
         (dataset_key, split)
         for dataset_key in GRID_VLNCE_DATASETS
-        for split in VLNCE_SPLITS
+        for split in _vlnce_splits_for_scope(scope)
     ]
-    keys.append((PRETRAIN_DATASET_KEY, PRETRAIN_SPLIT))
+    if scope == "all":
+        keys.append((PRETRAIN_DATASET_KEY, PRETRAIN_SPLIT))
     return keys
 
 
@@ -485,6 +507,8 @@ def _worker_command(
         "1",
         "--scale",
         str(args.scale),
+        "--scope",
+        str(args.scope),
         "--worker-count",
         str(worker_count),
         "--worker-index",

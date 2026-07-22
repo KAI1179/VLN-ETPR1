@@ -6,6 +6,7 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
+from prior.constants import OBJECT_CATEGORIES
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import llm_grid_eval, llm_grid_train
 
@@ -645,18 +646,90 @@ def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
     assert valid["cell_f1"] == pytest.approx(0.5)
     assert valid["category_aware_raster_iou"] == pytest.approx(1 / 3)
     assert valid["category_aware_raster_recall"] == pytest.approx(0.5)
+    assert valid["object_category_precision"] == 1.0
+    assert valid["object_category_recall"] == 1.0
+    assert valid["object_category_f1"] == 1.0
+    assert valid["region_category_precision"] == 1.0
+    assert valid["region_category_recall"] == 1.0
+    assert valid["region_category_f1"] == 1.0
     assert valid["duplicate_record_count"] == 0.0
     assert valid["duplicate_record_rate"] == 0.0
     assert invalid["json_valid"] == 0.0
     assert invalid["schema_valid"] == 0.0
     assert invalid["cell_precision"] == 0.0
     assert invalid["cell_recall"] == 0.0
+    assert invalid["object_category_precision"] == 0.0
+    assert invalid["object_category_recall"] == 0.0
+    assert invalid["object_category_f1"] == 0.0
+    assert invalid["region_category_precision"] == 0.0
+    assert invalid["region_category_recall"] == 0.0
+    assert invalid["region_category_f1"] == 0.0
     assert invalid["direction_vector_valid_rate"] == 0.0
     assert invalid["direction_vector_l2"] == 0.0
     assert invalid["direction_vector_l2_support"] == 0.0
     assert invalid["direction_vector_cosine"] == 0.0
     assert invalid["direction_vector_cosine_support"] == 0.0
     assert invalid["direction_vector_padding_accuracy"] == 0.0
+
+
+def test_grid_category_metrics_score_object_and_region_presence_separately():
+    pred = np.zeros((37, 2, 2), dtype=np.float32)
+    target = np.zeros_like(pred)
+    pred[[1, 5, OBJECT_CATEGORIES + 1, OBJECT_CATEGORIES + 5], 0, 0] = 1.0
+    target[[1, 3, OBJECT_CATEGORIES + 1], 1, 1] = 1.0
+
+    metrics = llm_grid_eval._category_presence_metrics(pred, target)
+
+    assert metrics == {
+        "object_category_true_positive_count": 1.0,
+        "object_category_predicted_count": 2.0,
+        "object_category_target_count": 2.0,
+        "object_category_precision": pytest.approx(0.5),
+        "object_category_recall": pytest.approx(0.5),
+        "object_category_f1": pytest.approx(0.5),
+        "region_category_true_positive_count": 1.0,
+        "region_category_predicted_count": 2.0,
+        "region_category_target_count": 1.0,
+        "region_category_precision": pytest.approx(0.5),
+        "region_category_recall": pytest.approx(1.0),
+        "region_category_f1": pytest.approx(2 / 3),
+    }
+
+
+def test_grid_category_metrics_define_empty_categories_as_zero():
+    empty = np.zeros((37, 2, 2), dtype=np.float32)
+
+    metrics = llm_grid_eval._category_presence_metrics(empty, empty)
+
+    assert all(value == 0.0 for value in metrics.values())
+
+
+def test_grid_category_metrics_are_pooled_across_episodes():
+    rows = [
+        {
+            **llm_grid_eval._category_presence_metrics(
+                np.ones((37, 1, 1), dtype=np.float32),
+                np.ones((37, 1, 1), dtype=np.float32),
+            ),
+            "missing_prediction": 0.0,
+        },
+        {
+            **llm_grid_eval._category_presence_metrics(
+                np.zeros((37, 1, 1), dtype=np.float32),
+                np.ones((37, 1, 1), dtype=np.float32),
+            ),
+            "missing_prediction": 0.0,
+        },
+    ]
+
+    metrics = llm_grid_eval._summarize_rows(rows)
+
+    assert metrics["object_category_precision"] == 1.0
+    assert metrics["object_category_recall"] == 0.5
+    assert metrics["object_category_f1"] == pytest.approx(2 / 3)
+    assert metrics["object_category_true_positive_count"] == float(
+        OBJECT_CATEGORIES
+    )
 
 
 def test_evaluate_grid_prediction_distinguishes_invalid_schema():

@@ -113,6 +113,7 @@ def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
         quiet=True,
         system_prompt="system prompt",
         scale=2,
+        scope="all",
     )
     model = _CacheGenerationModel(GRID_JSON)
 
@@ -182,6 +183,7 @@ def test_llm_grid_navigation_cache_splits_only_the_oom_batch(tmp_path):
         device="cpu",
         quiet=True,
         scale=2,
+        scope="all",
     )
     model = _OOMSplittingModel(GRID_JSON)
 
@@ -200,6 +202,81 @@ def test_llm_grid_navigation_cache_splits_only_the_oom_batch(tmp_path):
     assert metrics["oom_split_retries"] == 1.0
 
 
+def test_predictor_eval_resume_treats_raw_invalid_prediction_as_complete(tmp_path):
+    dataset = [
+        {
+            "example_id": "R2R_val_unseen_42",
+            "scene_id": "scene-a",
+            "input_text": "find the chair",
+            "instruction": "Find the chair.",
+            "start_direction": (0.0, 1.0),
+            "start_position": (4.0, 5.0),
+        }
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="grid-model",
+        max_input_length=256,
+        max_new_tokens=256,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        scale=2,
+        scope="predictor-eval",
+    )
+    model = _CacheGenerationModel("not json")
+
+    with pytest.warns(RuntimeWarning, match="grid_parse_or_write"):
+        first = llm_grid_navigation_cache.llm_grid_navigation_cache(
+            model,
+            _CharChatTokenizer(),
+            dataset,
+            args,
+            dataset_key="R2R",
+            split="val_unseen",
+        )
+    second = llm_grid_navigation_cache.llm_grid_navigation_cache(
+        model,
+        _CharChatTokenizer(),
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="val_unseen",
+    )
+
+    assert first["skipped"] == 1.0
+    assert second["cached"] == 1.0
+    assert model.generate_calls == 1
+
+
+def test_predictor_eval_main_does_not_fail_on_invalid_predictions(monkeypatch):
+    class Tokenizer:
+        padding_side = "right"
+
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "_load_causal_lm_model_and_tokenizer",
+        lambda *_args, **_kwargs: (object(), Tokenizer()),
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "generate_all_grid_navigation_caches",
+        lambda *_args: {"r2r/val_unseen": {"skipped": 1.0}},
+    )
+
+    metrics = llm_grid_navigation_cache.main([
+        "--scope",
+        "predictor-eval",
+        "--parallel-workers",
+        "1",
+        "--device",
+        "cpu",
+    ])
+
+    assert metrics["r2r/val_unseen"]["skipped"] == 1.0
+
+
 def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
     loaded_splits = []
     generated_splits = []
@@ -208,10 +285,16 @@ def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
         "load_pretrain_cache_items",
         lambda **_kwargs: [],
     )
+
+    def load_vlnce(dataset, split, **kwargs):
+        assert kwargs["require_navigation_cache"]
+        loaded_splits.append((dataset, split))
+        return []
+
     monkeypatch.setattr(
         llm_grid_navigation_cache,
         "load_vlnce_cache_items",
-        lambda dataset, split, **_kwargs: loaded_splits.append((dataset, split)) or [],
+        load_vlnce,
     )
     monkeypatch.setattr(
         llm_grid_navigation_cache,
@@ -224,7 +307,7 @@ def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
     llm_grid_navigation_cache.generate_all_grid_navigation_caches(
         object(),
         object(),
-        argparse.Namespace(limit=None, quiet=True),
+        argparse.Namespace(limit=None, quiet=True, scope="all"),
     )
 
     assert loaded_splits == [
@@ -235,20 +318,87 @@ def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
     assert generated_splits == [("pretrain", "mixed"), *loaded_splits]
 
 
-def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
-    args = argparse.Namespace(
-        model_name_or_path="tiny-llm",
-        max_input_length=128,
-        max_new_tokens=64,
-        batch_size=3,
-        device="cuda",
-        device_map="none",
-        cache_dir=str(tmp_path),
-        cache_model_key="test-model",
-        limit=None,
-        quiet=True,
-        scale=2,
+def test_generate_predictor_eval_grid_navigation_caches_loads_only_eval_splits(
+    monkeypatch,
+):
+    loaded_splits = []
+    generated_splits = []
+
+    def fail_on_pretrain_load(**_kwargs):
+        raise AssertionError("predictor-eval must not load pretrain items")
+
+    def load_vlnce(dataset, split, **kwargs):
+        assert not kwargs["require_navigation_cache"]
+        loaded_splits.append((dataset, split))
+        return []
+
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_pretrain_cache_items",
+        fail_on_pretrain_load,
     )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_vlnce_cache_items",
+        load_vlnce,
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "llm_grid_navigation_cache",
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split: (
+            generated_splits.append((dataset_key, split)) or {}
+        ),
+    )
+
+    llm_grid_navigation_cache.generate_all_grid_navigation_caches(
+        object(),
+        object(),
+        argparse.Namespace(limit=None, quiet=True, scope="predictor-eval"),
+    )
+
+    assert loaded_splits == [("R2R", "val_seen"), ("R2R", "val_unseen")]
+    assert generated_splits == loaded_splits
+
+
+def test_grid_cache_scope_parser_rejects_unknown_scope():
+    args = llm_grid_navigation_cache.parse_args(["--scope", "predictor-eval"])
+
+    assert args.scope == "predictor-eval"
+    with pytest.raises(SystemExit):
+        llm_grid_navigation_cache.parse_args(["--scope", "unknown"])
+
+
+def test_predictor_eval_scope_aggregates_only_eval_splits():
+    assert llm_grid_navigation_cache._grid_cache_split_keys("predictor-eval") == [
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+    ]
+
+
+def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
+    args = llm_grid_navigation_cache.parse_args([
+        "--model-name-or-path",
+        "tiny-llm",
+        "--max-input-length",
+        "128",
+        "--max-new-tokens",
+        "64",
+        "--batch-size",
+        "3",
+        "--device",
+        "cuda",
+        "--device-map",
+        "none",
+        "--cache-dir",
+        str(tmp_path),
+        "--cache-model-key",
+        "test-model",
+        "--quiet",
+        "--scale",
+        "2",
+        "--scope",
+        "predictor-eval",
+    ])
 
     command = llm_grid_navigation_cache._worker_command(
         args,
@@ -258,3 +408,4 @@ def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
     )
 
     assert command[command.index("--worker-shard-seed") + 1] == "resume-seed"
+    assert command[command.index("--scope") + 1] == "predictor-eval"

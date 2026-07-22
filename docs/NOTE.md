@@ -790,6 +790,14 @@ Drop Rate By `max_new_tokens`:
 - 下一步：固定 episode IDs，记录 namespace、scale 和 target shape，修正 prompt 后短训，按 checkpoint 评价，分解 mentioned/unmentioned/direction 指标，并做 no-map、zero-map、shuffled-map、epoch 5/10、PriorGT 的下游导航对照。
 - `llm-grid-try5-pt` 暂时保留到下一个可用 checkpoint，作为 integration datapoint；不要默认跑满 500k steps。
 
+## 07/22
+
+- [详细记录：LLM-Grid Checkpoint 泛化曲线](daily/2026-07-22.md)
+- 先在原 prompt contract 下公平比较 epoch 1–10，再把 prompt 修正作为新的训练实验线；否则无法判断现有 run 从何时开始过拟合。
+- 正式比较需要完整且相同的 R2R validation denominator；现有 epoch 5/10 抽样 cache 不能用于完整曲线。
+- 实现 evaluator 的 object/region category 指标、validation-only cache scope 和显式多 cache sweep 后，再生成 epoch 1–9 cache；epoch 10 复用已有完整 cache。
+- epoch 10 baseline 显示类别泛化明显强于精确布局恢复：`val_unseen` object/region pooled category F1 均约为 0.662，但 raster IoU 仅 0.128；epoch 1–9 sweep 尚未运行。
+
 # 实验
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)

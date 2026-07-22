@@ -1139,8 +1139,14 @@ def test_aggregate_worker_metrics_writes_split_metrics(tmp_path):
             }
         )
     )
+    (worker_dir / "worker_7.json").write_text(
+        json.dumps({"examples": 100.0, "generated": 100.0})
+    )
 
-    metrics = llm_boxes_navigation_cache._aggregate_worker_metrics(split_dir)
+    metrics = llm_boxes_navigation_cache._aggregate_worker_metrics(
+        split_dir,
+        worker_count=2,
+    )
 
     assert metrics == {
         "examples": 5.0,

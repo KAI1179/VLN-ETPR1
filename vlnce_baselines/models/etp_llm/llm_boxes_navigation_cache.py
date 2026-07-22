@@ -389,6 +389,7 @@ def load_vlnce_cache_items(
     limit: Optional[int] = None,
     quiet: bool = False,
     args: Optional[argparse.Namespace] = None,
+    require_navigation_cache: bool = True,
 ) -> List[LLMBoxesItem]:
     """Load uncached VLN-CE episodes as LLM-Navigation cache items."""
     if limit == 0:
@@ -414,6 +415,7 @@ def load_vlnce_cache_items(
                 dataset_key,
                 split,
                 args,
+                require_navigation_cache=require_navigation_cache,
             ):
                 cached += 1
                 continue
@@ -668,7 +670,10 @@ def _run_parallel_workers(
             cache_dir=args.cache_dir,
             model_key=args.cache_model_key,
         )
-        metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(split_dir)
+        metrics[f"{dataset_key.lower()}/{split}"] = _aggregate_worker_metrics(
+            split_dir,
+            worker_count,
+        )
     return metrics
 
 
@@ -739,7 +744,18 @@ def _cache_complete(
     dataset_key: str,
     split: str,
     args: argparse.Namespace,
+    *,
+    require_navigation_cache: bool = True,
 ) -> bool:
+    if not require_navigation_cache:
+        return llm_navigation_prediction_path(
+            scene_id,
+            cache_id,
+            dataset_key,
+            split,
+            cache_dir=args.cache_dir,
+            model_key=args.cache_model_key,
+        ).is_file()
     return llm_navigation_cache_complete(
         scene_id,
         cache_id,
@@ -809,10 +825,26 @@ def _write_split_metrics(
     )
 
 
-def _aggregate_worker_metrics(split_dir: Path) -> Dict[str, float]:
+def _aggregate_worker_metrics(
+    split_dir: Path,
+    worker_count: Optional[int] = None,
+) -> Dict[str, float]:
+    paths = (
+        [
+            split_dir / "worker_metrics" / f"worker_{index}.json"
+            for index in range(worker_count)
+        ]
+        if worker_count is not None
+        else sorted((split_dir / "worker_metrics").glob("worker_*.json"))
+    )
+    missing = [path for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "missing worker metrics: " + ", ".join(str(path) for path in missing)
+        )
     worker_metrics = [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted((split_dir / "worker_metrics").glob("worker_*.json"))
+        for path in paths
     ]
     metrics = _sum_metrics(worker_metrics)
     (split_dir / "metrics.json").write_text(
