@@ -761,7 +761,7 @@ Drop Rate By `max_new_tokens`:
         - [x] 加快训练速度？多卡调小 rank 调大并行度？
     - [x] 去除 dataset 标记
     - [x] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
-    - [ ] LLM 定量评估：IoU; obj 召回率 (mentioned / unmentioned) / F-score; 方向向量的定量评价
+    - [x] LLM-Grid predictor 定量评估：IoU、cell/category precision/recall/F1、方向向量与格式合法率（mentioned/unmentioned 分解仍作为后续 target 实验）
     - [x] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
     - [x] 验证工具网站数据的全面性
 
@@ -784,7 +784,7 @@ Drop Rate By `max_new_tokens`:
 ## 07/21
 
 - [详细记录：LLM-Grid Epoch 5/10 泛化分析](daily/2026-07-21.md)
-- 定量结果：完整 epoch 10 predictor-quality evaluation 覆盖 778 个 `val_seen` 和 1839 个 `val_unseen` episode，IoU 分别为 0.266 和 0.128，schema valid 分别为 98.7% 和 99.7%；结合 epoch 5/10 配对样本，模型基本完全学会格式，却没有改善 unseen scene 空间泛化。
+- 早期 epoch 5/10 抽样用于发现 train/unseen 差距；正式 checkpoint 结论已由 07/22 的完整固定分母 sweep 取代，逐样本清单仍保留作历史证据。
 - 当前结论：精确 full-grid target 包含输入无法唯一恢复的 unseen-scene 几何，同时 epoch 10 存在明显训练集记忆，不能只归因于“任务不可解”或“模型太差”。
 - GT namespace 名称差异不是混淆因素：训练会对 non-blurred cache 做 scale-2 max pooling，与 blurred cache 的有效 50×50 target 相同；真正需要排查的是 system prompt 的 row/column 与 direction vector 语义和项目实现不一致。
 - 下一步：固定 episode IDs，记录 namespace、scale 和 target shape，修正 prompt 后短训，按 checkpoint 评价，分解 mentioned/unmentioned/direction 指标，并做 no-map、zero-map、shuffled-map、epoch 5/10、PriorGT 的下游导航对照。
@@ -795,8 +795,9 @@ Drop Rate By `max_new_tokens`:
 - [详细记录：LLM-Grid Checkpoint 泛化曲线](daily/2026-07-22.md)
 - 先在原 prompt contract 下公平比较 epoch 1–10，再把 prompt 修正作为新的训练实验线；否则无法判断现有 run 从何时开始过拟合。
 - 正式比较需要完整且相同的 R2R validation denominator；现有 epoch 5/10 抽样 cache 不能用于完整曲线。
-- 实现 evaluator 的 object/region category 指标、validation-only cache scope 和显式多 cache sweep 后，再生成 epoch 1–9 cache；epoch 10 复用已有完整 cache。
-- epoch 10 baseline 显示类别泛化明显强于精确布局恢复：`val_unseen` object/region pooled category F1 均约为 0.662，但 raster IoU 仅 0.128；epoch 1–9 cache/sweep 已作为 Slurm job `1179424` 运行。
+- evaluator、validation-only cache scope、显式多 cache sweep 和折线图均已完成；epoch 1–10 都覆盖相同的 778 个 `val_seen`、1839 个 `val_unseen` episode，raw prediction 缺失数为 0。
+- 按预先固定的 `val_unseen` raster IoU 主指标，epoch 2 为候选（0.135701）；epoch 8 的 cell F1 最高且 IoU 仅低 0.000496，epoch 4 的 direction cosine 最高，三者差异需 scene-bootstrap CI 才能判断显著性。
+- unseen IoU 在 epoch 2 后进入平台，seen IoU 却继续升至 epoch 9 的 0.299，seen–unseen gap 同期扩大到 0.167，清楚支持继续训练增强 scene memorization 而非 unseen 空间泛化。epoch 5 是 schema validity 明显下降的独立格式异常点。
 - episode 级分析进一步显示 instruction 长度与 unseen IoU 几乎无关（`r=-0.028`），target 空间密度有中等负相关（`r=-0.280`），而类别 F1 与 unseen IoU 的相关性很弱；scene novelty 与输入不可辨识性仍是主要解释。
 
 # 实验
