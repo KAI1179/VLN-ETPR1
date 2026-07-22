@@ -35,4 +35,5 @@ Sub-agents are allowed explicitly for the main agent.
 
 - You're inside a dev container (docker).
 - I typically develop in this env, and then use git to sync code, scp to sync data to another machine (login node). Jobs that require GPU (like training) will be submitted to slurm on login node via `sbatch`.
+- You may connect to the login node via `ssh scze096-blsc`, but only for exploration of our code and data at `~/run/ETP-R1/`. Do not modify, including submitting and cancelling jobs without user consent.
 - Sometimes I may use this env's GPU to run training as well.
