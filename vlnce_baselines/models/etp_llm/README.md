@@ -82,6 +82,10 @@ RxR navigation cache. Use `--limit N` for a bounded check. Derived predictor
 metrics are written to the selected output directory and do not overwrite the
 cache generator's operational `metrics.json`.
 
+LLM-Grid evaluation also writes self-describing per-episode metrics to
+`episodes.csv`, plus distribution summaries, schema-valid correlations, and
+deterministic representative episode IDs to `diagnostics.json`.
+
 Object/region category precision, recall, and F1 pool category-presence counts
 over each split (micro averaging); missing and invalid rows act as empty
 predictions. The sweep rejects incomplete prediction coverage and inconsistent

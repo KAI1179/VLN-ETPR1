@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import cast, Dict, Optional, Sequence, Tuple
+from typing import cast, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -30,6 +32,43 @@ from .navigation import (
 )
 
 EVAL_SPLITS = ("val_seen", "val_unseen")
+EpisodeCSVValue = Union[str, int, float]
+
+
+@dataclass(frozen=True)
+class EpisodeEvaluation:
+    cache_model_key: str
+    dataset: str
+    split: str
+    scene_id: str
+    example_id: str
+    instruction: str
+    instruction_word_count: int
+    instruction_character_count: int
+    prediction_character_count: int
+    target_category_cell_density: float
+    target_spatial_cell_count: int
+    target_spatial_density: float
+    target_direction_count: int
+    metrics: Dict[str, float]
+
+    def csv_row(self) -> Dict[str, EpisodeCSVValue]:
+        return {
+            "cache_model_key": self.cache_model_key,
+            "dataset": self.dataset,
+            "split": self.split,
+            "scene_id": self.scene_id,
+            "example_id": self.example_id,
+            "instruction": self.instruction,
+            "instruction_word_count": self.instruction_word_count,
+            "instruction_character_count": self.instruction_character_count,
+            "prediction_character_count": self.prediction_character_count,
+            "target_category_cell_density": self.target_category_cell_density,
+            "target_spatial_cell_count": self.target_spatial_cell_count,
+            "target_spatial_density": self.target_spatial_density,
+            "target_direction_count": self.target_direction_count,
+            **self.metrics,
+        }
 
 
 def _binary_grid(grid: NDArray[np.float32]) -> NDArray[np.bool_]:
@@ -290,6 +329,7 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         "val_seen": [],
         "val_unseen": [],
     }
+    episode_evaluations: list[EpisodeEvaluation] = []
     for item in _progress(
         dataset,
         desc="eval cached LLM-Grid",
@@ -314,13 +354,273 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         row["missing_prediction"] = float(missing)
         rows.append(row)
         rows_by_split[item["split"]].append(row)
+        target_grid = item["target_grid"]
+        target_direction_vectors = item["target_direction_vectors"]
+        target_spatial_cell_count = int(
+            np.count_nonzero(np.any(target_grid > 0, axis=0))
+        )
+        episode_evaluations.append(
+            EpisodeEvaluation(
+                cache_model_key=args.cache_model_key,
+                dataset="R2R",
+                split=item["split"],
+                scene_id=item["scene_id"],
+                example_id=item["example_id"],
+                instruction=item["instruction"],
+                instruction_word_count=len(item["instruction"].split()),
+                instruction_character_count=len(item["instruction"]),
+                prediction_character_count=len(generated_text),
+                target_category_cell_density=float(np.count_nonzero(target_grid > 0))
+                / float(target_grid.size),
+                target_spatial_cell_count=target_spatial_cell_count,
+                target_spatial_density=float(target_spatial_cell_count)
+                / float(target_grid.shape[1] * target_grid.shape[2]),
+                target_direction_count=int(
+                    np.count_nonzero(np.linalg.norm(target_direction_vectors, axis=1))
+                ),
+                metrics=row,
+            )
+        )
 
     metrics = _summarize_rows(rows)
     for name, split_rows in (("combined", rows), *rows_by_split.items()):
         split_metrics = _summarize_rows(split_rows)
         metrics.update({f"{name}/{key}": value for key, value in split_metrics.items()})
     _write_metrics(args.output_dir / "metrics.json", metrics)
+    _write_episode_evaluations(
+        args.output_dir / "episodes.csv",
+        episode_evaluations,
+    )
+    _write_diagnostics(
+        args.output_dir / "diagnostics.json",
+        episode_evaluations,
+    )
     return metrics
+
+
+def _write_episode_evaluations(
+    path: Path,
+    evaluations: Sequence[EpisodeEvaluation],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metric_fields = sorted({
+        key for evaluation in evaluations for key in evaluation.metrics
+    })
+    fieldnames = [
+        "cache_model_key",
+        "dataset",
+        "split",
+        "scene_id",
+        "example_id",
+        "instruction",
+        "instruction_word_count",
+        "instruction_character_count",
+        "prediction_character_count",
+        "target_category_cell_density",
+        "target_spatial_cell_count",
+        "target_spatial_density",
+        "target_direction_count",
+        *metric_fields,
+    ]
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(evaluation.csv_row() for evaluation in evaluations)
+
+
+def _select_representative_episodes(
+    evaluations: Sequence[EpisodeEvaluation],
+) -> Dict[str, Dict[str, EpisodeCSVValue]]:
+    valid = sorted(
+        (
+            evaluation
+            for evaluation in evaluations
+            if evaluation.metrics["schema_valid"] == 1.0
+        ),
+        key=lambda evaluation: (
+            evaluation.metrics["category_aware_raster_iou"],
+            evaluation.example_id,
+        ),
+    )
+    if not valid:
+        return {}
+    selected = {
+        "worst": valid[0],
+        "median": valid[len(valid) // 2],
+        "best": valid[-1],
+        "largest_category_spatial_gap": max(
+            valid,
+            key=lambda evaluation: (
+                _combined_category_f1(evaluation) - evaluation.metrics["cell_f1"],
+                evaluation.example_id,
+            ),
+        ),
+    }
+    return {
+        label: {
+            "scene_id": evaluation.scene_id,
+            "example_id": evaluation.example_id,
+            "category_aware_raster_iou": evaluation.metrics[
+                "category_aware_raster_iou"
+            ],
+            "cell_f1": evaluation.metrics["cell_f1"],
+            "object_category_f1": evaluation.metrics["object_category_f1"],
+            "region_category_f1": evaluation.metrics["region_category_f1"],
+            "combined_category_f1": _combined_category_f1(evaluation),
+        }
+        for label, evaluation in selected.items()
+    }
+
+
+def _combined_category_f1(evaluation: EpisodeEvaluation) -> float:
+    true_positive_count = sum(
+        evaluation.metrics[f"{name}_category_true_positive_count"]
+        for name in ("object", "region")
+    )
+    predicted_count = sum(
+        evaluation.metrics[f"{name}_category_predicted_count"]
+        for name in ("object", "region")
+    )
+    target_count = sum(
+        evaluation.metrics[f"{name}_category_target_count"]
+        for name in ("object", "region")
+    )
+    return _safe_div(
+        int(2 * true_positive_count),
+        int(predicted_count + target_count),
+    )
+
+
+def _diagnostic_values(evaluation: EpisodeEvaluation) -> Dict[str, float]:
+    return {
+        "instruction_word_count": float(evaluation.instruction_word_count),
+        "prediction_character_count": float(evaluation.prediction_character_count),
+        "target_category_cell_density": evaluation.target_category_cell_density,
+        "target_spatial_density": evaluation.target_spatial_density,
+        "target_direction_count": float(evaluation.target_direction_count),
+        "object_category_target_count": evaluation.metrics[
+            "object_category_target_count"
+        ],
+        "region_category_target_count": evaluation.metrics[
+            "region_category_target_count"
+        ],
+        "category_aware_raster_iou": evaluation.metrics["category_aware_raster_iou"],
+        "cell_f1": evaluation.metrics["cell_f1"],
+        "object_category_f1": evaluation.metrics["object_category_f1"],
+        "region_category_f1": evaluation.metrics["region_category_f1"],
+        "direction_vector_cosine": evaluation.metrics["direction_vector_cosine"],
+    }
+
+
+def _distribution(values: Sequence[float]) -> Dict[str, Optional[float]]:
+    array = np.asarray(values, dtype=np.float64)
+    if array.size == 0:
+        return {"count": 0.0, "p10": None, "p50": None, "p90": None}
+    return {
+        "count": float(array.size),
+        "p10": float(np.quantile(array, 0.1)),
+        "p50": float(np.quantile(array, 0.5)),
+        "p90": float(np.quantile(array, 0.9)),
+    }
+
+
+def _pearson(
+    evaluations: Sequence[EpisodeEvaluation],
+    x_field: str,
+    y_field: str,
+) -> Dict[str, Optional[float]]:
+    pairs = [
+        (
+            _diagnostic_values(evaluation)[x_field],
+            _diagnostic_values(evaluation)[y_field],
+        )
+        for evaluation in evaluations
+        if evaluation.metrics["schema_valid"] == 1.0
+    ]
+    x = np.asarray([pair[0] for pair in pairs], dtype=np.float64)
+    y = np.asarray([pair[1] for pair in pairs], dtype=np.float64)
+    if len(pairs) < 2 or float(np.std(x)) == 0.0 or float(np.std(y)) == 0.0:
+        correlation = None
+    else:
+        correlation = float(np.corrcoef(x, y)[0, 1])
+    return {"pearson": correlation, "count": float(len(pairs))}
+
+
+def _diagnostics_for_split(
+    evaluations: Sequence[EpisodeEvaluation],
+) -> Dict[str, object]:
+    values = [_diagnostic_values(evaluation) for evaluation in evaluations]
+    distribution_fields = (
+        "category_aware_raster_iou",
+        "cell_f1",
+        "object_category_f1",
+        "region_category_f1",
+        "direction_vector_cosine",
+        "instruction_word_count",
+        "target_category_cell_density",
+        "target_spatial_density",
+    )
+    correlation_inputs = (
+        "instruction_word_count",
+        "target_category_cell_density",
+        "target_spatial_density",
+        "object_category_target_count",
+        "region_category_target_count",
+        "object_category_f1",
+        "region_category_f1",
+    )
+    correlation_outputs = ("category_aware_raster_iou", "cell_f1")
+    distributions = {
+        field: _distribution([
+            row[field]
+            for evaluation, row in zip(evaluations, values)
+            if field != "direction_vector_cosine"
+            or evaluation.metrics["direction_vector_cosine_support"] > 0.0
+        ])
+        for field in distribution_fields
+    }
+    return {
+        "expected_count": len(evaluations),
+        "missing_example_ids": [
+            evaluation.example_id
+            for evaluation in evaluations
+            if evaluation.metrics["missing_prediction"] == 1.0
+        ],
+        "invalid_example_ids": [
+            evaluation.example_id
+            for evaluation in evaluations
+            if evaluation.metrics["missing_prediction"] == 0.0
+            and evaluation.metrics["schema_valid"] == 0.0
+        ],
+        "distributions": distributions,
+        "correlations": {
+            f"{x_field}__{y_field}": _pearson(evaluations, x_field, y_field)
+            for x_field in correlation_inputs
+            for y_field in correlation_outputs
+        },
+        "representatives": _select_representative_episodes(evaluations),
+    }
+
+
+def _write_diagnostics(
+    path: Path,
+    evaluations: Sequence[EpisodeEvaluation],
+) -> None:
+    payload = {
+        "selection_metric": "category_aware_raster_iou",
+        "distribution_population": "expected_episodes_except_metric_support_filters",
+        "correlation_population": "schema_valid_predictions",
+        "splits": {
+            split: _diagnostics_for_split([
+                evaluation for evaluation in evaluations if evaluation.split == split
+            ])
+            for split in EVAL_SPLITS
+        },
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _validate_manifests(args: LLMGridEvalArgs) -> None:

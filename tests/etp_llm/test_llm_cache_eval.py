@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,6 +105,7 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
             "example_id": f"R2R_{split}_{index}",
             "scene_id": "scene-a",
             "split": split,
+            "instruction": "Walk forward.",
             "target_grid": target_grid,
             "target_direction_vectors": target_directions,
         }
@@ -147,3 +149,11 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
     assert metrics["val_unseen/predictions"] == 0.0
     assert metrics["val_unseen/missing_prediction_rate"] == 1.0
     assert (args.output_dir / "metrics.json").is_file()
+    with (args.output_dir / "episodes.csv").open(encoding="utf-8", newline="") as file:
+        episodes = list(csv.DictReader(file))
+    assert len(episodes) == 2
+    assert episodes[0]["instruction_word_count"] == "2"
+    assert episodes[0]["target_category_cell_density"] == "0.0"
+    assert episodes[0]["target_spatial_density"] == "0.0"
+    assert episodes[1]["missing_prediction"] == "1.0"
+    assert (args.output_dir / "diagnostics.json").is_file()
