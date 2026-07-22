@@ -16,7 +16,7 @@ Single-context repo. Read `CONTEXT.md` and relevant ADRs if they exist. See `doc
 
 ## Sub-agent policy
 
-Sub-agents are allowed explicitly for the main agent.
+The main agent shall act as the leader, decomposing and dispatching jobs to specialized sub agents and manage them, unless the job is too trivial and require little effort, so that it would require even more effort to dispatch it.
 
 ## Coding guidelines
 
