@@ -810,8 +810,8 @@ Drop Rate By `max_new_tokens`:
 - 原始 evidence JSON 严重超 prompt budget；exact compact row-run grammar 并去除与 observed/free mask 重复的 broad environment labels 后，sample median/P90/max prompt 为 1,229/2,049/2,580 tokens，3,072 prompt + 4,096 sequence budget 下 sample 无 truncation。下一步先在 login node 并行生成六个 R2R/RxR split caches，再跑 seed 42 的 2-epoch matched screen 与 matched/null/within/global controls。
 - 完整 R2R `val_unseen` 的 prompt median/P90/max 为 1,246/1,986/2,727；仅 1/1,839（0.054%）因 combined sequence 4,118 超预算。Observed mask 覆盖 70.2% target semantic cells；实际 prompt semantic evidence precision/recall 为 16.1%/25.5%。Evaluator controls 已禁止读取 prompt 未包含的 raw environmental labels，否则 recall 会虚增到 48.2%。
 - RxR `val_unseen` 的 fixed raster corpus 为 evidence index 11,006 episodes 中的 3,669 examples；prompt median/P90/max 为 1,225/2,013/2,800。原 4,096 sequence budget 会丢 4.69%，因此 screen 改为 completion 4,096、sequence 5,120；该 split 只剩 0.136% 超预算，train corpus 仍由 2% guard fail-fast。
-- Remote 已提交 cache array `1182682`（六个 split task，各 1 GPU）与依赖它的 matched training `1182689`（8 GPU、seed 42、2 epochs）；提交前 quota 剩余 87 GB。依赖为 `afterok`，partial cache 不会触发训练。R2R `val_unseen` 已完整生成 393 observations/1,839 examples，耗时 9 分 30 秒，manifest/index 与抽查 artifact hash 一致。
-- 四条件 cache/eval array `1182694`（matched/null/within-scene/global，各 2 GPUs）依赖 training 成功；约 3 分钟时 evidence producer 已写 601/13,785 个 artifacts（2.3 MB）。
+- Remote cache array `1182682`（六个 split task，各 1 GPU）已完成四个 validation tasks；R2R `val_unseen` 为 393 observations/1,839 examples、9 分 30 秒，manifest/index 与抽查 artifact hash 一致。R2R/RxR train tasks 继续运行。
+- Matched training `1182802`（8 GPU、seed 42、2 epochs）依赖完整 cache；四条件 cache/eval array `1182803`（matched/null/within-scene/global，各 2 GPUs）再依赖 training。旧 pending jobs `1182689`/`1182694` 的 Slurm snapshots 保留旧 budget，均未运行即取消并替代。
 
 ## 07/23（mentioned/unmentioned 空间与类别）
 
