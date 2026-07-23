@@ -25,8 +25,8 @@ torchrun --standalone \
   --gradient-checkpointing \
   --device-map none \
   --max-input-length 3072 \
-  --max-new-tokens 3072 \
-  --max-sequence-length 4096 \
+  --max-new-tokens 4096 \
+  --max-sequence-length 5120 \
   --max-dropped-fraction 0.02 \
   --cuda-cache-clear-min-sequence-length 3072 \
   --epochs 2 \

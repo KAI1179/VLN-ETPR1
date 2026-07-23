@@ -22,7 +22,7 @@ python -m vlnce_baselines.models.etp_llm.llm_grid_navigation_cache \
   --scale 2 \
   --batch-size 1 \
   --max-input-length 3072 \
-  --max-new-tokens 3072 \
+  --max-new-tokens 4096 \
   --evidence-root data/llm_grid_oracle_evidence \
   --evidence-key oracle-t0-v1 \
   --evidence-assignment "$assignment" \

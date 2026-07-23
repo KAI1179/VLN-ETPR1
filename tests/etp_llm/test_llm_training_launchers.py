@@ -45,21 +45,19 @@ def test_llm_training_launcher_uses_eight_rank_torchrun(relative_path):
 
 
 def test_navigation_launchers_use_mixed_tag_free_artifacts():
-    boxes_cache = Path(
-        "scripts/submit/llm-boxes-nav-cache-r1p5.sh"
-    ).read_text(encoding="utf-8")
-    grid_cache = Path(
-        "scripts/submit/llm-grid-nav-cache-r1p5.sh"
-    ).read_text(encoding="utf-8")
-    boxes_pretrain = Path(
-        "scripts/submit/llm-boxes-current-pretrain.sh"
-    ).read_text(encoding="utf-8")
-    grid_pretrain = Path(
-        "scripts/submit/llm-grid-try5-pretrain.sh"
-    ).read_text(encoding="utf-8")
-    navigation_runtime = Path("run_r2r/main_server.bash").read_text(
+    boxes_cache = Path("scripts/submit/llm-boxes-nav-cache-r1p5.sh").read_text(
         encoding="utf-8"
     )
+    grid_cache = Path("scripts/submit/llm-grid-nav-cache-r1p5.sh").read_text(
+        encoding="utf-8"
+    )
+    boxes_pretrain = Path("scripts/submit/llm-boxes-current-pretrain.sh").read_text(
+        encoding="utf-8"
+    )
+    grid_pretrain = Path("scripts/submit/llm-grid-try5-pretrain.sh").read_text(
+        encoding="utf-8"
+    )
+    navigation_runtime = Path("run_r2r/main_server.bash").read_text(encoding="utf-8")
 
     boxes_key = "llm-boxes-r2r-rxr-r1p5-path5-tagfree"
     grid_key = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
@@ -73,20 +71,32 @@ def test_navigation_launchers_use_mixed_tag_free_artifacts():
     assert "r2r-legacy-r1p5-direction5-scale2/checkpoints" not in grid_cache
 
 
-def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():
-    training = Path(
-        "scripts/submit/llm-grid-train-r1p5-contract-v2-e2.sh"
-    ).read_text(encoding="utf-8")
-    evaluation = Path(
-        "scripts/submit/llm-grid-eval-r1p5-contract-v2-e2.sh"
-    ).read_text(encoding="utf-8")
+def test_llm_grid_oracle_launchers_use_audited_token_budgets():
+    training = Path("scripts/submit/llm-grid-train-oracle-t0-v1.sh").read_text(
+        encoding="utf-8"
+    )
+    evaluation = Path("scripts/submit/llm-grid-oracle-eval.sh").read_text(
+        encoding="utf-8"
+    )
 
-    run_name = (
-        "r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag-contract-v2-e2"
+    assert "--max-input-length 3072" in training
+    assert "--max-new-tokens 4096" in training
+    assert "--max-sequence-length 5120" in training
+    assert "--max-dropped-fraction 0.02" in training
+    assert "--max-input-length 3072" in evaluation
+    assert "--max-new-tokens 4096" in evaluation
+
+
+def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():
+    training = Path("scripts/submit/llm-grid-train-r1p5-contract-v2-e2.sh").read_text(
+        encoding="utf-8"
     )
-    cache_key = (
-        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-contract-v2-epoch-2"
+    evaluation = Path("scripts/submit/llm-grid-eval-r1p5-contract-v2-e2.sh").read_text(
+        encoding="utf-8"
     )
+
+    run_name = "r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag-contract-v2-e2"
+    cache_key = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-contract-v2-epoch-2"
     assert run_name in training
     assert "--epochs 2" in training
     assert "--seed 42" in training
