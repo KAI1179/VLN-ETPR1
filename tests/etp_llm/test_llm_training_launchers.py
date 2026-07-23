@@ -33,6 +33,8 @@ def test_llm_training_launcher_uses_eight_rank_torchrun(relative_path):
         assert "--max-new-tokens 3072" in text
         assert "--max-sequence-length 4096" in text
         assert "--cuda-cache-clear-min-sequence-length 3072" in text
+        assert "--seed 42" in text
+        assert "export PYTHONHASHSEED=42" in text
     else:
         assert "--max-new-tokens 4096" in text
     assert "--epochs 10" in text
@@ -88,6 +90,7 @@ def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():
     assert run_name in training
     assert "--epochs 2" in training
     assert "--seed 42" in training
+    assert "export PYTHONHASHSEED=42" in training
     assert 'mkdir "$run_dir"' in training
     assert run_name in evaluation
     assert cache_key in evaluation

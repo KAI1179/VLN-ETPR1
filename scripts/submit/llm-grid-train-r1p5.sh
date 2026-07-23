@@ -11,6 +11,7 @@ eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export PYTHONHASHSEED=42
 
 torchrun --standalone \
   --nnodes=1 \
@@ -25,6 +26,7 @@ torchrun --standalone \
   --max-sequence-length 4096 \
   --cuda-cache-clear-min-sequence-length 3072 \
   --epochs 10 \
+  --seed 42 \
   --lora-r 32 \
   --lora-alpha 64 \
   --lora-dropout 0.05 \

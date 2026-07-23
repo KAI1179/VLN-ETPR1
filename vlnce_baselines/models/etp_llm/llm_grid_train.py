@@ -23,6 +23,7 @@ from typing import (
 
 import numpy as np
 from accelerate import Accelerator
+from accelerate.utils import set_seed as _set_seed
 from numpy.typing import NDArray
 from tap import Tap
 from torch.utils.data import DataLoader, Dataset
@@ -832,6 +833,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
 
     accelerator = make_sft_accelerator(args.gradient_accumulation_steps)
     validate_distributed_device_map(accelerator, args.device_map)
+    _set_seed(args.seed, device_specific=False)
     batch_metrics = distributed_batch_metrics(
         accelerator,
         args.per_device_batch_size,
@@ -1047,6 +1049,7 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         "per_device_batch_size": float(batch_metrics.per_device_batch_size),
         "gradient_accumulation_steps": float(batch_metrics.gradient_accumulation_steps),
         "global_batch_size": float(batch_metrics.global_batch_size),
+        "seed": float(args.seed),
         "skipped_over_budget_count": float(skipped_over_budget_count),
         **corpus_metrics,
     }
@@ -1125,6 +1128,9 @@ def _build_grid_training_manifest(
         })
     return TrainingManifest(
         metadata={
+            "seed": args.seed,
+            "scale": args.scale,
+            "cognitive_map_namespace": args.cognitive_map_namespace,
             "skipped_over_budget_count": len(dropped_over_budget),
             "token_budgets": {
                 "max_input_length": args.max_input_length,

@@ -11,6 +11,7 @@ eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export PYTHONHASHSEED=42
 
 run_dir=outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag-contract-v2-e2
 mkdir "$run_dir"

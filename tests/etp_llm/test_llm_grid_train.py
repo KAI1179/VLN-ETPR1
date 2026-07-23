@@ -1582,6 +1582,12 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
     }
     assert manifest.items[0]["sequence_tokens"] > 0
     assert "target_grid" not in manifest.items[0]
+    assert manifest.metadata["seed"] == 42
+    assert manifest.metadata["scale"] == 2
+    assert (
+        manifest.metadata["cognitive_map_namespace"]
+        == "gt.legacy.r1p5.direction5.v1"
+    )
     assert manifest.metadata["skipped_over_budget_count"] == 0
     assert manifest.metadata["fixed_corpus_metrics"]["combined_retained"] == 2.0
 
@@ -1643,6 +1649,9 @@ def test_train_model_builds_manifest_before_loading_model(monkeypatch, tmp_path)
         events.append("tokenizer")
         return tokenizer
 
+    def set_seed(seed, *, device_specific):
+        events.append(("seed", seed, device_specific))
+
     def load_manifest(accelerator, path, build):
         events.append(("manifest", path))
         manifest = build()
@@ -1654,6 +1663,7 @@ def test_train_model_builds_manifest_before_loading_model(monkeypatch, tmp_path)
         return model
 
     monkeypatch.setattr(llm_grid_train, "_load_grid_training_tokenizer", load_tokenizer)
+    monkeypatch.setattr(llm_grid_train, "_set_seed", set_seed)
     monkeypatch.setattr(
         llm_grid_train,
         "load_or_create_training_manifest",
@@ -1677,6 +1687,7 @@ def test_train_model_builds_manifest_before_loading_model(monkeypatch, tmp_path)
     llm_grid_train.train_model(args)
 
     assert events == [
+        ("seed", 42, False),
         "tokenizer",
         ("manifest", output_dir / "artifacts" / "training_manifest.jsonl"),
         "manifest-built",
