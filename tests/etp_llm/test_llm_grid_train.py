@@ -445,10 +445,18 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         "Allowed object categories",
         "Allowed region categories",
         "Each cell is [row,col] in a 50x50 grid with integers 0-49.",
-        "Grid columns follow the x axis; grid rows follow the z axis.",
+        "Grid rows increase with world x; grid columns increase with world z.",
+        "Start direction and direction_vectors use "
+        "display-frame [right,up]=[-dz,-dx],",
     ):
         assert required in prompt
-    for removed in ("region_candidates", "object_candidates", "motion_vectors"):
+    for removed in (
+        "region_candidates",
+        "object_candidates",
+        "motion_vectors",
+        "Grid columns follow the x axis; grid rows follow the z axis.",
+        "[dx,dz] vectors",
+    ):
         assert removed not in prompt
     assert (
         "Each cell is [row,col] in a 100x100 grid with integers 0-99." in scale_1_prompt
@@ -1033,7 +1041,8 @@ def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
 
     assert item["input_text"] == (
         "start x = 1.2 | start z = 3.4 | "
-        "direction x = 0.0 | direction z = 1.0 | instruction Go to the chair."
+        "start direction right = 0.0 | start direction up = 1.0 | "
+        "instruction Go to the chair."
     )
     assert json.loads(item["target_text"]) == {
         "predicted_regions": ["living/social space"],

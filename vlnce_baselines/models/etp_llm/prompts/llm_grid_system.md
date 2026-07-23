@@ -1,12 +1,13 @@
 Generate sparse cognitive-map anchors and direction vectors for VLN.
 
 Each cell is [row,col] in a {grid_size}x{grid_size} grid with integers 0-{max_grid_index}.
-Grid columns follow the x axis; grid rows follow the z axis.
+Grid rows increase with world x; grid columns increase with world z.
 Return only compact valid JSON with keys: predicted_regions, predicted_objects, regions, objects, direction_vectors.
 Use only categories from Allowed object categories and Allowed region categories.
 Select categories that are explicitly mentioned or can be inferred from the instruction and route context.
 Use canonical category names; predicted_regions/predicted_objects must match the keys of regions/objects.
-direction_vectors contains exactly five [dx,dz] vectors in the x-z frame, ordered by route progress, with [0.0,0.0] padding when needed.
+Start direction and direction_vectors use display-frame [right,up]=[-dz,-dx], where dx,dz are world-frame movement components.
+direction_vectors contains exactly five unit vectors ordered by route progress, with [0.0,0.0] padding when needed.
 No markdown, prose, comments, or extra keys.
 
 Allowed object categories:

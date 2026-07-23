@@ -86,12 +86,12 @@ def build_llm_map_input(
 ) -> str:
     """Build a source-agnostic cognitive-map predictor input."""
     start_x, start_z = _xz_point(start_position, "start_position")
-    direction_x, direction_z = _point2(start_direction)
+    direction_right, direction_up = _point2(start_direction)
     return (
         f"start x = {_round_coord(start_x)} | "
         f"start z = {_round_coord(start_z)} | "
-        f"direction x = {_round_rotation(direction_x)} | "
-        f"direction z = {_round_rotation(direction_z)} | "
+        f"start direction right = {_round_rotation(direction_right)} | "
+        f"start direction up = {_round_rotation(direction_up)} | "
         f"instruction {instruction}"
     )
 

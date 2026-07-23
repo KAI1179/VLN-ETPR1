@@ -69,3 +69,30 @@ def test_navigation_launchers_use_mixed_tag_free_artifacts():
     assert f'LLM_GRID_TRY5_MODEL_KEY="{grid_key}"' in navigation_runtime
     assert "r2r-bbox-r1p5-path5/checkpoints" not in boxes_cache
     assert "r2r-legacy-r1p5-direction5-scale2/checkpoints" not in grid_cache
+
+
+def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():
+    training = Path(
+        "scripts/submit/llm-grid-train-r1p5-contract-v2-e2.sh"
+    ).read_text(encoding="utf-8")
+    evaluation = Path(
+        "scripts/submit/llm-grid-eval-r1p5-contract-v2-e2.sh"
+    ).read_text(encoding="utf-8")
+
+    run_name = (
+        "r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag-contract-v2-e2"
+    )
+    cache_key = (
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-contract-v2-epoch-2"
+    )
+    assert run_name in training
+    assert "--epochs 2" in training
+    assert "--seed 42" in training
+    assert 'mkdir "$run_dir"' in training
+    assert run_name in evaluation
+    assert cache_key in evaluation
+    assert 'mkdir "$cache_root"' in evaluation
+    assert 'mkdir "$eval_dir"' in evaluation
+    assert "artifacts/system_prompt.md" in evaluation
+    assert "checkpoints/epoch-2" in evaluation
+    assert "--scope predictor-eval" in evaluation

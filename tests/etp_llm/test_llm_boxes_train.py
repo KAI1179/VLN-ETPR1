@@ -362,7 +362,7 @@ def test_llm_boxes_dataset_item_returns_text_ids_and_targets():
     assert item["example_id"] == "RxR_val_seen_9"
     assert item["input_text"] == (
         "start x = 0.0 | start z = 0.0 | "
-        "direction x = 1.0 | direction z = 0.0 | "
+        "start direction right = 1.0 | start direction up = 0.0 | "
         "instruction Walk into the living room."
     )
     assert item["target_text"] == (
@@ -702,6 +702,9 @@ def test_load_system_prompt_reads_package_prompt():
     prompt = llm_boxes_train.load_system_prompt()
 
     assert "compact valid JSON" in prompt
+    assert (
+        "Start direction uses display-frame [right,up]=[-dz,-dx]," in prompt
+    )
     assert prompt.strip() == prompt
 
 

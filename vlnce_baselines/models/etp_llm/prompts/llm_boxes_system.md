@@ -5,6 +5,7 @@ Use only categories from Allowed object categories and Allowed region categories
 Select categories that are explicitly mentioned or can be inferred from the instruction and route context.
 Use canonical category names; predicted_regions/predicted_objects must match the keys of regions/objects.
 Do not emit mentioned flags; mention status is derived after parsing.
+Start direction uses display-frame [right,up]=[-dz,-dx], where dx,dz are world-frame movement components.
 No markdown, prose, comments, or extra keys.
 
 keypoints contains exactly five [x,z] level-local meter points, ordered by route progress, with [0.0,0.0] padding when needed.

@@ -588,11 +588,15 @@ def parse_grid_text(
 
 def _parse_direction_vectors(value: Any) -> NDArray[np.float32]:
     if not isinstance(value, list) or len(value) != 5:
-        raise LLMGridValidationError("direction_vectors must be five [dx,dz] vectors")
+        raise LLMGridValidationError(
+            "direction_vectors must be five [right,up] vectors"
+        )
     rows: List[List[float]] = []
     for index, raw_vector in enumerate(value):
         if not isinstance(raw_vector, list) or len(raw_vector) != 2:
-            raise LLMGridValidationError(f"direction_vectors[{index}] must be [dx,dz]")
+            raise LLMGridValidationError(
+                f"direction_vectors[{index}] must be [right,up]"
+            )
         row: List[float] = []
         for component_index, component in enumerate(raw_vector):
             if type(component) is int or type(component) is float:

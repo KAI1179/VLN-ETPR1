@@ -39,7 +39,7 @@ def test_build_llm_map_input_includes_navigation_metadata_without_source():
 
     assert prompt == (
         "start x = 1.2 | start z = 3.0 | "
-        "direction x = 0.0 | direction z = -1.0 | "
+        "start direction right = 0.0 | start direction up = -1.0 | "
         "instruction Walk to the chair."
     )
     assert "dataset" not in prompt
@@ -393,14 +393,14 @@ def test_write_prediction_artifact_sanitizes_example_id_path_components(tmp_path
     assert not (tmp_path.parent / "escape.txt").exists()
 
 
-def test_llm_boxes_direction_and_rotation_follow_xz_convention():
+def test_llm_boxes_start_direction_and_rotation_use_documented_frames():
     prompt = build_llm_map_input(
         instruction="Face east.",
         start_position=(10.0, 20.0),
         start_direction=(1.0, 0.0),
     )
 
-    assert "direction x = 1.0 | direction z = 0.0" in prompt
+    assert "start direction right = 1.0 | start direction up = 0.0" in prompt
 
     spec = LLMBoxesSpec(
         objects=(
