@@ -810,7 +810,8 @@ Drop Rate By `max_new_tokens`:
 - [2×2 空间与类别曲线](images/llm_grid_mentioned_spatial_category_sweep_r1p5.png) 显示两组共同保留 seen 持续改善、unseen 早期平台化的 spatial gap。近似持平或轻微反向的 M/U spatial gap 受 category composition、cell density 与 prevalence 混淆，不能解释为 unmentioned layout 更好。
 - category 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致，但 category composition/base rate 仍是混淆因素；本轮也不能直接证明 mentioned-only target 会改善 predictor 或下游导航。
 - 今日结论：主要瓶颈是 input/target 信息不匹配；当前输入不含 scene observation，却要求恢复 unseen-house 精确 full-grid 几何与 unmentioned content。scene-specific overfit 会放大差距，但不是首要根因；错误 prompt 是单独的实现混淆因素。
-- 下一步：先做无需训练的 prior/shuffle 与同路径 paraphrase consistency；随后修正 prompt contract，并在 matched 短训中依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的 target 才进入下游导航实验。
+- prompt contract 已在 `a0bb323` 修正并由 contract tests 固定：网格为 `[row,col]=[world x,world z]`，方向为 display frame `[right,up]=[-dz,-dx]`。matched 2-epoch control launcher 已准备，等待 Slurm 完成后与旧 prompt epoch 2 比较；完成前不判断该错误的贡献大小。
+- 下一步：完成 prompt-contract matched control，并并行做无需训练的 prior/shuffle 与同路径 paraphrase consistency；随后在 matched 短训中依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的 target 才进入下游导航实验。
 
 # 实验
 
