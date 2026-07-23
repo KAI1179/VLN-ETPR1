@@ -73,6 +73,11 @@ ordered cache manifest and write per-run metrics plus aggregate JSON and CSV;
 partial sample caches are not valid inputs for a full-split checkpoint curve.
 Object/region category precision, recall, and F1 pool category-presence counts
 over each evaluation split.
+Mention-stratified category metrics partition the complete canonical vocabulary
+with the project's instruction category extractor and report pooled counts for
+mentioned and unmentioned object/region categories separately. They ignore the
+generated JSON `mentioned` flag so category recoverability is not conflated with
+mention-flag classification.
 LLM-Grid predictor-quality evaluation also exports one self-describing row per
 expected episode and derives distributions, schema-valid correlations, and
 deterministic representative episode IDs without another cache traversal.

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 from pathlib import Path
-from typing import cast, Dict, Optional, Sequence, Tuple, Union
+from typing import AbstractSet, cast, Dict, FrozenSet, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -82,38 +83,83 @@ def _safe_div(numerator: int, denominator: int) -> float:
 def _category_presence_metrics(
     pred_grid: NDArray[np.float32],
     target_grid: NDArray[np.float32],
+    mentioned_object_categories: AbstractSet[int],
+    mentioned_region_categories: AbstractSet[int],
 ) -> Dict[str, float]:
     pred_present = _binary_grid(pred_grid).reshape(pred_grid.shape[0], -1).any(axis=1)
     target_present = (
         _binary_grid(target_grid).reshape(target_grid.shape[0], -1).any(axis=1)
     )
     metrics: Dict[str, float] = {}
-    for name, channels in (
-        ("object", slice(None, OBJECT_CATEGORIES)),
-        ("region", slice(OBJECT_CATEGORIES, None)),
-    ):
-        pred = pred_present[channels]
-        target = target_present[channels]
-        intersection = int(np.logical_and(pred, target).sum())
-        pred_count = int(pred.sum())
-        target_count = int(target.sum())
-        metrics.update({
-            f"{name}_category_true_positive_count": float(intersection),
-            f"{name}_category_predicted_count": float(pred_count),
-            f"{name}_category_target_count": float(target_count),
-            f"{name}_category_precision": _safe_div(intersection, pred_count),
-            f"{name}_category_recall": _safe_div(intersection, target_count),
-            f"{name}_category_f1": _safe_div(
-                2 * intersection,
-                pred_count + target_count,
-            ),
-        })
+    region_categories = pred_grid.shape[0] - OBJECT_CATEGORIES
+    partitions = (
+        (
+            "object",
+            slice(None, OBJECT_CATEGORIES),
+            _category_mask(mentioned_object_categories, OBJECT_CATEGORIES, "object"),
+        ),
+        (
+            "region",
+            slice(OBJECT_CATEGORIES, None),
+            _category_mask(mentioned_region_categories, region_categories, "region"),
+        ),
+    )
+    for name, channels, mentioned_mask in partitions:
+        category_pred = pred_present[channels]
+        category_target = target_present[channels]
+        for prefix, mask in (
+            ("", np.ones_like(mentioned_mask)),
+            ("mentioned_", mentioned_mask),
+            ("unmentioned_", np.logical_not(mentioned_mask)),
+        ):
+            pred = category_pred[mask]
+            target = category_target[mask]
+            intersection = int(np.logical_and(pred, target).sum())
+            pred_count = int(pred.sum())
+            target_count = int(target.sum())
+            stem = f"{prefix}{name}_category"
+            metrics.update({
+                f"{stem}_true_positive_count": float(intersection),
+                f"{stem}_predicted_count": float(pred_count),
+                f"{stem}_target_count": float(target_count),
+                f"{stem}_precision": _safe_div(intersection, pred_count),
+                f"{stem}_recall": _safe_div(intersection, target_count),
+                f"{stem}_f1": _safe_div(
+                    2 * intersection,
+                    pred_count + target_count,
+                ),
+            })
     return metrics
+
+
+def _category_mask(
+    categories: AbstractSet[int],
+    size: int,
+    name: str,
+) -> NDArray[np.bool_]:
+    invalid = sorted(category for category in categories if not 0 <= category < size)
+    if invalid:
+        raise ValueError(f"invalid mentioned {name} category IDs: {invalid}")
+    mask = np.zeros(size, dtype=np.bool_)
+    mask[list(categories)] = True
+    return mask
+
+
+@lru_cache(maxsize=None)
+def _extract_instruction_mentions(
+    instruction: str,
+) -> Tuple[FrozenSet[int], FrozenSet[int]]:
+    from prior.grid_map._cognitive import extract_categories
+
+    objects, regions = extract_categories(instruction)
+    return frozenset(objects), frozenset(regions)
 
 
 def _grid_metrics(
     pred_grid: NDArray[np.float32],
     target_grid: NDArray[np.float32],
+    mentioned_object_categories: AbstractSet[int],
+    mentioned_region_categories: AbstractSet[int],
 ) -> Dict[str, float]:
     pred = _binary_grid(pred_grid)
     target = _binary_grid(target_grid)
@@ -133,7 +179,12 @@ def _grid_metrics(
         "category_aware_raster_support": float(target_count),
         "predicted_cell_count": float(pred_count),
         "target_cell_count": float(target_count),
-        **_category_presence_metrics(pred_grid, target_grid),
+        **_category_presence_metrics(
+            pred_grid,
+            target_grid,
+            mentioned_object_categories,
+            mentioned_region_categories,
+        ),
     }
 
 
@@ -190,6 +241,8 @@ def evaluate_grid_prediction(
     generated_text: str,
     target_grid: NDArray[np.float32],
     target_direction_vectors: NDArray[np.float32],
+    mentioned_object_categories: AbstractSet[int],
+    mentioned_region_categories: AbstractSet[int],
 ) -> Dict[str, float]:
     try:
         shape = cast(Tuple[int, int, int], target_grid.shape)
@@ -209,10 +262,20 @@ def evaluate_grid_prediction(
             "category_aware_raster_support": float(np.count_nonzero(target_grid > 0)),
             "predicted_cell_count": 0.0,
             "target_cell_count": float(np.count_nonzero(target_grid > 0)),
-            **_category_presence_metrics(np.zeros_like(target_grid), target_grid),
+            **_category_presence_metrics(
+                np.zeros_like(target_grid),
+                target_grid,
+                mentioned_object_categories,
+                mentioned_region_categories,
+            ),
             **_zero_direction_vector_metrics(),
         }
-    metrics = _grid_metrics(parsed.grid, target_grid)
+    metrics = _grid_metrics(
+        parsed.grid,
+        target_grid,
+        mentioned_object_categories,
+        mentioned_region_categories,
+    )
     metrics.update(
         _direction_vector_metrics(
             parsed.direction_vectors,
@@ -278,7 +341,14 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 def _summarize_rows(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     metrics = _aggregate_metrics(rows)
     metrics.pop("missing_prediction", None)
-    for name in ("object", "region"):
+    for name in (
+        "object",
+        "region",
+        "mentioned_object",
+        "unmentioned_object",
+        "mentioned_region",
+        "unmentioned_region",
+    ):
         true_positive_count = sum(
             row[f"{name}_category_true_positive_count"] for row in rows
         )
@@ -346,10 +416,15 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         )
         missing = not prediction_path.is_file()
         generated_text = "" if missing else prediction_path.read_text(encoding="utf-8")
+        mentioned_objects, mentioned_regions = _extract_instruction_mentions(
+            item["instruction"]
+        )
         row = evaluate_grid_prediction(
             generated_text,
             item["target_grid"],
             item["target_direction_vectors"],
+            mentioned_objects,
+            mentioned_regions,
         )
         row["missing_prediction"] = float(missing)
         rows.append(row)

@@ -761,7 +761,7 @@ Drop Rate By `max_new_tokens`:
         - [x] 加快训练速度？多卡调小 rank 调大并行度？
     - [x] 去除 dataset 标记
     - [x] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
-    - [x] LLM-Grid predictor 定量评估：IoU、cell/category precision/recall/F1、方向向量与格式合法率（mentioned/unmentioned 分解仍作为后续 target 实验）
+    - [x] LLM-Grid predictor 定量评估：IoU、cell/category precision/recall/F1、mentioned/unmentioned category、方向向量与格式合法率
     - [x] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
     - [x] 验证工具网站数据的全面性
 
@@ -787,7 +787,7 @@ Drop Rate By `max_new_tokens`:
 - 早期 epoch 5/10 抽样用于发现 train/unseen 差距；正式 checkpoint 结论已由 07/22 的完整固定分母 sweep 取代，逐样本清单仍保留作历史证据。
 - 当前结论：精确 full-grid target 包含输入无法唯一恢复的 unseen-scene 几何，同时 epoch 10 存在明显训练集记忆，不能只归因于“任务不可解”或“模型太差”。
 - GT namespace 名称差异不是混淆因素：训练会对 non-blurred cache 做 scale-2 max pooling，与 blurred cache 的有效 50×50 target 相同；真正需要排查的是 system prompt 的 row/column 与 direction vector 语义和项目实现不一致。
-- 下一步：固定 episode IDs，记录 namespace、scale 和 target shape，修正 prompt 后短训，按 checkpoint 评价，分解 mentioned/unmentioned/direction 指标，并做 no-map、zero-map、shuffled-map、epoch 5/10、PriorGT 的下游导航对照。
+- 下一步：mentioned/unmentioned category 分解已完成；修正 prompt 后对 full/mentioned-only target 短训，按 checkpoint 评价，并做 no-map、zero-map、shuffled-map、epoch 2/8/10、PriorGT 的下游导航对照。
 - `llm-grid-try5-pt` 暂时保留到下一个可用 checkpoint，作为 integration datapoint；不要默认跑满 500k steps。
 
 ## 07/22（续 07/21：checkpoint 泛化曲线）
@@ -799,6 +799,14 @@ Drop Rate By `max_new_tokens`:
 - 按预先固定的 `val_unseen` raster IoU 主指标，epoch 2 为候选（0.135701）；epoch 8 的 cell F1 最高且 IoU 仅低 0.000496，epoch 4 的 direction cosine 最高，三者差异需 scene-bootstrap CI 才能判断显著性。
 - unseen IoU 在 epoch 2 后进入平台，seen IoU 却继续升至 epoch 9 的 0.299，seen–unseen gap 同期扩大到 0.167，清楚支持继续训练增强 scene memorization 而非 unseen 空间泛化。epoch 5 是 schema validity 明显下降的独立格式异常点。
 - episode 级分析进一步显示 instruction 长度与 unseen IoU 几乎无关（`r=-0.028`），target 空间密度有中等负相关（`r=-0.280`），而类别 F1 与 unseen IoU 的相关性很弱；scene novelty 与输入不可辨识性仍是主要解释。
+
+## 07/23（mentioned/unmentioned category）
+
+- [详细记录：LLM-Grid mentioned/unmentioned 类别分析](daily/2026-07-23.md)
+- 使用 instruction-derived category partition 重跑相同的 epoch 1–10 R2R sweep；不采用模型自报的 `mentioned` flag，因此衡量的是类别可恢复性。
+- 在 instruction-derived partition 的 pooled presence 指标下，unmentioned category 在 10/10 个 epoch、seen/unseen 和 object/region 中均更低。epoch 2 的 `val_unseen` mentioned/unmentioned F1 为 object 0.873/0.636、region 0.948/0.529；precision 和 recall 都同步下降。
+- `val_unseen` mentioned−unmentioned F1 gap 跨 epoch 为 object 0.237–0.264、region 0.359–0.432。unmentioned target support 反而更多，差距不是小样本造成。
+- 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致；category composition/base rate 仍是混淆因素。它只评价 category presence，不证明 mentioned layout 已准确，也不能直接证明 mentioned-only target 会改善下游导航。
 
 # 实验
 

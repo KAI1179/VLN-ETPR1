@@ -632,11 +632,15 @@ def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
         ),
         target,
         target_direction_vectors,
+        {1},
+        {0},
     )
     invalid = llm_grid_eval.evaluate_grid_prediction(
         "not json",
         target,
         target_direction_vectors,
+        {1},
+        {0},
     )
 
     assert valid["json_valid"] == 1.0
@@ -678,9 +682,19 @@ def test_grid_category_metrics_score_object_and_region_presence_separately():
     pred[[1, 5, OBJECT_CATEGORIES + 1, OBJECT_CATEGORIES + 5], 0, 0] = 1.0
     target[[1, 3, OBJECT_CATEGORIES + 1], 1, 1] = 1.0
 
-    metrics = llm_grid_eval._category_presence_metrics(pred, target)
+    metrics = llm_grid_eval._category_presence_metrics(
+        pred,
+        target,
+        {1, 3, 5},
+        {1},
+    )
 
-    assert metrics == {
+    overall_metrics = {
+        key: value
+        for key, value in metrics.items()
+        if not key.startswith(("mentioned_", "unmentioned_"))
+    }
+    assert overall_metrics == {
         "object_category_true_positive_count": 1.0,
         "object_category_predicted_count": 2.0,
         "object_category_target_count": 2.0,
@@ -694,14 +708,37 @@ def test_grid_category_metrics_score_object_and_region_presence_separately():
         "region_category_recall": pytest.approx(1.0),
         "region_category_f1": pytest.approx(2 / 3),
     }
+    assert metrics["mentioned_object_category_precision"] == 0.5
+    assert metrics["mentioned_object_category_recall"] == 0.5
+    assert metrics["unmentioned_object_category_target_count"] == 0.0
+    assert metrics["mentioned_region_category_f1"] == 1.0
+    assert metrics["unmentioned_region_category_predicted_count"] == 1.0
+    for kind in ("object", "region"):
+        for count in ("true_positive_count", "predicted_count", "target_count"):
+            assert metrics[f"{kind}_category_{count}"] == sum(
+                metrics[f"{status}_{kind}_category_{count}"]
+                for status in ("mentioned", "unmentioned")
+            )
 
 
 def test_grid_category_metrics_define_empty_categories_as_zero():
     empty = np.zeros((37, 2, 2), dtype=np.float32)
 
-    metrics = llm_grid_eval._category_presence_metrics(empty, empty)
+    metrics = llm_grid_eval._category_presence_metrics(empty, empty, set(), set())
 
     assert all(value == 0.0 for value in metrics.values())
+
+
+def test_grid_category_metrics_reject_invalid_mention_ids():
+    empty = np.zeros((37, 2, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="invalid mentioned object category IDs"):
+        llm_grid_eval._category_presence_metrics(
+            empty,
+            empty,
+            {OBJECT_CATEGORIES},
+            set(),
+        )
 
 
 def test_grid_category_metrics_are_pooled_across_episodes():
@@ -710,6 +747,8 @@ def test_grid_category_metrics_are_pooled_across_episodes():
             **llm_grid_eval._category_presence_metrics(
                 np.ones((37, 1, 1), dtype=np.float32),
                 np.ones((37, 1, 1), dtype=np.float32),
+                {1},
+                {1},
             ),
             "missing_prediction": 0.0,
         },
@@ -717,6 +756,8 @@ def test_grid_category_metrics_are_pooled_across_episodes():
             **llm_grid_eval._category_presence_metrics(
                 np.zeros((37, 1, 1), dtype=np.float32),
                 np.ones((37, 1, 1), dtype=np.float32),
+                {1},
+                {1},
             ),
             "missing_prediction": 0.0,
         },
@@ -730,6 +771,9 @@ def test_grid_category_metrics_are_pooled_across_episodes():
     assert metrics["object_category_true_positive_count"] == float(
         OBJECT_CATEGORIES
     )
+    assert metrics["mentioned_object_category_recall"] == 0.5
+    assert metrics["mentioned_object_category_f1"] == pytest.approx(2 / 3)
+    assert metrics["unmentioned_region_category_recall"] == 0.5
 
 
 def test_evaluate_grid_prediction_distinguishes_invalid_schema():
@@ -745,6 +789,8 @@ def test_evaluate_grid_prediction_distinguishes_invalid_schema():
         ),
         target,
         ZERO_DIRECTION_VECTORS,
+        set(),
+        set(),
     )
 
     assert result["json_valid"] == 1.0
@@ -768,6 +814,8 @@ def test_evaluate_grid_prediction_scores_matching_direction_vectors():
         ),
         target,
         target_direction_vectors,
+        set(),
+        set(),
     )
 
     assert result["direction_vector_valid_rate"] == 1.0

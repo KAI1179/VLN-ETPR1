@@ -99,6 +99,8 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
     monkeypatch,
 ) -> None:
     target_grid = np.zeros((37, 50, 50), dtype=np.float32)
+    target_grid[1, 0, 0] = 1.0
+    target_grid[OBJECT_CATEGORIES + 2, 0, 0] = 1.0
     target_directions = np.zeros((5, 2), dtype=np.float32)
     items = [
         {
@@ -112,6 +114,16 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
         for index, split in enumerate(("val_seen", "val_unseen"))
     ]
     monkeypatch.setattr(llm_grid_eval, "_validate_manifests", lambda args: None)
+
+    def extract_mentions(instruction: str):
+        assert instruction == "Walk forward."
+        return frozenset({1}), frozenset({2})
+
+    monkeypatch.setattr(
+        llm_grid_eval,
+        "_extract_instruction_mentions",
+        extract_mentions,
+    )
 
     def load_grid(*args, **kwargs):
         assert kwargs["datasets"] == ("R2R",)
@@ -148,12 +160,19 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
     assert metrics["val_seen/examples"] == 1.0
     assert metrics["val_unseen/predictions"] == 0.0
     assert metrics["val_unseen/missing_prediction_rate"] == 1.0
+    assert metrics["mentioned_object_category_target_count"] == 2.0
+    assert metrics["mentioned_region_category_target_count"] == 2.0
+    assert metrics["unmentioned_object_category_target_count"] == 0.0
+    assert metrics["val_seen/mentioned_object_category_recall"] == 0.0
     assert (args.output_dir / "metrics.json").is_file()
     with (args.output_dir / "episodes.csv").open(encoding="utf-8", newline="") as file:
         episodes = list(csv.DictReader(file))
     assert len(episodes) == 2
     assert episodes[0]["instruction_word_count"] == "2"
-    assert episodes[0]["target_category_cell_density"] == "0.0"
-    assert episodes[0]["target_spatial_density"] == "0.0"
+    assert np.isclose(
+        float(episodes[0]["target_category_cell_density"]),
+        2 / target_grid.size,
+    )
+    assert np.isclose(float(episodes[0]["target_spatial_density"]), 1 / 2500)
     assert episodes[1]["missing_prediction"] == "1.0"
     assert (args.output_dir / "diagnostics.json").is_file()
