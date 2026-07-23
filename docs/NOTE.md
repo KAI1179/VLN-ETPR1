@@ -814,7 +814,7 @@ Drop Rate By `max_new_tokens`:
 - 旧 prompt epoch 2 的 [input-dependence controls](daily/2026-07-23.md#input-dependence-controls) 已完成：`val_unseen` binary raster IoU 为 matched 0.136、within-scene permutation 0.061、global permutation 0.036；同路径 paraphrase prediction IoU 为 0.284。输出含 episode-specific signal，但不足以稳定恢复唯一 full-grid layout；这里是 cache reassignment，不是真正的 shuffled-input model run。
 - paired scene-cluster bootstrap 已完成：epoch 4/8 相对 epoch 2 的 `val_unseen` Raster IoU delta 均不能区分于零；contract-v2 相对旧 epoch 2 也不能区分于零。详细 matched 指标见[今日记录](daily/2026-07-23.md#matched-result)。
 - 增加输入的首选最小改动是只改 cache generation：把起点 `t=0` panorama 投影成带 observed/unknown mask 的稀疏观测证据，逐级比较 free-space、semantic inventory 与 spatial semantic cells，保持 `.npz`、Try5 和 navigation 接口不变。详见[方案与防泄漏约束](daily/2026-07-23.md#增加输入但保持导航接口不变)。
-- 下一步：依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor；若仍不足，再在不改 navigation 接口的前提下逐级加入 `t=0` 观测。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的方案才进入下游导航实验。
+- 下一步：先统一固定训练全部 RNG，再用 paired run seeds 依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor；若仍不足，再在不改 navigation 接口的前提下逐级加入 `t=0` 观测。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的方案才进入下游导航实验。
 
 # 实验
 
