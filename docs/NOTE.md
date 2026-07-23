@@ -761,7 +761,7 @@ Drop Rate By `max_new_tokens`:
         - [x] 加快训练速度？多卡调小 rank 调大并行度？
     - [x] 去除 dataset 标记
     - [x] 采样前几个 epoch 生成的数据（epoch 过多 -> 过拟合）
-    - [x] LLM-Grid predictor 定量评估：IoU、cell/category precision/recall/F1、mentioned/unmentioned category、方向向量与格式合法率
+    - [x] LLM-Grid predictor 定量评估：IoU、cell/category precision/recall/F1、mentioned/unmentioned category/spatial quality、方向向量与格式合法率
     - [x] 重要：除了跑实验外，还需要分析成功/失败结果；周报加上思考过程
     - [x] 验证工具网站数据的全面性
 
@@ -800,13 +800,16 @@ Drop Rate By `max_new_tokens`:
 - unseen IoU 在 epoch 2 后进入平台，seen IoU 却继续升至 epoch 9 的 0.299，seen–unseen gap 同期扩大到 0.167，清楚支持继续训练增强 scene memorization 而非 unseen 空间泛化。epoch 5 是 schema validity 明显下降的独立格式异常点。
 - episode 级分析进一步显示 instruction 长度与 unseen IoU 几乎无关（`r=-0.028`），target 空间密度有中等负相关（`r=-0.280`），而类别 F1 与 unseen IoU 的相关性很弱；scene novelty 与输入不可辨识性仍是主要解释。
 
-## 07/23（mentioned/unmentioned category）
+## 07/23（mentioned/unmentioned 空间与类别）
 
-- [详细记录：LLM-Grid mentioned/unmentioned 类别分析](daily/2026-07-23.md)
-- 使用 instruction-derived category partition 重跑相同的 epoch 1–10 R2R sweep；不采用模型自报的 `mentioned` flag，因此衡量的是类别可恢复性。
+- [详细记录：LLM-Grid mentioned/unmentioned 空间与类别分析](daily/2026-07-23.md)
+- 使用 instruction-derived category partition 重跑相同的 epoch 1–10 R2R sweep；不采用模型自报的 `mentioned` flag，category presence 与 spatial quality 都由同一组完整词表 channel mask 划分。
 - 在 instruction-derived partition 的 pooled presence 指标下，unmentioned category 在 10/10 个 epoch、seen/unseen 和 object/region 中均更低。epoch 2 的 `val_unseen` mentioned/unmentioned F1 为 object 0.873/0.636、region 0.948/0.529；precision 和 recall 都同步下降。
 - `val_unseen` mentioned−unmentioned F1 gap 跨 epoch 为 object 0.237–0.264、region 0.359–0.432。unmentioned target support 反而更多，差距不是小样本造成。
-- 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致；category composition/base rate 仍是混淆因素。它只评价 category presence，不证明 mentioned layout 已准确，也不能直接证明 mentioned-only target 会改善下游导航。
+- 新增 spatial 指标使用同一互补 channel mask，但按 split 汇总 intersection/union/cell count 后计算 pooled IoU/P/R/F1；原 overall spatial 指标仍是 episode-macro，两者 aggregation 不同，不能直接相减或加权还原。empty/empty 不产生伪零分，prediction-only 计 false positive，invalid-with-target 计 false negative，并另报 target-bearing episode support。
+- 空间结果没有复现 category presence 的大幅 mentioned 优势：`val_unseen` unmentioned IoU/F1 在 10/10 epoch 略高，但差值仅为 `+0.0002`–`+0.0104`/`+0.0003`–`+0.0167`；epoch 2 两组几乎相同（IoU 0.1181/0.1182，F1 0.2112/0.2115）。seen 的差值方向随 epoch 改变。
+- [2×2 空间与类别曲线](images/llm_grid_mentioned_spatial_category_sweep_r1p5.png) 显示两组共同保留 seen 持续改善、unseen 早期平台化的 spatial gap。近似持平或轻微反向的 M/U spatial gap 受 category composition、cell density 与 prevalence 混淆，不能解释为 unmentioned layout 更好。
+- category 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致，但 category composition/base rate 仍是混淆因素；本轮也不能直接证明 mentioned-only target 会改善 predictor 或下游导航。
 
 # 实验
 

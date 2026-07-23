@@ -155,6 +155,47 @@ def _extract_instruction_mentions(
     return frozenset(objects), frozenset(regions)
 
 
+def _spatial_partition_metrics(
+    pred_grid: NDArray[np.float32],
+    target_grid: NDArray[np.float32],
+    mentioned_object_categories: AbstractSet[int],
+    mentioned_region_categories: AbstractSet[int],
+) -> Dict[str, float]:
+    region_categories = pred_grid.shape[0] - OBJECT_CATEGORIES
+    mentioned_mask = np.concatenate((
+        _category_mask(mentioned_object_categories, OBJECT_CATEGORIES, "object"),
+        _category_mask(mentioned_region_categories, region_categories, "region"),
+    ))
+    pred = _binary_grid(pred_grid)
+    target = _binary_grid(target_grid)
+    metrics: Dict[str, float] = {}
+    for name, mask in (
+        ("mentioned", mentioned_mask),
+        ("unmentioned", np.logical_not(mentioned_mask)),
+    ):
+        partition_pred = pred[mask]
+        partition_target = target[mask]
+        intersection = int(np.logical_and(partition_pred, partition_target).sum())
+        predicted_count = int(partition_pred.sum())
+        target_count = int(partition_target.sum())
+        union = int(np.logical_or(partition_pred, partition_target).sum())
+        metrics.update({
+            f"{name}_cell_true_positive_count": float(intersection),
+            f"{name}_predicted_cell_count": float(predicted_count),
+            f"{name}_target_cell_count": float(target_count),
+            f"{name}_category_aware_raster_union_count": float(union),
+            f"{name}_spatial_target_episode_count": float(target_count > 0),
+            f"{name}_cell_precision": _safe_div(intersection, predicted_count),
+            f"{name}_cell_recall": _safe_div(intersection, target_count),
+            f"{name}_cell_f1": _safe_div(
+                2 * intersection,
+                predicted_count + target_count,
+            ),
+            f"{name}_category_aware_raster_iou": _safe_div(intersection, union),
+        })
+    return metrics
+
+
 def _grid_metrics(
     pred_grid: NDArray[np.float32],
     target_grid: NDArray[np.float32],
@@ -179,6 +220,12 @@ def _grid_metrics(
         "category_aware_raster_support": float(target_count),
         "predicted_cell_count": float(pred_count),
         "target_cell_count": float(target_count),
+        **_spatial_partition_metrics(
+            pred_grid,
+            target_grid,
+            mentioned_object_categories,
+            mentioned_region_categories,
+        ),
         **_category_presence_metrics(
             pred_grid,
             target_grid,
@@ -262,6 +309,12 @@ def evaluate_grid_prediction(
             "category_aware_raster_support": float(np.count_nonzero(target_grid > 0)),
             "predicted_cell_count": 0.0,
             "target_cell_count": float(np.count_nonzero(target_grid > 0)),
+            **_spatial_partition_metrics(
+                np.zeros_like(target_grid),
+                target_grid,
+                mentioned_object_categories,
+                mentioned_region_categories,
+            ),
             **_category_presence_metrics(
                 np.zeros_like(target_grid),
                 target_grid,
@@ -341,6 +394,41 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 def _summarize_rows(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     metrics = _aggregate_metrics(rows)
     metrics.pop("missing_prediction", None)
+    for name in ("mentioned", "unmentioned"):
+        true_positive_count = sum(
+            row[f"{name}_cell_true_positive_count"] for row in rows
+        )
+        predicted_count = sum(row[f"{name}_predicted_cell_count"] for row in rows)
+        target_count = sum(row[f"{name}_target_cell_count"] for row in rows)
+        union_count = sum(
+            row[f"{name}_category_aware_raster_union_count"] for row in rows
+        )
+        target_episode_count = sum(
+            row[f"{name}_spatial_target_episode_count"] for row in rows
+        )
+        metrics.update({
+            f"{name}_cell_true_positive_count": true_positive_count,
+            f"{name}_predicted_cell_count": predicted_count,
+            f"{name}_target_cell_count": target_count,
+            f"{name}_category_aware_raster_union_count": union_count,
+            f"{name}_spatial_target_episode_count": target_episode_count,
+            f"{name}_cell_precision": _safe_div(
+                int(true_positive_count),
+                int(predicted_count),
+            ),
+            f"{name}_cell_recall": _safe_div(
+                int(true_positive_count),
+                int(target_count),
+            ),
+            f"{name}_cell_f1": _safe_div(
+                int(2 * true_positive_count),
+                int(predicted_count + target_count),
+            ),
+            f"{name}_category_aware_raster_iou": _safe_div(
+                int(true_positive_count),
+                int(union_count),
+            ),
+        })
     for name in (
         "object",
         "region",

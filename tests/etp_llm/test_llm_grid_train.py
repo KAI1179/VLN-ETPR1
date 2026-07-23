@@ -662,6 +662,13 @@ def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
     assert invalid["schema_valid"] == 0.0
     assert invalid["cell_precision"] == 0.0
     assert invalid["cell_recall"] == 0.0
+    assert invalid["mentioned_predicted_cell_count"] == 0.0
+    assert invalid["mentioned_target_cell_count"] == 1.0
+    assert invalid["mentioned_spatial_target_episode_count"] == 1.0
+    assert invalid["mentioned_cell_f1"] == 0.0
+    assert invalid["mentioned_category_aware_raster_iou"] == 0.0
+    assert invalid["unmentioned_target_cell_count"] == 1.0
+    assert invalid["unmentioned_spatial_target_episode_count"] == 1.0
     assert invalid["object_category_precision"] == 0.0
     assert invalid["object_category_recall"] == 0.0
     assert invalid["object_category_f1"] == 0.0
@@ -721,6 +728,48 @@ def test_grid_category_metrics_score_object_and_region_presence_separately():
             )
 
 
+def test_grid_spatial_metrics_partition_channels_and_conserve_counts():
+    pred = np.zeros((37, 2, 2), dtype=np.float32)
+    target = np.zeros_like(pred)
+    pred[1, 0, 0] = 1.0
+    pred[1, 1, 0] = 1.0
+    target[1, 0, 0] = 1.0
+    target[1, 0, 1] = 1.0
+    pred[3, 1, 1] = 1.0
+    target[3, 1, 1] = 1.0
+
+    metrics = llm_grid_eval._grid_metrics(pred, target, {1}, {1})
+
+    assert metrics["mentioned_cell_precision"] == pytest.approx(0.5)
+    assert metrics["mentioned_cell_recall"] == pytest.approx(0.5)
+    assert metrics["mentioned_cell_f1"] == pytest.approx(0.5)
+    assert metrics["mentioned_category_aware_raster_iou"] == pytest.approx(1 / 3)
+    assert metrics["mentioned_spatial_target_episode_count"] == 1.0
+    assert metrics["unmentioned_cell_f1"] == 1.0
+    assert metrics["unmentioned_category_aware_raster_iou"] == 1.0
+    assert metrics["unmentioned_spatial_target_episode_count"] == 1.0
+    for count in ("predicted_cell_count", "target_cell_count"):
+        assert metrics[count] == sum(
+            metrics[f"{status}_{count}"]
+            for status in ("mentioned", "unmentioned")
+        )
+
+
+def test_grid_spatial_metrics_penalize_prediction_only_stratum():
+    pred = np.zeros((37, 1, 1), dtype=np.float32)
+    target = np.zeros_like(pred)
+    pred[3, 0, 0] = 1.0
+
+    metrics = llm_grid_eval._grid_metrics(pred, target, {1}, set())
+
+    assert metrics["unmentioned_spatial_target_episode_count"] == 0.0
+    assert metrics["unmentioned_predicted_cell_count"] == 1.0
+    assert metrics["unmentioned_target_cell_count"] == 0.0
+    assert metrics["unmentioned_category_aware_raster_union_count"] == 1.0
+    assert metrics["unmentioned_cell_precision"] == 0.0
+    assert metrics["unmentioned_category_aware_raster_iou"] == 0.0
+
+
 def test_grid_category_metrics_define_empty_categories_as_zero():
     empty = np.zeros((37, 2, 2), dtype=np.float32)
 
@@ -744,7 +793,7 @@ def test_grid_category_metrics_reject_invalid_mention_ids():
 def test_grid_category_metrics_are_pooled_across_episodes():
     rows = [
         {
-            **llm_grid_eval._category_presence_metrics(
+            **llm_grid_eval._grid_metrics(
                 np.ones((37, 1, 1), dtype=np.float32),
                 np.ones((37, 1, 1), dtype=np.float32),
                 {1},
@@ -753,7 +802,7 @@ def test_grid_category_metrics_are_pooled_across_episodes():
             "missing_prediction": 0.0,
         },
         {
-            **llm_grid_eval._category_presence_metrics(
+            **llm_grid_eval._grid_metrics(
                 np.zeros((37, 1, 1), dtype=np.float32),
                 np.ones((37, 1, 1), dtype=np.float32),
                 {1},
@@ -774,6 +823,48 @@ def test_grid_category_metrics_are_pooled_across_episodes():
     assert metrics["mentioned_object_category_recall"] == 0.5
     assert metrics["mentioned_object_category_f1"] == pytest.approx(2 / 3)
     assert metrics["unmentioned_region_category_recall"] == 0.5
+
+
+def test_grid_spatial_metrics_are_pooled_across_episodes():
+    small_target = np.zeros((37, 3, 3), dtype=np.float32)
+    small_target[1, 0, 0] = 1.0
+    large_target = np.zeros_like(small_target)
+    large_target[1] = 1.0
+    large_prediction = np.zeros_like(small_target)
+    large_prediction[1, 0, 0] = 1.0
+    rows = [
+        {
+            **llm_grid_eval._grid_metrics(
+                small_target,
+                small_target,
+                {1},
+                set(),
+            ),
+            "missing_prediction": 0.0,
+        },
+        {
+            **llm_grid_eval._grid_metrics(
+                large_prediction,
+                large_target,
+                {1},
+                set(),
+            ),
+            "missing_prediction": 0.0,
+        },
+    ]
+
+    metrics = llm_grid_eval._summarize_rows(rows)
+
+    assert metrics["mentioned_cell_true_positive_count"] == 2.0
+    assert metrics["mentioned_predicted_cell_count"] == 2.0
+    assert metrics["mentioned_target_cell_count"] == 10.0
+    assert metrics["mentioned_category_aware_raster_union_count"] == 10.0
+    assert metrics["mentioned_spatial_target_episode_count"] == 2.0
+    assert metrics["mentioned_cell_precision"] == 1.0
+    assert metrics["mentioned_cell_recall"] == pytest.approx(0.2)
+    assert metrics["mentioned_cell_f1"] == pytest.approx(1 / 3)
+    assert metrics["mentioned_category_aware_raster_iou"] == pytest.approx(0.2)
+    assert metrics["mentioned_category_aware_raster_iou"] != pytest.approx(5 / 9)
 
 
 def test_evaluate_grid_prediction_distinguishes_invalid_schema():

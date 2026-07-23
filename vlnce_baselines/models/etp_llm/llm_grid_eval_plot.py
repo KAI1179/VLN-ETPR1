@@ -64,6 +64,7 @@ class EpochMetrics:
 class LLMGridEvalPlotArgs(Tap):
     input_path: Path = Path("outputs/llm_grid_eval/checkpoint-sweep-r1p5/metrics.json")
     output_path: Path = Path("outputs/llm_grid_eval/checkpoint-sweep-r1p5/metrics.png")
+    mention_partition_output_path: Optional[Path] = None
 
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("underscores_to_dashes", True)
@@ -93,6 +94,21 @@ PANELS = (
         ),
     ),
     ("Output reliability", (("Schema valid", "schema_valid"),)),
+)
+
+MENTION_PARTITION_REQUIRED_METRICS = frozenset(
+    {
+        f"{split}/{status}_{metric}"
+        for split in ("val_seen", "val_unseen")
+        for status in ("mentioned", "unmentioned")
+        for metric in ("category_aware_raster_iou", "cell_f1")
+    }
+    | {
+        f"{split}/{status}_{kind}_category_f1"
+        for split in ("val_seen", "val_unseen")
+        for status in ("mentioned", "unmentioned")
+        for kind in ("object", "region")
+    }
 )
 
 
@@ -144,9 +160,88 @@ def plot_checkpoint_metrics(
     plt.close(figure)
 
 
+def plot_mention_partition_metrics(
+    results: Sequence[EpochMetrics],
+    output_path: Path,
+) -> None:
+    if not results:
+        raise ValueError("cannot plot an empty checkpoint sweep")
+    for result in results:
+        missing = sorted(MENTION_PARTITION_REQUIRED_METRICS - result.metrics.keys())
+        if missing:
+            raise ValueError(
+                f"epoch-{result.epoch} is missing mention-partition plot metrics: "
+                f"{', '.join(missing)}"
+            )
+
+    epochs = [result.epoch for result in results]
+    figure, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    statuses = (
+        ("Mentioned", "mentioned", "tab:blue"),
+        ("Unmentioned", "unmentioned", "tab:orange"),
+    )
+    spatial_metrics = (
+        ("Raster IoU", "category_aware_raster_iou", "-"),
+        ("Cell F1", "cell_f1", "--"),
+    )
+    for axis, split in zip(axes[0], ("val_seen", "val_unseen")):
+        for status_label, status, color in statuses:
+            for metric_label, metric, linestyle in spatial_metrics:
+                axis.plot(
+                    epochs,
+                    [
+                        result.metrics[f"{split}/{status}_{metric}"]
+                        for result in results
+                    ],
+                    color=color,
+                    linestyle=linestyle,
+                    marker="o",
+                    label=f"{status_label} {metric_label}",
+                )
+        axis.set_title(f"{split} spatial quality")
+
+    for axis, (kind_label, kind) in zip(
+        axes[1],
+        (("Object", "object"), ("Region", "region")),
+    ):
+        for status_label, status, color in statuses:
+            for split, linestyle in (("val_seen", "-"), ("val_unseen", "--")):
+                axis.plot(
+                    epochs,
+                    [
+                        result.metrics[
+                            f"{split}/{status}_{kind}_category_f1"
+                        ]
+                        for result in results
+                    ],
+                    color=color,
+                    linestyle=linestyle,
+                    marker="o",
+                    label=f"{split} {status_label} F1",
+                )
+        axis.set_title(f"{kind_label} category presence")
+
+    for axis in axes.flat:
+        axis.set_xlabel("Epoch")
+        axis.set_xticks(epochs)
+        axis.set_ylim(-0.05, 1.05)
+        axis.grid(alpha=0.25)
+        axis.legend(fontsize=8)
+    axes[0, 0].set_ylabel("Metric value")
+    axes[1, 0].set_ylabel("Metric value")
+    figure.suptitle("LLM-Grid R2R quality by instruction mention partition")
+    figure.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = LLMGridEvalPlotArgs().parse_args(argv)
-    plot_checkpoint_metrics(EpochMetrics.load(args.input_path), args.output_path)
+    results = EpochMetrics.load(args.input_path)
+    plot_checkpoint_metrics(results, args.output_path)
+    if args.mention_partition_output_path is not None:
+        plot_mention_partition_metrics(results, args.mention_partition_output_path)
 
 
 if __name__ == "__main__":
