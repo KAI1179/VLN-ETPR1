@@ -148,6 +148,10 @@ _Avoid_: map concatenation, pooled map fusion, single fused map
 A model component that predicts a cognitive map or cognitive-map-like representation from instruction metadata.
 _Avoid_: instruction mapper
 
+**Observation-bounded oracle evidence**:
+A predictor-only diagnostic input derived from ground-truth semantic labels at `t=0`, restricted by sensor visibility and occlusion and independent of the instruction, goal, and ground-truth trajectory. It is neither a deployable input nor a cognitive-map source.
+_Avoid_: PriorGT, oracle cognitive map, full-scene semantic map
+
 **PriorGT**:
 An upper-bound candidate that uses ground-truth cognitive maps.
 _Avoid_: GT model, oracle model

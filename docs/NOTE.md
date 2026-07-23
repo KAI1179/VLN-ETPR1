@@ -799,6 +799,14 @@ Drop Rate By `max_new_tokens`:
 - unseen IoU 在 epoch 2 后进入平台，seen IoU 却继续升至 epoch 9 的 0.299，seen–unseen gap 同期扩大到 0.167，清楚支持继续训练增强 scene memorization 而非 unseen 空间泛化。epoch 5 是 schema validity 明显下降的独立格式异常点。
 - episode 级分析进一步显示 instruction 长度与 unseen IoU 几乎无关（`r=-0.028`），target 空间密度有中等负相关（`r=-0.280`），而类别 F1 与 unseen IoU 的相关性很弱；scene novelty 与输入不可辨识性仍是主要解释。
 
+## 07/24（起点观测边界 oracle evidence）
+
+- [详细记录：LLM-Grid 起点观测边界 oracle evidence](daily/2026-07-24.md)
+- 已选择 causal-diagnostic first：用受 `t=0` 视野与遮挡限制、且与 instruction/goal/GT trajectory 无关的 semantic+depth oracle evidence 检验 input insufficiency；oracle 标签只作为 predictor 诊断上界，不作为导航候选。
+- 保持 full-grid target、LLM JSON、navigation-ready `.npz`、Try5 与 navigation trainer 不变；第一轮只改变 predictor input/cache generation，并对 matched/null/within-scene shuffle/global shuffle 做显式 manifest。
+- Uncertainty-Aware VLN 论文建模的是 observation-built online Gaussian map 上的局部 perceptual reliability，不区分 free/unknown、没有 multiple full-layout hypotheses，也未用 matched controls 隔离 information gain 与 architecture gain；第一轮只借鉴 explicit observed/unknown 表示，不引入 Gaussian map、uncertainty output 或 online map fusion。
+- 当前 frozen waypoint sidecar 可低成本复用，但实际为 depth-only，保留作 deployable geometry control；Habitat semantic+depth renderer 可作为 oracle 起点，但 37-channel projection、free/unknown mask 与 vocabulary coverage 仍需原型验证。
+
 ## 07/23（mentioned/unmentioned 空间与类别）
 
 - [详细记录：LLM-Grid mentioned/unmentioned 空间与类别分析](daily/2026-07-23.md)
