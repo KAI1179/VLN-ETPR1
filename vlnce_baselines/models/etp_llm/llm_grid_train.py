@@ -74,6 +74,7 @@ from .llm_boxes_train import (
     _validate_trainable_parameters_finite,
     _validate_supervised_labels,
 )
+from .llm_grid_evidence import GridEvidenceIndex
 
 GRID_CHANNELS = 37
 GRID_SCALE = 2
@@ -290,9 +291,12 @@ class LLMGridDataset(Dataset):
         self,
         examples: Sequence[LLMGridExample],
         scale: int = GRID_SCALE,
+        evidence_indexes: Optional[Mapping[Tuple[str, str], GridEvidenceIndex]] = None,
     ) -> None:
         self.examples = list(examples)
         self.scale = scale
+        self.evidence_indexes = evidence_indexes
+        self._evidence_prompt_cache: Dict[Tuple[str, str, str], str] = {}
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -309,12 +313,49 @@ class LLMGridDataset(Dataset):
         )
         mentioned_objects, mentioned_regions = _load_grid_mentions(example.raster_path)
         target_grid = downsample_grid(full_grid, self.scale)
+        input_text = build_llm_map_input(
+            example.instruction,
+            start_position,
+            start_direction,
+        )
+        if self.evidence_indexes is not None:
+            try:
+                evidence_index = self.evidence_indexes[(example.dataset, example.split)]
+            except KeyError as error:
+                raise KeyError(
+                    f"missing evidence index for {example.dataset}/{example.split}"
+                ) from error
+            episode = evidence_index.episode(example.example_id)
+            if episode.scene_id != example.scene_id:
+                raise ValueError(
+                    f"evidence scene mismatch for {example.example_id}: "
+                    f"{episode.scene_id} != {example.scene_id}"
+                )
+            cache_key = (example.dataset, example.split, episode.observation_id)
+            evidence_prompt = self._evidence_prompt_cache.get(cache_key)
+            if evidence_prompt is None:
+                evidence = evidence_index.load_evidence(example.example_id)
+                if not np.allclose(
+                    evidence.start_position,
+                    start_position,
+                    atol=1e-4,
+                ):
+                    raise ValueError(
+                        f"evidence start position mismatch for {example.example_id}"
+                    )
+                if not np.allclose(
+                    evidence.start_direction,
+                    start_direction,
+                    atol=1e-4,
+                ):
+                    raise ValueError(
+                        f"evidence start direction mismatch for {example.example_id}"
+                    )
+                evidence_prompt = evidence.prompt_block()
+                self._evidence_prompt_cache[cache_key] = evidence_prompt
+            input_text = f"{input_text}\n{evidence_prompt}"
         return {
-            "input_text": build_llm_map_input(
-                example.instruction,
-                start_position,
-                start_direction,
-            ),
+            "input_text": input_text,
             "target_text": serialize_grid_target(
                 full_grid,
                 direction_vectors=direction_vectors,
@@ -494,12 +535,22 @@ def collate_llm_grid_prompt_batch(
         _render_chat_prompt(tokenizer, system_prompt, item["input_text"])
         for item in batch
     ]
+    oversized = [
+        item["example_id"]
+        for item, prompt in zip(batch, prompt_texts)
+        if _token_count(tokenizer, prompt) > max_input_length
+    ]
+    if oversized:
+        raise ValueError(
+            f"Prompt for {', '.join(oversized)} exceeds "
+            f"max_input_length={max_input_length}"
+        )
     encoded = tokenizer(
         prompt_texts,
         add_special_tokens=False,
         max_length=max_input_length,
         padding=True,
-        truncation=True,
+        truncation=False,
         return_tensors="pt",
     )
     prompt_width = _encoded_width(encoded["input_ids"])
@@ -686,6 +737,8 @@ class LLMGridArgs(Tap):
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH
     output_dir: str = "outputs/llm_grid"
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
+    evidence_root: str = ""
+    evidence_key: str = ""
     scale: int = GRID_SCALE
     max_input_length: int = 1152
     max_new_tokens: int = 3072
@@ -735,6 +788,8 @@ class LLMGridArgs(Tap):
 
 
 def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
+    if bool(args.evidence_root) != bool(args.evidence_key):
+        raise ValueError("--evidence-root and --evidence-key must be provided together")
     if args.epochs < 1:
         raise ValueError("--epochs must be >= 1")
     if args.gradient_accumulation_steps < 1:
@@ -1071,9 +1126,18 @@ def _build_grid_training_manifest(
         cognitive_map_namespace=args.cognitive_map_namespace,
     )
     validate_fixed_corpus(load_result.by_dataset)
+    evidence_indexes = _load_grid_evidence_indexes(
+        args.evidence_root,
+        args.evidence_key,
+        TRAIN_SPLITS,
+    )
     all_items = list(
         _progress(
-            LLMGridDataset(load_result.examples, scale=args.scale),
+            LLMGridDataset(
+                load_result.examples,
+                scale=args.scale,
+                evidence_indexes=evidence_indexes,
+            ),
             desc="serialize LLM-Grid targets",
             quiet=args.quiet,
             total=len(load_result.examples),
@@ -1131,6 +1195,18 @@ def _build_grid_training_manifest(
             "seed": args.seed,
             "scale": args.scale,
             "cognitive_map_namespace": args.cognitive_map_namespace,
+            "evidence": (
+                None
+                if evidence_indexes is None
+                else {
+                    "root": args.evidence_root,
+                    "key": args.evidence_key,
+                    "manifests": {
+                        f"{dataset}/{split}": index.manifest_sha256
+                        for (dataset, split), index in sorted(evidence_indexes.items())
+                    },
+                }
+            ),
             "skipped_over_budget_count": len(dropped_over_budget),
             "token_budgets": {
                 "max_input_length": args.max_input_length,
@@ -1146,6 +1222,29 @@ def _build_grid_training_manifest(
         },
         items=tuple(manifest_items),
     )
+
+
+def _load_grid_evidence_indexes(
+    evidence_root: str,
+    evidence_key: str,
+    splits: Iterable[str],
+    *,
+    datasets: Iterable[Literal["R2R", "RxR"]] = ("R2R", "RxR"),
+) -> Optional[Dict[Tuple[str, str], GridEvidenceIndex]]:
+    if not evidence_root and not evidence_key:
+        return None
+    if not evidence_root or not evidence_key:
+        raise ValueError("evidence_root and evidence_key must be provided together")
+    return {
+        (dataset, split): GridEvidenceIndex.load(
+            evidence_root,
+            evidence_key,
+            dataset,
+            split,
+        )
+        for dataset in datasets
+        for split in splits
+    }
 
 
 def _grid_training_item_from_manifest(

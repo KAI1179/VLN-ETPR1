@@ -299,7 +299,7 @@ def test_generate_all_grid_navigation_caches_skips_rxr_vlnce(monkeypatch):
     monkeypatch.setattr(
         llm_grid_navigation_cache,
         "llm_grid_navigation_cache",
-        lambda _model, _tokenizer, _items, _args, *, dataset_key, split: (
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split, evidence_condition=None: (
             generated_splits.append((dataset_key, split)) or {}
         ),
     )
@@ -345,7 +345,7 @@ def test_generate_predictor_eval_grid_navigation_caches_loads_only_eval_splits(
     monkeypatch.setattr(
         llm_grid_navigation_cache,
         "llm_grid_navigation_cache",
-        lambda _model, _tokenizer, _items, _args, *, dataset_key, split: (
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split, evidence_condition=None: (
             generated_splits.append((dataset_key, split)) or {}
         ),
     )
@@ -398,6 +398,14 @@ def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
         "2",
         "--scope",
         "predictor-eval",
+        "--evidence-root",
+        str(tmp_path / "evidence"),
+        "--evidence-key",
+        "oracle-t0-v1",
+        "--evidence-assignment",
+        "global",
+        "--evidence-assignment-seed",
+        "7",
     ])
 
     command = llm_grid_navigation_cache._worker_command(
@@ -409,3 +417,5 @@ def test_grid_worker_command_propagates_resume_shard_seed(tmp_path):
 
     assert command[command.index("--worker-shard-seed") + 1] == "resume-seed"
     assert command[command.index("--scope") + 1] == "predictor-eval"
+    assert command[command.index("--evidence-assignment") + 1] == "global"
+    assert command[command.index("--evidence-assignment-seed") + 1] == "7"

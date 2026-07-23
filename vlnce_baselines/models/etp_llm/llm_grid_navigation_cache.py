@@ -6,6 +6,7 @@ import hashlib
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
@@ -58,10 +59,23 @@ from .llm_grid_train import (
     load_system_prompt,
     parse_grid_text,
 )
+from .llm_grid_evidence import (
+    EvidenceAssignmentKind,
+    EvidenceAssignments,
+    GridEvidenceIndex,
+    assigned_prompt_block,
+)
 
 GRID_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
 GridCacheScope = Literal["all", "predictor-eval"]
 PREDICTOR_EVAL_SPLITS = ("val_seen", "val_unseen")
+
+
+@dataclass(frozen=True)
+class EvidenceCondition:
+    index: GridEvidenceIndex
+    assignments: EvidenceAssignments
+    assignment_sha256: str
 
 
 class LLMGridNavigationCacheArgs(Tap):
@@ -82,6 +96,10 @@ class LLMGridNavigationCacheArgs(Tap):
     worker_index: int = 0
     worker_shard_seed: str = ""
     scope: GridCacheScope = "all"
+    evidence_root: str = ""
+    evidence_key: str = ""
+    evidence_assignment: EvidenceAssignmentKind = "matched"
+    evidence_assignment_seed: int = 42
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("underscores_to_dashes", True)
@@ -92,6 +110,16 @@ class LLMGridNavigationCacheArgs(Tap):
             self.device = _default_device()
         if self.scale != GRID_SCALE:
             raise ValueError("LLM-Grid navigation cache generation supports scale=2")
+        if bool(self.evidence_root) != bool(self.evidence_key):
+            raise ValueError(
+                "--evidence-root and --evidence-key must be provided together"
+            )
+        if self.evidence_root and self.scope != "predictor-eval":
+            raise ValueError(
+                "evidence-conditioned cache generation requires --scope predictor-eval"
+            )
+        if self.evidence_assignment_seed < 0:
+            raise ValueError("--evidence-assignment-seed must be non-negative")
 
 
 def llm_grid_navigation_cache(
@@ -102,6 +130,7 @@ def llm_grid_navigation_cache(
     *,
     dataset_key: str,
     split: str,
+    evidence_condition: Optional[EvidenceCondition] = None,
 ) -> Dict[str, float]:
     """Generate LLM-Grid prediction text and direction5 raster caches."""
     import torch
@@ -125,6 +154,7 @@ def llm_grid_navigation_cache(
         system_prompt,
         dataset_key,
         split,
+        evidence_condition,
     )
 
     examples = 0
@@ -132,17 +162,38 @@ def llm_grid_navigation_cache(
 
     def pending_items() -> Iterable[Any]:
         nonlocal cached, examples
-        for item in dataset:
+        prompt_cache: Dict[str, str] = {}
+        for original_item in dataset:
             examples += 1
             if _cache_complete(
-                item["scene_id"],
-                item["example_id"],
+                original_item["scene_id"],
+                original_item["example_id"],
                 dataset_key,
                 split,
                 args,
             ):
                 cached += 1
                 continue
+            item = original_item
+            if evidence_condition is not None:
+                recipient = evidence_condition.index.episode(item["example_id"])
+                if recipient.scene_id != item["scene_id"]:
+                    raise ValueError(
+                        f"evidence scene mismatch for {item['example_id']}: "
+                        f"{recipient.scene_id} != {item['scene_id']}"
+                    )
+                donor = evidence_condition.assignments.donor_for(item["example_id"])
+                cache_key = "null" if donor is None else donor
+                evidence_prompt = prompt_cache.get(cache_key)
+                if evidence_prompt is None:
+                    evidence_prompt = assigned_prompt_block(
+                        evidence_condition.index,
+                        evidence_condition.assignments,
+                        item["example_id"],
+                    )
+                    prompt_cache[cache_key] = evidence_prompt
+                item = dict(item)
+                item["input_text"] = f"{item['input_text']}\n{evidence_prompt}"
             yield item
 
     loader = _iter_collated_batches(
@@ -289,6 +340,7 @@ def generate_all_grid_navigation_caches(
         )
     for dataset_key in GRID_VLNCE_DATASETS:
         for split in _vlnce_splits_for_scope(args.scope):
+            evidence_condition = _build_evidence_condition(args, dataset_key, split)
             items = load_vlnce_cache_items(
                 dataset_key,
                 split,
@@ -304,6 +356,7 @@ def generate_all_grid_navigation_caches(
                 args,
                 dataset_key=dataset_key,
                 split=split,
+                evidence_condition=evidence_condition,
             )
     return metrics
 
@@ -392,20 +445,63 @@ def _write_grid_navigation_cache_manifest(
     system_prompt: str,
     dataset_key: str,
     split: str,
+    evidence_condition: Optional[EvidenceCondition],
 ) -> None:
-    ensure_llm_navigation_manifest(split_dir, {
-        "dataset": dataset_key,
-        "split": split,
-        "generator": "llm-grid",
-        "scale": args.scale,
-        "model_name_or_path": args.model_name_or_path,
-        "cache_model_key": args.cache_model_key,
-        "max_input_length": args.max_input_length,
-        "max_new_tokens": args.max_new_tokens,
-        "system_prompt_sha256": hashlib.sha256(
-            system_prompt.encode("utf-8")
-        ).hexdigest(),
-    })
+    ensure_llm_navigation_manifest(
+        split_dir,
+        {
+            "dataset": dataset_key,
+            "split": split,
+            "generator": "llm-grid",
+            "scale": args.scale,
+            "model_name_or_path": args.model_name_or_path,
+            "cache_model_key": args.cache_model_key,
+            "max_input_length": args.max_input_length,
+            "max_new_tokens": args.max_new_tokens,
+            "system_prompt_sha256": hashlib.sha256(
+                system_prompt.encode("utf-8")
+            ).hexdigest(),
+            "evidence": (
+                None
+                if evidence_condition is None
+                else {
+                    "key": evidence_condition.index.evidence_key,
+                    "manifest_sha256": evidence_condition.index.manifest_sha256,
+                    "assignment": evidence_condition.assignments.kind,
+                    "assignment_seed": evidence_condition.assignments.seed,
+                    "assignment_sha256": evidence_condition.assignment_sha256,
+                }
+            ),
+        },
+    )
+
+
+def _build_evidence_condition(
+    args: LLMGridNavigationCacheArgs,
+    dataset: str,
+    split: str,
+) -> Optional[EvidenceCondition]:
+    if not getattr(args, "evidence_root", ""):
+        return None
+    index = GridEvidenceIndex.load(
+        args.evidence_root,
+        args.evidence_key,
+        dataset,
+        split,
+    )
+    assignments = EvidenceAssignments.build(
+        index,
+        args.evidence_assignment,
+        seed=args.evidence_assignment_seed,
+    )
+    split_dir = llm_navigation_split_dir(
+        dataset,
+        split,
+        cache_dir=args.cache_dir,
+        model_key=args.cache_model_key,
+    )
+    assignment_sha256 = assignments.save(split_dir / "evidence_assignment.jsonl")
+    return EvidenceCondition(index, assignments, assignment_sha256)
 
 
 def _run_parallel_workers(
@@ -516,6 +612,17 @@ def _worker_command(
         "--worker-shard-seed",
         worker_shard_seed,
     ]
+    if args.evidence_root:
+        command.extend([
+            "--evidence-root",
+            args.evidence_root,
+            "--evidence-key",
+            args.evidence_key,
+            "--evidence-assignment",
+            args.evidence_assignment,
+            "--evidence-assignment-seed",
+            str(args.evidence_assignment_seed),
+        ])
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])
     if args.quiet:

@@ -15,6 +15,7 @@ from tap import Tap
 
 from prior.constants import OBJECT_CATEGORIES
 
+from .llm_grid_evidence import GridEvidence, GridEvidenceIndex
 from .llm_grid_train import (
     DEFAULT_GRID_NAMESPACE,
     GRID_SCALE,
@@ -284,18 +285,101 @@ def _direction_vector_metrics(
     }
 
 
+def _prefixed_direction_metrics(
+    prefix: str,
+    pred_vectors: NDArray[np.float32],
+    target_vectors: NDArray[np.float32],
+) -> Dict[str, float]:
+    return {
+        f"{prefix}_{name}": value
+        for name, value in _direction_vector_metrics(
+            pred_vectors,
+            target_vectors,
+        ).items()
+    }
+
+
+def _zero_prefixed_direction_metrics(prefix: str) -> Dict[str, float]:
+    return {
+        f"{prefix}_{name}": value
+        for name, value in _zero_direction_vector_metrics().items()
+    }
+
+
+def _binary_raster_metrics(
+    prefix: str,
+    pred: NDArray[np.bool_],
+    target: NDArray[np.bool_],
+) -> Dict[str, float]:
+    intersection = int(np.logical_and(pred, target).sum())
+    predicted_count = int(pred.sum())
+    target_count = int(target.sum())
+    union = int(np.logical_or(pred, target).sum())
+    return {
+        f"{prefix}_cell_true_positive_count": float(intersection),
+        f"{prefix}_predicted_cell_count": float(predicted_count),
+        f"{prefix}_target_cell_count": float(target_count),
+        f"{prefix}_category_aware_raster_union_count": float(union),
+        f"{prefix}_cell_precision": _safe_div(intersection, predicted_count),
+        f"{prefix}_cell_recall": _safe_div(intersection, target_count),
+        f"{prefix}_cell_f1": _safe_div(
+            2 * intersection,
+            predicted_count + target_count,
+        ),
+        f"{prefix}_category_aware_raster_iou": _safe_div(intersection, union),
+    }
+
+
+def _evidence_partition_metrics(
+    pred_grid: NDArray[np.float32],
+    target_grid: NDArray[np.float32],
+    evidence: GridEvidence,
+) -> Dict[str, float]:
+    pred = _binary_grid(pred_grid)
+    target = _binary_grid(target_grid)
+    observed = evidence.target_observed_mask[np.newaxis, :, :]
+    metrics: Dict[str, float] = {}
+    for name, mask in (
+        ("observed", observed),
+        ("unobserved", np.logical_not(observed)),
+    ):
+        metrics.update(
+            _binary_raster_metrics(
+                name,
+                np.logical_and(pred, mask),
+                np.logical_and(target, mask),
+            )
+        )
+    metrics.update(
+        _binary_raster_metrics(
+            "evidence_only",
+            evidence.target_semantic_grid,
+            target,
+        )
+    )
+    metrics.update(
+        _binary_raster_metrics(
+            "prediction_evidence_union",
+            np.logical_or(pred, evidence.target_semantic_grid),
+            target,
+        )
+    )
+    return metrics
+
+
 def evaluate_grid_prediction(
     generated_text: str,
     target_grid: NDArray[np.float32],
     target_direction_vectors: NDArray[np.float32],
     mentioned_object_categories: AbstractSet[int],
     mentioned_region_categories: AbstractSet[int],
+    evidence: Optional[GridEvidence] = None,
 ) -> Dict[str, float]:
     try:
         shape = cast(Tuple[int, int, int], target_grid.shape)
         parsed = parse_grid_text(generated_text, shape=shape)
     except LLMGridValidationError as error:
-        return {
+        metrics = {
             "json_valid": float(not isinstance(error, _LLMGridJSONError)),
             "schema_valid": 0.0,
             "record_count": 0.0,
@@ -322,7 +406,18 @@ def evaluate_grid_prediction(
                 mentioned_region_categories,
             ),
             **_zero_direction_vector_metrics(),
+            **_zero_prefixed_direction_metrics("first"),
+            **_zero_prefixed_direction_metrics("later"),
         }
+        if evidence is not None:
+            metrics.update(
+                _evidence_partition_metrics(
+                    np.zeros_like(target_grid),
+                    target_grid,
+                    evidence,
+                )
+            )
+        return metrics
     metrics = _grid_metrics(
         parsed.grid,
         target_grid,
@@ -335,6 +430,28 @@ def evaluate_grid_prediction(
             target_direction_vectors,
         )
     )
+    metrics.update(
+        _prefixed_direction_metrics(
+            "first",
+            parsed.direction_vectors[:1],
+            target_direction_vectors[:1],
+        )
+    )
+    metrics.update(
+        _prefixed_direction_metrics(
+            "later",
+            parsed.direction_vectors[1:],
+            target_direction_vectors[1:],
+        )
+    )
+    if evidence is not None:
+        metrics.update(
+            _evidence_partition_metrics(
+                parsed.grid,
+                target_grid,
+                evidence,
+            )
+        )
     metrics.update({
         "json_valid": 1.0,
         "schema_valid": 1.0,
@@ -353,6 +470,8 @@ class LLMGridEvalArgs(Tap):
     cache_model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY
     output_dir: Path = Path("outputs/llm_grid_eval")
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
+    evidence_root: str = ""
+    evidence_key: str = ""
     limit: Optional[int] = None
     quiet: bool = False
 
@@ -363,6 +482,10 @@ class LLMGridEvalArgs(Tap):
     def process_args(self) -> None:
         if self.limit is not None and self.limit < 0:
             raise ValueError("--limit must be >= 0")
+        if bool(self.evidence_root) != bool(self.evidence_key):
+            raise ValueError(
+                "--evidence-root and --evidence-key must be provided together"
+            )
 
 
 def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
@@ -372,6 +495,10 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     weighted_keys = {
         "direction_vector_l2": "direction_vector_l2_support",
         "direction_vector_cosine": "direction_vector_cosine_support",
+        "first_direction_vector_l2": "first_direction_vector_l2_support",
+        "first_direction_vector_cosine": "first_direction_vector_cosine_support",
+        "later_direction_vector_l2": "later_direction_vector_l2_support",
+        "later_direction_vector_cosine": "later_direction_vector_cosine_support",
     }
     metrics: Dict[str, float] = {}
     for key in keys:
@@ -394,6 +521,40 @@ def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
 def _summarize_rows(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
     metrics = _aggregate_metrics(rows)
     metrics.pop("missing_prediction", None)
+    for name in (
+        "observed",
+        "unobserved",
+        "evidence_only",
+        "prediction_evidence_union",
+    ):
+        count_keys = (
+            "cell_true_positive_count",
+            "predicted_cell_count",
+            "target_cell_count",
+            "category_aware_raster_union_count",
+        )
+        if not rows or f"{name}_{count_keys[0]}" not in rows[0]:
+            continue
+        counts = {key: sum(row[f"{name}_{key}"] for row in rows) for key in count_keys}
+        metrics.update({f"{name}_{key}": value for key, value in counts.items()})
+        metrics.update({
+            f"{name}_cell_precision": _safe_div(
+                int(counts["cell_true_positive_count"]),
+                int(counts["predicted_cell_count"]),
+            ),
+            f"{name}_cell_recall": _safe_div(
+                int(counts["cell_true_positive_count"]),
+                int(counts["target_cell_count"]),
+            ),
+            f"{name}_cell_f1": _safe_div(
+                int(2 * counts["cell_true_positive_count"]),
+                int(counts["predicted_cell_count"] + counts["target_cell_count"]),
+            ),
+            f"{name}_category_aware_raster_iou": _safe_div(
+                int(counts["cell_true_positive_count"]),
+                int(counts["category_aware_raster_union_count"]),
+            ),
+        })
     for name in ("mentioned", "unmentioned"):
         true_positive_count = sum(
             row[f"{name}_cell_true_positive_count"] for row in rows
@@ -482,6 +643,19 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         datasets=("R2R",),
     )
     dataset = LLMGridDataset(loaded.examples, scale=GRID_SCALE)
+    evidence_indexes = (
+        None
+        if not args.evidence_root
+        else {
+            split: GridEvidenceIndex.load(
+                args.evidence_root,
+                args.evidence_key,
+                "R2R",
+                split,
+            )
+            for split in EVAL_SPLITS
+        }
+    )
     rows: list[Dict[str, float]] = []
     rows_by_split: Dict[str, list[Dict[str, float]]] = {
         "val_seen": [],
@@ -507,12 +681,18 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         mentioned_objects, mentioned_regions = _extract_instruction_mentions(
             item["instruction"]
         )
+        evidence = (
+            None
+            if evidence_indexes is None
+            else evidence_indexes[item["split"]].load_evidence(item["example_id"])
+        )
         row = evaluate_grid_prediction(
             generated_text,
             item["target_grid"],
             item["target_direction_vectors"],
             mentioned_objects,
             mentioned_regions,
+            evidence,
         )
         row["missing_prediction"] = float(missing)
         rows.append(row)
@@ -788,13 +968,14 @@ def _write_diagnostics(
 
 def _validate_manifests(args: LLMGridEvalArgs) -> None:
     for split in EVAL_SPLITS:
+        split_dir = llm_navigation_split_dir(
+            "R2R",
+            split,
+            cache_dir=args.cache_dir,
+            model_key=args.cache_model_key,
+        )
         validate_llm_navigation_manifest(
-            llm_navigation_split_dir(
-                "R2R",
-                split,
-                cache_dir=args.cache_dir,
-                model_key=args.cache_model_key,
-            ),
+            split_dir,
             {
                 "dataset": "R2R",
                 "split": split,
@@ -803,6 +984,25 @@ def _validate_manifests(args: LLMGridEvalArgs) -> None:
                 "cache_model_key": args.cache_model_key,
             },
         )
+        if args.evidence_root:
+            index = GridEvidenceIndex.load(
+                args.evidence_root,
+                args.evidence_key,
+                "R2R",
+                split,
+            )
+            manifest = json.loads(
+                (split_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            evidence = manifest.get("evidence")
+            expected = {
+                "key": args.evidence_key,
+                "manifest_sha256": index.manifest_sha256,
+            }
+            if not isinstance(evidence, dict) or any(
+                evidence.get(key) != value for key, value in expected.items()
+            ):
+                raise ValueError(f"LLM-Grid evidence provenance mismatch: {split_dir}")
 
 
 def _write_metrics(path: Path, metrics: Dict[str, float]) -> None:

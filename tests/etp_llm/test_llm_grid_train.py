@@ -1,5 +1,6 @@
 import json
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from accelerate.utils import DistributedType
 from prior.constants import OBJECT_CATEGORIES
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import llm_grid_eval, llm_grid_train
+from vlnce_baselines.models.etp_llm.llm_grid_evidence import GridEvidence
 
 EMPTY_GRID_TEXT = (
     '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},'
@@ -273,22 +275,18 @@ def _save_box_payload(path, object_mentions=(), region_mentions=()):
     objects = [[] for _ in range(27)]
     regions = [[] for _ in range(10)]
     for category_id in object_mentions:
-        objects[category_id].append(
-            {
-                "center": [0.0, 0.0],
-                "half_extents": [0.5, 0.5],
-                "rotation": 0.0,
-                "mentioned": True,
-            }
-        )
+        objects[category_id].append({
+            "center": [0.0, 0.0],
+            "half_extents": [0.5, 0.5],
+            "rotation": 0.0,
+            "mentioned": True,
+        })
     for category_id in region_mentions:
-        regions[category_id].append(
-            {
-                "min": [0.0, 0.0],
-                "max": [1.0, 1.0],
-                "mentioned": True,
-            }
-        )
+        regions[category_id].append({
+            "min": [0.0, 0.0],
+            "max": [1.0, 1.0],
+            "mentioned": True,
+        })
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -446,8 +444,7 @@ def test_load_system_prompt_uses_candidate_schema_terms():
         "Allowed region categories",
         "Each cell is [row,col] in a 50x50 grid with integers 0-49.",
         "Grid rows increase with world x; grid columns increase with world z.",
-        "Start direction and direction_vectors use "
-        "display-frame [right,up]=[-dz,-dx],",
+        "Start direction and direction_vectors use display-frame [right,up]=[-dz,-dx],",
     ):
         assert required in prompt
     for removed in (
@@ -691,6 +688,47 @@ def test_compute_grid_metrics_counts_invalid_predictions_explicitly():
     assert invalid["direction_vector_padding_accuracy"] == 0.0
 
 
+def test_grid_evaluation_partitions_evidence_and_direction_order():
+    target = np.zeros((37, 50, 50), dtype=np.float32)
+    target[1, 4, 5] = 1.0
+    target[2, 20, 21] = 1.0
+    pred = np.zeros_like(target)
+    pred[1, 4, 5] = 1.0
+    directions = np.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
+    observed = np.zeros((50, 50), dtype=np.bool_)
+    observed[4, 5] = True
+    evidence_semantic = pred.astype(np.bool_)
+    evidence = GridEvidence(
+        ego_semantic_grid=evidence_semantic.copy(),
+        ego_observed_mask=observed.copy(),
+        ego_free_mask=np.zeros_like(observed),
+        target_semantic_grid=evidence_semantic,
+        target_observed_mask=observed,
+        target_free_mask=np.zeros_like(observed),
+        start_position=(4.0, 5.0),
+        start_direction=(0.0, 1.0),
+    )
+
+    metrics = llm_grid_eval.evaluate_grid_prediction(
+        serialize_grid_target(pred, direction_vectors=directions),
+        target,
+        directions,
+        {1, 2},
+        set(),
+        evidence,
+    )
+
+    assert metrics["observed_cell_recall"] == 1.0
+    assert metrics["unobserved_cell_recall"] == 0.0
+    assert metrics["evidence_only_cell_recall"] == 0.5
+    assert metrics["prediction_evidence_union_cell_recall"] == 0.5
+    assert metrics["first_direction_vector_cosine"] == 1.0
+    assert metrics["later_direction_vector_cosine"] == 1.0
+
+
 def test_grid_category_metrics_score_object_and_region_presence_separately():
     pred = np.zeros((37, 2, 2), dtype=np.float32)
     target = np.zeros_like(pred)
@@ -758,8 +796,7 @@ def test_grid_spatial_metrics_partition_channels_and_conserve_counts():
     assert metrics["unmentioned_spatial_target_episode_count"] == 1.0
     for count in ("predicted_cell_count", "target_cell_count"):
         assert metrics[count] == sum(
-            metrics[f"{status}_{count}"]
-            for status in ("mentioned", "unmentioned")
+            metrics[f"{status}_{count}"] for status in ("mentioned", "unmentioned")
         )
 
 
@@ -825,9 +862,7 @@ def test_grid_category_metrics_are_pooled_across_episodes():
     assert metrics["object_category_precision"] == 1.0
     assert metrics["object_category_recall"] == 0.5
     assert metrics["object_category_f1"] == pytest.approx(2 / 3)
-    assert metrics["object_category_true_positive_count"] == float(
-        OBJECT_CATEGORIES
-    )
+    assert metrics["object_category_true_positive_count"] == float(OBJECT_CATEGORIES)
     assert metrics["mentioned_object_category_recall"] == 0.5
     assert metrics["mentioned_object_category_f1"] == pytest.approx(2 / 3)
     assert metrics["unmentioned_region_category_recall"] == 0.5
@@ -926,34 +961,32 @@ def test_evaluate_grid_prediction_scores_matching_direction_vectors():
 
 
 def test_aggregate_metrics_weights_direction_vector_support():
-    metrics = llm_grid_eval._aggregate_metrics(
-        [
-            {
-                "json_valid": 0.0,
-                "direction_vector_valid_rate": 0.0,
-                "direction_vector_l2": 0.0,
-                "direction_vector_l2_support": 0.0,
-                "direction_vector_cosine": 0.0,
-                "direction_vector_cosine_support": 0.0,
-            },
-            {
-                "json_valid": 1.0,
-                "direction_vector_valid_rate": 1.0,
-                "direction_vector_l2": 2.0,
-                "direction_vector_l2_support": 1.0,
-                "direction_vector_cosine": 0.25,
-                "direction_vector_cosine_support": 1.0,
-            },
-            {
-                "json_valid": 1.0,
-                "direction_vector_valid_rate": 1.0,
-                "direction_vector_l2": 4.0,
-                "direction_vector_l2_support": 1.0,
-                "direction_vector_cosine": 0.0,
-                "direction_vector_cosine_support": 0.0,
-            },
-        ]
-    )
+    metrics = llm_grid_eval._aggregate_metrics([
+        {
+            "json_valid": 0.0,
+            "direction_vector_valid_rate": 0.0,
+            "direction_vector_l2": 0.0,
+            "direction_vector_l2_support": 0.0,
+            "direction_vector_cosine": 0.0,
+            "direction_vector_cosine_support": 0.0,
+        },
+        {
+            "json_valid": 1.0,
+            "direction_vector_valid_rate": 1.0,
+            "direction_vector_l2": 2.0,
+            "direction_vector_l2_support": 1.0,
+            "direction_vector_cosine": 0.25,
+            "direction_vector_cosine_support": 1.0,
+        },
+        {
+            "json_valid": 1.0,
+            "direction_vector_valid_rate": 1.0,
+            "direction_vector_l2": 4.0,
+            "direction_vector_l2_support": 1.0,
+            "direction_vector_cosine": 0.0,
+            "direction_vector_cosine_support": 0.0,
+        },
+    ])
 
     assert metrics["json_valid"] == pytest.approx(2 / 3)
     assert metrics["direction_vector_valid_rate"] == pytest.approx(2 / 3)
@@ -1073,6 +1106,59 @@ def test_llm_grid_dataset_uses_npz_metadata_and_scale_2_target(tmp_path):
     )
     assert tuple(item["start_position"]) == pytest.approx((1.2, 3.4))
     assert tuple(item["start_direction"]) == pytest.approx((0.0, 1.0))
+
+
+def test_llm_grid_dataset_appends_target_aligned_evidence(tmp_path):
+    raster_path = tmp_path / "raster" / "scene-a" / "grid.npz"
+    raster_path.parent.mkdir(parents=True)
+    np.savez_compressed(
+        raster_path,
+        grid=np.zeros((37, 100, 100), dtype=np.float32),
+        start_position=np.asarray([1.2, 3.4], dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        direction_vectors=ZERO_DIRECTION_VECTORS,
+    )
+    _save_box_payload(tmp_path / "boxes" / "scene-a" / "grid.npz")
+    example = llm_grid_train.LLMGridExample(
+        example_id="R2R_train_42",
+        dataset="R2R",
+        split="train",
+        scene_id="scene-a",
+        episode_id=42,
+        instruction="Go to the chair.",
+        raster_path=raster_path,
+    )
+    target_semantic = np.zeros((37, 50, 50), dtype=np.bool_)
+    target_semantic[2, 4, 5] = True
+    target_observed = np.zeros((50, 50), dtype=np.bool_)
+    target_observed[4, 5] = True
+    evidence = GridEvidence(
+        ego_semantic_grid=np.zeros((37, 50, 50), dtype=np.bool_),
+        ego_observed_mask=np.zeros((50, 50), dtype=np.bool_),
+        ego_free_mask=np.zeros((50, 50), dtype=np.bool_),
+        target_semantic_grid=target_semantic,
+        target_observed_mask=target_observed,
+        target_free_mask=np.zeros((50, 50), dtype=np.bool_),
+        start_position=(1.2, 3.4),
+        start_direction=(0.0, 1.0),
+    )
+    evidence_index = SimpleNamespace(
+        episode=lambda example_id: SimpleNamespace(
+            scene_id="scene-a",
+            observation_id="observation-a",
+        ),
+        load_evidence=lambda example_id: evidence,
+    )
+
+    evidence_indexes = {("R2R", "train"): evidence_index}
+    item = llm_grid_train.LLMGridDataset(
+        [example],
+        evidence_indexes=evidence_indexes,
+    )[0]
+
+    assert "\nobservation evidence = " in item["input_text"]
+    assert '"frame":"level-local world-aligned"' in item["input_text"]
+    assert '"door":[[4,5,5]]' in item["input_text"]
 
 
 def test_llm_grid_dataset_rejects_bad_direction_vector_shape(tmp_path):
@@ -1327,9 +1413,7 @@ def test_grid_sequence_budget_is_inclusive_and_enforced_by_collate():
         "is_padding": False,
     }
     tokenizer = _EosChatTokenizer()
-    prompt = llm_grid_train._render_chat_prompt(
-        tokenizer, "system", item["input_text"]
-    )
+    prompt = llm_grid_train._render_chat_prompt(tokenizer, "system", item["input_text"])
     completion = llm_grid_train._render_chat_completion(
         tokenizer,
         "system",
@@ -1400,6 +1484,28 @@ def test_collate_llm_grid_prompt_lengths_use_padded_width():
     padded_width = int(batch["input_ids"].shape[-1])
     assert batch["prompt_lengths"] == [padded_width, padded_width]
     assert int(batch["attention_mask"][0].sum()) < padded_width
+
+
+def test_collate_llm_grid_prompt_rejects_truncation():
+    item: llm_grid_train.LLMGridItem = {
+        "input_text": "too long",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
+        "example_id": "oversized",
+        "instruction": "too long",
+        "start_position": (1.2, 3.4),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+    }
+
+    with pytest.raises(ValueError, match="oversized.*max_input_length=1"):
+        llm_grid_train.collate_llm_grid_prompt_batch(
+            [item],
+            tokenizer=_ChatTokenizer(),
+            system_prompt="system",
+            max_input_length=1,
+        )
 
 
 def test_filter_training_items_excludes_targets_over_completion_budget():
@@ -1552,12 +1658,10 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
         return iterable
 
     monkeypatch.setattr(llm_grid_train, "_progress", record_progress)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--gradient-checkpointing",
-            "--quiet",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+        "--quiet",
+    ])
 
     manifest = llm_grid_train._build_grid_training_manifest(
         args,
@@ -1585,8 +1689,7 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
     assert manifest.metadata["seed"] == 42
     assert manifest.metadata["scale"] == 2
     assert (
-        manifest.metadata["cognitive_map_namespace"]
-        == "gt.legacy.r1p5.direction5.v1"
+        manifest.metadata["cognitive_map_namespace"] == "gt.legacy.r1p5.direction5.v1"
     )
     assert manifest.metadata["skipped_over_budget_count"] == 0
     assert manifest.metadata["fixed_corpus_metrics"]["combined_retained"] == 2.0
@@ -1610,18 +1713,16 @@ def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
         ]
 
     monkeypatch.setattr(llm_grid_train, "DataLoader", fake_data_loader)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     metrics = llm_grid_train.train_model(args)
 
@@ -1671,18 +1772,16 @@ def test_train_model_builds_manifest_before_loading_model(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(llm_grid_train, "_load_grid_training_model", load_model)
     output_dir = tmp_path / "run"
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(output_dir),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(output_dir),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     llm_grid_train.train_model(args)
 
@@ -1729,33 +1828,29 @@ def test_train_model_preflights_globally_longest_example_after_prepare(
         example_id,
         sequence_tokens,
     ):
-        calls.append(
-            (
-                accelerator_arg,
-                prepared_model,
-                prepared_optimizer,
-                len(inputs["input_ids"]),
-                example_id,
-                sequence_tokens,
-                accelerator.prepare_calls,
-            )
-        )
+        calls.append((
+            accelerator_arg,
+            prepared_model,
+            prepared_optimizer,
+            len(inputs["input_ids"]),
+            example_id,
+            sequence_tokens,
+            accelerator.prepare_calls,
+        ))
 
     monkeypatch.setattr(llm_grid_train, "run_backward_preflight", record_preflight)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--epochs",
-            "1",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--epochs",
+        "1",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     llm_grid_train.train_model(args)
 
@@ -1792,20 +1887,18 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
         "set_epoch",
         record_epoch,
     )
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--epochs",
-            "2",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--epochs",
+        "2",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     llm_grid_train.train_model(args)
 
@@ -1813,11 +1906,9 @@ def test_train_model_sets_sampler_epoch(monkeypatch, tmp_path):
 
 
 def test_llm_grid_args_defaults_to_grid_namespace_and_scale():
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+    ])
 
     assert args.cognitive_map_namespace == "gt.legacy.r1p5.direction5.v1"
     assert args.scale == 2
@@ -1871,13 +1962,11 @@ def test_llm_grid_args_rejects_dataset_selection():
 
 
 def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
-    scale_1 = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--scale",
-            "1",
-            "--gradient-checkpointing",
-        ]
-    )
+    scale_1 = llm_grid_train.LLMGridArgs().parse_args([
+        "--scale",
+        "1",
+        "--gradient-checkpointing",
+    ])
 
     assert scale_1.scale == 1
     with pytest.raises(ValueError, match="--scale 1 or 2"):
@@ -1885,13 +1974,11 @@ def test_llm_grid_args_accepts_scale_1_and_rejects_other_scales():
 
 
 def test_train_model_rejects_full_finetuning():
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--finetune-method",
-            "full",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--finetune-method",
+        "full",
+        "--gradient-checkpointing",
+    ])
 
     with pytest.raises(NotImplementedError, match="full fine-tuning"):
         llm_grid_train.train_model(args)
@@ -1899,18 +1986,16 @@ def test_train_model_rejects_full_finetuning():
 
 def test_train_model_rejects_non_finite_loss(monkeypatch, tmp_path):
     _patch_training_dependencies(monkeypatch, _TrainingModel(float("nan")))
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     with pytest.raises(FloatingPointError, match="training loss"):
         llm_grid_train.train_model(args)
@@ -1927,18 +2012,16 @@ def test_train_model_rejects_non_finite_clipped_gradient_norm(
         return torch.tensor(float("inf"))
 
     monkeypatch.setattr(accelerator, "clip_grad_norm_", fake_clip)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     with pytest.raises(FloatingPointError, match="training gradient norm"):
         llm_grid_train.train_model(args)
@@ -1956,18 +2039,16 @@ def test_train_model_validates_parameters_and_writes_outputs(monkeypatch, tmp_pa
         raising=False,
     )
     output_dir = tmp_path / "run"
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(output_dir),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(output_dir),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     metrics = llm_grid_train.train_model(args)
 
@@ -2013,20 +2094,18 @@ def test_train_model_accumulates_gradients_before_optimizer_step(
             calls["zero_grad"] += 1
 
     monkeypatch.setattr(torch.optim, "AdamW", FakeOptimizer)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--epochs",
-            "1",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--epochs",
+        "1",
+        "--gradient-checkpointing",
+    ])
 
     metrics = llm_grid_train.train_model(args)
 
@@ -2045,13 +2124,11 @@ def test_train_args_reject_gradient_accumulation_above_one():
         ValueError,
         match="requires --gradient-accumulation-steps 1",
     ):
-        llm_grid_train.LLMGridArgs().parse_args(
-            [
-                "--gradient-accumulation-steps",
-                "2",
-                "--gradient-checkpointing",
-            ]
-        )
+        llm_grid_train.LLMGridArgs().parse_args([
+            "--gradient-accumulation-steps",
+            "2",
+            "--gradient-checkpointing",
+        ])
 
 
 def test_train_args_require_gradient_checkpointing():
@@ -2059,15 +2136,25 @@ def test_train_args_require_gradient_checkpointing():
         llm_grid_train.LLMGridArgs().parse_args([])
 
 
+def test_train_args_require_complete_evidence_reference():
+    with pytest.raises(
+        ValueError,
+        match="--evidence-root and --evidence-key must be provided together",
+    ):
+        llm_grid_train.LLMGridArgs().parse_args([
+            "--gradient-checkpointing",
+            "--evidence-root",
+            "data/evidence",
+        ])
+
+
 def test_train_args_require_positive_epochs():
     with pytest.raises(ValueError, match="--epochs must be >= 1"):
-        llm_grid_train.LLMGridArgs().parse_args(
-            [
-                "--epochs",
-                "0",
-                "--gradient-checkpointing",
-            ]
-        )
+        llm_grid_train.LLMGridArgs().parse_args([
+            "--epochs",
+            "0",
+            "--gradient-checkpointing",
+        ])
 
 
 def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
@@ -2083,18 +2170,16 @@ def test_train_model_non_main_rank_writes_no_artifacts(monkeypatch, tmp_path):
         accelerator=accelerator,
     )
     output_dir = tmp_path / "run"
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(output_dir),
-            "--device-map",
-            "none",
-            "--epochs",
-            "1",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(output_dir),
+        "--device-map",
+        "none",
+        "--epochs",
+        "1",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     metrics = llm_grid_train.train_model(args)
 
@@ -2136,18 +2221,16 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
         batches=batches,
         accelerator=accelerator,
     )
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device-map",
-            "none",
-            "--epochs",
-            "1",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device-map",
+        "none",
+        "--epochs",
+        "1",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     metrics = llm_grid_train.train_model(args)
 
@@ -2165,11 +2248,9 @@ def test_train_model_excludes_synthetic_tail_from_metrics(monkeypatch, tmp_path)
 def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
     monkeypatch,
 ):
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+    ])
     args.gradient_accumulation_steps = 2
 
     def unexpected(*args, **kwargs):
@@ -2190,11 +2271,9 @@ def test_train_model_direct_call_rejects_gradient_accumulation_above_one(
 
 
 def test_train_model_direct_call_requires_gradient_checkpointing(monkeypatch):
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+    ])
     args.gradient_checkpointing = False
 
     def unexpected(*args, **kwargs):
@@ -2212,11 +2291,9 @@ def test_train_model_direct_call_requires_gradient_checkpointing(monkeypatch):
 
 
 def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+    ])
     args.epochs = 0
 
     def unexpected(*args, **kwargs):
@@ -2232,18 +2309,16 @@ def test_train_model_direct_call_requires_positive_epochs(monkeypatch):
 def test_train_model_enables_gradient_checkpointing(monkeypatch, tmp_path):
     model = _TrainingModel(1.0)
     _patch_training_dependencies(monkeypatch, model)
-    args = llm_grid_train.LLMGridArgs().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path / "run"),
-            "--device",
-            "cpu",
-            "--device-map",
-            "none",
-            "--quiet",
-            "--gradient-checkpointing",
-        ]
-    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--output-dir",
+        str(tmp_path / "run"),
+        "--device",
+        "cpu",
+        "--device-map",
+        "none",
+        "--quiet",
+        "--gradient-checkpointing",
+    ])
 
     llm_grid_train.train_model(args)
 
