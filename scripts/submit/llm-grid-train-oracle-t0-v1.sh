@@ -27,6 +27,7 @@ torchrun --standalone \
   --max-input-length 3072 \
   --max-new-tokens 3072 \
   --max-sequence-length 4096 \
+  --max-dropped-fraction 0.02 \
   --cuda-cache-clear-min-sequence-length 3072 \
   --epochs 2 \
   --seed 42 \

@@ -743,6 +743,7 @@ class LLMGridArgs(Tap):
     max_input_length: int = 1152
     max_new_tokens: int = 3072
     max_sequence_length: int = 4096
+    max_dropped_fraction: float = 1.0
     cuda_cache_clear_min_sequence_length: int = 3072
     finetune_method: Literal["lora", "full"] = "lora"
     per_device_batch_size: int = 1
@@ -804,6 +805,8 @@ def _validate_llm_grid_training_args(args: LLMGridArgs) -> None:
         raise ValueError("--gradient-checkpointing is required for LLM-Grid training")
     if args.max_sequence_length < 1:
         raise ValueError("--max-sequence-length must be >= 1")
+    if not 0.0 <= args.max_dropped_fraction <= 1.0:
+        raise ValueError("--max-dropped-fraction must be in [0, 1]")
     if not 1 <= args.cuda_cache_clear_min_sequence_length <= args.max_sequence_length:
         raise ValueError(
             "--cuda-cache-clear-min-sequence-length must be in "
@@ -1157,7 +1160,6 @@ def _build_grid_training_manifest(
         max_sequence_length=args.max_sequence_length,
     )
     train_items = list(filtered.kept)
-    validate_fixed_corpus(load_result.by_dataset, retained_items=train_items)
     dropped_over_budget = (
         set(filtered.dropped_prompt_example_ids)
         | set(filtered.dropped_completion_example_ids)
@@ -1165,6 +1167,14 @@ def _build_grid_training_manifest(
     )
     if dropped_over_budget and not args.quiet:
         print(f"skipped_over_budget={len(dropped_over_budget)}")
+    dropped_fraction = len(dropped_over_budget) / len(all_items) if all_items else 0.0
+    if dropped_fraction > args.max_dropped_fraction:
+        raise ValueError(
+            "LLM-Grid corpus exceeds --max-dropped-fraction: "
+            f"{len(dropped_over_budget)}/{len(all_items)} "
+            f"({dropped_fraction:.2%}) > {args.max_dropped_fraction:.2%}"
+        )
+    validate_fixed_corpus(load_result.by_dataset, retained_items=train_items)
 
     manifest_items = []
     for item in _progress(
@@ -1208,6 +1218,7 @@ def _build_grid_training_manifest(
                 }
             ),
             "skipped_over_budget_count": len(dropped_over_budget),
+            "skipped_over_budget_fraction": dropped_fraction,
             "token_budgets": {
                 "max_input_length": args.max_input_length,
                 "max_new_tokens": args.max_new_tokens,

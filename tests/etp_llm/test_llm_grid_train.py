@@ -1692,7 +1692,52 @@ def test_build_training_manifest_keeps_only_text_and_token_metadata(
         manifest.metadata["cognitive_map_namespace"] == "gt.legacy.r1p5.direction5.v1"
     )
     assert manifest.metadata["skipped_over_budget_count"] == 0
+    assert manifest.metadata["skipped_over_budget_fraction"] == 0.0
     assert manifest.metadata["fixed_corpus_metrics"]["combined_retained"] == 2.0
+
+
+def test_build_training_manifest_rejects_excessive_length_drops(monkeypatch):
+    item: llm_grid_train.LLMGridItem = {
+        "input_text": "map input",
+        "target_text": EMPTY_GRID_TEXT,
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "target_direction_vectors": ZERO_DIRECTION_VECTORS,
+        "example_id": "r2r-example",
+        "instruction": "instruction",
+        "start_position": (1.0, 2.0),
+        "start_direction": (0.0, 1.0),
+        "scene_id": "scene-a",
+        "dataset": "R2R",
+        "split": "train",
+    }
+    monkeypatch.setattr(
+        llm_grid_train,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: _load_result([object()]),
+    )
+    monkeypatch.setattr(
+        llm_grid_train,
+        "LLMGridDataset",
+        lambda *args, **kwargs: [item],
+    )
+    args = llm_grid_train.LLMGridArgs().parse_args([
+        "--gradient-checkpointing",
+        "--max-input-length",
+        "1",
+        "--max-dropped-fraction",
+        "0",
+        "--quiet",
+    ])
+
+    with pytest.raises(
+        ValueError,
+        match=r"exceeds --max-dropped-fraction: 1/1 \(100.00%\) > 0.00%",
+    ):
+        llm_grid_train._build_grid_training_manifest(
+            args,
+            _TrainingTokenizer(),
+            "system",
+        )
 
 
 def test_train_model_uses_length_grouped_batch_sampler(monkeypatch, tmp_path):
@@ -2145,6 +2190,18 @@ def test_train_args_require_complete_evidence_reference():
             "--gradient-checkpointing",
             "--evidence-root",
             "data/evidence",
+        ])
+
+
+def test_train_args_validate_max_dropped_fraction():
+    with pytest.raises(
+        ValueError,
+        match="--max-dropped-fraction must be in \\[0, 1\\]",
+    ):
+        llm_grid_train.LLMGridArgs().parse_args([
+            "--gradient-checkpointing",
+            "--max-dropped-fraction",
+            "1.01",
         ])
 
 
