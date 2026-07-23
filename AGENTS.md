@@ -28,7 +28,7 @@ The main agent shall act as the leader, decomposing and dispatching jobs to spec
 
 ## Experiment Note Policy
 
-- Use Chinese in `docs/NOTE.md` and `docs/daily/`.
+- Use Chinese in `docs/NOTE.md` and `docs/daily/`, English everywhere else, including when communicating.
 - Document the day's diagnoses, findings and plans per `docs/daily/README.md`.
 
 ## Environment Context
