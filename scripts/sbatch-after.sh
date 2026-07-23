@@ -17,4 +17,4 @@ DEP=$(IFS=:; echo "${JOB_IDS[*]}")
 echo "Found job(s): ${JOB_IDS[*]}"
 echo "Submitting '$SCRIPT' after dependency $JOB_NAME."
 
-sbatch --dependency="afterany:$DEP" "$@" "$SCRIPT"
+sbatch --dependency="afterok:$DEP" "$@" "$SCRIPT"
