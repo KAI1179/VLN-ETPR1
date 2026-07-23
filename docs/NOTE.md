@@ -785,9 +785,8 @@ Drop Rate By `max_new_tokens`:
 
 - [详细记录：LLM-Grid Epoch 5/10 泛化分析](daily/2026-07-21.md)
 - 早期 epoch 5/10 抽样用于发现 train/unseen 差距；正式 checkpoint 结论已由 07/22 的完整固定分母 sweep 取代，逐样本清单仍保留作历史证据。
-- 当前结论：精确 full-grid target 包含输入无法唯一恢复的 unseen-scene 几何，同时 epoch 10 存在明显训练集记忆，不能只归因于“任务不可解”或“模型太差”。
 - GT namespace 名称差异不是混淆因素：训练会对 non-blurred cache 做 scale-2 max pooling，与 blurred cache 的有效 50×50 target 相同；真正需要排查的是 system prompt 的 row/column 与 direction vector 语义和项目实现不一致。
-- 下一步：mentioned/unmentioned category 分解已完成；修正 prompt 后对 full/mentioned-only target 短训，按 checkpoint 评价，并做 no-map、zero-map、shuffled-map、epoch 2/8/10、PriorGT 的下游导航对照。
+- 该日提出的 predictor 成因与可预测边界问题已由 [07/23 的今日结论](daily/2026-07-23.md#今日结论) 回答。
 - `llm-grid-try5-pt` 暂时保留到下一个可用 checkpoint，作为 integration datapoint；不要默认跑满 500k steps。
 
 ## 07/22（续 07/21：checkpoint 泛化曲线）
@@ -810,6 +809,8 @@ Drop Rate By `max_new_tokens`:
 - 空间结果没有复现 category presence 的大幅 mentioned 优势：`val_unseen` unmentioned IoU/F1 在 10/10 epoch 略高，但差值仅为 `+0.0002`–`+0.0104`/`+0.0003`–`+0.0167`；epoch 2 两组几乎相同（IoU 0.1181/0.1182，F1 0.2112/0.2115）。seen 的差值方向随 epoch 改变。
 - [2×2 空间与类别曲线](images/llm_grid_mentioned_spatial_category_sweep_r1p5.png) 显示两组共同保留 seen 持续改善、unseen 早期平台化的 spatial gap。近似持平或轻微反向的 M/U spatial gap 受 category composition、cell density 与 prevalence 混淆，不能解释为 unmentioned layout 更好。
 - category 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致，但 category composition/base rate 仍是混淆因素；本轮也不能直接证明 mentioned-only target 会改善 predictor 或下游导航。
+- 今日结论：精确 full-grid target 包含当前输入无法唯一恢复的 unseen-scene 几何，同时 predictor 存在可测量的 scene-specific overfit；mentioned category presence 较可靠，精确位置、unmentioned inventory 与轨迹方向尚不能可靠恢复。
+- 下一步：修正 prompt 后对 full/mentioned-only target 短训，并做 prior/shuffle、同路径 paraphrase consistency 与下游导航因果对照。
 
 # 实验
 
