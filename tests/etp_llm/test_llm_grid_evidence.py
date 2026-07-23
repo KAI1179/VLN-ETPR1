@@ -171,10 +171,10 @@ def test_prompt_block_uses_only_target_frame_and_excludes_ids() -> None:
 
     block = evidence.prompt_block()
 
-    assert '"frame":"level-local world-aligned"' in block
-    assert '"door":[[4,5,5]]' in block
-    assert '"free_runs":[[4,4,4]]' in block
-    assert '"chair"' not in block
+    assert "(target-frame;50x50;cell=1m;run=r:c or r:c0-c1)" in block
+    assert "objects=door=4:5" in block
+    assert "free=4:4" in block
+    assert "chair" not in block
     assert "scene-secret" not in block
     assert "observation-secret" not in block
 

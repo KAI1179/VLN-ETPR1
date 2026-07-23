@@ -190,29 +190,28 @@ class GridEvidence:
 
     def prompt_block(self) -> str:
         """Serialize target-aligned evidence without artifact or scene IDs."""
-        objects = _semantic_runs(
+        prompt_objects = np.array(
             self.target_semantic_grid[: len(MAPPED_OBJECT_NAMES)],
+            copy=True,
+        )
+        for environmental_name in ("structure", "other", "free-space"):
+            prompt_objects[MAPPED_OBJECT_NAMES.index(environmental_name)] = False
+        objects = _semantic_runs(
+            prompt_objects,
             MAPPED_OBJECT_NAMES,
         )
         regions = _semantic_runs(
             self.target_semantic_grid[len(MAPPED_OBJECT_NAMES) :],
             MAPPED_REGION_NAMES,
         )
-        payload = {
-            "cell_size_m": CELL_SIZE_M,
-            "frame": "level-local world-aligned",
-            "free_runs": _mask_runs(self.target_free_mask),
-            "grid_size": GRID_SIZE,
-            "objects": objects,
-            "observed_runs": _mask_runs(self.target_observed_mask),
-            "regions": regions,
-            "unknown": "all cells outside observed_runs",
-        }
-        return "observation evidence = " + json.dumps(
-            payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
+        return (
+            "observation evidence"
+            "(target-frame;50x50;cell=1m;run=r:c or r:c0-c1);"
+            f"observed={_format_runs(self.target_observed_mask)};"
+            f"free={_format_runs(self.target_free_mask)};"
+            f"objects={_format_semantic_runs(objects)};"
+            f"regions={_format_semantic_runs(regions)};"
+            "unknown=not-observed"
         )
 
 
@@ -825,6 +824,31 @@ def _semantic_runs(
         for index, name in enumerate(names)
         if np.any(grid[index])
     }
+
+
+def _format_runs(mask: NDArray[np.bool_]) -> str:
+    runs = _mask_runs(mask)
+    if not runs:
+        return "-"
+    return ",".join(
+        f"{row}:{start}" if start == end else f"{row}:{start}-{end}"
+        for row, start, end in runs
+    )
+
+
+def _format_semantic_runs(
+    runs_by_name: Mapping[str, Sequence[Sequence[int]]],
+) -> str:
+    if not runs_by_name:
+        return "-"
+    return "|".join(
+        f"{name}="
+        + ",".join(
+            f"{row}:{start}" if start == end else f"{row}:{start}-{end}"
+            for row, start, end in runs
+        )
+        for name, runs in runs_by_name.items()
+    )
 
 
 def _safe_part(value: str, name: str) -> str:

@@ -1156,9 +1156,9 @@ def test_llm_grid_dataset_appends_target_aligned_evidence(tmp_path):
         evidence_indexes=evidence_indexes,
     )[0]
 
-    assert "\nobservation evidence = " in item["input_text"]
-    assert '"frame":"level-local world-aligned"' in item["input_text"]
-    assert '"door":[[4,5,5]]' in item["input_text"]
+    assert "\nobservation evidence(" in item["input_text"]
+    assert "target-frame;50x50;cell=1m" in item["input_text"]
+    assert "objects=door=4:5" in item["input_text"]
 
 
 def test_llm_grid_dataset_rejects_bad_direction_vector_shape(tmp_path):

@@ -806,6 +806,8 @@ Drop Rate By `max_new_tokens`:
 - 保持 full-grid target、LLM JSON、navigation-ready `.npz`、Try5 与 navigation trainer 不变；第一轮只改变 predictor input/cache generation，并对 matched/null/within-scene shuffle/global shuffle 做显式 manifest。
 - Uncertainty-Aware VLN 论文建模的是 observation-built online Gaussian map 上的局部 perceptual reliability，不区分 free/unknown、没有 multiple full-layout hypotheses，也未用 matched controls 隔离 information gain 与 architecture gain；第一轮只借鉴 explicit observed/unknown 表示，不引入 Gaussian map、uncertainty output 或 online map fusion。
 - 当前 frozen waypoint sidecar 可低成本复用，但实际为 depth-only，保留作 deployable geometry control；Habitat semantic+depth renderer 可作为 oracle 起点，但 37-channel projection、free/unknown mask 与 vocabulary coverage 仍需原型验证。
+- 起点 oracle 原型、strict artifact/index、四类 observation-level assignment、train/cache/eval wiring 已完成。R2R `val_unseen` 50-observation sample 对应 222 examples，生成约 1 分 50 秒，artifact 平均 3.5 KB；t=0 observed cells 覆盖 full target semantic support 的 64.1%，直接 evidence 在 observed target 上 recall 67.2%，但对 route-relevant target precision 仅 17.1%，因此必须由 instruction-conditioned predictor筛选，不能直接复制。
+- 原始 evidence JSON 严重超 prompt budget；exact compact row-run grammar 并去除与 observed/free mask 重复的 broad environment labels 后，sample median/P90/max prompt 为 1,229/2,049/2,580 tokens，3,072 prompt + 4,096 sequence budget 下 sample 无 truncation。下一步先在 login node 并行生成六个 R2R/RxR split caches，再跑 seed 42 的 2-epoch matched screen 与 matched/null/within/global controls。
 
 ## 07/23（mentioned/unmentioned 空间与类别）
 
