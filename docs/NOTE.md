@@ -809,6 +809,7 @@ Drop Rate By `max_new_tokens`:
 - 起点 oracle 原型、strict artifact/index、四类 observation-level assignment、train/cache/eval wiring 已完成。R2R `val_unseen` 50-observation sample 对应 222 examples，生成约 1 分 50 秒，artifact 平均 3.5 KB；t=0 observed cells 覆盖 full target semantic support 的 64.1%，直接 evidence 在 observed target 上 recall 67.2%，但对 route-relevant target precision 仅 17.1%，因此必须由 instruction-conditioned predictor筛选，不能直接复制。
 - 原始 evidence JSON 严重超 prompt budget；exact compact row-run grammar 并去除与 observed/free mask 重复的 broad environment labels 后，sample median/P90/max prompt 为 1,229/2,049/2,580 tokens，3,072 prompt + 4,096 sequence budget 下 sample 无 truncation。下一步先在 login node 并行生成六个 R2R/RxR split caches，再跑 seed 42 的 2-epoch matched screen 与 matched/null/within/global controls。
 - Remote 已提交 cache array `1182682`（六个 split task，各 1 GPU）与依赖它的 matched training `1182689`（8 GPU、seed 42、2 epochs）；提交前 quota 剩余 87 GB。依赖为 `afterok`，partial cache 不会触发训练。
+- 四条件 cache/eval array `1182694`（matched/null/within-scene/global，各 2 GPUs）依赖 training 成功；约 3 分钟时 evidence producer 已写 601/13,785 个 artifacts（2.3 MB）。
 
 ## 07/23（mentioned/unmentioned 空间与类别）
 
