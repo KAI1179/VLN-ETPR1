@@ -810,11 +810,11 @@ Drop Rate By `max_new_tokens`:
 - [2×2 空间与类别曲线](images/llm_grid_mentioned_spatial_category_sweep_r1p5.png) 显示两组共同保留 seen 持续改善、unseen 早期平台化的 spatial gap。近似持平或轻微反向的 M/U spatial gap 受 category composition、cell density 与 prevalence 混淆，不能解释为 unmentioned layout 更好。
 - category 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致，但 category composition/base rate 仍是混淆因素；本轮也不能直接证明 mentioned-only target 会改善 predictor 或下游导航。
 - 今日结论：主要瓶颈是 input/target 信息不匹配；当前输入不含 scene observation，却要求恢复 unseen-house 精确 full-grid 几何与 unmentioned content。scene-specific overfit 会放大差距，但不是首要根因；错误 prompt 是单独的实现混淆因素。
-- prompt contract 已在 `a0bb323` 修正并由 contract tests 固定：网格为 `[row,col]=[world x,world z]`，方向为 display frame `[right,up]=[-dz,-dx]`。matched 2-epoch control launcher 已准备，等待 Slurm 完成后与旧 prompt epoch 2 比较；完成前不判断该错误的贡献大小。
+- prompt contract 已在 `a0bb323` 修正并完成 matched 2-epoch control。`val_unseen` Raster IoU 为 0.1357→0.1340，delta -0.0017 `[-0.0080, 0.0051]`；Cell F1 同样不能与零区分，direction 与 object/region F1 下降。错误 prompt 是应保留修复的独立 defect，但不是低 IoU 的主要原因。
 - 旧 prompt epoch 2 的 [input-dependence controls](daily/2026-07-23.md#input-dependence-controls) 已完成：`val_unseen` binary raster IoU 为 matched 0.136、within-scene permutation 0.061、global permutation 0.036；同路径 paraphrase prediction IoU 为 0.284。输出含 episode-specific signal，但不足以稳定恢复唯一 full-grid layout；这里是 cache reassignment，不是真正的 shuffled-input model run。
-- paired scene-cluster bootstrap 已完成：epoch 4/8 相对 epoch 2 的 `val_unseen` raster IoU delta 分别为 -0.0007 `[-0.0112, 0.0107]`、-0.0005 `[-0.0136, 0.0111]`，均不能区分于零；contract-v2 evaluator 完成后可直接复用同一工具报告 matched delta。
+- paired scene-cluster bootstrap 已完成：epoch 4/8 相对 epoch 2 的 `val_unseen` Raster IoU delta 均不能区分于零；contract-v2 相对旧 epoch 2 也不能区分于零。详细 matched 指标见[今日记录](daily/2026-07-23.md#matched-result)。
 - 增加输入的首选最小改动是只改 cache generation：把起点 `t=0` panorama 投影成带 observed/unknown mask 的稀疏观测证据，逐级比较 free-space、semantic inventory 与 spatial semantic cells，保持 `.npz`、Try5 和 navigation 接口不变。详见[方案与防泄漏约束](daily/2026-07-23.md#增加输入但保持导航接口不变)。
-- 下一步：先完成 prompt-contract matched control；再依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的 target 才进入下游导航实验。
+- 下一步：依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor；若仍不足，再在不改 navigation 接口的前提下逐级加入 `t=0` 观测。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的方案才进入下游导航实验。
 
 # 实验
 
