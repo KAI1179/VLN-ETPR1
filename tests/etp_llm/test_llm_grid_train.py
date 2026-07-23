@@ -7,7 +7,7 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from prior.constants import OBJECT_CATEGORIES
+from prior.constants import MAPPED_OBJECT_NAMES, OBJECT_CATEGORIES
 from prior.llm_grid_samples import downsample_grid, serialize_grid_target
 from vlnce_baselines.models.etp_llm import llm_grid_eval, llm_grid_train
 from vlnce_baselines.models.etp_llm.llm_grid_evidence import GridEvidence
@@ -727,6 +727,37 @@ def test_grid_evaluation_partitions_evidence_and_direction_order():
     assert metrics["prediction_evidence_union_cell_recall"] == 0.5
     assert metrics["first_direction_vector_cosine"] == 1.0
     assert metrics["later_direction_vector_cosine"] == 1.0
+
+
+def test_grid_evaluation_controls_use_only_prompt_semantics():
+    environmental_channel = MAPPED_OBJECT_NAMES.index("structure")
+    target = np.zeros((37, 50, 50), dtype=np.float32)
+    target[environmental_channel, 4, 5] = 1.0
+    observed = np.zeros((50, 50), dtype=np.bool_)
+    observed[4, 5] = True
+    evidence_semantic = target.astype(np.bool_)
+    evidence = GridEvidence(
+        ego_semantic_grid=evidence_semantic.copy(),
+        ego_observed_mask=observed.copy(),
+        ego_free_mask=np.zeros_like(observed),
+        target_semantic_grid=evidence_semantic,
+        target_observed_mask=observed,
+        target_free_mask=np.zeros_like(observed),
+        start_position=(4.0, 5.0),
+        start_direction=(0.0, 1.0),
+    )
+
+    metrics = llm_grid_eval.evaluate_grid_prediction(
+        EMPTY_GRID_TEXT,
+        target,
+        ZERO_DIRECTION_VECTORS,
+        set(),
+        set(),
+        evidence,
+    )
+
+    assert metrics["evidence_only_predicted_cell_count"] == 0.0
+    assert metrics["prediction_evidence_union_predicted_cell_count"] == 0.0
 
 
 def test_grid_category_metrics_score_object_and_region_presence_separately():

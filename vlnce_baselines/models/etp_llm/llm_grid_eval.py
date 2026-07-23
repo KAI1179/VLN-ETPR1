@@ -353,14 +353,14 @@ def _evidence_partition_metrics(
     metrics.update(
         _binary_raster_metrics(
             "evidence_only",
-            evidence.target_semantic_grid,
+            evidence.prompt_semantic_grid,
             target,
         )
     )
     metrics.update(
         _binary_raster_metrics(
             "prediction_evidence_union",
-            np.logical_or(pred, evidence.target_semantic_grid),
+            np.logical_or(pred, evidence.prompt_semantic_grid),
             target,
         )
     )

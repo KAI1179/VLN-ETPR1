@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from prior.constants import MAPPED_OBJECT_NAMES
 from vlnce_baselines.models.etp_llm.llm_grid_evidence import (
     EvidenceAssignmentKind,
     EvidenceAssignments,
@@ -177,6 +178,18 @@ def test_prompt_block_uses_only_target_frame_and_excludes_ids() -> None:
     assert "chair" not in block
     assert "scene-secret" not in block
     assert "observation-secret" not in block
+
+
+@pytest.mark.parametrize("name", ["structure", "other", "free-space"])
+def test_prompt_semantic_grid_excludes_unserialized_environmental_labels(
+    name: str,
+) -> None:
+    channel = MAPPED_OBJECT_NAMES.index(name)
+    evidence = _evidence(target_channel=channel)
+
+    assert evidence.target_semantic_grid[channel, 4, 5]
+    assert not evidence.prompt_semantic_grid[channel, 4, 5]
+    assert name not in evidence.prompt_block()
 
 
 def test_index_deduplicates_observations_and_pins_hashes(tmp_path: Path) -> None:

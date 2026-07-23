@@ -108,6 +108,14 @@ class GridEvidence:
         """Return target-frame cells outside the observation boundary."""
         return np.logical_not(self.target_observed_mask)
 
+    @property
+    def prompt_semantic_grid(self) -> NDArray[np.bool_]:
+        """Return exactly the semantic cells serialized into the prompt."""
+        grid = np.array(self.target_semantic_grid, copy=True)
+        for environmental_name in ("structure", "other", "free-space"):
+            grid[MAPPED_OBJECT_NAMES.index(environmental_name)] = False
+        return grid
+
     def save(self, path: str | Path) -> None:
         """Atomically save an object-free NPZ artifact."""
         output_path = Path(path)
@@ -190,18 +198,13 @@ class GridEvidence:
 
     def prompt_block(self) -> str:
         """Serialize target-aligned evidence without artifact or scene IDs."""
-        prompt_objects = np.array(
-            self.target_semantic_grid[: len(MAPPED_OBJECT_NAMES)],
-            copy=True,
-        )
-        for environmental_name in ("structure", "other", "free-space"):
-            prompt_objects[MAPPED_OBJECT_NAMES.index(environmental_name)] = False
+        prompt_semantic = self.prompt_semantic_grid
         objects = _semantic_runs(
-            prompt_objects,
+            prompt_semantic[: len(MAPPED_OBJECT_NAMES)],
             MAPPED_OBJECT_NAMES,
         )
         regions = _semantic_runs(
-            self.target_semantic_grid[len(MAPPED_OBJECT_NAMES) :],
+            prompt_semantic[len(MAPPED_OBJECT_NAMES) :],
             MAPPED_REGION_NAMES,
         )
         return (
