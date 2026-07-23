@@ -811,7 +811,10 @@ Drop Rate By `max_new_tokens`:
 - category 结果与 full-grid target 要求恢复输入未提供的 scene context 这一假设一致，但 category composition/base rate 仍是混淆因素；本轮也不能直接证明 mentioned-only target 会改善 predictor 或下游导航。
 - 今日结论：主要瓶颈是 input/target 信息不匹配；当前输入不含 scene observation，却要求恢复 unseen-house 精确 full-grid 几何与 unmentioned content。scene-specific overfit 会放大差距，但不是首要根因；错误 prompt 是单独的实现混淆因素。
 - prompt contract 已在 `a0bb323` 修正并由 contract tests 固定：网格为 `[row,col]=[world x,world z]`，方向为 display frame `[right,up]=[-dz,-dx]`。matched 2-epoch control launcher 已准备，等待 Slurm 完成后与旧 prompt epoch 2 比较；完成前不判断该错误的贡献大小。
-- 下一步：完成 prompt-contract matched control，并并行做无需训练的 prior/shuffle 与同路径 paraphrase consistency；随后在 matched 短训中依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的 target 才进入下游导航实验。
+- 旧 prompt epoch 2 的 [input-dependence controls](daily/2026-07-23.md#input-dependence-controls) 已完成：`val_unseen` binary raster IoU 为 matched 0.136、within-scene permutation 0.061、global permutation 0.036；同路径 paraphrase prediction IoU 为 0.284。输出含 episode-specific signal，但不足以稳定恢复唯一 full-grid layout；这里是 cache reassignment，不是真正的 shuffled-input model run。
+- paired scene-cluster bootstrap 已完成：epoch 4/8 相对 epoch 2 的 `val_unseen` raster IoU delta 分别为 -0.0007 `[-0.0112, 0.0107]`、-0.0005 `[-0.0136, 0.0111]`，均不能区分于零；contract-v2 evaluator 完成后可直接复用同一工具报告 matched delta。
+- 增加输入的首选最小改动是只改 cache generation：把起点 `t=0` panorama 投影成带 observed/unknown mask 的稀疏观测证据，逐级比较 free-space、semantic inventory 与 spatial semantic cells，保持 `.npz`、Try5 和 navigation 接口不变。详见[方案与防泄漏约束](daily/2026-07-23.md#增加输入但保持导航接口不变)。
+- 下一步：先完成 prompt-contract matched control；再依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的 target 才进入下游导航实验。
 
 # 实验
 
