@@ -7,3 +7,5 @@
     - ⭐ [End-to-End Object Detection with Transformers](https://arxiv.org/abs/2005.12872)
 - [x] LLM predictor
     - Text style & token-level loss: [LengSicong/Tell2Design](https://github.com/LengSicong/Tell2Design) | [paper](https://aclanthology.org/2023.acl-long.820.pdf)
+- Other
+    - [Uncertainty-Aware Gaussian Map for Vision-Language Navigation](http://arxiv.org/abs/2605.26503)
