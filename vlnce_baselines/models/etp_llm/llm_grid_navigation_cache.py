@@ -135,6 +135,22 @@ def llm_grid_navigation_cache(
     """Generate LLM-Grid prediction text and direction5 raster caches."""
     import torch
 
+    excluded = 0
+    if evidence_condition is not None:
+        included_items = []
+        for item in dataset:
+            recipient = evidence_condition.index.episode(item["example_id"])
+            if recipient.scene_id != item["scene_id"]:
+                raise ValueError(
+                    f"evidence scene mismatch for {item['example_id']}: "
+                    f"{recipient.scene_id} != {item['scene_id']}"
+                )
+            if evidence_condition.assignments.supports(item["example_id"]):
+                included_items.append(item)
+            else:
+                excluded += 1
+        dataset = included_items
+
     if hasattr(model, "to") and not _model_uses_device_map(model):
         model.to(args.device)
     if hasattr(model, "eval"):
@@ -182,7 +198,9 @@ def llm_grid_navigation_cache(
                         f"evidence scene mismatch for {item['example_id']}: "
                         f"{recipient.scene_id} != {item['scene_id']}"
                     )
-                donor = evidence_condition.assignments.donor_for(item["example_id"])
+                donor = evidence_condition.assignments.entry_for(
+                    item["example_id"]
+                ).donor_observation_id
                 cache_key = "null" if donor is None else donor
                 evidence_prompt = prompt_cache.get(cache_key)
                 if evidence_prompt is None:
@@ -314,6 +332,12 @@ def llm_grid_navigation_cache(
             float(attempted - strict_valid) / float(attempted) if attempted else 0.0
         ),
     }
+    if evidence_condition is not None:
+        metrics.update({
+            "indexed_examples": float(examples + excluded),
+            "eligible_examples": float(examples),
+            "excluded_examples": float(excluded),
+        })
     _write_split_metrics(split_dir, metrics, args)
     return metrics
 

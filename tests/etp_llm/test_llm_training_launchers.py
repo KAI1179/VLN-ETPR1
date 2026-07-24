@@ -85,6 +85,8 @@ def test_llm_grid_oracle_launchers_use_audited_token_budgets():
     assert "--max-dropped-fraction 0.02" in training
     assert "--max-input-length 3072" in evaluation
     assert "--max-new-tokens 4096" in evaluation
+    assert 'if [[ "$assignment" == "within-scene" ]]' in evaluation
+    assert "--population-assignment within-scene" in evaluation
 
 
 def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():

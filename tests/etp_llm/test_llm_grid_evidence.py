@@ -11,6 +11,7 @@ from vlnce_baselines.models.etp_llm.llm_grid_evidence import (
     EvidenceEpisode,
     GridEvidence,
     GridEvidenceIndex,
+    assigned_prompt_block,
 )
 
 
@@ -252,7 +253,9 @@ def test_assignments_are_deterministic_and_observation_level(
     second = EvidenceAssignments.build(index, kind, seed=42)
 
     assert first == second
-    assert first.donor_for("R2R_val_unseen_1a") == first.donor_for("R2R_val_unseen_1b")
+    assert first.entry_for("R2R_val_unseen_1a").donor_observation_id == first.entry_for(
+        "R2R_val_unseen_1b"
+    ).donor_observation_id
     scenes = {episode.observation_id: episode.scene_id for episode in index.episodes}
     for entry in first.entries:
         donor = entry.donor_observation_id
@@ -299,3 +302,43 @@ def test_assignment_rejects_impossible_scene_controls(tmp_path: Path) -> None:
         EvidenceAssignments.build(index, "within-scene", seed=0)
     with pytest.raises(ValueError, match="at least two scenes"):
         EvidenceAssignments.build(index, "global", seed=0)
+
+
+def test_within_scene_assignment_excludes_singleton_scenes(tmp_path: Path) -> None:
+    key = "mixed"
+    episodes = (
+        EvidenceEpisode("example-a", "scene-a", "obs-a"),
+        EvidenceEpisode("example-b1", "scene-b", "obs-b1"),
+        EvidenceEpisode("example-b2", "scene-b", "obs-b2"),
+    )
+    for scene_id, observation_id in (
+        ("scene-a", "obs-a"),
+        ("scene-b", "obs-b1"),
+        ("scene-b", "obs-b2"),
+    ):
+        _write_observation(tmp_path, key, scene_id, observation_id)
+    index = GridEvidenceIndex.create(
+        tmp_path,
+        key,
+        "R2R",
+        "val_unseen",
+        episodes,
+        provenance={},
+    )
+
+    assignments = EvidenceAssignments.build(index, "within-scene", seed=0)
+    path = tmp_path / "mixed-assignments.jsonl"
+    digest = assignments.save(path)
+
+    assert index.within_scene_assignable_example_ids() == {
+        "example-b1",
+        "example-b2",
+    }
+    assert EvidenceAssignments.load(path, index, expected_sha256=digest) == assignments
+    assert len(assignments.entries) == 3
+    assert not assignments.supports("example-a")
+    assert assignments.entry_for("example-a").exclusion_reason == "singleton-scene"
+    with pytest.raises(ValueError, match="excluded evidence assignment has no prompt"):
+        assigned_prompt_block(index, assignments, "example-a")
+    assert assignments.entry_for("example-b1").donor_observation_id == "obs-b2"
+    assert assignments.entry_for("example-b2").donor_observation_id == "obs-b1"

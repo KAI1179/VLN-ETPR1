@@ -13,6 +13,10 @@ set -u
 assignments=(matched null within-scene global)
 assignment="${assignments[$SLURM_ARRAY_TASK_ID]}"
 cache_key="llm-grid-oracle-t0-v1-e2-${assignment}"
+eval_args=()
+if [[ "$assignment" == "within-scene" ]]; then
+  eval_args+=(--population-assignment within-scene --population-assignment-seed 42)
+fi
 
 python -m vlnce_baselines.models.etp_llm.llm_grid_navigation_cache \
   --model-name-or-path \
@@ -32,4 +36,5 @@ python -m vlnce_baselines.models.etp_llm.llm_grid_eval \
   --cache-model-key "$cache_key" \
   --evidence-root data/llm_grid_oracle_evidence \
   --evidence-key oracle-t0-v1 \
+  "${eval_args[@]}" \
   --output-dir "outputs/llm_grid_eval/oracle-t0-v1-e2-${assignment}"

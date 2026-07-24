@@ -21,7 +21,7 @@ from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
 
 EVIDENCE_SCHEMA_VERSION = 1
 EVIDENCE_INDEX_SCHEMA_VERSION = 1
-EVIDENCE_ASSIGNMENT_SCHEMA_VERSION = 1
+EVIDENCE_ASSIGNMENT_SCHEMA_VERSION = 2
 GRID_CHANNELS = 37
 GRID_SIZE = 50
 GRID_SCALE = 2
@@ -30,6 +30,7 @@ SEMANTIC_SHAPE = (GRID_CHANNELS, GRID_SIZE, GRID_SIZE)
 MASK_SHAPE = (GRID_SIZE, GRID_SIZE)
 
 EvidenceAssignmentKind = Literal["matched", "null", "within-scene", "global"]
+EvidenceExclusionReason = Literal["singleton-scene"]
 
 _NPZ_KEYS = {
     "schema_version",
@@ -456,6 +457,22 @@ class GridEvidenceIndex:
                 return record.episode
         raise KeyError(example_id)
 
+    def within_scene_assignable_example_ids(self) -> frozenset[str]:
+        """Return examples whose scene has a distinct donor observation."""
+        observations_by_scene: dict[str, set[str]] = defaultdict(set)
+        for record in self.records:
+            observations_by_scene[record.scene_id].add(record.observation_id)
+        assignable_scenes = {
+            scene_id
+            for scene_id, observation_ids in observations_by_scene.items()
+            if len(observation_ids) >= 2
+        }
+        return frozenset(
+            record.example_id
+            for record in self.records
+            if record.scene_id in assignable_scenes
+        )
+
     def load_evidence(self, example_id: str) -> GridEvidence:
         """Load one artifact after validating its index-pinned content hash."""
         record = next(
@@ -506,6 +523,7 @@ class EvidenceAssignmentEntry:
     example_id: str
     observation_id: str
     donor_observation_id: Optional[str]
+    exclusion_reason: Optional[EvidenceExclusionReason]
 
 
 @dataclass(frozen=True)
@@ -550,7 +568,13 @@ class EvidenceAssignments:
                 EvidenceAssignmentEntry(
                     example_id=episode.example_id,
                     observation_id=episode.observation_id,
-                    donor_observation_id=donors[episode.observation_id],
+                    donor_observation_id=donors.get(episode.observation_id),
+                    exclusion_reason=(
+                        "singleton-scene"
+                        if kind == "within-scene"
+                        and episode.observation_id not in donors
+                        else None
+                    ),
                 )
                 for episode in index.episodes
             ),
@@ -558,10 +582,13 @@ class EvidenceAssignments:
         result.validate(index)
         return result
 
-    def donor_for(self, example_id: str) -> Optional[str]:
+    def supports(self, example_id: str) -> bool:
+        return self.entry_for(example_id).exclusion_reason is None
+
+    def entry_for(self, example_id: str) -> EvidenceAssignmentEntry:
         for entry in self.entries:
             if entry.example_id == example_id:
-                return entry.donor_observation_id
+                return entry
         raise KeyError(example_id)
 
     def validate(self, index: GridEvidenceIndex) -> None:
@@ -576,23 +603,44 @@ class EvidenceAssignments:
         observation_scenes = {
             episode.observation_id: episode.scene_id for episode in index.episodes
         }
-        donor_by_observation: dict[str, Optional[str]] = {}
+        assignment_by_observation: dict[
+            str, Tuple[Optional[str], Optional[EvidenceExclusionReason]]
+        ] = {}
+        eligible_donor_by_observation: dict[str, str] = {}
+        observation_counts_by_scene: dict[str, int] = defaultdict(int)
+        for observation_id, scene_id in observation_scenes.items():
+            observation_counts_by_scene[scene_id] += 1
         for entry in self.entries:
             expected_observation = index.episode(entry.example_id).observation_id
             if entry.observation_id != expected_observation:
                 raise ValueError(f"assignment observation mismatch: {entry.example_id}")
-            previous = donor_by_observation.setdefault(
-                entry.observation_id, entry.donor_observation_id
+            assignment = (entry.donor_observation_id, entry.exclusion_reason)
+            previous = assignment_by_observation.setdefault(
+                entry.observation_id, assignment
             )
-            if previous != entry.donor_observation_id:
+            if previous != assignment:
                 raise ValueError(
                     f"sibling examples have different donors: {entry.observation_id}"
                 )
             donor = entry.donor_observation_id
+            if entry.exclusion_reason is not None:
+                scene_id = observation_scenes[entry.observation_id]
+                if (
+                    self.kind != "within-scene"
+                    or entry.exclusion_reason != "singleton-scene"
+                    or donor is not None
+                    or observation_counts_by_scene[scene_id] != 1
+                ):
+                    raise ValueError(
+                        f"invalid evidence exclusion: {entry.example_id}"
+                    )
+                continue
             if self.kind == "null":
                 if donor is not None:
                     raise ValueError("null assignment must not have donors")
                 continue
+            if donor is None:
+                raise ValueError(f"missing assignment donor: {entry.example_id}")
             if donor not in observation_scenes:
                 raise ValueError(f"unknown donor observation: {donor}")
             if self.kind == "matched" and donor != entry.observation_id:
@@ -614,11 +662,11 @@ class EvidenceAssignments:
                 == observation_scenes[entry.observation_id]
             ):
                 raise ValueError("global donor must belong to another scene")
+            eligible_donor_by_observation[entry.observation_id] = donor
         if self.kind in ("matched", "within-scene", "global"):
-            non_null_donors = [
-                donor for donor in donor_by_observation.values() if donor is not None
-            ]
-            if len(set(non_null_donors)) != len(observation_scenes):
+            if set(eligible_donor_by_observation.values()) != set(
+                eligible_donor_by_observation
+            ):
                 raise ValueError("assignment is not one-to-one at observation level")
 
     def save(self, path: str | Path) -> str:
@@ -645,6 +693,7 @@ class EvidenceAssignments:
                     "example_id": entry.example_id,
                     "observation_id": entry.observation_id,
                     "donor_observation_id": entry.donor_observation_id,
+                    "exclusion_reason": entry.exclusion_reason,
                 },
                 ensure_ascii=True,
                 separators=(",", ":"),
@@ -695,6 +744,7 @@ class EvidenceAssignments:
             "example_id",
             "observation_id",
             "donor_observation_id",
+            "exclusion_reason",
         }
         for line_number, raw in enumerate(raw_lines[1:], start=2):
             if (
@@ -707,6 +757,7 @@ class EvidenceAssignments:
                     raw["donor_observation_id"] is not None
                     and not isinstance(raw["donor_observation_id"], str)
                 )
+                or raw["exclusion_reason"] not in (None, "singleton-scene")
             ):
                 raise ValueError(
                     f"invalid evidence assignment record at line {line_number}: "
@@ -717,6 +768,7 @@ class EvidenceAssignments:
                     example_id=raw["example_id"],
                     observation_id=raw["observation_id"],
                     donor_observation_id=raw["donor_observation_id"],
+                    exclusion_reason=raw["exclusion_reason"],
                 )
             )
         result = cls(
@@ -735,7 +787,10 @@ def assigned_prompt_block(
     example_id: str,
 ) -> str:
     """Resolve one immutable assignment into its model-visible prompt block."""
-    donor = assignments.donor_for(example_id)
+    entry = assignments.entry_for(example_id)
+    if entry.exclusion_reason is not None:
+        raise ValueError(f"excluded evidence assignment has no prompt: {example_id}")
+    donor = entry.donor_observation_id
     if donor is None:
         return "observation evidence = null"
     return index.load_observation(donor).prompt_block()
@@ -957,10 +1012,12 @@ def _within_scene_donors(
     for scene_id, group in sorted(groups.items()):
         ordered = sorted(group)
         if len(ordered) < 2:
-            raise ValueError(
-                f"within-scene assignment requires two observations: {scene_id}"
-            )
+            continue
         donors.update(zip(ordered, _sattolo(ordered, rng)))
+    if not donors:
+        raise ValueError(
+            "within-scene assignment requires two observations in at least one scene"
+        )
     return donors
 
 

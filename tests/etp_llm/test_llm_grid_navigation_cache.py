@@ -1,5 +1,6 @@
 import argparse
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -159,6 +160,81 @@ def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
     assert status["prediction_path"] == str(prediction_path)
     assert "cognitive_map_boxes_path" not in status
     assert status["cognitive_map_raster_path"] == str(raster_path)
+
+
+def test_grid_cache_excludes_unsupported_evidence_examples(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = [
+        {
+            "example_id": example_id,
+            "scene_id": scene_id,
+            "input_text": "find the chair",
+            "instruction": "Find the chair.",
+            "start_direction": (0.0, 1.0),
+            "start_position": (4.0, 5.0),
+        }
+        for example_id, scene_id in (
+            ("excluded", "singleton-scene"),
+            ("eligible", "multi-observation-scene"),
+        )
+    ]
+    args = argparse.Namespace(
+        model_name_or_path="tiny",
+        cache_dir=str(tmp_path),
+        cache_model_key="grid-model",
+        max_input_length=256,
+        max_new_tokens=256,
+        batch_size=1,
+        device="cpu",
+        quiet=True,
+        scale=2,
+        scope="predictor-eval",
+    )
+    scenes = {item["example_id"]: item["scene_id"] for item in dataset}
+    index = SimpleNamespace(
+        evidence_key="oracle",
+        manifest_sha256="manifest-sha",
+        episode=lambda example_id: SimpleNamespace(scene_id=scenes[example_id]),
+    )
+    assignments = SimpleNamespace(
+        kind="within-scene",
+        seed=42,
+        supports=lambda example_id: example_id == "eligible",
+        entry_for=lambda _example_id: SimpleNamespace(
+            donor_observation_id="donor"
+        ),
+    )
+    condition = llm_grid_navigation_cache.EvidenceCondition(
+        index=index,
+        assignments=assignments,
+        assignment_sha256="assignment-sha",
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "assigned_prompt_block",
+        lambda *_args: "observation evidence = test",
+    )
+
+    metrics = llm_grid_navigation_cache.llm_grid_navigation_cache(
+        _CacheGenerationModel(GRID_JSON),
+        _CharChatTokenizer(),
+        dataset,
+        args,
+        dataset_key="R2R",
+        split="val_seen",
+        evidence_condition=condition,
+    )
+
+    assert metrics["indexed_examples"] == 2.0
+    assert metrics["eligible_examples"] == 1.0
+    assert metrics["excluded_examples"] == 1.0
+    assert metrics["generated"] == 1.0
+    assert not (
+        tmp_path
+        / "grid-model/r2r/val_seen/predictions/singleton-scene/excluded.txt"
+    ).exists()
 
 
 def test_llm_grid_navigation_cache_splits_only_the_oom_batch(tmp_path):

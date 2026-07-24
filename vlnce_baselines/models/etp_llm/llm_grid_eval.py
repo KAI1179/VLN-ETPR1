@@ -15,7 +15,12 @@ from tap import Tap
 
 from prior.constants import OBJECT_CATEGORIES
 
-from .llm_grid_evidence import GridEvidence, GridEvidenceIndex
+from .llm_grid_evidence import (
+    EvidenceAssignmentKind,
+    EvidenceAssignments,
+    GridEvidence,
+    GridEvidenceIndex,
+)
 from .llm_grid_train import (
     DEFAULT_GRID_NAMESPACE,
     GRID_SCALE,
@@ -472,6 +477,8 @@ class LLMGridEvalArgs(Tap):
     cognitive_map_namespace: str = DEFAULT_GRID_NAMESPACE
     evidence_root: str = ""
     evidence_key: str = ""
+    population_assignment: Optional[EvidenceAssignmentKind] = None
+    population_assignment_seed: int = 42
     limit: Optional[int] = None
     quiet: bool = False
 
@@ -486,6 +493,10 @@ class LLMGridEvalArgs(Tap):
             raise ValueError(
                 "--evidence-root and --evidence-key must be provided together"
             )
+        if self.population_assignment is not None and not self.evidence_root:
+            raise ValueError("--population-assignment requires evidence")
+        if self.population_assignment_seed < 0:
+            raise ValueError("--population-assignment-seed must be non-negative")
 
 
 def _aggregate_metrics(rows: Sequence[Dict[str, float]]) -> Dict[str, float]:
@@ -661,6 +672,8 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         "val_seen": [],
         "val_unseen": [],
     }
+    excluded_by_split = _write_population_assignments(args, evidence_indexes)
+    excluded_counts_by_split = {split: 0 for split in EVAL_SPLITS}
     episode_evaluations: list[EpisodeEvaluation] = []
     for item in _progress(
         dataset,
@@ -668,6 +681,9 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         quiet=args.quiet,
         total=len(dataset),
     ):
+        if item["example_id"] in excluded_by_split[item["split"]]:
+            excluded_counts_by_split[item["split"]] += 1
+            continue
         prediction_path = llm_navigation_prediction_path(
             item["scene_id"],
             item["example_id"],
@@ -729,6 +745,11 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
     for name, split_rows in (("combined", rows), *rows_by_split.items()):
         split_metrics = _summarize_rows(split_rows)
         metrics.update({f"{name}/{key}": value for key, value in split_metrics.items()})
+    excluded_count = sum(excluded_counts_by_split.values())
+    metrics["excluded_examples"] = float(excluded_count)
+    metrics["combined/excluded_examples"] = float(excluded_count)
+    for split, count in excluded_counts_by_split.items():
+        metrics[f"{split}/excluded_examples"] = float(count)
     _write_metrics(args.output_dir / "metrics.json", metrics)
     _write_episode_evaluations(
         args.output_dir / "episodes.csv",
@@ -739,6 +760,57 @@ def evaluate_cache(args: LLMGridEvalArgs) -> Dict[str, float]:
         episode_evaluations,
     )
     return metrics
+
+
+def _write_population_assignments(
+    args: LLMGridEvalArgs,
+    evidence_indexes: Optional[Dict[str, GridEvidenceIndex]],
+) -> Dict[str, frozenset[str]]:
+    if args.population_assignment is None:
+        return {split: frozenset() for split in EVAL_SPLITS}
+    if evidence_indexes is None:
+        raise ValueError("evaluation population assignment requires evidence")
+
+    split_records = {}
+    excluded_by_split = {}
+    for split in EVAL_SPLITS:
+        index = evidence_indexes[split]
+        assignments = EvidenceAssignments.build(
+            index,
+            args.population_assignment,
+            seed=args.population_assignment_seed,
+        )
+        assignment_path = args.output_dir / "population" / f"{split}.jsonl"
+        assignment_sha256 = assignments.save(assignment_path)
+        excluded = frozenset(
+            entry.example_id
+            for entry in assignments.entries
+            if entry.exclusion_reason is not None
+        )
+        excluded_by_split[split] = excluded
+        split_records[split] = {
+            "evidence_manifest_sha256": index.manifest_sha256,
+            "assignment_sha256": assignment_sha256,
+            "indexed_examples": len(assignments.entries),
+            "eligible_examples": len(assignments.entries) - len(excluded),
+            "excluded_examples": len(excluded),
+        }
+    manifest_path = args.output_dir / "population" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "assignment": args.population_assignment,
+                "assignment_seed": args.population_assignment_seed,
+                "splits": split_records,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return excluded_by_split
 
 
 def _write_episode_evaluations(

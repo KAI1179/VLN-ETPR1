@@ -875,6 +875,9 @@ def _sum_metrics(metrics_by_worker: Sequence[Dict[str, float]]) -> Dict[str, flo
         metrics["oom_split_retries"] = sum(
             float(item.get("oom_split_retries", 0.0)) for item in metrics_by_worker
         )
+    for key in ("indexed_examples", "eligible_examples", "excluded_examples"):
+        if any(key in item for item in metrics_by_worker):
+            metrics[key] = sum(float(item.get(key, 0.0)) for item in metrics_by_worker)
     return metrics
 
 

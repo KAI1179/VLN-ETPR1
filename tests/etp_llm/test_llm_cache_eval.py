@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from prior.bbox import LevelSemanticBoxes, RelevantSemanticBoxes
 from prior.constants import OBJECT_CATEGORIES, REGION_CATEGORIES
 from vlnce_baselines.models.etp_llm import llm_boxes_eval, llm_grid_eval
 from vlnce_baselines.models.etp_llm.boxes_schema import LLMBoxesSpec
+from vlnce_baselines.models.etp_llm.llm_grid_evidence import EvidenceEpisode
 from vlnce_baselines.models.etp_llm.navigation import llm_navigation_prediction_path
 
 EMPTY_BOXES_JSON = (
@@ -18,6 +20,22 @@ EMPTY_GRID_JSON = (
     '{"predicted_regions":[],"predicted_objects":[],"regions":{},"objects":{},'
     '"direction_vectors":[[0,0],[0,0],[0,0],[0,0],[0,0]]}'
 )
+
+
+class _PopulationIndex:
+    manifest_sha256 = "evidence-manifest"
+
+    def __init__(self) -> None:
+        self.episodes = (
+            EvidenceEpisode("excluded", "scene-a", "obs-a"),
+            EvidenceEpisode("eligible-1", "scene-b", "obs-b1"),
+            EvidenceEpisode("eligible-2", "scene-b", "obs-b2"),
+        )
+
+    def episode(self, example_id: str) -> EvidenceEpisode:
+        return next(
+            episode for episode in self.episodes if episode.example_id == example_id
+        )
 
 
 def _empty_relevant() -> RelevantSemanticBoxes:
@@ -176,3 +194,24 @@ def test_grid_eval_scores_cache_and_counts_missing_predictions(
     assert np.isclose(float(episodes[0]["target_spatial_density"]), 1 / 2500)
     assert episodes[1]["missing_prediction"] == "1.0"
     assert (args.output_dir / "diagnostics.json").is_file()
+
+
+def test_grid_eval_writes_hash_pinned_common_population(tmp_path: Path) -> None:
+    args = llm_grid_eval.LLMGridEvalArgs()
+    args.output_dir = tmp_path
+    args.population_assignment = "within-scene"
+    args.population_assignment_seed = 42
+    indexes = {split: _PopulationIndex() for split in llm_grid_eval.EVAL_SPLITS}
+
+    excluded = llm_grid_eval._write_population_assignments(args, indexes)
+
+    assert excluded == {
+        "val_seen": frozenset({"excluded"}),
+        "val_unseen": frozenset({"excluded"}),
+    }
+    manifest = json.loads((tmp_path / "population/manifest.json").read_text())
+    assert manifest["assignment"] == "within-scene"
+    assert manifest["splits"]["val_seen"]["indexed_examples"] == 3
+    assert manifest["splits"]["val_seen"]["eligible_examples"] == 2
+    assert manifest["splits"]["val_seen"]["excluded_examples"] == 1
+    assert len(manifest["splits"]["val_seen"]["assignment_sha256"]) == 64
