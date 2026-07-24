@@ -799,20 +799,6 @@ Drop Rate By `max_new_tokens`:
 - unseen IoU 在 epoch 2 后进入平台，seen IoU 却继续升至 epoch 9 的 0.299，seen–unseen gap 同期扩大到 0.167，清楚支持继续训练增强 scene memorization 而非 unseen 空间泛化。epoch 5 是 schema validity 明显下降的独立格式异常点。
 - episode 级分析进一步显示 instruction 长度与 unseen IoU 几乎无关（`r=-0.028`），target 空间密度有中等负相关（`r=-0.280`），而类别 F1 与 unseen IoU 的相关性很弱；scene novelty 与输入不可辨识性仍是主要解释。
 
-## 07/24（起点观测边界 oracle evidence）
-
-- [详细记录：LLM-Grid 起点观测边界 oracle evidence](daily/2026-07-24.md)
-- 已选择 causal-diagnostic first：用受 `t=0` 视野与遮挡限制、且与 instruction/goal/GT trajectory 无关的 semantic+depth oracle evidence 检验 input insufficiency；oracle 标签只作为 predictor 诊断上界，不作为导航候选。
-- 保持 full-grid target、LLM JSON、navigation-ready `.npz`、Try5 与 navigation trainer 不变；第一轮只改变 predictor input/cache generation，并对 matched/null/within-scene shuffle/global shuffle 做显式 manifest。
-- Uncertainty-Aware VLN 论文建模的是 observation-built online Gaussian map 上的局部 perceptual reliability，不区分 free/unknown、没有 multiple full-layout hypotheses，也未用 matched controls 隔离 information gain 与 architecture gain；第一轮只借鉴 explicit observed/unknown 表示，不引入 Gaussian map、uncertainty output 或 online map fusion。
-- 当前 frozen waypoint sidecar 可低成本复用，但实际为 depth-only，保留作 deployable geometry control；Habitat semantic+depth renderer 可作为 oracle 起点，但 37-channel projection、free/unknown mask 与 vocabulary coverage 仍需原型验证。
-- 起点 oracle 原型、strict artifact/index、四类 observation-level assignment、train/cache/eval wiring 已完成。R2R `val_unseen` 50-observation sample 对应 222 examples，生成约 1 分 50 秒，artifact 平均 3.5 KB；t=0 observed cells 覆盖 full target semantic support 的 64.1%，直接 evidence 在 observed target 上 recall 67.2%，但对 route-relevant target precision 仅 17.1%，因此必须由 instruction-conditioned predictor筛选，不能直接复制。
-- 原始 evidence JSON 严重超 prompt budget；exact compact row-run grammar 并去除与 observed/free mask 重复的 broad environment labels 后，sample median/P90/max prompt 为 1,229/2,049/2,580 tokens，3,072 prompt + 4,096 sequence budget 下 sample 无 truncation。下一步先在 login node 并行生成六个 R2R/RxR split caches，再跑 seed 42 的 2-epoch matched screen 与 matched/null/within/global controls。
-- 完整 R2R `val_unseen` 的 prompt median/P90/max 为 1,246/1,986/2,727；仅 1/1,839（0.054%）因 combined sequence 4,118 超预算。Observed mask 覆盖 70.2% target semantic cells；实际 prompt semantic evidence precision/recall 为 16.1%/25.5%。Evaluator controls 已禁止读取 prompt 未包含的 raw environmental labels，否则 recall 会虚增到 48.2%。
-- RxR `val_unseen` 的 fixed raster corpus 为 evidence index 11,006 episodes 中的 3,669 examples；prompt median/P90/max 为 1,225/2,013/2,800。原 4,096 sequence budget 会丢 4.69%，因此 screen 改为 completion 4,096、sequence 5,120；该 split 只剩 0.136% 超预算，train corpus 仍由 2% guard fail-fast。
-- Remote cache array `1182682`（六个 split task，各 1 GPU）已完成四个 validation tasks；R2R `val_unseen` 为 393 observations/1,839 examples、9 分 30 秒，manifest/index 与抽查 artifact hash 一致。R2R/RxR train tasks 继续运行。
-- Matched training `1182802`（8 GPU、seed 42、2 epochs）依赖完整 cache；四条件 cache/eval array `1182803`（matched/null/within-scene/global，各 2 GPUs）再依赖 training。旧 pending jobs `1182689`/`1182694` 的 Slurm snapshots 保留旧 budget，均未运行即取消并替代。
-
 ## 07/23（mentioned/unmentioned 空间与类别）
 
 - [详细记录：LLM-Grid mentioned/unmentioned 空间与类别分析](daily/2026-07-23.md)
@@ -829,6 +815,20 @@ Drop Rate By `max_new_tokens`:
 - paired scene-cluster bootstrap 已完成：epoch 4/8 相对 epoch 2 的 `val_unseen` Raster IoU delta 均不能区分于零；contract-v2 相对旧 epoch 2 也不能区分于零。详细 matched 指标见[今日记录](daily/2026-07-23.md#matched-result)。
 - 增加输入的首选最小改动是只改 cache generation：把起点 `t=0` panorama 投影成带 observed/unknown mask 的稀疏观测证据，逐级比较 free-space、semantic inventory 与 spatial semantic cells，保持 `.npz`、Try5 和 navigation 接口不变。详见[方案与防泄漏约束](daily/2026-07-23.md#增加输入但保持导航接口不变)。
 - 下一步：先统一固定训练全部 RNG，再用 paired run seeds 依次比较 full-grid、mentioned-only absolute grid、mentioned-only start-centered/heading-normalized route corridor；若仍不足，再在不改 navigation 接口的前提下逐级加入 `t=0` 观测。只有超过 prior、对输入 shuffle 敏感且缩小 seen/unseen gap 的方案才进入下游导航实验。
+
+## 07/24（起点观测边界 oracle evidence）
+
+- [详细记录：LLM-Grid 起点观测边界 oracle evidence](daily/2026-07-24.md)
+- 已选择 causal-diagnostic first：用受 `t=0` 视野与遮挡限制、且与 instruction/goal/GT trajectory 无关的 semantic+depth oracle evidence 检验 input insufficiency；oracle 标签只作为 predictor 诊断上界，不作为导航候选。
+- 保持 full-grid target、LLM JSON、navigation-ready `.npz`、Try5 与 navigation trainer 不变；第一轮只改变 predictor input/cache generation，并对 matched/null/within-scene shuffle/global shuffle 做显式 manifest。
+- Uncertainty-Aware VLN 论文建模的是 observation-built online Gaussian map 上的局部 perceptual reliability，不区分 free/unknown、没有 multiple full-layout hypotheses，也未用 matched controls 隔离 information gain 与 architecture gain；第一轮只借鉴 explicit observed/unknown 表示，不引入 Gaussian map、uncertainty output 或 online map fusion。
+- 当前 frozen waypoint sidecar 可低成本复用，但实际为 depth-only，保留作 deployable geometry control；Habitat semantic+depth renderer 可作为 oracle 起点，但 37-channel projection、free/unknown mask 与 vocabulary coverage 仍需原型验证。
+- 起点 oracle 原型、strict artifact/index、四类 observation-level assignment、train/cache/eval wiring 已完成。R2R `val_unseen` 50-observation sample 对应 222 examples，生成约 1 分 50 秒，artifact 平均 3.5 KB；t=0 observed cells 覆盖 full target semantic support 的 64.1%，直接 evidence 在 observed target 上 recall 67.2%，但对 route-relevant target precision 仅 17.1%，因此必须由 instruction-conditioned predictor筛选，不能直接复制。
+- 原始 evidence JSON 严重超 prompt budget；exact compact row-run grammar 并去除与 observed/free mask 重复的 broad environment labels 后，sample median/P90/max prompt 为 1,229/2,049/2,580 tokens，3,072 prompt + 4,096 sequence budget 下 sample 无 truncation。下一步先在 login node 并行生成六个 R2R/RxR split caches，再跑 seed 42 的 2-epoch matched screen 与 matched/null/within/global controls。
+- 完整 R2R `val_unseen` 的 prompt median/P90/max 为 1,246/1,986/2,727；仅 1/1,839（0.054%）因 combined sequence 4,118 超预算。Observed mask 覆盖 70.2% target semantic cells；实际 prompt semantic evidence precision/recall 为 16.1%/25.5%。Evaluator controls 已禁止读取 prompt 未包含的 raw environmental labels，否则 recall 会虚增到 48.2%。
+- RxR `val_unseen` 的 fixed raster corpus 为 evidence index 11,006 episodes 中的 3,669 examples；prompt median/P90/max 为 1,225/2,013/2,800。原 4,096 sequence budget 会丢 4.69%，因此 screen 改为 completion 4,096、sequence 5,120；该 split 只剩 0.136% 超预算，train corpus 仍由 2% guard fail-fast。
+- Remote cache array `1182682`（六个 split task，各 1 GPU）已完成四个 validation tasks；R2R `val_unseen` 为 393 observations/1,839 examples、9 分 30 秒，manifest/index 与抽查 artifact hash 一致。R2R/RxR train tasks 继续运行。
+- Matched training `1182802`（8 GPU、seed 42、2 epochs）依赖完整 cache；四条件 cache/eval array `1182803`（matched/null/within-scene/global，各 2 GPUs）再依赖 training。旧 pending jobs `1182689`/`1182694` 的 Slurm snapshots 保留旧 budget，均未运行即取消并替代。
 
 # 实验
 
