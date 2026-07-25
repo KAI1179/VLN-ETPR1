@@ -26,6 +26,15 @@ The main agent shall act as the leader, decomposing and dispatching jobs to spec
 - Some APIs for `prior` are already cached, so do not cache again. Examples include `SceneSemanticBoxes.from_scene_id` and `ConnectivityEntry.map_for`.
 - Follow "Cyber Mysophobia" skill for new code and API design.
 
+## Git workflow
+
+- Prefix experiment-specific branches with `exp/`, for example
+  `exp/llm-grid-r2r-only-sweep`.
+- Keep one-off experiment code, configurations, and launchers on the experiment
+  branch. Merge reusable or accepted infrastructure into `main`.
+- Verified experiment notes and results may be committed to `main` even when
+  their implementation remains on an `exp/` branch.
+
 ## Experiment Note Policy
 
 - Use Chinese in `docs/NOTE.md` and `docs/daily/`, English everywhere else, including when communicating.
