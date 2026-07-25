@@ -103,7 +103,7 @@ def select_common_examples(
 def write_comparison_sheet(
     columns: Sequence[tuple[str, Path]], output_path: Path
 ) -> None:
-    """Write a titled horizontal image sheet from the supplied PNG columns."""
+    """Write a titled two-column image sheet from the supplied PNG columns."""
     if not columns:
         raise ValueError("columns must not be empty")
     images = []
@@ -116,23 +116,30 @@ def write_comparison_sheet(
     column_width = max(image.width for _, image in images)
     image_height = max(image.height for _, image in images)
     title_height = 30
+    grid_columns = min(2, len(images))
+    grid_rows = (len(images) + grid_columns - 1) // grid_columns
+    sheet_width = column_width * grid_columns
     sheet = Image.new(
         "RGB",
-        (column_width * len(images), title_height + image_height),
+        (sheet_width, grid_rows * (title_height + image_height)),
         color="white",
     )
     drawer = ImageDraw.Draw(sheet)
     for index, (title, image) in enumerate(images):
-        x_offset = index * column_width
+        row, column = divmod(index, grid_columns)
+        final_unpaired_image = index == len(images) - 1 and len(images) % 2
+        tile_width = sheet_width if final_unpaired_image else column_width
+        x_offset = 0 if final_unpaired_image else column * column_width
+        y_offset = row * (title_height + image_height)
         title_bounds = drawer.textbbox((0, 0), title)
         title_width = title_bounds[2] - title_bounds[0]
         drawer.text(
-            (x_offset + (column_width - title_width) // 2, 8),
+            (x_offset + (tile_width - title_width) // 2, y_offset + 8),
             title,
             fill="black",
         )
-        image_x = x_offset + (column_width - image.width) // 2
-        image_y = title_height + (image_height - image.height) // 2
+        image_x = x_offset + (tile_width - image.width) // 2
+        image_y = y_offset + title_height + (image_height - image.height) // 2
         sheet.paste(image, (image_x, image_y))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

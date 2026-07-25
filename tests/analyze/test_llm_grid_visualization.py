@@ -68,7 +68,9 @@ def test_select_common_examples_rejects_unexpected_common_count(
         select_common_examples(historical_root, {}, expected_count=2)
 
 
-def test_write_comparison_sheet_writes_png(tmp_path: Path) -> None:
+def test_write_comparison_sheet_arranges_five_columns_in_readable_grid(
+    tmp_path: Path,
+) -> None:
     columns = []
     for index in range(5):
         path = tmp_path / "columns" / f"column-{index}.png"
@@ -79,3 +81,5 @@ def test_write_comparison_sheet_writes_png(tmp_path: Path) -> None:
     write_comparison_sheet(columns, output_path)
 
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(output_path) as sheet:
+        assert sheet.size == (16, 114)
