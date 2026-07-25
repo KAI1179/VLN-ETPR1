@@ -444,59 +444,6 @@ def test_grid_cache_scope_parser_rejects_unknown_scope():
         llm_grid_navigation_cache.parse_args(["--scope", "unknown"])
 
 
-def test_legacy_r2r_prompt_contract_is_explicit_and_propagated(tmp_path):
-    prompt_path = tmp_path / "system-prompt.md"
-    prompt_path.write_text("historical system prompt\n", encoding="utf-8")
-    args = llm_grid_navigation_cache.parse_args([
-        "--model-name-or-path",
-        "historical-checkpoint",
-        "--scope",
-        "predictor-eval",
-        "--prompt-contract",
-        "r2r-legacy-v1",
-        "--system-prompt-path",
-        str(prompt_path),
-    ])
-
-    assert llm_grid_navigation_cache._generation_system_prompt(args) == (
-        "historical system prompt"
-    )
-    assert llm_grid_navigation_cache._legacy_r2r_input(
-        "start x = 1.2 | start z = 3.4 | "
-        "start direction right = -0.5 | start direction up = 0.75 | "
-        "instruction turn left"
-    ) == (
-        "dataset R2R | start x = 1.2 | start z = 3.4 | "
-        "direction x = -0.5 | direction z = 0.75 | instruction turn left"
-    )
-
-    command = llm_grid_navigation_cache._worker_command(
-        args,
-        worker_count=2,
-        worker_index=1,
-        worker_shard_seed="seed",
-    )
-    assert command[command.index("--prompt-contract") + 1] == "r2r-legacy-v1"
-    assert command[command.index("--system-prompt-path") + 1] == str(prompt_path)
-
-
-def test_legacy_r2r_prompt_contract_rejects_implicit_prompt_selection():
-    with pytest.raises(ValueError, match="requires --system-prompt-path"):
-        llm_grid_navigation_cache.parse_args([
-            "--scope",
-            "predictor-eval",
-            "--prompt-contract",
-            "r2r-legacy-v1",
-        ])
-    with pytest.raises(ValueError, match="requires --prompt-contract"):
-        llm_grid_navigation_cache.parse_args([
-            "--scope",
-            "predictor-eval",
-            "--system-prompt-path",
-            "prompt.md",
-        ])
-
-
 def test_predictor_eval_scope_aggregates_only_eval_splits():
     assert llm_grid_navigation_cache._grid_cache_split_keys("predictor-eval") == [
         ("R2R", "val_seen"),

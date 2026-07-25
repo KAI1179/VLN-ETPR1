@@ -68,7 +68,6 @@ from .llm_grid_evidence import (
 
 GRID_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
 GridCacheScope = Literal["all", "predictor-eval"]
-GridPromptContract = Literal["current", "r2r-legacy-v1"]
 PREDICTOR_EVAL_SPLITS = ("val_seen", "val_unseen")
 
 
@@ -97,8 +96,6 @@ class LLMGridNavigationCacheArgs(Tap):
     worker_index: int = 0
     worker_shard_seed: str = ""
     scope: GridCacheScope = "all"
-    prompt_contract: GridPromptContract = "current"
-    system_prompt_path: str = ""
     evidence_root: str = ""
     evidence_key: str = ""
     evidence_assignment: EvidenceAssignmentKind = "matched"
@@ -123,20 +120,6 @@ class LLMGridNavigationCacheArgs(Tap):
             )
         if self.evidence_assignment_seed < 0:
             raise ValueError("--evidence-assignment-seed must be non-negative")
-        if self.prompt_contract == "r2r-legacy-v1":
-            if self.scope != "predictor-eval":
-                raise ValueError(
-                    "r2r-legacy-v1 prompt contract requires --scope predictor-eval"
-                )
-            if not self.system_prompt_path:
-                raise ValueError(
-                    "r2r-legacy-v1 prompt contract requires --system-prompt-path"
-                )
-        elif self.system_prompt_path:
-            raise ValueError(
-                "--system-prompt-path requires "
-                "--prompt-contract r2r-legacy-v1"
-            )
 
 
 def llm_grid_navigation_cache(
@@ -173,7 +156,7 @@ def llm_grid_navigation_cache(
     if hasattr(model, "eval"):
         model.eval()
 
-    system_prompt = _generation_system_prompt(args)
+    system_prompt = load_system_prompt(scale=args.scale)
     split_dir = llm_navigation_split_dir(
         dataset_key,
         split,
@@ -208,9 +191,6 @@ def llm_grid_navigation_cache(
                 cached += 1
                 continue
             item = original_item
-            if getattr(args, "prompt_contract", "current") == "r2r-legacy-v1":
-                item = dict(item)
-                item["input_text"] = _legacy_r2r_input(item["input_text"])
             if evidence_condition is not None:
                 recipient = evidence_condition.index.episode(item["example_id"])
                 if recipient.scene_id != item["scene_id"]:
@@ -502,7 +482,6 @@ def _write_grid_navigation_cache_manifest(
             "cache_model_key": args.cache_model_key,
             "max_input_length": args.max_input_length,
             "max_new_tokens": args.max_new_tokens,
-            "prompt_contract": getattr(args, "prompt_contract", "current"),
             "system_prompt_sha256": hashlib.sha256(
                 system_prompt.encode("utf-8")
             ).hexdigest(),
@@ -650,8 +629,6 @@ def _worker_command(
         str(args.scale),
         "--scope",
         str(args.scope),
-        "--prompt-contract",
-        str(args.prompt_contract),
         "--worker-count",
         str(worker_count),
         "--worker-index",
@@ -670,38 +647,11 @@ def _worker_command(
             "--evidence-assignment-seed",
             str(args.evidence_assignment_seed),
         ])
-    if args.system_prompt_path:
-        command.extend(["--system-prompt-path", args.system_prompt_path])
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])
     if args.quiet:
         command.append("--quiet")
     return command
-
-
-def _generation_system_prompt(args: Any) -> str:
-    if getattr(args, "prompt_contract", "current") == "current":
-        return load_system_prompt(scale=args.scale)
-    path = Path(args.system_prompt_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing legacy system prompt: {path}")
-    return path.read_text(encoding="utf-8").strip()
-
-
-def _legacy_r2r_input(current_input: str) -> str:
-    right = "start direction right = "
-    up = "start direction up = "
-    if right not in current_input or up not in current_input:
-        raise ValueError(
-            "current input does not contain the direction fields required "
-            "for r2r-legacy-v1 conversion"
-        )
-    return (
-        "dataset R2R | "
-        + current_input.replace(right, "direction x = ", 1).replace(
-            up, "direction z = ", 1
-        )
-    )
 
 
 if __name__ == "__main__":

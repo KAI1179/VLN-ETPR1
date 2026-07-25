@@ -111,23 +111,3 @@ def test_llm_grid_contract_v2_launchers_isolate_epoch_2_control():
     assert "artifacts/system_prompt.md" in evaluation
     assert "checkpoints/epoch-2" in evaluation
     assert "--scope predictor-eval" in evaluation
-
-
-def test_r2r_only_grid_sweep_uses_isolated_legacy_contract():
-    generation = Path(
-        "scripts/submit/llm-grid-r2r-only-cache-sweep-r1p5.sh"
-    ).read_text(encoding="utf-8")
-    evaluation = Path(
-        "scripts/submit/llm-grid-r2r-only-eval-sweep-r1p5.sh"
-    ).read_text(encoding="utf-8")
-
-    assert "#SBATCH --array=1-10%10" in generation
-    assert "#SBATCH --gpus=1" in generation
-    assert "--scope predictor-eval" in generation
-    assert "--prompt-contract r2r-legacy-v1" in generation
-    assert "--system-prompt-path" in generation
-    assert "6de023cedc1409ce82c5d93d52083b8b980f788b380ea475c69451370cf28409" in (
-        generation
-    )
-    assert "--max-new-tokens 4096" in generation
-    assert "r2r-only-checkpoint-sweep-r1p5" in evaluation
