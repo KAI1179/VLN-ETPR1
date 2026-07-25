@@ -19,31 +19,38 @@ Downstream analysis does not belong in
 `vlnce_baselines/models/etp_llm/`. That package retains training, prediction,
 schema, and evaluator primitives.
 
-The analysis lives in a focused subpackage:
+Reusable analysis code lives directly under `prior/analyze`, while thin
+date-specific entry points live in a valid Python package named with the
+`dYYYY_MM_DD` convention:
 
 ```text
-prior/analyze/llm_grid/
-├── __main__.py
-├── metrics.py
-├── plots.py
-└── samples.py
+prior/analyze/
+├── batch_vis.py
+├── llm_grid_eval_records.py
+├── llm_grid_eval_plots.py
+└── d2026_07_25/
+    ├── __init__.py
+    ├── plot_llm_grid_sanity.py
+    └── visualize_llm_grid.py
 ```
 
-`metrics.py` owns completed evaluator-artifact loading, population validation,
-diagnostic baselines, and tabular exports. `plots.py` owns quantitative
-figures. `samples.py` owns fixed qualitative-example selection, rendering, and
-comparison sheets. `__main__.py` provides the `tap.Tap` orchestration CLI.
-`prior/analyze/batch_vis.py` may gain the smallest reusable API needed to
-render an explicit set of example IDs. No new analysis module is added to
-`etp_llm`.
+`llm_grid_eval_records.py` owns completed evaluator-artifact loading,
+population validation, diagnostic baselines, and tabular exports.
+`llm_grid_eval_plots.py` owns reusable quantitative figures.
+`plot_llm_grid_sanity.py` fixes today's experiment paths and orchestrates the
+quantitative report. `visualize_llm_grid.py` fixes today's qualitative sample
+set, renders it, and produces comparison sheets. Both entry points use
+`tap.Tap`. `prior/analyze/batch_vis.py` may gain the smallest reusable API
+needed to render an explicit set of example IDs. No new analysis module is
+added to `etp_llm`.
 
 Tests mirror those responsibilities:
 
 ```text
 tests/analyze/
-├── test_llm_grid_metrics.py
-├── test_llm_grid_plots.py
-└── test_llm_grid_samples.py
+├── test_llm_grid_eval_records.py
+├── test_llm_grid_eval_plots.py
+└── test_llm_grid_visualization.py
 ```
 
 Complete generated artifacts go under:
