@@ -193,9 +193,106 @@ def test_load_episode_records_rejects_out_of_range_category_counts(
     )
     with pytest.raises(
         ValueError,
-        match="object prediction partitions exceed object_category_predicted_count",
+        match="object prediction partitions must equal object_category_predicted_count",
     ):
         load_episode_records(1, partition_path)
+
+
+@pytest.mark.parametrize(
+    ("kind", "limiting_count", "record"),
+    (
+        (
+            "object",
+            "predicted",
+            _record(
+                object_target=2,
+                object_predicted=1,
+                object_true_positive=2,
+            ),
+        ),
+        (
+            "object",
+            "target",
+            _record(
+                object_target=1,
+                object_predicted=2,
+                object_true_positive=2,
+            ),
+        ),
+        (
+            "region",
+            "predicted",
+            _record(
+                region_target=2,
+                region_predicted=1,
+                region_true_positive=2,
+            ),
+        ),
+        (
+            "region",
+            "target",
+            _record(
+                region_target=1,
+                region_predicted=2,
+                region_true_positive=2,
+            ),
+        ),
+    ),
+)
+def test_load_episode_records_rejects_true_positives_above_input_counts(
+    tmp_path: Path,
+    kind: str,
+    limiting_count: str,
+    record: EpisodeRecord,
+) -> None:
+    path = tmp_path / f"{kind}-{limiting_count}.csv"
+    _write_records(path, [record])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"{kind}_category_true_positive_count must not exceed "
+            f"{kind}_category_{limiting_count}_count"
+        ),
+    ):
+        load_episode_records(1, path)
+
+
+@pytest.mark.parametrize(
+    ("kind", "record"),
+    (
+        (
+            "object",
+            _record(
+                object_predicted=2,
+                mentioned_object_predicted=1,
+            ),
+        ),
+        (
+            "region",
+            _record(
+                region_predicted=2,
+                mentioned_region_predicted=1,
+            ),
+        ),
+    ),
+)
+def test_load_episode_records_requires_complete_prediction_partitions(
+    tmp_path: Path,
+    kind: str,
+    record: EpisodeRecord,
+) -> None:
+    path = tmp_path / f"{kind}-incomplete-partitions.csv"
+    _write_records(path, [record])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"{kind} prediction partitions must equal "
+            f"{kind}_category_predicted_count"
+        ),
+    ):
+        load_episode_records(1, path)
 
 
 def _populations() -> Mapping[int, tuple[EpisodeRecord, ...]]:

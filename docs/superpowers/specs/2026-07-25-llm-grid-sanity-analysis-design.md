@@ -126,15 +126,15 @@ historical R2R-only images while avoiding cherry-picking by the new analysis.
 
 For every selected example, render the mixed-model prediction against the same
 ground truth at epochs 1, 2, 5, and 10. Also produce a comparison sheet with
-five labeled columns:
+five labeled panels arranged in a readable grid:
 
-1. Historical R2R-only image.
-2. Mixed epoch 1.
-3. Mixed epoch 2.
-4. Mixed epoch 5.
-5. Mixed epoch 10.
+1. Historical R2R-only panel.
+2. Mixed epoch 1 panel.
+3. Mixed epoch 2 panel.
+4. Mixed epoch 5 panel.
+5. Mixed epoch 10 panel.
 
-The R2R-only column is labeled as a historical sample whose exact checkpoint
+The R2R-only panel is labeled as a historical sample whose exact checkpoint
 provenance is unavailable. It must not be presented as an epoch-matched
 quantitative comparison.
 
@@ -239,7 +239,8 @@ The output directory contains:
   and predicted category-count histograms.
 - PNG figures for each quantitative check.
 - A manifest of the 17 qualitative example IDs and source paths.
-- Per-epoch renderings and five-column comparison sheets.
+- Per-epoch renderings and comparison sheets with five labeled panels arranged
+  in a readable grid.
 
 Every artifact is deterministic for identical inputs. Existing caches and
 evaluator results remain read-only.

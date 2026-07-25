@@ -105,6 +105,33 @@ def _parse_schema_valid(value: str, row_number: int) -> bool:
     return bool(number)
 
 
+def _validate_category_counts(
+    *,
+    kind: str,
+    target: int,
+    predicted: int,
+    true_positive: int,
+    mentioned_predicted: int,
+    unmentioned_predicted: int,
+    row_number: int,
+) -> None:
+    if true_positive > predicted:
+        raise ValueError(
+            f"row {row_number}: {kind}_category_true_positive_count must not exceed "
+            f"{kind}_category_predicted_count"
+        )
+    if true_positive > target:
+        raise ValueError(
+            f"row {row_number}: {kind}_category_true_positive_count must not exceed "
+            f"{kind}_category_target_count"
+        )
+    if mentioned_predicted + unmentioned_predicted != predicted:
+        raise ValueError(
+            f"row {row_number}: {kind} prediction partitions must equal "
+            f"{kind}_category_predicted_count"
+        )
+
+
 def load_episode_records(epoch: int, path: Path) -> Tuple[EpisodeRecord, ...]:
     """Load one evaluator CSV while preserving invalid zero-IoU episodes."""
     with path.open(encoding="utf-8", newline="") as file:
@@ -197,24 +224,24 @@ def _record_from_row(
             10,
         ),
     )
-    if (
-        record.mentioned_object_predicted + record.unmentioned_object_predicted
-        > record.object_predicted
-    ):
-        raise ValueError(
-            "row "
-            f"{row_number}: object prediction partitions exceed "
-            "object_category_predicted_count"
-        )
-    if (
-        record.mentioned_region_predicted + record.unmentioned_region_predicted
-        > record.region_predicted
-    ):
-        raise ValueError(
-            "row "
-            f"{row_number}: region prediction partitions exceed "
-            "region_category_predicted_count"
-        )
+    _validate_category_counts(
+        kind="object",
+        target=record.object_target,
+        predicted=record.object_predicted,
+        true_positive=record.object_true_positive,
+        mentioned_predicted=record.mentioned_object_predicted,
+        unmentioned_predicted=record.unmentioned_object_predicted,
+        row_number=row_number,
+    )
+    _validate_category_counts(
+        kind="region",
+        target=record.region_target,
+        predicted=record.region_predicted,
+        true_positive=record.region_true_positive,
+        mentioned_predicted=record.mentioned_region_predicted,
+        unmentioned_predicted=record.unmentioned_region_predicted,
+        row_number=row_number,
+    )
     return record
 
 

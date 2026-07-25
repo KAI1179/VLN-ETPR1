@@ -209,7 +209,7 @@ def test_sanity_analysis_writes_quantitative_artifacts_and_postpones_r2r_compari
     comparison = summary["r2r_only_comparison"]
     assert comparison["status"] == "postponed"
     assert comparison["missing_cache"] == (
-        "data/llm_navigation/llm-grid-r2r-only-r1p5-direction5-s2-tagfree"
+        "data/llm_navigation/llm-grid-r2r-legacy-r1p5-direction5-scale2"
     )
     assert comparison["missing_evaluator_outputs"] == (
         "outputs/llm_grid_eval/r2r-only-checkpoint-sweep-r1p5/runs/*/episodes.csv"

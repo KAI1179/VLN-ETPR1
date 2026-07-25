@@ -405,9 +405,10 @@ class VisualizationArgs(Tap):
 
 `select_common_examples` requires exactly 17 common historical `val_unseen`
 identities for the default run. `run_visualization` renders each epoch into
-`output_root/epoch-N`, writes one five-column sheet per example, and writes
+`output_root/epoch-N`, writes one sheet with five labeled panels arranged in a
+readable grid per example, and writes
 `qualitative_examples.json` containing all source and output paths. Historical
-columns are titled `Historical R2R-only (checkpoint unknown)`.
+panels are titled `Historical R2R-only (checkpoint unknown)`.
 
 - [ ] **Step 7: Run tests and quality checks**
 

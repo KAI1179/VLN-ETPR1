@@ -7,6 +7,8 @@ import pytest
 from PIL import Image
 
 from prior.analyze.d2026_07_25.visualize_llm_grid import (
+    VisualizationArgs,
+    run_visualization,
     select_common_examples,
     write_comparison_sheet,
 )
@@ -68,7 +70,7 @@ def test_select_common_examples_rejects_unexpected_common_count(
         select_common_examples(historical_root, {}, expected_count=2)
 
 
-def test_write_comparison_sheet_arranges_five_columns_in_readable_grid(
+def test_write_comparison_sheet_arranges_five_panels_in_readable_grid(
     tmp_path: Path,
 ) -> None:
     columns = []
@@ -83,3 +85,39 @@ def test_write_comparison_sheet_arranges_five_columns_in_readable_grid(
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     with Image.open(output_path) as sheet:
         assert sheet.size == (16, 114)
+
+
+@pytest.mark.parametrize(
+    ("overlapping_root", "historical_relative", "output_relative"),
+    (
+        ("output_root", "historical", "historical"),
+        ("output_root", "historical/nested", "historical"),
+        ("output_root", "historical", "historical/nested"),
+        ("docs_image_root", "historical", "historical"),
+        ("docs_image_root", "historical/nested", "historical"),
+        ("docs_image_root", "historical", "historical/nested"),
+    ),
+)
+def test_run_visualization_rejects_historical_output_overlap_before_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overlapping_root: str,
+    historical_relative: str,
+    output_relative: str,
+) -> None:
+    args = VisualizationArgs()
+    args.historical_root = tmp_path / historical_relative
+    args.output_root = tmp_path / "separate-output"
+    args.docs_image_root = tmp_path / "separate-docs"
+    setattr(args, overlapping_root, tmp_path / output_relative)
+
+    def fail_if_called(*args: object, **kwargs: object) -> tuple[Path, ...]:
+        raise AssertionError("renderer called before overlap rejection")
+
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_25.visualize_llm_grid.render_prediction_paths",
+        fail_if_called,
+    )
+
+    with pytest.raises(ValueError, match="historical root overlaps"):
+        run_visualization(args)

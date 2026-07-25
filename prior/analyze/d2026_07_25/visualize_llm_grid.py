@@ -158,8 +158,31 @@ def _epoch_raster_roots(navigation_root: Path) -> dict[int, Path]:
     }
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    resolved_first = first.resolve()
+    resolved_second = second.resolve()
+    return (
+        resolved_first == resolved_second
+        or resolved_first in resolved_second.parents
+        or resolved_second in resolved_first.parents
+    )
+
+
+def _refuse_historical_overwrite(args: VisualizationArgs) -> None:
+    for output_name, output_root in (
+        ("output root", args.output_root),
+        ("docs image root", args.docs_image_root),
+    ):
+        if _paths_overlap(args.historical_root, output_root):
+            raise ValueError(
+                f"historical root overlaps {output_name}: "
+                f"{args.historical_root} and {output_root}"
+            )
+
+
 def run_visualization(args: VisualizationArgs) -> dict[str, object]:
-    """Render all fixed epoch comparisons and their five-column sheet manifest."""
+    """Render all fixed epoch comparisons and their readable-grid sheet manifest."""
+    _refuse_historical_overwrite(args)
     raster_roots = _epoch_raster_roots(args.navigation_root)
     examples = select_common_examples(
         args.historical_root,
