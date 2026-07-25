@@ -85,45 +85,48 @@ def plot_iou_survival(
     _require_records(records_by_epoch)
     rows = iou_survival_rows(records_by_epoch, thresholds=thresholds)
     figure, axes = plt.subplots(1, 2, figsize=(12, 4), squeeze=False)
-    for split_index, split in enumerate(_SPLITS):
-        axis = axes[0, split_index]
-        population = sum(
-            record.split == split for record in records_by_epoch[_EPOCHS[0]]
-        )
-        if population == 0:
-            raise ValueError(f"no records for split {split!r}")
-        for epoch_index, epoch in enumerate(_EPOCHS):
-            survival_rows = sorted(
-                (
-                    row
-                    for row in rows
-                    if row["epoch"] == epoch and row["split"] == split
+    try:
+        for split_index, split in enumerate(_SPLITS):
+            axis = axes[0, split_index]
+            population = sum(
+                record.split == split for record in records_by_epoch[_EPOCHS[0]]
+            )
+            if population == 0:
+                raise ValueError(f"no records for split {split!r}")
+            for epoch_index, epoch in enumerate(_EPOCHS):
+                survival_rows = sorted(
+                    (
+                        row
+                        for row in rows
+                        if row["epoch"] == epoch and row["split"] == split
+                    ),
+                    key=lambda row: float(row["threshold"]),
+                )
+                axis.plot(
+                    [float(row["threshold"]) for row in survival_rows],
+                    [int(row["count"]) for row in survival_rows],
+                    label=f"Epoch {epoch}",
+                    color=f"C{epoch_index}",
+                )
+            axis.set_title(split)
+            axis.set_xlim(0.0, 1.0)
+            axis.set_ylim(0, population)
+            axis.set_xlabel("IoU threshold")
+            axis.set_ylabel("Episodes")
+            fraction_axis = axis.secondary_yaxis(
+                "right",
+                functions=(
+                    lambda count, population=population: count / population,
+                    lambda fraction, population=population: fraction * population,
                 ),
-                key=lambda row: float(row["threshold"]),
             )
-            axis.plot(
-                [float(row["threshold"]) for row in survival_rows],
-                [int(row["count"]) for row in survival_rows],
-                label=f"Epoch {epoch}",
-                color=f"C{epoch_index}",
-            )
-        axis.set_title(split)
-        axis.set_xlim(0.0, 1.0)
-        axis.set_ylim(0, population)
-        axis.set_xlabel("IoU threshold")
-        axis.set_ylabel("Episodes")
-        fraction_axis = axis.secondary_yaxis(
-            "right",
-            functions=(
-                lambda count, population=population: count / population,
-                lambda fraction, population=population: fraction * population,
-            ),
-        )
-        fraction_axis.set_ylabel("Population fraction")
-        fraction_axis.set_ylim(0.0, 1.0)
-        axis.legend()
-    figure.tight_layout()
-    _save_figure(figure, output_path)
+            fraction_axis.set_ylabel("Population fraction")
+            fraction_axis.set_ylim(0.0, 1.0)
+            axis.legend()
+        figure.tight_layout()
+        _save_figure(figure, output_path)
+    finally:
+        plt.close(figure)
 
 
 def plot_category_f1(
@@ -133,47 +136,53 @@ def plot_category_f1(
     _require_records(records_by_epoch)
     rows = category_f1_rows(records_by_epoch)
     figure, axes = plt.subplots(3, 2, figsize=(10, 11), squeeze=False, sharey=True)
-    for category_index, (category, field) in enumerate(
-        (("Object", "object_f1"), ("Region", "region_f1"), ("Combined", "combined_f1"))
-    ):
-        for split_index, split in enumerate(_SPLITS):
-            axis = axes[category_index, split_index]
-            distributions = [
-                [
-                    float(row[field])
-                    for row in rows
-                    if row["source"] == "model"
-                    and row["epoch"] == epoch
-                    and row["split"] == split
+    try:
+        for category_index, (category, field) in enumerate(
+            (("Object", "object_f1"), ("Region", "region_f1"), ("Combined", "combined_f1"))
+        ):
+            for split_index, split in enumerate(_SPLITS):
+                axis = axes[category_index, split_index]
+                distributions = [
+                    [
+                        float(row[field])
+                        for row in rows
+                        if row["source"] == "model"
+                        and row["epoch"] == epoch
+                        and row["split"] == split
+                    ]
+                    for epoch in _EPOCHS
                 ]
-                for epoch in _EPOCHS
-            ]
-            distributions.append(
-                [
-                    float(row[field])
-                    for row in rows
-                    if row["source"] == "predict_all" and row["split"] == split
-                ]
-            )
-            if any(not distribution for distribution in distributions):
-                raise ValueError(f"no category F1 records for split {split!r}")
-            axis.boxplot(distributions, labels=["1", "2", "5", "10", "predict all"])
-            axis.set_ylim(-0.05, 1.05)
-            axis.set_ylabel("Episode-wise F1")
-            axis.set_xlabel("Epoch")
-            if category_index == 0:
-                axis.set_title(split)
-            if split_index == 0:
-                axis.annotate(
-                    category,
-                    xy=(-0.28, 0.5),
-                    xycoords="axes fraction",
-                    rotation=90,
-                    ha="center",
-                    va="center",
+                distributions.append(
+                    [
+                        float(row[field])
+                        for row in rows
+                        if row["source"] == "predict_all" and row["split"] == split
+                    ]
                 )
-    figure.tight_layout()
-    _save_figure(figure, output_path)
+                if any(not distribution for distribution in distributions):
+                    raise ValueError(f"no category F1 records for split {split!r}")
+                axis.boxplot(
+                    distributions,
+                    labels=["1", "2", "5", "10", "predict all"],
+                )
+                axis.set_ylim(-0.05, 1.05)
+                axis.set_ylabel("Episode-wise F1")
+                axis.set_xlabel("Epoch")
+                if category_index == 0:
+                    axis.set_title(split)
+                if split_index == 0:
+                    axis.annotate(
+                        category,
+                        xy=(-0.28, 0.5),
+                        xycoords="axes fraction",
+                        rotation=90,
+                        ha="center",
+                        va="center",
+                    )
+        figure.tight_layout()
+        _save_figure(figure, output_path)
+    finally:
+        plt.close(figure)
 
 
 def plot_category_counts(

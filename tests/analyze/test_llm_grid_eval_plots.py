@@ -9,6 +9,8 @@ import pytest
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from prior.analyze.llm_grid_eval_records import EpisodeRecord
 from prior.analyze.llm_grid_eval_plots import (
     plot_category_counts,
@@ -90,3 +92,25 @@ def test_plotters_reject_empty_record_mapping(tmp_path: Path) -> None:
 def test_plot_category_counts_rejects_unknown_kind(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="kind must be 'object' or 'region'"):
         plot_category_counts(_records_by_epoch(), tmp_path / "plot.png", kind="furniture")
+
+
+def test_plotters_close_figures_when_an_evaluation_split_is_missing(
+    tmp_path: Path,
+) -> None:
+    records_by_epoch = {
+        epoch: (replace(_record(split="val_seen"), epoch=epoch),)
+        for epoch in (1, 2, 5, 10)
+    }
+    figure_numbers = plt.get_fignums()
+
+    with pytest.raises(ValueError, match="no records for split 'val_unseen'"):
+        plot_iou_survival(
+            records_by_epoch,
+            tmp_path / "iou-survival.png",
+            thresholds=(0.0,),
+        )
+    assert plt.get_fignums() == figure_numbers
+
+    with pytest.raises(ValueError, match="no category F1 records for split 'val_unseen'"):
+        plot_category_f1(records_by_epoch, tmp_path / "category-f1.png")
+    assert plt.get_fignums() == figure_numbers
