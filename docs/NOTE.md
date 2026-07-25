@@ -835,6 +835,7 @@ Drop Rate By `max_new_tokens`:
 - [详细记录：起点 oracle evidence 因果 screen 结果](daily/2026-07-25.md)
 - Training、matched/null/global 与 replacement within-scene eval 均正常完成；原 within-scene task 的 failure 不能被 array-level COMPLETED 隐藏。成功日志无 traceback/OOM/fatal error，invalid outputs 均作为空预测保留在 denominator。
 - Final adapter、training manifest、完整四条件 caches、oracle evidence、原始/common-population eval、paired bootstrap 与四个 Slurm logs 已复制到本机。Adapter SHA-256 为 `c93adf4…3976def`；epoch 2 与 final 完全相同，因此没有复制 duplicate checkpoint。
+- 完整性复验后，本机只保留 decompressed canonical artifacts，transfer archives/chunks/staging 已删除；login node 的本轮 checkpoint、prediction caches/eval outputs、logs 与 transfer staging 也已删除。Remote `data/llm_grid_oracle_evidence` 保留，供后续 paired seeds 复用。
 - Remote launcher 只对 within-scene 应用 common population，导致原始 `val_seen` denominator 为 778/769 不一致。本地四条件已统一重评为 769 seen、1,839 unseen、9/0 exclusions、0 missing；23 个 contract tests 通过。修正对 seen 数值影响很小。
 - `val_unseen` matched F1/IoU 为 0.3175/0.1954，within-scene 为 0.1993/0.1205，global 为 0.0952/0.0549，null 为 0。Matched 相对 within-scene 的 paired scene-cluster bootstrap delta 为 F1 +0.1182 `[0.0863, 0.1473]`、IoU +0.0749 `[0.0565, 0.0911]`。
 - Unobserved F1/IoU matched 为 0.1243/0.0663，仍高于 within-scene 的 0.0947/0.0497；但 matched recall 0.1336 低于 within-scene 0.1690，增益由 precision 主导，不能声称恢复了更多未知 cells。现有 bootstrap 不覆盖 pooled unobserved/union metrics。
