@@ -19,22 +19,31 @@ Downstream analysis does not belong in
 `vlnce_baselines/models/etp_llm/`. That package retains training, prediction,
 schema, and evaluator primitives.
 
-The new analysis entry point is:
+The analysis lives in a focused subpackage:
 
 ```text
-prior/analyze/llm_grid_sanity.py
+prior/analyze/llm_grid/
+├── __main__.py
+├── metrics.py
+├── plots.py
+└── samples.py
 ```
 
-It owns loading completed evaluator artifacts, calculating diagnostic
-baselines, selecting existing visualization examples, and producing tables and
-figures. `prior/analyze/batch_vis.py` may gain the smallest reusable API needed
-to render an explicit set of example IDs. No new analysis module is added to
+`metrics.py` owns completed evaluator-artifact loading, population validation,
+diagnostic baselines, and tabular exports. `plots.py` owns quantitative
+figures. `samples.py` owns fixed qualitative-example selection, rendering, and
+comparison sheets. `__main__.py` provides the `tap.Tap` orchestration CLI.
+`prior/analyze/batch_vis.py` may gain the smallest reusable API needed to
+render an explicit set of example IDs. No new analysis module is added to
 `etp_llm`.
 
-Tests follow the existing flat test layout:
+Tests mirror those responsibilities:
 
 ```text
-tests/test_llm_grid_sanity.py
+tests/analyze/
+├── test_llm_grid_metrics.py
+├── test_llm_grid_plots.py
+└── test_llm_grid_samples.py
 ```
 
 Complete generated artifacts go under:
