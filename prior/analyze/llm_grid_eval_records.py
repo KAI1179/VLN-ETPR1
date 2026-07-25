@@ -64,7 +64,7 @@ class EpisodeRecord:
     unmentioned_region_predicted: int
 
 
-def _parse_count(value: str, column: str, row_number: int) -> int:
+def _parse_count(value: str, column: str, row_number: int, maximum: int) -> int:
     try:
         number = float(value)
     except (TypeError, ValueError) as error:
@@ -74,6 +74,10 @@ def _parse_count(value: str, column: str, row_number: int) -> int:
     count = int(number)
     if count < 0:
         raise ValueError(f"row {row_number}: {column} must not be negative")
+    if count > maximum:
+        raise ValueError(
+            f"row {row_number}: {column} must be in [0, {maximum}]"
+        )
     return count
 
 
@@ -125,7 +129,7 @@ def _record_from_row(
         raise ValueError(
             f"row {row_number}: invalid schema row must have zero raster IoU"
         )
-    return EpisodeRecord(
+    record = EpisodeRecord(
         epoch=epoch,
         split=split,
         scene_id=row["scene_id"],
@@ -133,52 +137,85 @@ def _record_from_row(
         iou=iou,
         schema_valid=schema_valid,
         object_target=_parse_count(
-            row["object_category_target_count"], "object_category_target_count", row_number
+            row["object_category_target_count"],
+            "object_category_target_count",
+            row_number,
+            27,
         ),
         object_predicted=_parse_count(
             row["object_category_predicted_count"],
             "object_category_predicted_count",
             row_number,
+            27,
         ),
         object_true_positive=_parse_count(
             row["object_category_true_positive_count"],
             "object_category_true_positive_count",
             row_number,
+            27,
         ),
         region_target=_parse_count(
-            row["region_category_target_count"], "region_category_target_count", row_number
+            row["region_category_target_count"],
+            "region_category_target_count",
+            row_number,
+            10,
         ),
         region_predicted=_parse_count(
             row["region_category_predicted_count"],
             "region_category_predicted_count",
             row_number,
+            10,
         ),
         region_true_positive=_parse_count(
             row["region_category_true_positive_count"],
             "region_category_true_positive_count",
             row_number,
+            10,
         ),
         mentioned_object_predicted=_parse_count(
             row["mentioned_object_category_predicted_count"],
             "mentioned_object_category_predicted_count",
             row_number,
+            27,
         ),
         unmentioned_object_predicted=_parse_count(
             row["unmentioned_object_category_predicted_count"],
             "unmentioned_object_category_predicted_count",
             row_number,
+            27,
         ),
         mentioned_region_predicted=_parse_count(
             row["mentioned_region_category_predicted_count"],
             "mentioned_region_category_predicted_count",
             row_number,
+            10,
         ),
         unmentioned_region_predicted=_parse_count(
             row["unmentioned_region_category_predicted_count"],
             "unmentioned_region_category_predicted_count",
             row_number,
+            10,
         ),
     )
+    if (
+        record.mentioned_object_predicted + record.unmentioned_object_predicted
+        > record.object_predicted
+    ):
+        raise ValueError(
+            "row "
+            f"{row_number}: object prediction partitions exceed "
+            "object_category_predicted_count"
+        )
+    if (
+        record.mentioned_region_predicted + record.unmentioned_region_predicted
+        > record.region_predicted
+    ):
+        raise ValueError(
+            "row "
+            f"{row_number}: region prediction partitions exceed "
+            "region_category_predicted_count"
+        )
+    return record
 
 
 def _f1(true_positive: int, predicted: int, target: int) -> float:

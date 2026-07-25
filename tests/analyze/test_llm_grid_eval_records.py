@@ -156,6 +156,38 @@ def test_load_episode_records_validates_columns_and_keeps_invalid_rows(
         load_episode_records(1, incomplete_path)
 
 
+def test_load_episode_records_rejects_out_of_range_category_counts(
+    tmp_path: Path,
+) -> None:
+    overflow_path = tmp_path / "object-overflow.csv"
+    _write_records(overflow_path, [_record(object_predicted=28)])
+
+    with pytest.raises(
+        ValueError,
+        match=r"object_category_predicted_count must be in \[0, 27\]",
+    ):
+        load_episode_records(1, overflow_path)
+
+    region_overflow_path = tmp_path / "region-overflow.csv"
+    _write_records(region_overflow_path, [_record(region_predicted=11)])
+    with pytest.raises(
+        ValueError,
+        match=r"region_category_predicted_count must be in \[0, 10\]",
+    ):
+        load_episode_records(1, region_overflow_path)
+
+    partition_path = tmp_path / "object-partition-overflow.csv"
+    _write_records(
+        partition_path,
+        [_record(object_predicted=2, mentioned_object_predicted=3)],
+    )
+    with pytest.raises(
+        ValueError,
+        match="object prediction partitions exceed object_category_predicted_count",
+    ):
+        load_episode_records(1, partition_path)
+
+
 def _populations() -> Mapping[int, tuple[EpisodeRecord, ...]]:
     base = (
         _record(split="val_seen", scene_id="seen", example_id="a"),
