@@ -41,7 +41,7 @@ class Arguments(Tap):
     """Checkpoint-pruning command line arguments."""
 
     checkpoint_base: Path
-    """Experiment directory containing checkpoints, including nested store/."""
+    """Directory containing checkpoints to prune."""
     tfevents_filename: Path
     """Event filename relative to checkpoint_base, or an absolute path."""
     metric: str = "loss/IL_loss"
@@ -159,7 +159,7 @@ class CheckpointPruner:
     def _discover_checkpoints(self) -> tuple[Checkpoint, ...]:
         checkpoints: list[Checkpoint] = []
         steps: dict[int, Path] = {}
-        for path in sorted(self.checkpoint_base.glob("**/ckpt.iter*.pth")):
+        for path in sorted(self.checkpoint_base.glob("ckpt.iter*.pth")):
             match = CHECKPOINT_NAME.fullmatch(path.name)
             if match is None or not path.is_file():
                 continue

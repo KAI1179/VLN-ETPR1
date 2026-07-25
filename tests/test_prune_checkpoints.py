@@ -24,17 +24,17 @@ def _write_checkpoint(path: Path) -> None:
         archive.writestr("data.pkl", b"checkpoint")
 
 
-def test_pruner_keeps_three_lowest_metrics_from_nested_checkpoints(
+def test_pruner_keeps_three_lowest_metrics_without_touching_store(
     tmp_path: Path,
 ) -> None:
     store = tmp_path / "store"
     store.mkdir()
     for step in (100, 200, 300, 400, 500):
-        directory = store if step % 200 == 0 else tmp_path
-        _write_checkpoint(directory / f"ckpt.iter{step}.pth")
+        _write_checkpoint(tmp_path / f"ckpt.iter{step}.pth")
+    _write_checkpoint(store / "ckpt.iter50.pth")
     event_path = _write_events(
         tmp_path,
-        {100: 3.0, 200: 1.0, 300: 2.0, 400: 0.5, 500: 4.0},
+        {50: 10.0, 100: 3.0, 200: 1.0, 300: 2.0, 400: 0.5, 500: 4.0},
     )
 
     report = CheckpointPruner(
@@ -49,9 +49,9 @@ def test_pruner_keeps_three_lowest_metrics_from_nested_checkpoints(
     assert [item.checkpoint.step for item in report.kept] == [400, 200, 300]
     assert [item.checkpoint.step for item in report.deleted] == [100, 500]
     assert sorted(
-        int(path.stem[len("ckpt.iter") :])
-        for path in tmp_path.glob("**/ckpt.iter*.pth")
+        int(path.stem[len("ckpt.iter") :]) for path in tmp_path.glob("ckpt.iter*.pth")
     ) == [200, 300, 400]
+    assert (store / "ckpt.iter50.pth").exists()
 
 
 def test_pruner_protects_checkpoint_missing_from_partial_events(
