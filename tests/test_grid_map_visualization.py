@@ -11,6 +11,7 @@ from prior.analyze.batch_vis import (
     _load_prediction_map,
     _sample_prediction_paths,
     render_comparisons,
+    render_prediction_paths,
 )
 from prior.grid_map import BaseGridMap, CognitiveGridMap
 from prior.grid_map._visualize import _MapOverlay, _grid_bounds
@@ -180,6 +181,73 @@ def test_render_comparisons_loads_paired_context(
         == context.trajectory_keypoints
     )
     assert captured["save_path"] == output_root / "scene" / "R2R_val_unseen_1.png"
+
+
+def test_render_prediction_paths_preserves_requested_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prediction_root = tmp_path / "predictions"
+    ground_truth_root = tmp_path / "ground-truth"
+    output_root = tmp_path / "output"
+    prediction_paths = [
+        prediction_root / "scene" / f"episode_{index}.npz" for index in range(3)
+    ]
+    for prediction_path in prediction_paths:
+        ground_truth_path = (
+            ground_truth_root / "raster" / "scene" / prediction_path.name
+        )
+        boxes_path = ground_truth_root / "boxes" / "scene" / prediction_path.name
+        for path in (prediction_path, ground_truth_path, boxes_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    monkeypatch.setattr(
+        "prior.analyze.batch_vis._load_prediction_map",
+        lambda path: (BaseGridMap(), None),
+    )
+    monkeypatch.setattr(BaseGridMap, "load", staticmethod(lambda path: BaseGridMap()))
+    monkeypatch.setattr(
+        "prior.analyze.batch_vis.RelevantSemanticBoxes.load",
+        lambda path: SimpleNamespace(
+            instruction="Walk to the chair.",
+            ground_truth_trajectory=[(1.0, 2.0)],
+            trajectory_keypoints=[(1.0, 2.0)] * 5,
+            start_direction_vector=(1.0, 0.0),
+        ),
+    )
+    monkeypatch.setattr(
+        BaseGridMap,
+        "visualize_comparison",
+        lambda self, ground_truth_map, save_path, **kwargs: None,
+    )
+
+    rendered = render_prediction_paths(
+        [prediction_paths[2], prediction_paths[0]],
+        ground_truth_root,
+        output_root,
+    )
+
+    assert rendered == (
+        output_root / "scene" / "episode_2.png",
+        output_root / "scene" / "episode_0.png",
+    )
+
+
+def test_render_prediction_paths_rejects_missing_requested_prediction(
+    tmp_path: Path,
+) -> None:
+    missing_prediction_path = tmp_path / "predictions" / "scene" / "episode.npz"
+    ground_truth_root = tmp_path / "ground-truth"
+    (ground_truth_root / "raster").mkdir(parents=True)
+    (ground_truth_root / "boxes").mkdir()
+
+    with pytest.raises(FileNotFoundError, match="Missing prediction"):
+        render_prediction_paths(
+            [missing_prediction_path],
+            ground_truth_root,
+            tmp_path / "output",
+        )
 
 
 def test_render_comparisons_rejects_missing_boxes(tmp_path: Path) -> None:

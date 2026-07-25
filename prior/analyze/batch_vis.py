@@ -74,6 +74,21 @@ def render_comparisons(
 ) -> int:
     if not prediction_root.is_dir():
         raise FileNotFoundError(f"Missing prediction root: {prediction_root}")
+    return len(
+        render_prediction_paths(
+            _sample_prediction_paths(prediction_root, count, seed),
+            ground_truth_root,
+            output_root,
+        )
+    )
+
+
+def render_prediction_paths(
+    prediction_paths: Sequence[Path],
+    ground_truth_root: Path,
+    output_root: Path,
+) -> tuple[Path, ...]:
+    """Render comparisons for exactly the requested prediction paths in order."""
     raster_root = ground_truth_root / "raster"
     boxes_root = ground_truth_root / "boxes"
     if not raster_root.is_dir():
@@ -81,8 +96,10 @@ def render_comparisons(
     if not boxes_root.is_dir():
         raise FileNotFoundError(f"Missing ground-truth boxes root: {boxes_root}")
 
-    rendered = 0
-    for prediction_path in _sample_prediction_paths(prediction_root, count, seed):
+    output_paths: list[Path] = []
+    for prediction_path in prediction_paths:
+        if not prediction_path.is_file():
+            raise FileNotFoundError(f"Missing prediction: {prediction_path}")
         scene_id = prediction_path.parent.name
         ground_truth_path = raster_root / scene_id / prediction_path.name
         boxes_path = boxes_root / scene_id / prediction_path.name
@@ -109,9 +126,9 @@ def render_comparisons(
             ground_truth_trajectory_keypoints=boxes.trajectory_keypoints,
             start_direction_vector=boxes.start_direction_vector,
         )
-        rendered += 1
+        output_paths.append(output_path)
 
-    return rendered
+    return tuple(output_paths)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
