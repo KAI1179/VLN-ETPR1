@@ -20,6 +20,7 @@ from prior.analyze.llm_grid_eval_records import (
     validate_epoch_populations,
     write_csv_rows,
 )
+from prior.analyze.d2026_07_25.plot_llm_grid_sanity import epoch_episode_paths
 
 
 REQUIRED_COLUMNS = (
@@ -39,6 +40,15 @@ REQUIRED_COLUMNS = (
     "mentioned_region_category_predicted_count",
     "unmentioned_region_category_predicted_count",
 )
+
+
+def test_epoch_episode_paths_selects_fixed_checkpoint_runs() -> None:
+    assert epoch_episode_paths(Path("sweep")) == {
+        1: Path("sweep/runs/000/episodes.csv"),
+        2: Path("sweep/runs/001/episodes.csv"),
+        5: Path("sweep/runs/004/episodes.csv"),
+        10: Path("sweep/runs/009/episodes.csv"),
+    }
 
 
 def _record(

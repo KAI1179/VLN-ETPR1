@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
@@ -17,6 +19,11 @@ from prior.analyze.llm_grid_eval_plots import (
     plot_category_f1,
     plot_iou_histograms,
     plot_iou_survival,
+)
+from prior.analyze.d2026_07_25.plot_llm_grid_sanity import (
+    SanityPlotArgs,
+    _run_analysis,
+    epoch_episode_paths,
 )
 
 
@@ -114,3 +121,96 @@ def test_plotters_close_figures_when_an_evaluation_split_is_missing(
     with pytest.raises(ValueError, match="no category F1 records for split 'val_unseen'"):
         plot_category_f1(records_by_epoch, tmp_path / "category-f1.png")
     assert plt.get_fignums() == figure_numbers
+
+
+def test_sanity_analysis_writes_quantitative_artifacts_and_postpones_r2r_comparison(
+    tmp_path: Path,
+) -> None:
+    sweep_root = tmp_path / "sweep"
+    for epoch, path in epoch_episode_paths(sweep_root).items():
+        path.parent.mkdir(parents=True)
+        records = [
+            replace(_record(split="val_seen", example_id="seen"), epoch=epoch),
+            replace(_record(split="val_unseen", example_id="unseen"), epoch=epoch),
+        ]
+        with path.open("w", encoding="utf-8", newline="") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=(
+                    "split",
+                    "scene_id",
+                    "example_id",
+                    "category_aware_raster_iou",
+                    "schema_valid",
+                    "object_category_target_count",
+                    "object_category_predicted_count",
+                    "object_category_true_positive_count",
+                    "region_category_target_count",
+                    "region_category_predicted_count",
+                    "region_category_true_positive_count",
+                    "mentioned_object_category_predicted_count",
+                    "unmentioned_object_category_predicted_count",
+                    "mentioned_region_category_predicted_count",
+                    "unmentioned_region_category_predicted_count",
+                ),
+            )
+            writer.writeheader()
+            for record in records:
+                writer.writerow(
+                    {
+                        "split": record.split,
+                        "scene_id": record.scene_id,
+                        "example_id": record.example_id,
+                        "category_aware_raster_iou": record.iou,
+                        "schema_valid": int(record.schema_valid),
+                        "object_category_target_count": record.object_target,
+                        "object_category_predicted_count": record.object_predicted,
+                        "object_category_true_positive_count": record.object_true_positive,
+                        "region_category_target_count": record.region_target,
+                        "region_category_predicted_count": record.region_predicted,
+                        "region_category_true_positive_count": record.region_true_positive,
+                        "mentioned_object_category_predicted_count": record.mentioned_object_predicted,
+                        "unmentioned_object_category_predicted_count": record.unmentioned_object_predicted,
+                        "mentioned_region_category_predicted_count": record.mentioned_region_predicted,
+                        "unmentioned_region_category_predicted_count": record.unmentioned_region_predicted,
+                    }
+                )
+
+    args = SanityPlotArgs()
+    args.sweep_root = sweep_root
+    args.output_root = tmp_path / "analysis"
+    args.docs_image_root = tmp_path / "docs-images"
+    _run_analysis(args, expected_counts={"val_seen": 1, "val_unseen": 1})
+
+    artifact_names = {
+        "iou_histograms.csv",
+        "iou_survival.csv",
+        "category_f1.csv",
+        "category_count_histograms.csv",
+        "summary.json",
+        "iou_histograms.png",
+        "iou_survival.png",
+        "category_f1.png",
+        "object_category_counts.png",
+        "region_category_counts.png",
+    }
+    assert {path.name for path in args.output_root.iterdir()} == artifact_names
+    assert {path.name for path in args.docs_image_root.iterdir()} == {
+        name for name in artifact_names if name.endswith(".png")
+    }
+
+    summary = json.loads((args.output_root / "summary.json").read_text())
+    assert summary["population_counts"] == {
+        "1": {"val_seen": 1, "val_unseen": 1},
+        "2": {"val_seen": 1, "val_unseen": 1},
+        "5": {"val_seen": 1, "val_unseen": 1},
+        "10": {"val_seen": 1, "val_unseen": 1},
+    }
+    comparison = summary["r2r_only_comparison"]
+    assert comparison["status"] == "postponed"
+    assert comparison["missing_cache"] == (
+        "data/llm_navigation/llm-grid-r2r-only-r1p5-direction5-s2-tagfree"
+    )
+    assert comparison["missing_evaluator_outputs"] == (
+        "outputs/llm_grid_eval/r2r-only-checkpoint-sweep-r1p5/runs/*/episodes.csv"
+    )
