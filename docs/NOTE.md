@@ -842,6 +842,17 @@ Drop Rate By `max_new_tokens`:
 - 当前 single-seed causal screen 方向性通过，但完整结论仍需至少三个 paired training seeds、unobserved/union CI，以及对 legacy-union contract 的澄清；在此之前不启动 Try5 navigation。
 - RGB-D perception 表示决策不变：efficient RGB-D segmentation 为主路径，instance masks 为 latency fallback，raw boxes 只作 ablation；DFormer/DFormerv2、ESANet、YOLOE 与 YOLO-World 的具体选择待 paired benchmark。
 
+## 07/26（R2R-only 与 R2R+RxR-EN checkpoint 对照）
+
+- [详细记录：R2R-only LLM-Grid checkpoint sweep 对照](daily/2026-07-26.md)
+- R2R-only epoch 1–10 的 cache/eval 全部完成；每轮固定 778 seen、1,839 unseen，0 missing/excluded。10 轮共 26,170 条 raw prediction，720 条 schema-invalid 均留在 denominator。
+- R2R-only 最佳 unseen Raster IoU 为 epoch 7 的 0.133635；mixed 最佳值为 epoch 2 的 0.135701。Mixed−R2R-only paired scene-bootstrap delta 为 +0.002065 `[-0.00973, +0.01508]`，没有可测量的 unseen 改善。
+- Epoch 10 mixed 相对 R2R-only 的 seen IoU 提高 +0.07993 `[+0.05024, +0.11090]`，unseen 差值为 -0.00275 `[-0.01185, +0.00526]`；mixed 的 seen–unseen gap 明显更大，更多数据没有缓解 scene overfitting。
+- RxR train 的 59 个 scene 是 R2R train 61 个 scene 的子集，没有新增环境；它与 R2R val_seen 52/53 scene 重叠、与 val_unseen 0/11 重叠。本轮实际增加的是相同 houses 上的英文 route/instruction supervision。
+- Predict-every-category baseline 的 unseen combined episode-macro F1 已达 0.5482；R2R-only epoch 1/2/5/10 为 0.6642/0.6643/0.6151/0.6598。Category F1 可诊断“有什么”，但与 spatial IoU 几乎不相关，不能作为主要质量指标。
+- 固定 17 个 unseen identities 的 136-panel paired sheets 保留了 2 个显式 invalid placeholder；逐图与完整分布均显示 mixed 没有稳定的 unseen layout improvement。
+- 两条 training line 的 prompt、effective batch、sequence budget、optimizer steps 与 RNG 控制不同，结论是观察性的；不能把全部差值因果归因于 RxR。
+
 # 实验
 
 - [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
