@@ -125,7 +125,7 @@ def test_unobserved_error_map_distinguishes_substitution() -> None:
     assert result.tolist() == [[1, 2], [3, 4]]
 
 
-def test_observation_overlays_use_cell_centers() -> None:
+def test_observation_contour_uses_cell_centers_without_snapping_route() -> None:
     axis = Mock()
     observed = np.zeros((2, 3), dtype=np.bool_)
 
@@ -140,5 +140,5 @@ def test_observation_overlays_use_cell_centers() -> None:
     assert contour_x.tolist() == [0.5, 1.5, 2.5]
     assert contour_y.tolist() == [0.5, 1.5]
     route_cols, route_rows = axis.plot.call_args.args
-    assert route_cols == (0.5, 1.5)
-    assert route_rows == (0.5, 1.5)
+    assert route_cols == (0.1, 1.1)
+    assert route_rows == (0.1, 1.1)

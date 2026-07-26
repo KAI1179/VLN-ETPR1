@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +31,7 @@ from prior.grid_map import BaseGridMap
 from prior.grid_map._visualize import (
     _MapOverlay,
     _draw_grid_map,
+    _draw_overlay,
     _grid_bounds,
 )
 from prior.llm_grid_samples import downsample_grid
@@ -456,19 +456,12 @@ def _route_overlay(
     *,
     scale: float,
 ) -> None:
-    points = tuple(
-        tuple(
-            math.floor(coordinate / scale) + 0.5
-            for coordinate in meters_to_grid(float(x), float(z))
-        )
+    trajectory = tuple(
+        (row / scale, col / scale)
         for x, z in boxes.ground_truth_trajectory
+        for row, col in (meters_to_grid(float(x), float(z)),)
     )
-    if not points:
-        return
-    rows, cols = zip(*points)
-    axis.plot(cols, rows, color="#C00000", linewidth=1.3, zorder=20)
-    axis.scatter(cols[0], rows[0], color="#00B050", s=25, zorder=21)
-    axis.scatter(cols[-1], rows[-1], color="#C00000", marker="*", s=40, zorder=21)
+    _draw_overlay(axis, _MapOverlay(trajectory=trajectory))
 
 
 def _oracle_bounds(
@@ -753,7 +746,7 @@ def render_oracle_comparison(
         0.5,
         0.01,
         "Grey = unknown at t=0; pale blue = observed free; cyan = observed "
-        "boundary; red line = GT route snapped to containing cell centers.\n"
+        "boundary; red line = continuous GT route.\n"
         "Displayed-category IoU excludes hidden broad channels "
         f"(void, structure, other, free-space); all-37-channel evidence-only "
         f"IoU = {evidence_only_iou:.3f}. The error panel scores only cells "
