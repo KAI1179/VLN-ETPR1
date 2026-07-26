@@ -4,6 +4,7 @@
     "example_id": "R2R_val_unseen_1633",
     "figure_path": "docs/images/llm_grid_presentation/oracle_t0_gt_evidence_prediction.png",
     "metrics": {
+      "displayed_category_evidence_iou": 0.21768707482993196,
       "evidence_only_iou": 0.16080402010050251,
       "overall_iou": 0.1897810218978102,
       "unobserved_iou": 0.043010752688172046,

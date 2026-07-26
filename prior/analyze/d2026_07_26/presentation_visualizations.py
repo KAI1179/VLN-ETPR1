@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -430,7 +431,17 @@ def _observation_geometry(
     free_rgba[..., :3] = mcolors.to_rgb("#DDEBF7")
     free_rgba[..., 3] = free_crop * 0.85
     axis.imshow(free_rgba, interpolation="nearest", extent=extent, zorder=-4)
+    _observed_contour(axis, observed)
+
+
+def _observed_contour(
+    axis: Axes,
+    observed: NDArray[np.bool_],
+) -> None:
+    rows, cols = observed.shape
     axis.contour(
+        np.arange(cols, dtype=np.float32) + 0.5,
+        np.arange(rows, dtype=np.float32) + 0.5,
         observed.astype(np.float32),
         levels=(0.5,),
         colors=("#00A6D6",),
@@ -446,7 +457,10 @@ def _route_overlay(
     scale: float,
 ) -> None:
     points = tuple(
-        tuple(coordinate / scale for coordinate in meters_to_grid(float(x), float(z)))
+        tuple(
+            math.floor(coordinate / scale) + 0.5
+            for coordinate in meters_to_grid(float(x), float(z))
+        )
         for x, z in boxes.ground_truth_trajectory
     )
     if not points:
@@ -546,13 +560,7 @@ def _draw_error(
         interpolation="nearest",
         extent=[col_min, col_max + 1, row_max + 1, row_min],
     )
-    axis.contour(
-        observed.astype(np.float32),
-        levels=(0.5,),
-        colors=("#00A6D6",),
-        linewidths=1.2,
-        zorder=15,
-    )
+    _observed_contour(axis, observed)
     axis.legend(
         handles=[
             mpatches.Patch(facecolor=color, label=label)
@@ -611,6 +619,15 @@ def render_oracle_comparison(
         target & unobserved[None, ...],
     )
     evidence_only_iou, _, _ = _binary_metrics(prompt_evidence, target)
+    displayed_target = np.array(target, copy=True)
+    displayed_evidence = np.array(prompt_evidence, copy=True)
+    for category in _BROAD_OBJECT_IDS:
+        displayed_target[category] = False
+        displayed_evidence[category] = False
+    displayed_evidence_iou, _, _ = _binary_metrics(
+        displayed_evidence,
+        displayed_target,
+    )
     _verify_metric(overall_iou, metrics.raw, "category_aware_raster_iou")
     _verify_metric(
         evidence_only_iou,
@@ -642,7 +659,7 @@ def render_oracle_comparison(
         "Full route-relevant GT",
         (
             "t=0 observation-bounded evidence\n"
-            f"Evidence-only IoU {_number(metrics.raw, 'evidence_only_category_aware_raster_iou'):.3f}"
+            f"Displayed-category IoU {displayed_evidence_iou:.3f}"
         ),
         f"Raw LLM-Grid-Oracle prediction\nOverall IoU {metrics.raster_iou:.3f}",
         (
@@ -728,22 +745,24 @@ def render_oracle_comparison(
         _route_overlay(axes[row_index, 2], boxes, scale=2)
     fig.suptitle(
         f"Representative observation-evidence comparison: {metrics.example_id}\n"
-        f"Grey = unknown at t=0; pale blue = observed free; cyan = observed boundary; "
-        f"red line = GT route",
+        f"Instruction: {textwrap.fill(metrics.instruction.strip(), width=115)}",
         fontsize=13,
         fontweight="bold",
     )
     fig.text(
         0.5,
         0.01,
-        "Broad channels (void, structure, other, free-space) are hidden for "
-        "readability; reported IoU still uses all 37 channels. "
-        "The error panel scores only cells outside the observed mask.",
+        "Grey = unknown at t=0; pale blue = observed free; cyan = observed "
+        "boundary; red line = GT route snapped to containing cell centers.\n"
+        "Displayed-category IoU excludes hidden broad channels "
+        f"(void, structure, other, free-space); all-37-channel evidence-only "
+        f"IoU = {evidence_only_iou:.3f}. The error panel scores only cells "
+        "outside the observed mask.",
         ha="center",
         fontsize=9,
     )
     figure_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(rect=(0, 0.035, 1, 0.91))
+    fig.tight_layout(rect=(0, 0.07, 1, 0.89))
     fig.savefig(figure_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     return {
@@ -763,6 +782,7 @@ def render_oracle_comparison(
             "evidence_only_iou": _number(
                 metrics.raw, "evidence_only_category_aware_raster_iou"
             ),
+            "displayed_category_evidence_iou": displayed_evidence_iou,
             "unobserved_iou": _number(
                 metrics.raw, "unobserved_category_aware_raster_iou"
             ),

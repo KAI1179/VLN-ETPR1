@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -9,6 +11,8 @@ from prior.analyze.d2026_07_26.category_metrics import _CategoryCounts
 from prior.analyze.d2026_07_26.presentation_visualizations import (
     EpisodeMetrics,
     _error_map,
+    _observed_contour,
+    _route_overlay,
     select_ordinary_examples,
 )
 
@@ -119,3 +123,22 @@ def test_unobserved_error_map_distinguishes_substitution() -> None:
     result = _error_map(predicted, target, observed)
 
     assert result.tolist() == [[1, 2], [3, 4]]
+
+
+def test_observation_overlays_use_cell_centers() -> None:
+    axis = Mock()
+    observed = np.zeros((2, 3), dtype=np.bool_)
+
+    _observed_contour(axis, observed)
+    _route_overlay(
+        axis,
+        SimpleNamespace(ground_truth_trajectory=((0.1, 0.1), (1.1, 1.1))),
+        scale=2,
+    )
+
+    contour_x, contour_y, _ = axis.contour.call_args.args
+    assert contour_x.tolist() == [0.5, 1.5, 2.5]
+    assert contour_y.tolist() == [0.5, 1.5]
+    route_cols, route_rows = axis.plot.call_args.args
+    assert route_cols == (0.5, 1.5)
+    assert route_rows == (0.5, 1.5)
