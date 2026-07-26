@@ -1,0 +1,85 @@
+{
+  "observation_evidence_comparison": {
+    "evidence_manifest_sha256": "be2d25890c01234dd1bb8191af6c1d87121330991299287b635205f2ebf0327a",
+    "example_id": "R2R_val_unseen_1633",
+    "figure_path": "docs/images/llm_grid_presentation/oracle_t0_gt_evidence_prediction.png",
+    "metrics": {
+      "evidence_only_iou": 0.16080402010050251,
+      "overall_iou": 0.1897810218978102,
+      "unobserved_iou": 0.043010752688172046,
+      "unobserved_precision": 0.06451612903225806,
+      "unobserved_recall": 0.11428571428571428,
+      "unobserved_target_cells": 35
+    },
+    "prediction_path": "data/llm_navigation/llm-grid-oracle-t0-v1-e2-matched/r2r/val_unseen/predictions/x8F5xyUWy9e/R2R_val_unseen_1633.txt",
+    "role": "representative",
+    "scene_id": "x8F5xyUWy9e",
+    "selection": "nearest joint overall/unobserved median among schema-valid episodes with at least 20 unobserved target category-cells",
+    "target_path": "data/cognitive_maps/gt.legacy.r1p5.direction5.v1/raster/x8F5xyUWy9e/R2R_val_unseen_1633.npz"
+  },
+  "ordinary_llm_grid": [
+    {
+      "epochs": {
+        "10": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree",
+          "category_f1": 0.5161290322580645,
+          "raster_iou": 0.07297830374753451,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree/r2r/val_unseen/cognitive_maps/raster/TbHJrupSAjP/R2R_val_unseen_1824.npz"
+        },
+        "2": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+          "category_f1": 0.6206896551724138,
+          "raster_iou": 0.12471655328798185,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/r2r/val_unseen/cognitive_maps/raster/TbHJrupSAjP/R2R_val_unseen_1824.npz"
+        }
+      },
+      "example_id": "R2R_val_unseen_1824",
+      "figure_path": "docs/images/llm_grid_presentation/qualitative/median.png",
+      "role": "median",
+      "scene_id": "TbHJrupSAjP",
+      "selection": "epoch-2 evaluator representative"
+    },
+    {
+      "epochs": {
+        "10": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree",
+          "category_f1": 0.7878787878787878,
+          "raster_iou": 0.037383177570093455,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree/r2r/val_unseen/cognitive_maps/raster/X7HyMhZNoso/R2R_val_unseen_690.npz"
+        },
+        "2": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+          "category_f1": 0.9285714285714286,
+          "raster_iou": 0.00641025641025641,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/r2r/val_unseen/cognitive_maps/raster/X7HyMhZNoso/R2R_val_unseen_690.npz"
+        }
+      },
+      "example_id": "R2R_val_unseen_690",
+      "figure_path": "docs/images/llm_grid_presentation/qualitative/category_spatial_gap.png",
+      "role": "category_spatial_gap",
+      "scene_id": "X7HyMhZNoso",
+      "selection": "epoch-2 evaluator representative"
+    },
+    {
+      "epochs": {
+        "10": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree",
+          "category_f1": 0.6666666666666666,
+          "raster_iou": 0.0,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree/r2r/val_unseen/cognitive_maps/raster/2azQ1b91cZZ/R2R_val_unseen_139.npz"
+        },
+        "2": {
+          "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+          "category_f1": 0.6896551724137931,
+          "raster_iou": 0.0,
+          "raster_path": "data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/r2r/val_unseen/cognitive_maps/raster/2azQ1b91cZZ/R2R_val_unseen_139.npz"
+        }
+      },
+      "example_id": "R2R_val_unseen_139",
+      "figure_path": "docs/images/llm_grid_presentation/qualitative/support_rich_failure.png",
+      "role": "support_rich_failure",
+      "scene_id": "2azQ1b91cZZ",
+      "selection": "minimum epoch-2 IoU, then maximum target cells, then ID"
+    }
+  ]
+}

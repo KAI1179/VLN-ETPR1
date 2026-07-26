@@ -1,0 +1,84 @@
+{
+  "cache_model_key": "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+  "dataset": "R2R",
+  "definitions": {
+    "presence_f1": "pooled episode-level category presence F1",
+    "spatial_iou": "pooled category-aware cell IoU across episodes"
+  },
+  "hardest_supported": [
+    {
+      "category_group": "object",
+      "category_name": "toilet",
+      "presence_f1": 0.2250879249706917,
+      "spatial_iou": 0.0006406149903907751,
+      "target_example_count": 408,
+      "target_scene_count": 6
+    },
+    {
+      "category_group": "object",
+      "category_name": "towel",
+      "presence_f1": 0.1707865168539326,
+      "spatial_iou": 0.0017006802721088435,
+      "target_example_count": 300,
+      "target_scene_count": 7
+    },
+    {
+      "category_group": "object",
+      "category_name": "sink",
+      "presence_f1": 0.1934782608695652,
+      "spatial_iou": 0.001806140878988561,
+      "target_example_count": 636,
+      "target_scene_count": 8
+    },
+    {
+      "category_group": "object",
+      "category_name": "fireplace",
+      "presence_f1": 0.2081447963800905,
+      "spatial_iou": 0.0019083969465648854,
+      "target_example_count": 114,
+      "target_scene_count": 5
+    },
+    {
+      "category_group": "object",
+      "category_name": "picture",
+      "presence_f1": 0.3776892430278884,
+      "spatial_iou": 0.0035096515417397845,
+      "target_example_count": 741,
+      "target_scene_count": 9
+    },
+    {
+      "category_group": "object",
+      "category_name": "sofa",
+      "presence_f1": 0.38689866939611056,
+      "spatial_iou": 0.003871800387180039,
+      "target_example_count": 579,
+      "target_scene_count": 9
+    },
+    {
+      "category_group": "object",
+      "category_name": "shower",
+      "presence_f1": 0.15343915343915343,
+      "spatial_iou": 0.00511770726714432,
+      "target_example_count": 300,
+      "target_scene_count": 6
+    },
+    {
+      "category_group": "object",
+      "category_name": "plant",
+      "presence_f1": 0.38648052902277735,
+      "spatial_iou": 0.005198960207958408,
+      "target_example_count": 753,
+      "target_scene_count": 9
+    }
+  ],
+  "plot_filter": {
+    "broad_channels_excluded": [
+      "free-space",
+      "other",
+      "structure",
+      "void"
+    ],
+    "minimum_target_scenes": 5
+  },
+  "split": "val_unseen"
+}
