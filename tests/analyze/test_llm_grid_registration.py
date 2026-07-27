@@ -60,6 +60,25 @@ def test_fractional_pivot_warp_keeps_padded_outside_cell() -> None:
     assert warped.grid[0, -1 - warped.bounds.row_min, 3 - warped.bounds.col_min]
 
 
+@pytest.mark.parametrize(
+    ("angle_degrees", "expected_bounds"),
+    [
+        (90.0, SpatialBounds(-5, 0, 0, 5)),
+        (180.0, SpatialBounds(-5, 0, -5, 0)),
+        (270.0, SpatialBounds(0, 5, -5, 0)),
+    ],
+)
+def test_cardinal_rotation_bounds_are_exact(
+    angle_degrees: float, expected_bounds: SpatialBounds
+) -> None:
+    """Breaks if trigonometric roundoff expands cardinal output bounds."""
+    grid = np.zeros((1, 5, 5), dtype=np.bool_)
+
+    warped = warp_grid_about_pivot(grid, (0.0, 0.0), angle_degrees)
+
+    assert warped.bounds == expected_bounds
+
+
 def test_scoring_keeps_fractional_pivot_support_outside_target_frame() -> None:
     """Breaks if score crops outside support before counting false positives."""
     grid = np.zeros((1, 5, 5), dtype=np.bool_)

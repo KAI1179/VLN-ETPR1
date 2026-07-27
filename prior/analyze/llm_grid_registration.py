@@ -137,6 +137,20 @@ def _validate_pivot(pivot: tuple[float, float]) -> tuple[float, float]:
     )
 
 
+def _rotation_coefficients(angle_degrees: float) -> tuple[float, float]:
+    normalized = angle_degrees % 360.0
+    if normalized == 0.0:
+        return 1.0, 0.0
+    if normalized == 90.0:
+        return 0.0, 1.0
+    if normalized == 180.0:
+        return -1.0, 0.0
+    if normalized == 270.0:
+        return 0.0, -1.0
+    angle_radians = np.deg2rad(angle_degrees)
+    return float(np.cos(angle_radians)), float(np.sin(angle_radians))
+
+
 def warp_grid_about_pivot(
     grid: NDArray[np.bool_], pivot: tuple[float, float], angle_degrees: float
 ) -> WarpedGrid:
@@ -154,9 +168,7 @@ def warp_grid_about_pivot(
             input_support=input_support,
         )
 
-    angle_radians = np.deg2rad(angle)
-    cosine = float(np.cos(angle_radians))
-    sine = float(np.sin(angle_radians))
+    cosine, sine = _rotation_coefficients(angle)
     corners = np.asarray(
         ((0.0, 0.0), (0.0, cols), (rows, 0.0), (rows, cols)), dtype=np.float64
     )
@@ -246,9 +258,7 @@ def rotate_direction_vectors(
     """Rotate row-wise two-dimensional direction vectors counter-clockwise."""
     _validate_direction_vectors(vectors, "vectors")
     angle = _require_finite_real(angle_degrees, "angle_degrees")
-    angle_radians = np.deg2rad(angle)
-    cosine = np.float32(np.cos(angle_radians))
-    sine = np.float32(np.sin(angle_radians))
+    cosine, sine = _rotation_coefficients(angle)
     rotation = np.asarray(((cosine, -sine), (sine, cosine)), dtype=np.float32)
     return np.asarray(np.asarray(vectors, dtype=np.float32) @ rotation.T, dtype=np.float32)
 
