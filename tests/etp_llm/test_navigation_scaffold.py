@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+import torch
 
 
 class _StubClipModel:
@@ -405,3 +407,91 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
     assert failure_stats["1"]["llm_generation_failure"] == 1.0
     assert aggregated["llm_cache_missing_count"] == 1
     assert aggregated["llm_cache_missing_rate"] == 0.5
+
+
+def test_eval_aggregation_supports_rank_local_failure_metrics(monkeypatch):
+    _stub_clip_load(monkeypatch)
+
+    from vlnce_baselines import ss_trainer_ETP_PriorGT
+
+    rank_stats = [
+        {
+            "0": {
+                "ndtw": np.float64(0.5),
+                "steps_taken": np.float32(100.0),
+                "success": np.float32(1.0),
+            },
+            "1": {
+                "ndtw": np.float64(1.0),
+                "steps_taken": np.float32(100.0),
+                "success": np.float32(0.0),
+            },
+        },
+        {
+            "2": {
+                "llm_cache_missing": 1.0,
+                "llm_generation_failure": 1.0,
+                "ndtw": np.float64(0.0),
+                "steps_taken": np.float32(0.0),
+                "success": np.float32(0.0),
+            }
+        },
+    ]
+    metric_keys = [
+        ["ndtw", "steps_taken", "success"],
+        [
+            "llm_cache_missing",
+            "llm_generation_failure",
+            "ndtw",
+            "steps_taken",
+            "success",
+        ],
+    ]
+    expected_local_vectors = [
+        [2.0, 0.0, 0.0, 1.5, 200.0, 1.0],
+        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+    ]
+    expected_aggregated = {
+        "llm_cache_missing": 1 / 3,
+        "llm_generation_failure": 1 / 3,
+        "ndtw": 0.5,
+        "steps_taken": 200 / 3,
+        "success": 1 / 3,
+    }
+
+    for rank in range(2):
+        trainer = ss_trainer_ETP_PriorGT.RLTrainer.__new__(
+            ss_trainer_ETP_PriorGT.RLTrainer
+        )
+        trainer.world_size = 2
+        trainer.device = torch.device("cpu")
+        trainer.stat_eps = rank_stats[rank]
+
+        def fake_all_gather_object(output, local_keys):
+            assert local_keys == metric_keys[rank]
+            output[:] = metric_keys
+
+        def fake_all_reduce(tensor, op):
+            assert op == torch.distributed.ReduceOp.SUM
+            assert tensor.dtype == torch.float64
+            assert tensor.tolist() == expected_local_vectors[rank]
+            tensor += torch.tensor(
+                expected_local_vectors[1 - rank],
+                dtype=torch.float64,
+            )
+
+        monkeypatch.setattr(
+            ss_trainer_ETP_PriorGT.distr,
+            "all_gather_object",
+            fake_all_gather_object,
+        )
+        monkeypatch.setattr(
+            ss_trainer_ETP_PriorGT.distr,
+            "all_reduce",
+            fake_all_reduce,
+        )
+
+        _, aggregated, total = trainer._aggregate_eval_episode_stats()
+
+        assert total == 3
+        assert aggregated == pytest.approx(expected_aggregated)

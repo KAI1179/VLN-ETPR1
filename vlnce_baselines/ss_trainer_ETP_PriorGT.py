@@ -3,7 +3,7 @@ import os
 import random
 import re
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List, Tuple
 import jsonlines
 
 import numpy as np
@@ -31,7 +31,6 @@ from vlnce_baselines.common.utils import extract_instruction_tokens
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
 
 from .utils import get_camera_orientations12
-from vlnce_baselines.common.utils import gather_list_and_concat
 from habitat_extensions.measures import NDTW
 from fastdtw import fastdtw
 
@@ -1134,32 +1133,63 @@ class RLTrainer(BaseVLNCETrainer):
     def _augment_eval_aggregated_states(self, aggregated_states, total):
         return aggregated_states
 
-    def _write_eval_results(self, writer, checkpoint_index):
-        if self.world_size > 1:
-            distr.barrier()
-        aggregated_states = {}
-        num_episodes = len(self.stat_eps)
-        stat_keys = sorted(
-            {key for episode_stats in self.stat_eps.values() for key in episode_stats}
-        )
-        for stat_key in stat_keys:
-            aggregated_states[stat_key] = (
-                sum(v.get(stat_key, 0.0) for v in self.stat_eps.values()) / num_episodes
-            )
-        total = torch.tensor(num_episodes).cuda()
-        if self.world_size > 1:
-            distr.reduce(total, dst=0)
-        total = total.item()
+    def _aggregate_eval_episode_stats(
+        self,
+    ) -> Tuple[Dict[str, float], Dict[str, float], int]:
+        if self.world_size < 1:
+            raise ValueError(f"world_size must be positive, got {self.world_size}")
 
+        num_episodes = len(self.stat_eps)
+        local_metric_keys = sorted({
+            key for episode_stats in self.stat_eps.values() for key in episode_stats
+        })
+        gathered_metric_keys: List[List[str]] = [[] for _ in range(self.world_size)]
+        if self.world_size > 1:
+            distr.all_gather_object(gathered_metric_keys, local_metric_keys)
+        else:
+            gathered_metric_keys[0] = local_metric_keys
+        metric_keys = sorted({
+            key for rank_metric_keys in gathered_metric_keys for key in rank_metric_keys
+        })
+        if not metric_keys:
+            raise ValueError("evaluation produced no metric keys")
+
+        local_sums = {
+            key: sum(
+                float(episode_stats.get(key, 0.0))
+                for episode_stats in self.stat_eps.values()
+            )
+            for key in metric_keys
+        }
+        local_averages = {
+            key: value / num_episodes if num_episodes else 0.0
+            for key, value in local_sums.items()
+        }
+        reduced = torch.tensor(
+            [float(num_episodes), *(local_sums[key] for key in metric_keys)],
+            dtype=torch.float64,
+            device=self.device,
+        )
+        if self.world_size > 1:
+            distr.all_reduce(reduced, op=distr.ReduceOp.SUM)
+
+        total = int(reduced[0].item())
+        if total < 1:
+            raise ValueError("evaluation produced no episodes")
+        aggregated_states = {
+            key: reduced[index + 1].item() / total
+            for index, key in enumerate(metric_keys)
+        }
+        return local_averages, aggregated_states, total
+
+    def _write_eval_results(self, writer, checkpoint_index):
+        num_episodes = len(self.stat_eps)
+        local_averages, aggregated_states, total = self._aggregate_eval_episode_stats()
         if self.world_size > 1:
             logger.info(
-                f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}"
+                f"rank {self.local_rank}'s {num_episodes}-episode results: "
+                f"{local_averages}"
             )
-            for k, v in aggregated_states.items():
-                v = torch.tensor(v * num_episodes).cuda()
-                cat_v = gather_list_and_concat(v, self.world_size)
-                v = (sum(cat_v) / total).item()
-                aggregated_states[k] = v
         aggregated_states = self._augment_eval_aggregated_states(
             aggregated_states,
             total,
@@ -1173,6 +1203,8 @@ class RLTrainer(BaseVLNCETrainer):
         with open(fname, "w") as f:
             json.dump(self.stat_eps, f, indent=2)
 
+        if self.world_size > 1:
+            distr.barrier()
         if self.local_rank < 1:
             if self.config.EVAL.SAVE_RESULTS:
                 fname = os.path.join(
