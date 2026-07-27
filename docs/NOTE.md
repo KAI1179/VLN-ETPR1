@@ -98,6 +98,12 @@
 
 ### 基于 LLM 的 pipeline
 
+| Method                     | SR         | OSR        | SPL        | ckpt    |
+| -------------------------- | ---------- | ---------- | ---------- | ------- |
+| Baseline (Dagger)          | 0.6313     | 0.6852     | 0.5423     |         |
+| Baseline (GRPO)            | 0.6536     | 0.7151     | 0.5582     |         |
+| LLM-Grid 2 (Dagger)        | 0.6542     | 0.7058     | 0.5525     | 28000   |
+
 - Smoke: LLM-derived cognitive-map cache + Try 7 navigation checkpoint
     - Script: `scripts/tries/smoke-llm-map-try7.sh`
     - Matrix: LLM4 cache, LLM5 cache
@@ -116,6 +122,7 @@
     - 未完整运行 - 中断，运行 try5-r1p5
 - LLM-Grid 1，Try 5 架构
 - LLM-Boxes 1，Try 10 架构
+- LLM-Grid 2: R2R + RxR-EN, 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`
 
 # 讨论与结果
 
@@ -852,25 +859,3 @@ Drop Rate By `max_new_tokens`:
 - Predict-every-category baseline 的 unseen combined episode-macro F1 已达 0.5482；R2R-only epoch 1/2/5/10 为 0.6642/0.6643/0.6151/0.6598。Category F1 可诊断“有什么”，但与 spatial IoU 几乎不相关，不能作为主要质量指标。
 - 固定 17 个 unseen identities 的 136-panel paired sheets 保留了 2 个显式 invalid placeholder；逐图与完整分布均显示 mixed 没有稳定的 unseen layout improvement。
 - 两条 training line 的 prompt、effective batch、sequence budget、optimizer steps 与 RNG 控制不同，结论是观察性的；不能把全部差值因果归因于 RxR。
-
-# 实验
-
-- [x] 去除随机旋转，加入 cross attn 的 GT 实验 (try 8@超算)
-- [x] 去除随机旋转的 LLM 评估 (llm 5@超算)
-- [x] 去除随机旋转的 LLM 导航缓存生成 (llm 5@超算)
-    - R2R train: 10494/10819
-    - R2R val_unseen: 1351/1839
-- ~~Nav 1: Try 8 + LLM 5~~
-- [x] Try 9: 简易的认知地图 Decoder @ VIPL
-- [x] LLM 5 nav cache (structured, `c0ed1e9`) @ 超算
-- ~~Nav 2: Try 9 + LLM 5 @ 超算~~
-- ~~Try 10: DETR-style decoder @ VIPL~~
-- [x] Try 5 repro (半径 1.5, on-the-fly) @ 超算
-- [x] 2x "Blurred", r=1.5 Try5-like (try5-r1p5-blurred) @ 超算
-- [x] 2x "Blurred", r=1.5 LLM-Grid 微调 (r2r-legacy-r1p5-direction5-scale2) @ 超算
-- [x] 2x "Blurred", r=1.5 LLM-Grid 预训练导航缓存生成 @ 超算
-- [x] 2x "Blurred", r=1.5 LLM-Grid, Try 5 架构 导航 @ 超算
-- [x] LLM-Boxes 微调 @ 超算
-- [x] LLM-Boxes 导航缓存生成 @ 超算
-- ~~LLM-Boxes, Try 10 架构 导航 @ 超算~~
-- [x] LLM-Grid 2 大模型微调 @ 超算
