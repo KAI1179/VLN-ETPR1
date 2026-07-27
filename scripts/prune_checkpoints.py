@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Periodically retain the lowest-loss checkpoints recorded in a tfevents file."""
+"""Periodically retain the best checkpoints recorded in a tfevents file."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import types
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Optional, Protocol
 
 import numpy as np
 from tap import Tap
@@ -27,6 +27,8 @@ sys.modules.setdefault(
 
 LOGGER = logging.getLogger(__name__)
 CHECKPOINT_NAME = re.compile(r"ckpt\.iter(?P<step>\d+)\.pth")
+Stage = Literal["dagger", "grpo"]
+Mode = Literal["min", "max"]
 
 
 class SummaryValue(Protocol):
@@ -37,15 +39,40 @@ class SummaryValue(Protocol):
     def HasField(self, field_name: str) -> bool: ...
 
 
+@dataclass(frozen=True)
+class Objective:
+    metric_tag: str
+    mode: Mode
+
+    @classmethod
+    def resolve(
+        cls,
+        stage: Stage,
+        metric_tag: Optional[str],
+        mode: Optional[Mode],
+    ) -> Objective:
+        if metric_tag is None:
+            if mode is not None:
+                raise ValueError("--mode requires --metric")
+            if stage == "dagger":
+                return cls("loss/IL_loss", "min")
+            return cls("grpo/spl_reward", "max")
+        if mode is None:
+            raise ValueError("--mode is required with --metric")
+        return cls(metric_tag, mode)
+
+
 class Arguments(Tap):
     """Checkpoint-pruning command line arguments."""
 
-    checkpoint_base: Path
-    """Directory containing checkpoints to prune."""
-    tfevents_filename: Path
-    """Event filename relative to checkpoint_base, or an absolute path."""
-    metric: str = "loss/IL_loss"
-    """TensorBoard scalar tag to minimise."""
+    tfevents_path: Path
+    """Event file whose parent directory contains checkpoints to prune."""
+    stage: Stage
+    """Training stage that selects the default metric and ranking direction."""
+    metric: Optional[str] = None
+    """Custom TensorBoard scalar tag."""
+    mode: Optional[Mode] = None
+    """Ranking direction required with a custom metric."""
     keep: int = 3
     """Target number of checkpoints; protected files consume slots."""
     interval_seconds: float = 300.0
@@ -58,8 +85,7 @@ class Arguments(Tap):
     """Report deletions without applying them."""
 
     def configure(self) -> None:
-        self.add_argument("checkpoint_base")
-        self.add_argument("tfevents_filename")
+        self.add_argument("tfevents_path")
 
 
 @dataclass(frozen=True)
@@ -87,7 +113,7 @@ class PruneReport:
 class CheckpointPruner:
     checkpoint_base: Path
     tfevents_path: Path
-    metric_tag: str
+    objective: Objective
     keep: int
     min_age_seconds: float
     dry_run: bool
@@ -101,17 +127,16 @@ class CheckpointPruner:
         if args.min_age_seconds < 0:
             raise ValueError("--min-age-seconds cannot be negative")
 
-        checkpoint_base = args.checkpoint_base.resolve(strict=True)
-        if not checkpoint_base.is_dir():
-            raise NotADirectoryError(checkpoint_base)
-        tfevents_path = args.tfevents_filename
-        if not tfevents_path.is_absolute():
-            tfevents_path = checkpoint_base / tfevents_path
+        tfevents_path = args.tfevents_path.resolve(strict=True)
+        if tfevents_path.is_dir():
+            raise IsADirectoryError(f"expected a tfevents file: {tfevents_path}")
+        if not tfevents_path.is_file():
+            raise ValueError(f"not a regular tfevents file: {tfevents_path}")
 
         return cls(
-            checkpoint_base=checkpoint_base,
-            tfevents_path=tfevents_path.resolve(strict=True),
-            metric_tag=args.metric,
+            checkpoint_base=tfevents_path.parent,
+            tfevents_path=tfevents_path,
+            objective=Objective.resolve(args.stage, args.metric, args.mode),
             keep=args.keep,
             min_age_seconds=args.min_age_seconds,
             dry_run=args.dry_run,
@@ -146,7 +171,10 @@ class CheckpointPruner:
                 for checkpoint in complete
                 if checkpoint.step in metric_by_step
             ),
-            key=lambda item: (item.metric, -item.checkpoint.step),
+            key=lambda item: (
+                item.metric if self.objective.mode == "min" else -item.metric,
+                -item.checkpoint.step,
+            ),
         )
         scored_slots = max(self.keep - len(unscored), 0)
         kept = tuple(scored if incomplete else scored[:scored_slots])
@@ -180,12 +208,14 @@ class CheckpointPruner:
         metric_by_step: dict[int, float] = {}
         for event in EventFileLoader(str(self.tfevents_path)).Load():
             for value in event.summary.value:
-                if value.tag != self.metric_tag:
+                if value.tag != self.objective.metric_tag:
                     continue
                 metric = _scalar_value(value)
                 if not math.isfinite(metric):
                     LOGGER.warning(
-                        "ignoring non-finite %s at step %d", self.metric_tag, event.step
+                        "ignoring non-finite %s at step %d",
+                        self.objective.metric_tag,
+                        event.step,
                     )
                     continue
                 metric_by_step[event.step] = metric
@@ -246,6 +276,12 @@ def main() -> None:
         level=logging.INFO,
     )
     pruner = CheckpointPruner.from_arguments(args)
+    LOGGER.info(
+        "ranking %s checkpoints by %s (%s)",
+        pruner.checkpoint_base,
+        pruner.objective.metric_tag,
+        pruner.objective.mode,
+    )
     while True:
         _log_report(pruner.prune_once(), dry_run=args.dry_run)
         if args.once:
