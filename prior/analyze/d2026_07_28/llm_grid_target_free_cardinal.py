@@ -104,6 +104,12 @@ class EpisodeKey:
     scene_id: str
     example_id: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.scene_id, str) or not self.scene_id:
+            raise ValueError("scene_id must be non-empty")
+        if not isinstance(self.example_id, str) or not self.example_id:
+            raise ValueError("example_id must be non-empty")
+
 
 @dataclass(frozen=True)
 class SelectorInput:

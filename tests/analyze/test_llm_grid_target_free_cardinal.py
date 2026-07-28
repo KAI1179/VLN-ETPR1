@@ -24,6 +24,15 @@ def test_quantize_heading_uses_clockwise_display_frame_and_declared_ties() -> No
     assert target_free.quantize_heading(boundary) == 0.0
 
 
+@pytest.mark.parametrize("scene_id, example_id", (("", "example"), ("scene", "")))
+def test_episode_key_rejects_empty_csv_identity_components(
+    scene_id: str, example_id: str
+) -> None:
+    """Breaks if canonical assignment CSV rows can contain empty identity cells."""
+    with pytest.raises(ValueError, match="must be non-empty"):
+        target_free.EpisodeKey(scene_id, example_id)
+
+
 @pytest.mark.parametrize(
     "bad",
     ([0.0, 0.0], [float("nan"), 1.0], [0.5, 0.0]),
