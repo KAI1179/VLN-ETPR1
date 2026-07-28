@@ -1745,20 +1745,30 @@ class _ArtifactBundle:
         }
 
 
+_ARTIFACT_VALIDATION_TOKEN = object()
+
+
 @dataclass(frozen=True)
 class _ValidatedArtifactBundle:
     """Opaque capability returned only after full artifact validation."""
 
     _serialized: _ArtifactBundle
+    _token: object = None
+
+    def __post_init__(self) -> None:
+        if self._token is not _ARTIFACT_VALIDATION_TOKEN:
+            raise ValueError(
+                "validated artifacts require a validator-issued capability"
+            )
 
     def files(self) -> Dict[str, bytes]:
         return self._serialized.files()
 
 
-def _write_artifacts(
-    output_dir: Path, artifacts: _ValidatedArtifactBundle
-) -> None:
+def _write_artifacts(output_dir: Path, artifacts: object) -> None:
     """Persist an already validated and serialized seven-file transaction."""
+    if not isinstance(artifacts, _ValidatedArtifactBundle):
+        raise TypeError("artifacts must be a validator-issued bundle")
     output_dir.mkdir(parents=True, exist_ok=True)
     for filename, data in artifacts.files().items():
         (output_dir / filename).write_bytes(data)
@@ -2114,7 +2124,7 @@ def _raster_from_csv(row: Mapping[str, str], prefix: str) -> RasterScore:
         in_frame_support=_csv_int(row, f"{prefix}_in_frame_support"),
         out_of_frame_support=_csv_int(row, f"{prefix}_out_of_frame_support"),
     )
-    if not _is_close(serialized_iou, score.iou):
+    if serialized_iou != score.iou:
         raise ValueError(
             f"{prefix}_iou does not match the reconstructed RasterScore.iou"
         )
@@ -2578,7 +2588,7 @@ def _validate_artifact_bundle(
         raise ValueError("manifest bootstrap contract is inconsistent")
     if decoded_manifest.get("gate_decision") != decision.value:
         raise ValueError("manifest gate decision is inconsistent")
-    return _ValidatedArtifactBundle(artifacts)
+    return _ValidatedArtifactBundle(artifacts, _ARTIFACT_VALIDATION_TOKEN)
 
 
 def validate_artifact_directory(

@@ -5,7 +5,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Callable, cast, Dict, Mapping, Optional
+from typing import Callable, Dict, Mapping, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -937,23 +937,47 @@ def artifact_cases() -> tuple[EpisodeCase, ...]:
     )
 
 
+def half_iou_artifact_cases() -> tuple[EpisodeCase, ...]:
+    cases = []
+    for case in artifact_cases():
+        target_grid = case.target_grid.copy()
+        target_grid[0, 10, 10] = True
+        cases.append(replace(case, target_grid=target_grid))
+    return tuple(cases)
+
+
 def write_artifact_fixture(
     tmp_path: Path,
+    cases: Optional[tuple[EpisodeCase, ...]] = None,
 ) -> tuple[Path, Path, tuple[EpisodeCase, ...]]:
-    cases = artifact_cases()
+    fixture_cases = artifact_cases() if cases is None else cases
     source_manifest = tmp_path / "prediction-manifest.json"
     source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
     output_dir = tmp_path / "output"
     crossfit._run_cases(
         fixed_args(output_dir=output_dir),
-        cases,
-        expected_population=len(cases),
+        fixture_cases,
+        expected_population=len(fixture_cases),
         expected_scenes=3,
-        expected_valid=len(cases),
+        expected_valid=len(fixture_cases),
         expected_invalid=0,
         prediction_manifest_path=source_manifest,
     )
-    return output_dir, source_manifest, cases
+    return output_dir, source_manifest, fixture_cases
+
+
+def artifact_bundle_from_directory(output_dir: Path) -> crossfit._ArtifactBundle:
+    return crossfit._ArtifactBundle(
+        manifest_json=(output_dir / "manifest.json").read_bytes(),
+        angle_scores_csv=(output_dir / "angle_scores.csv").read_bytes(),
+        crossfit_results_csv=(output_dir / "crossfit_results.csv").read_bytes(),
+        pivot_assignments_csv=(output_dir / "pivot_assignments.csv").read_bytes(),
+        summary_json=(output_dir / "summary.json").read_bytes(),
+        bootstrap_json=(output_dir / "bootstrap.json").read_bytes(),
+        control_intervals_png=(
+            output_dir / "crossfit_control_intervals.png"
+        ).read_bytes(),
+    )
 
 
 def refresh_artifact_hash(output_dir: Path, filename: str) -> None:
@@ -963,6 +987,7 @@ def refresh_artifact_hash(output_dir: Path, filename: str) -> None:
     )
     artifact_hashes = checked_json_object(manifest["artifact_sha256"])
     artifact_hashes[filename] = sha256((output_dir / filename).read_bytes()).hexdigest()
+    manifest["artifact_sha256"] = artifact_hashes
     if filename == "pivot_assignments.csv":
         manifest["pivot_assignments_sha256"] = artifact_hashes[filename]
     manifest_path.write_text(
@@ -1002,8 +1027,11 @@ def mutate_csv_field(
 
 def checked_json_object(value: object) -> Dict[str, object]:
     assert isinstance(value, dict)
-    assert all(isinstance(key, str) for key in value)
-    return cast(Dict[str, object], value)
+    result: Dict[str, object] = {}
+    for key, item in value.items():
+        assert isinstance(key, str)
+        result[key] = item
+    return result
 
 
 def write_json_artifact(
@@ -1040,6 +1068,72 @@ def test_validator_rejects_refreshed_hash_iou_corruption(
             expected_valid=len(cases),
             expected_invalid=0,
         )
+
+
+def test_validator_rejects_sub_tolerance_iou_corruption(
+    tmp_path: Path,
+) -> None:
+    output_dir, _, cases = write_artifact_fixture(
+        tmp_path,
+        half_iou_artifact_cases(),
+    )
+    mutate_csv_field(
+        output_dir,
+        "angle_scores.csv",
+        row_index=0,
+        field="object_iou",
+        value="0.5000000000005",
+    )
+
+    with pytest.raises(ValueError, match="object_iou"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+def test_artifact_writer_rejects_raw_serialized_bundle(tmp_path: Path) -> None:
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    bypass_dir = tmp_path / "raw-bypass"
+
+    with pytest.raises(TypeError, match="validator-issued"):
+        crossfit._write_artifacts(bypass_dir, raw)
+    assert not bypass_dir.exists()
+
+
+def test_validated_bundle_rejects_ordinary_construction(tmp_path: Path) -> None:
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+
+    with pytest.raises(ValueError, match="validator-issued"):
+        crossfit._ValidatedArtifactBundle(raw)
+
+
+def test_validator_issued_bundle_can_be_written(tmp_path: Path) -> None:
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    manifest = checked_json_object(
+        json.loads(raw.manifest_json.decode("utf-8"))
+    )
+    validated = crossfit._validate_artifact_bundle(
+        raw,
+        manifest,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+    )
+    validated_dir = tmp_path / "validated"
+
+    crossfit._write_artifacts(validated_dir, validated)
+
+    assert {
+        path.name for path in validated_dir.iterdir()
+    } == set(raw.files())
 
 
 @pytest.mark.parametrize(
@@ -1463,10 +1557,14 @@ def test_validator_rejects_semantic_corruption_after_hash_refresh(
             contrasts = checked_json_object(summary["start_specific_contrasts"])
             center = checked_json_object(contrasts["true_start_minus_map_center"])
             center["mean_delta_iou"] = 0.5
+            contrasts["true_start_minus_map_center"] = center
+            summary["start_specific_contrasts"] = contrasts
         else:
             gate = checked_json_object(summary["gate"])
             conditions = checked_json_object(gate["conditions"])
             conditions["true_start_symmetric_ci_lower_above_zero"] = True
+            gate["conditions"] = conditions
+            summary["gate"] = gate
         write_json_artifact(output_dir, "summary.json", summary)
     elif corruption in {"bootstrap_interval", "gate_input"}:
         bootstrap_path = output_dir / "bootstrap.json"
@@ -1479,6 +1577,8 @@ def test_validator_rejects_semantic_corruption_after_hash_refresh(
             endpoint["ci_lower"] = -99.0
         else:
             endpoint["mean"] = 0.5
+        endpoints["true_start_symmetric"] = endpoint
+        bootstrap["endpoints"] = endpoints
         write_json_artifact(output_dir, "bootstrap.json", bootstrap)
     elif corruption in {
         "gate_decision",
