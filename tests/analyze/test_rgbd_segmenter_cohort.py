@@ -12,6 +12,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Dict, cast
 
 import pytest
 
@@ -157,23 +158,23 @@ def test_select_observations_is_stratified_stable_and_artifact_independent() -> 
     observations = (
         _observation(
             observation_id="00000000000000000001",
-            artifact_sha256="1" * 64,
+            artifact_sha256="f" * 64,
             aliases=("R2R_val_unseen_1",),
         ),
         _observation(
             observation_id="00000000000000000002",
-            artifact_sha256="2" * 64,
+            artifact_sha256="0" * 64,
             aliases=("R2R_val_unseen_2",),
         ),
         _observation(
             observation_id="00000000000000000003",
-            artifact_sha256="3" * 64,
+            artifact_sha256="f" * 64,
             aliases=("R2R_val_unseen_3",),
             scene_id="8194nk5LbLH",
         ),
         _observation(
             observation_id="00000000000000000004",
-            artifact_sha256="4" * 64,
+            artifact_sha256="0" * 64,
             aliases=("R2R_val_unseen_4",),
             scene_id="8194nk5LbLH",
         ),
@@ -545,6 +546,19 @@ def test_build_cohort_from_sources_rejects_a_pinned_hash_mismatch(
         build_cohort_from_sources(git_commit="1" * 40)
 
 
+def _assert_exact_typed(actual: object, expected: object) -> None:
+    assert type(actual) is type(expected)
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        actual_mapping = cast(Dict[str, object], actual)
+        expected_mapping = cast(Dict[str, object], expected)
+        assert set(actual_mapping) == set(expected_mapping)
+        for key, value in expected_mapping.items():
+            _assert_exact_typed(actual_mapping[key], value)
+    else:
+        assert actual == expected
+
+
 def test_real_sources_reconstruct_frozen_population_and_episode_34() -> None:
     artifacts = build_cohort_from_sources(git_commit="1" * 40)
     manifest = json.loads(artifacts.manifest_json)
@@ -559,8 +573,114 @@ def test_real_sources_reconstruct_frozen_population_and_episode_34() -> None:
     assert len({item.scene_id for item in artifacts.population}) == 11
     assert artifacts.cohort.scene_quotas == OFFICIAL_SCENE_QUOTAS
     assert episode_34.observation_id == "409975fb26c71c8b50ec"
-    assert manifest["population"]["scene_observation_counts"] == dict(
-        OFFICIAL_SCENE_COUNTS
+    _assert_exact_typed(
+        manifest,
+        {
+            "cohort_id": "r2r-val-unseen-50-v1",
+            "files": {
+                "cohort.jsonl": {
+                    "byte_length": 20781,
+                    "row_count": 50,
+                    "sha256": (
+                        "89ae70f3e489fa702c66110f9bd9e766"
+                        "6ba0e16a9fbc3ac20aaa91a95adef0ce"
+                    ),
+                }
+            },
+            "git_commit": "1" * 40,
+            "population": {
+                "example_count": 1839,
+                "observation_count": 393,
+                "scene_count": 11,
+                "scene_observation_counts": {
+                    "2azQ1b91cZZ": 63,
+                    "8194nk5LbLH": 7,
+                    "EU6Fwq7SyZv": 33,
+                    "QUCTc6BB5sX": 64,
+                    "TbHJrupSAjP": 55,
+                    "X7HyMhZNoso": 33,
+                    "Z6MFQCViBuw": 28,
+                    "oLBMNvg9in8": 41,
+                    "pLe4wQe7qrG": 6,
+                    "x8F5xyUWy9e": 21,
+                    "zsNo4HB9uLZ": 42,
+                },
+            },
+            "schema_version": 1,
+            "selection": {
+                "algorithm": (
+                    "hamilton-scene-proportional-sha256-selection-key-v1"
+                ),
+                "domain_hex": (
+                    "6574702d72313a726762642d7365676d656e7465722d62656e63686d6172"
+                    "6b3a636f686f72742d763100"
+                ),
+                "scene_quotas": {
+                    "2azQ1b91cZZ": 8,
+                    "8194nk5LbLH": 1,
+                    "EU6Fwq7SyZv": 4,
+                    "QUCTc6BB5sX": 8,
+                    "TbHJrupSAjP": 7,
+                    "X7HyMhZNoso": 4,
+                    "Z6MFQCViBuw": 4,
+                    "oLBMNvg9in8": 5,
+                    "pLe4wQe7qrG": 1,
+                    "x8F5xyUWy9e": 3,
+                    "zsNo4HB9uLZ": 5,
+                },
+                "scene_selected_counts": {
+                    "2azQ1b91cZZ": 8,
+                    "8194nk5LbLH": 1,
+                    "EU6Fwq7SyZv": 4,
+                    "QUCTc6BB5sX": 8,
+                    "TbHJrupSAjP": 7,
+                    "X7HyMhZNoso": 4,
+                    "Z6MFQCViBuw": 4,
+                    "oLBMNvg9in8": 5,
+                    "pLe4wQe7qrG": 1,
+                    "x8F5xyUWy9e": 3,
+                    "zsNo4HB9uLZ": 5,
+                },
+                "selected_example_count": 255,
+                "selected_observation_count": 50,
+                "selected_scene_count": 11,
+                "selection_sha256": (
+                    "32a7adddf32291f059eb1045e63e077a"
+                    "693ca64d6fdf6e7418b54dd5d3644cb2"
+                ),
+                "target_observation_count": 50,
+            },
+            "source": {
+                "dataset": "R2R",
+                "evidence_index": (
+                    "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/"
+                    "val_unseen/index.jsonl"
+                ),
+                "evidence_index_sha256": (
+                    "0acc9d18aea6d369db4b0a73f8ab3ee"
+                    "bbe8fab51257b34614d1a7c407443acb9"
+                ),
+                "evidence_key": "oracle-t0-v1",
+                "evidence_manifest": (
+                    "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/"
+                    "val_unseen/manifest.json"
+                ),
+                "evidence_manifest_sha256": (
+                    "be2d25890c01234dd1bb8191af6c1d87"
+                    "121330991299287b635205f2ebf0327a"
+                ),
+                "evidence_root": "data/llm_grid_oracle_evidence",
+                "raw_split": (
+                    "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/"
+                    "val_unseen/val_unseen.json.gz"
+                ),
+                "raw_split_sha256": (
+                    "6140b46759fe332ee96aa849d4bb64e1"
+                    "c1829b8f65acee127355040a6ee23484"
+                ),
+                "split": "val_unseen",
+            },
+        },
     )
 
 
@@ -772,6 +892,26 @@ def test_validator_rejects_fifo_member_without_blocking(tmp_path: Path) -> None:
     assert time.monotonic() - started < 1.0
 
 
+def test_write_fsynced_flushes_complete_file_before_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "payload"
+    payload = b"sealed bytes"
+    fsync_sizes: list[int] = []
+    real_fsync = os.fsync
+
+    def observed_fsync(file_descriptor: int) -> None:
+        fsync_sizes.append(os.fstat(file_descriptor).st_size)
+        real_fsync(file_descriptor)
+
+    monkeypatch.setattr(cohort_module.os, "fsync", observed_fsync)
+
+    cohort_module._write_fsynced(destination, payload)
+
+    assert fsync_sizes == [len(payload)]
+    assert destination.read_bytes() == payload
+
+
 def test_publish_cohort_validates_temp_rechecks_git_and_atomically_publishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -944,7 +1084,16 @@ def test_rename_noreplace_uses_linux_abi_and_preserves_both_paths(
     assert destination.is_dir()
 
 
-def test_fixed_cli_rejects_scientific_and_path_overrides() -> None:
+def test_fixed_cli_rejects_overrides_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_calls = 0
+
+    def run() -> None:
+        nonlocal run_calls
+        run_calls += 1
+
+    monkeypatch.setattr(cohort_module, "_run", run)
     for override in (
         ["--output-dir", "elsewhere"],
         ["--target-count", "1"],
@@ -954,7 +1103,8 @@ def test_fixed_cli_rejects_scientific_and_path_overrides() -> None:
         ["--limit", "1"],
     ):
         with pytest.raises(SystemExit):
-            cohort_module.CohortArgs(underscores_to_dashes=True).parse_args(override)
+            cohort_module.main(override)
+    assert run_calls == 0
 
 
 def test_run_requires_absent_output_then_clean_git_before_source_load(
