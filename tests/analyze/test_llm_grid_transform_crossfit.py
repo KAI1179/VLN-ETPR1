@@ -11,16 +11,24 @@ from prior.analyze.d2026_07_28 import llm_grid_transform_crossfit as crossfit
 from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     CrossFitResult,
     Direction,
+    EndpointEstimate,
     EpisodeCase,
     EpisodePivotResult,
     FamilyAngleScore,
+    GateDecision,
     PivotAssignment,
     PivotMode,
+    _bootstrap_episode_macro,
     build_pivot_assignments,
+    bootstrap_results,
+    classify_gate,
     crossfit_scores,
     evaluate_episode,
+    leave_one_scene_out_ranges,
     pivot_for_mode,
+    scene_bootstrap_multiplicities,
     score_angle_families,
+    summarize_results,
 )
 from prior.analyze.llm_grid_registration import (
     RasterScore,
@@ -535,3 +543,259 @@ def test_crossfit_result_rejects_inconsistent_selector_margin() -> None:
             heldout_target_support_empty=False,
             heldout_union_empty=False,
         )
+
+
+def synthetic_crossfit_result(
+    direction: Direction,
+    delta: float,
+    *,
+    selected_angle: float = 90.0,
+    empty: bool = False,
+) -> CrossFitResult:
+    """Builds a valid held-out result; breaks if test fixtures stop matching records."""
+    return CrossFitResult(
+        direction=direction,
+        selected_angle_degrees=selected_angle,
+        second_angle_degrees=0.0,
+        selector_identity_iou=0.1,
+        selector_selected_iou=0.2,
+        selector_second_iou=0.1,
+        selector_margin=0.1,
+        heldout_identity_iou=0.5,
+        heldout_selected_iou=0.5 + delta,
+        delta_iou=delta,
+        selector_predicted_support_empty=empty,
+        selector_target_support_empty=empty,
+        selector_union_empty=empty,
+        heldout_predicted_support_empty=empty,
+        heldout_target_support_empty=empty,
+        heldout_union_empty=empty,
+    )
+
+
+def synthetic_pivot_result(
+    scene_id: str,
+    example_id: str,
+    pivot_mode: PivotMode,
+    object_delta: float,
+    region_delta: float,
+    *,
+    schema_valid: bool = True,
+    empty: bool = False,
+) -> EpisodePivotResult:
+    """Builds one real typed pivot row with literal directional deltas."""
+    return EpisodePivotResult(
+        split="val_unseen",
+        scene_id=scene_id,
+        example_id=example_id,
+        schema_valid=schema_valid,
+        pivot_mode=pivot_mode,
+        pivot=(1.0, 1.0),
+        donor_example_id="donor" if pivot_mode is PivotMode.SHUFFLED_START else None,
+        angle_scores=(family_score(0.0, object_iou_tenths=1, region_iou_tenths=1),),
+        object_to_region=synthetic_crossfit_result(
+            Direction.OBJECT_TO_REGION,
+            object_delta,
+            selected_angle=90.0,
+            empty=empty,
+        ),
+        region_to_object=synthetic_crossfit_result(
+            Direction.REGION_TO_OBJECT,
+            region_delta,
+            selected_angle=180.0,
+            empty=empty,
+        ),
+    )
+
+
+def inference_rows() -> tuple[EpisodePivotResult, ...]:
+    """Two unequal scenes retain an invalid row in every declared pivot."""
+    rows: list[EpisodePivotResult] = []
+    values = (
+        ("A", "a", True, False, (0.4, 0.2), (0.0, 0.0), (0.1, 0.1)),
+        ("B", "b1", True, False, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
+        ("B", "b2", True, False, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
+        ("B", "b3", False, True, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
+    )
+    for scene_id, example_id, schema_valid, empty, true, center, shuffled in values:
+        rows.extend(
+            (
+                synthetic_pivot_result(
+                    scene_id,
+                    example_id,
+                    PivotMode.TRUE_START,
+                    *true,
+                    schema_valid=schema_valid,
+                    empty=empty,
+                ),
+                synthetic_pivot_result(
+                    scene_id,
+                    example_id,
+                    PivotMode.MAP_CENTER,
+                    *center,
+                    schema_valid=schema_valid,
+                    empty=empty,
+                ),
+                synthetic_pivot_result(
+                    scene_id,
+                    example_id,
+                    PivotMode.SHUFFLED_START,
+                    *shuffled,
+                    schema_valid=schema_valid,
+                    empty=empty,
+                ),
+            )
+        )
+    return tuple(rows)
+
+
+def test_bootstrap_replicates_preserve_episode_weighting() -> None:
+    """Breaks if multiplicities average unequal scene means equally."""
+    scene_ids = ("A", "B")
+    multiplicities = np.asarray(((1, 1), (2, 0), (0, 2)), dtype=np.int64)
+    values = {"A": (1.0,), "B": (0.0, 0.0, 0.0)}
+
+    replicates = _bootstrap_episode_macro(values, scene_ids, multiplicities)
+
+    np.testing.assert_allclose(replicates, (0.25, 1.0, 0.0))
+
+
+def test_scene_bootstrap_multiplicities_are_seeded_and_scene_sorted() -> None:
+    """Breaks if scene bootstrap consumes row order or an unfrozen random source."""
+    rows = inference_rows()
+
+    first_scenes, first = scene_bootstrap_multiplicities(rows)
+    second_scenes, second = scene_bootstrap_multiplicities(tuple(reversed(rows)))
+
+    assert first_scenes == ("A", "B")
+    assert second_scenes == first_scenes
+    np.testing.assert_array_equal(second, first)
+    assert first.shape == (10_000, 2)
+    assert first.dtype == np.int64
+
+
+def test_inference_uses_shared_bootstrap_and_episode_paired_contrasts() -> None:
+    """Breaks if endpoints resample independently or contrast after scene averaging."""
+    rows = inference_rows()
+
+    estimates = bootstrap_results(rows)
+
+    assert estimates.true_start_object_to_region.mean == pytest.approx(0.1)
+    assert estimates.true_start_region_to_object.mean == pytest.approx(0.05)
+    assert estimates.true_start_symmetric.mean == pytest.approx(0.075)
+    assert estimates.true_start_minus_map_center.mean == pytest.approx(-0.075)
+    assert estimates.true_start_minus_shuffled.mean == pytest.approx(-0.025)
+    for estimate in estimates.all():
+        assert np.isfinite(
+            (
+                estimate.mean,
+                estimate.ci_lower,
+                estimate.ci_upper,
+                estimate.leave_one_scene_out_min,
+                estimate.leave_one_scene_out_max,
+            )
+        ).all()
+
+
+def test_all_endpoints_receive_the_same_bootstrap_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if an endpoint draws its own scene bootstrap matrix."""
+    received: list[NDArray[np.int64]] = []
+    real_bootstrap = crossfit._bootstrap_episode_macro
+
+    def capture_bootstrap(
+        values: dict[str, tuple[float, ...]],
+        scene_ids: tuple[str, ...],
+        multiplicities: NDArray[np.int64],
+    ) -> NDArray[np.float64]:
+        received.append(multiplicities)
+        return real_bootstrap(values, scene_ids, multiplicities)
+
+    monkeypatch.setattr(crossfit, "_bootstrap_episode_macro", capture_bootstrap)
+
+    bootstrap_results(inference_rows())
+
+    assert len(received) == 11
+    assert all(matrix is received[0] for matrix in received)
+
+
+def test_leave_one_scene_out_reports_only_episode_macro_range() -> None:
+    """Breaks if LOSO averages remaining scenes equally rather than episodes."""
+    ranges = leave_one_scene_out_ranges(inference_rows())
+
+    assert ranges.true_start_symmetric == pytest.approx((0.0, 0.3))
+    assert ranges.true_start_minus_map_center == pytest.approx((-0.2, 0.3))
+
+
+def test_summary_retains_invalid_rows_and_all_empty_rates() -> None:
+    """Breaks if summary filtering removes invalid rows or collapses empty flags."""
+    summary = summarize_results(inference_rows())
+    true_start = summary[PivotMode.TRUE_START]
+
+    assert true_start.object_to_region_mean == pytest.approx(0.1)
+    assert true_start.region_to_object_mean == pytest.approx(0.05)
+    assert true_start.symmetric_mean == pytest.approx(0.075)
+    assert true_start.object_to_region_angle_counts == ((90.0, 4),)
+    assert true_start.region_to_object_angle_counts == ((180.0, 4),)
+    assert true_start.object_to_region_empty_rates == (0.25,) * 6
+    assert true_start.region_to_object_empty_rates == (0.25,) * 6
+
+
+def estimate(*, mean: float, lower: float) -> EndpointEstimate:
+    """Builds a finite endpoint estimate with literal bounds for gate tests."""
+    return EndpointEstimate(
+        mean=mean,
+        ci_lower=lower,
+        ci_upper=lower + 0.1,
+        leave_one_scene_out_min=mean,
+        leave_one_scene_out_max=mean,
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "mean",
+        "lower",
+        "object_delta",
+        "region_delta",
+        "center_lower",
+        "shuffle_lower",
+        "expected",
+    ),
+    (
+        (0.011, 0.001, 0.002, 0.020, 0.001, 0.001, GateDecision.GO),
+        (
+            0.011,
+            0.001,
+            -0.001,
+            0.023,
+            0.001,
+            0.001,
+            GateDecision.PARTIAL_EVIDENCE,
+        ),
+        (0.009, 0.001, 0.002, 0.016, 0.001, 0.001, GateDecision.NO_GO),
+        (0.011, 0.000, 0.002, 0.020, 0.001, 0.001, GateDecision.NO_GO),
+    ),
+)
+def test_gate_is_literal(
+    mean: float,
+    lower: float,
+    object_delta: float,
+    region_delta: float,
+    center_lower: float,
+    shuffle_lower: float,
+    expected: GateDecision,
+) -> None:
+    """Breaks if any frozen gate threshold or decision ordering changes."""
+    symmetric = estimate(mean=mean, lower=lower)
+    center = estimate(mean=0.0, lower=center_lower)
+    shuffle = estimate(mean=0.0, lower=shuffle_lower)
+
+    assert classify_gate(
+        true_start_symmetric=symmetric,
+        true_start_object_to_region_mean=object_delta,
+        true_start_region_to_object_mean=region_delta,
+        start_minus_center=center,
+        start_minus_shuffled=shuffle,
+    ) is expected

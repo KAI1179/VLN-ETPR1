@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from numbers import Integral, Real
-from typing import Dict, Optional, Sequence, Set
+from typing import Dict, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -84,6 +84,122 @@ class PivotMode(str, Enum):
 class Direction(str, Enum):
     OBJECT_TO_REGION = "object_to_region"
     REGION_TO_OBJECT = "region_to_object"
+
+
+class GateDecision(str, Enum):
+    GO = "GO"
+    PARTIAL_EVIDENCE = "partial_evidence"
+    NO_GO = "NO_GO"
+
+
+@dataclass(frozen=True)
+class EndpointEstimate:
+    mean: float
+    ci_lower: float
+    ci_upper: float
+    leave_one_scene_out_min: float
+    leave_one_scene_out_max: float
+
+    def __post_init__(self) -> None:
+        _require_finite_real(self.mean, "mean")
+        ci_lower = _require_finite_real(self.ci_lower, "ci_lower")
+        ci_upper = _require_finite_real(self.ci_upper, "ci_upper")
+        loso_min = _require_finite_real(
+            self.leave_one_scene_out_min, "leave_one_scene_out_min"
+        )
+        loso_max = _require_finite_real(
+            self.leave_one_scene_out_max, "leave_one_scene_out_max"
+        )
+        if ci_lower > ci_upper:
+            raise ValueError("ci_lower must not exceed ci_upper")
+        if loso_min > loso_max:
+            raise ValueError(
+                "leave_one_scene_out_min must not exceed leave_one_scene_out_max"
+            )
+
+
+@dataclass(frozen=True)
+class InferenceEstimates:
+    true_start_object_to_region: EndpointEstimate
+    true_start_region_to_object: EndpointEstimate
+    true_start_symmetric: EndpointEstimate
+    map_center_object_to_region: EndpointEstimate
+    map_center_region_to_object: EndpointEstimate
+    map_center_symmetric: EndpointEstimate
+    shuffled_start_object_to_region: EndpointEstimate
+    shuffled_start_region_to_object: EndpointEstimate
+    shuffled_start_symmetric: EndpointEstimate
+    true_start_minus_map_center: EndpointEstimate
+    true_start_minus_shuffled: EndpointEstimate
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(estimate, EndpointEstimate) for estimate in self.all()):
+            raise ValueError("inference estimates must contain EndpointEstimate values")
+
+    def all(self) -> Tuple[EndpointEstimate, ...]:
+        return (
+            self.true_start_object_to_region,
+            self.true_start_region_to_object,
+            self.true_start_symmetric,
+            self.map_center_object_to_region,
+            self.map_center_region_to_object,
+            self.map_center_symmetric,
+            self.shuffled_start_object_to_region,
+            self.shuffled_start_region_to_object,
+            self.shuffled_start_symmetric,
+            self.true_start_minus_map_center,
+            self.true_start_minus_shuffled,
+        )
+
+
+@dataclass(frozen=True)
+class InferenceRanges:
+    true_start_object_to_region: Tuple[float, float]
+    true_start_region_to_object: Tuple[float, float]
+    true_start_symmetric: Tuple[float, float]
+    map_center_object_to_region: Tuple[float, float]
+    map_center_region_to_object: Tuple[float, float]
+    map_center_symmetric: Tuple[float, float]
+    shuffled_start_object_to_region: Tuple[float, float]
+    shuffled_start_region_to_object: Tuple[float, float]
+    shuffled_start_symmetric: Tuple[float, float]
+    true_start_minus_map_center: Tuple[float, float]
+    true_start_minus_shuffled: Tuple[float, float]
+
+    def __post_init__(self) -> None:
+        for bounds in self.all():
+            if not isinstance(bounds, tuple) or len(bounds) != 2:
+                raise ValueError("leave-one-scene-out ranges must be two-item tuples")
+            lower = _require_finite_real(bounds[0], "leave-one-scene-out lower")
+            upper = _require_finite_real(bounds[1], "leave-one-scene-out upper")
+            if lower > upper:
+                raise ValueError("leave-one-scene-out lower must not exceed upper")
+
+    def all(self) -> Tuple[Tuple[float, float], ...]:
+        return (
+            self.true_start_object_to_region,
+            self.true_start_region_to_object,
+            self.true_start_symmetric,
+            self.map_center_object_to_region,
+            self.map_center_region_to_object,
+            self.map_center_symmetric,
+            self.shuffled_start_object_to_region,
+            self.shuffled_start_region_to_object,
+            self.shuffled_start_symmetric,
+            self.true_start_minus_map_center,
+            self.true_start_minus_shuffled,
+        )
+
+
+@dataclass(frozen=True)
+class PivotSummary:
+    object_to_region_mean: float
+    region_to_object_mean: float
+    symmetric_mean: float
+    object_to_region_angle_counts: Tuple[Tuple[float, int], ...]
+    region_to_object_angle_counts: Tuple[Tuple[float, int], ...]
+    object_to_region_empty_rates: Tuple[float, float, float, float, float, float]
+    region_to_object_empty_rates: Tuple[float, float, float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -579,3 +695,376 @@ def evaluate_episode(
             )
         )
     return tuple(results)
+
+
+_PIVOT_MODES = tuple(PivotMode)
+_ENDPOINT_FIELDS = (
+    "true_start_object_to_region",
+    "true_start_region_to_object",
+    "true_start_symmetric",
+    "map_center_object_to_region",
+    "map_center_region_to_object",
+    "map_center_symmetric",
+    "shuffled_start_object_to_region",
+    "shuffled_start_region_to_object",
+    "shuffled_start_symmetric",
+    "true_start_minus_map_center",
+    "true_start_minus_shuffled",
+)
+
+
+def _endpoint_name(pivot_mode: PivotMode, suffix: str) -> str:
+    return f"{pivot_mode.value}_{suffix}"
+
+
+def _complete_pivot_results(
+    results: Sequence[EpisodePivotResult],
+) -> Dict[Tuple[str, str], Dict[PivotMode, EpisodePivotResult]]:
+    rows = tuple(results)
+    if not rows:
+        raise ValueError("results must contain at least one EpisodePivotResult")
+
+    by_identity: Dict[Tuple[str, str], Dict[PivotMode, EpisodePivotResult]] = {}
+    for row in rows:
+        if not isinstance(row, EpisodePivotResult):
+            raise ValueError("results must contain only EpisodePivotResult rows")
+        identity = (row.scene_id, row.example_id)
+        pivot_rows = by_identity.setdefault(identity, {})
+        if row.pivot_mode in pivot_rows:
+            raise ValueError("results must not duplicate an episode pivot identity")
+        pivot_rows[row.pivot_mode] = row
+
+    required_modes = set(_PIVOT_MODES)
+    for pivot_rows in by_identity.values():
+        if set(pivot_rows) != required_modes:
+            raise ValueError("results must contain a complete pivot triple per episode")
+    return by_identity
+
+
+def _prepared_endpoint_values(
+    results: Sequence[EpisodePivotResult],
+) -> Tuple[Tuple[str, ...], Dict[str, Dict[str, Tuple[float, ...]]]]:
+    by_identity = _complete_pivot_results(results)
+    scene_ids = tuple(
+        sorted({scene_id for scene_id, _ in by_identity}, key=lambda value: value.encode("utf-8"))
+    )
+    if not scene_ids:
+        raise ValueError("results must contain at least one scene")
+    mutable_values: Dict[str, Dict[str, list[float]]] = {
+        endpoint: {scene_id: [] for scene_id in scene_ids}
+        for endpoint in _ENDPOINT_FIELDS
+    }
+    for scene_id, example_id in sorted(
+        by_identity,
+        key=lambda identity: (identity[0].encode("utf-8"), identity[1].encode("utf-8")),
+    ):
+        pivot_rows = by_identity[(scene_id, example_id)]
+        for pivot_mode in _PIVOT_MODES:
+            row = pivot_rows[pivot_mode]
+            object_delta = _require_finite_real(
+                row.object_to_region.delta_iou, "object_to_region delta_iou"
+            )
+            region_delta = _require_finite_real(
+                row.region_to_object.delta_iou, "region_to_object delta_iou"
+            )
+            mutable_values[_endpoint_name(pivot_mode, "object_to_region")][
+                scene_id
+            ].append(object_delta)
+            mutable_values[_endpoint_name(pivot_mode, "region_to_object")][
+                scene_id
+            ].append(region_delta)
+            mutable_values[_endpoint_name(pivot_mode, "symmetric")][scene_id].append(
+                0.5 * (object_delta + region_delta)
+            )
+        true_start = pivot_rows[PivotMode.TRUE_START].symmetric_delta
+        map_center = pivot_rows[PivotMode.MAP_CENTER].symmetric_delta
+        shuffled_start = pivot_rows[PivotMode.SHUFFLED_START].symmetric_delta
+        mutable_values["true_start_minus_map_center"][scene_id].append(
+            _require_finite_real(
+                true_start - map_center, "true_start minus map_center symmetric delta"
+            )
+        )
+        mutable_values["true_start_minus_shuffled"][scene_id].append(
+            _require_finite_real(
+                true_start - shuffled_start,
+                "true_start minus shuffled_start symmetric delta",
+            )
+        )
+
+    endpoint_values: Dict[str, Dict[str, Tuple[float, ...]]] = {}
+    for endpoint, scene_values in mutable_values.items():
+        endpoint_values[endpoint] = {
+            scene_id: tuple(values) for scene_id, values in scene_values.items()
+        }
+    return scene_ids, endpoint_values
+
+
+def scene_bootstrap_multiplicities(
+    results: Sequence[EpisodePivotResult],
+) -> Tuple[Tuple[str, ...], NDArray[np.int64]]:
+    """Return the fixed shared scene-bootstrap multiplicity matrix."""
+    scene_ids, _ = _prepared_endpoint_values(results)
+    generator = np.random.default_rng(42)
+    draws = generator.integers(0, len(scene_ids), size=(10_000, len(scene_ids)))
+    multiplicities = np.zeros((10_000, len(scene_ids)), dtype=np.int64)
+    for scene_index in range(len(scene_ids)):
+        multiplicities[:, scene_index] = np.count_nonzero(
+            draws == scene_index, axis=1
+        )
+    return scene_ids, multiplicities
+
+
+def _bootstrap_episode_macro(
+    values: Mapping[str, Sequence[float]],
+    scene_ids: Sequence[str],
+    multiplicities: NDArray[np.int64],
+) -> NDArray[np.float64]:
+    """Bootstrap an episode-macro endpoint from fixed scene multiplicities."""
+    ordered_scenes = tuple(scene_ids)
+    if not ordered_scenes or len(set(ordered_scenes)) != len(ordered_scenes):
+        raise ValueError("scene_ids must be a nonempty unique sequence")
+    if set(values) != set(ordered_scenes):
+        raise ValueError("values must contain exactly the declared scene keys")
+    if (
+        not isinstance(multiplicities, np.ndarray)
+        or multiplicities.ndim != 2
+        or multiplicities.shape[1] != len(ordered_scenes)
+        or not np.issubdtype(multiplicities.dtype, np.integer)
+    ):
+        raise ValueError("multiplicities must be a two-dimensional integer matrix")
+    if multiplicities.shape[0] == 0 or np.any(multiplicities < 0):
+        raise ValueError("multiplicities must be nonnegative with at least one replicate")
+
+    scene_sums = []
+    scene_counts = []
+    for scene_id in ordered_scenes:
+        scene_values = tuple(values[scene_id])
+        if not scene_values:
+            raise ValueError("every bootstrap scene must contain at least one episode")
+        checked_values = tuple(
+            _require_finite_real(value, f"values for scene {scene_id}")
+            for value in scene_values
+        )
+        scene_sums.append(sum(checked_values))
+        scene_counts.append(len(checked_values))
+    sums = np.asarray(scene_sums, dtype=np.float64)
+    counts = np.asarray(scene_counts, dtype=np.int64)
+    denominators = multiplicities @ counts
+    if np.any(denominators == 0):
+        raise ValueError("bootstrap multiplicities must give every replicate an episode")
+    replicates = (multiplicities @ sums) / denominators
+    if not np.isfinite(replicates).all():
+        raise ValueError("bootstrap replicates must be finite")
+    return replicates
+
+
+def _mean(values: Sequence[float], name: str) -> float:
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    checked_values = tuple(_require_finite_real(value, name) for value in values)
+    return float(sum(checked_values) / len(checked_values))
+
+
+def _leave_one_scene_out_range(
+    values: Mapping[str, Sequence[float]], scene_ids: Sequence[str]
+) -> Tuple[float, float]:
+    if len(scene_ids) < 2:
+        raise ValueError("leave-one-scene-out requires at least two scenes")
+    means = []
+    for omitted_scene in scene_ids:
+        remaining = tuple(
+            value
+            for scene_id in scene_ids
+            if scene_id != omitted_scene
+            for value in values[scene_id]
+        )
+        means.append(_mean(remaining, "leave-one-scene-out values"))
+    return (float(min(means)), float(max(means)))
+
+
+def _inference_ranges(
+    values: Mapping[str, Tuple[float, float]],
+) -> InferenceRanges:
+    if set(values) != set(_ENDPOINT_FIELDS):
+        raise ValueError("inference ranges must contain every endpoint")
+    return InferenceRanges(
+        true_start_object_to_region=values["true_start_object_to_region"],
+        true_start_region_to_object=values["true_start_region_to_object"],
+        true_start_symmetric=values["true_start_symmetric"],
+        map_center_object_to_region=values["map_center_object_to_region"],
+        map_center_region_to_object=values["map_center_region_to_object"],
+        map_center_symmetric=values["map_center_symmetric"],
+        shuffled_start_object_to_region=values["shuffled_start_object_to_region"],
+        shuffled_start_region_to_object=values["shuffled_start_region_to_object"],
+        shuffled_start_symmetric=values["shuffled_start_symmetric"],
+        true_start_minus_map_center=values["true_start_minus_map_center"],
+        true_start_minus_shuffled=values["true_start_minus_shuffled"],
+    )
+
+
+def _inference_estimates(
+    values: Mapping[str, EndpointEstimate],
+) -> InferenceEstimates:
+    if set(values) != set(_ENDPOINT_FIELDS):
+        raise ValueError("inference estimates must contain every endpoint")
+    return InferenceEstimates(
+        true_start_object_to_region=values["true_start_object_to_region"],
+        true_start_region_to_object=values["true_start_region_to_object"],
+        true_start_symmetric=values["true_start_symmetric"],
+        map_center_object_to_region=values["map_center_object_to_region"],
+        map_center_region_to_object=values["map_center_region_to_object"],
+        map_center_symmetric=values["map_center_symmetric"],
+        shuffled_start_object_to_region=values["shuffled_start_object_to_region"],
+        shuffled_start_region_to_object=values["shuffled_start_region_to_object"],
+        shuffled_start_symmetric=values["shuffled_start_symmetric"],
+        true_start_minus_map_center=values["true_start_minus_map_center"],
+        true_start_minus_shuffled=values["true_start_minus_shuffled"],
+    )
+
+
+def leave_one_scene_out_ranges(
+    results: Sequence[EpisodePivotResult],
+) -> InferenceRanges:
+    """Return episode-macro minimum/maximum values after omitting each scene."""
+    scene_ids, endpoint_values = _prepared_endpoint_values(results)
+    ranges = {
+        endpoint: _leave_one_scene_out_range(values, scene_ids)
+        for endpoint, values in endpoint_values.items()
+    }
+    return _inference_ranges(ranges)
+
+
+def bootstrap_results(
+    results: Sequence[EpisodePivotResult],
+) -> InferenceEstimates:
+    """Estimate all endpoints from one shared paired scene-bootstrap matrix."""
+    scene_ids, endpoint_values = _prepared_endpoint_values(results)
+    bootstrap_scene_ids, multiplicities = scene_bootstrap_multiplicities(results)
+    if bootstrap_scene_ids != scene_ids:
+        raise ValueError("bootstrap scene order does not match endpoint scene order")
+    ranges = {
+        endpoint: _leave_one_scene_out_range(values, scene_ids)
+        for endpoint, values in endpoint_values.items()
+    }
+    estimates: Dict[str, EndpointEstimate] = {}
+    for endpoint in _ENDPOINT_FIELDS:
+        values = endpoint_values[endpoint]
+        all_values = tuple(
+            value for scene_id in scene_ids for value in values[scene_id]
+        )
+        replicates = _bootstrap_episode_macro(values, scene_ids, multiplicities)
+        ci_lower, ci_upper = np.percentile(replicates, (2.5, 97.5))
+        leave_one_scene_out_min, leave_one_scene_out_max = ranges[endpoint]
+        estimates[endpoint] = EndpointEstimate(
+            mean=_mean(all_values, endpoint),
+            ci_lower=float(ci_lower),
+            ci_upper=float(ci_upper),
+            leave_one_scene_out_min=leave_one_scene_out_min,
+            leave_one_scene_out_max=leave_one_scene_out_max,
+        )
+    return _inference_estimates(estimates)
+
+
+def _direction_summary(rows: Sequence[CrossFitResult]) -> Tuple[
+    float,
+    Tuple[Tuple[float, int], ...],
+    Tuple[float, float, float, float, float, float],
+]:
+    if not rows:
+        raise ValueError("direction summary requires at least one result")
+    angle_counts = tuple(
+        (angle, sum(row.selected_angle_degrees == angle for row in rows))
+        for angle in sorted({row.selected_angle_degrees for row in rows})
+    )
+    empty_flags = (
+        "selector_predicted_support_empty",
+        "selector_target_support_empty",
+        "selector_union_empty",
+        "heldout_predicted_support_empty",
+        "heldout_target_support_empty",
+        "heldout_union_empty",
+    )
+    empty_rates = tuple(
+        _mean(
+            tuple(float(getattr(row, flag)) for row in rows),
+            f"{flag} values",
+        )
+        for flag in empty_flags
+    )
+    return (
+        _mean(tuple(row.delta_iou for row in rows), "directional deltas"),
+        angle_counts,
+        (
+            empty_rates[0],
+            empty_rates[1],
+            empty_rates[2],
+            empty_rates[3],
+            empty_rates[4],
+            empty_rates[5],
+        ),
+    )
+
+
+def summarize_results(
+    results: Sequence[EpisodePivotResult],
+) -> Dict[PivotMode, PivotSummary]:
+    """Summarize retained rows by pivot without filtering invalid episodes."""
+    by_identity = _complete_pivot_results(results)
+    summary: Dict[PivotMode, PivotSummary] = {}
+    for pivot_mode in _PIVOT_MODES:
+        pivot_rows = tuple(
+            pivot_rows[pivot_mode] for pivot_rows in by_identity.values()
+        )
+        object_mean, object_angles, object_empty_rates = _direction_summary(
+            tuple(row.object_to_region for row in pivot_rows)
+        )
+        region_mean, region_angles, region_empty_rates = _direction_summary(
+            tuple(row.region_to_object for row in pivot_rows)
+        )
+        summary[pivot_mode] = PivotSummary(
+            object_to_region_mean=object_mean,
+            region_to_object_mean=region_mean,
+            symmetric_mean=0.5 * (object_mean + region_mean),
+            object_to_region_angle_counts=object_angles,
+            region_to_object_angle_counts=region_angles,
+            object_to_region_empty_rates=object_empty_rates,
+            region_to_object_empty_rates=region_empty_rates,
+        )
+    return summary
+
+
+def classify_gate(
+    *,
+    true_start_symmetric: EndpointEstimate,
+    true_start_object_to_region_mean: float,
+    true_start_region_to_object_mean: float,
+    start_minus_center: EndpointEstimate,
+    start_minus_shuffled: EndpointEstimate,
+) -> GateDecision:
+    """Apply the frozen, ordered intersection-union decision gate literally."""
+    if not isinstance(true_start_symmetric, EndpointEstimate):
+        raise ValueError("true_start_symmetric must be an EndpointEstimate")
+    if not isinstance(start_minus_center, EndpointEstimate):
+        raise ValueError("start_minus_center must be an EndpointEstimate")
+    if not isinstance(start_minus_shuffled, EndpointEstimate):
+        raise ValueError("start_minus_shuffled must be an EndpointEstimate")
+    object_delta = _require_finite_real(
+        true_start_object_to_region_mean, "true_start_object_to_region_mean"
+    )
+    region_delta = _require_finite_real(
+        true_start_region_to_object_mean, "true_start_region_to_object_mean"
+    )
+    symmetric_passes = (
+        true_start_symmetric.mean >= 0.01
+        and true_start_symmetric.ci_lower > 0.0
+    )
+    if not symmetric_passes:
+        return GateDecision.NO_GO
+    if (
+        object_delta > 0.0
+        and region_delta > 0.0
+        and start_minus_center.ci_lower > 0.0
+        and start_minus_shuffled.ci_lower > 0.0
+    ):
+        return GateDecision.GO
+    return GateDecision.PARTIAL_EVIDENCE
