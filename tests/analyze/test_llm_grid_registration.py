@@ -12,6 +12,7 @@ from prior.analyze.llm_grid_registration import (
     select_best_angle,
     warp_grid_about_pivot,
 )
+from prior.directions import world_delta_to_direction_vector
 
 
 def test_identity_preserves_coordinates_and_support() -> None:
@@ -178,14 +179,16 @@ def test_score_counts_identical_occupancy_once_per_category() -> None:
     assert score.target_support == 2
 
 
-def test_rotate_direction_vectors_preserves_zero_vectors() -> None:
-    """Breaks if direction rotation uses the wrong orientation or changes zeros."""
+def test_rotate_direction_vectors_uses_physical_grid_angle_in_reflected_basis() -> None:
+    """Breaks if a physical grid rotation uses the same numeric stored-basis angle."""
+    source = world_delta_to_direction_vector(1.0, 0.0)
+    expected = world_delta_to_direction_vector(0.0, 1.0)
     rotated = rotate_direction_vectors(
-        np.asarray([[1.0, 0.0], [0.0, 0.0]], dtype=np.float32), 90.0
+        np.asarray([source, (0.0, 0.0)], dtype=np.float32), 90.0
     )
 
     assert rotated.dtype == np.float32
-    assert rotated[0] == pytest.approx([0.0, 1.0], abs=1e-6)
+    assert rotated[0] == pytest.approx(expected, abs=1e-6)
     assert rotated[1] == pytest.approx([0.0, 0.0], abs=1e-6)
 
 

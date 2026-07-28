@@ -18,7 +18,10 @@
 - Apply one angle to all 37 channels around the exact continuous scale-2 start pivot; keep ground truth, start position, and start heading fixed.
 - Cell centers are `(row + 0.5, col + 0.5)`; boolean grids use nearest-neighbor inverse warping.
 - Preserve all warped support on dynamic padded bounds; count support outside the `50×50` target frame as false positives.
-- Rotate predicted direction vectors with the same signed angle as the grid.
+- Apply the same physical signed angle to predicted direction vectors. Because
+  `world_delta_to_direction_vector(dx, dz) = (-dz, -dx)` is a reflection, a
+  physical grid rotation by `theta` requires a numeric stored-vector rotation
+  by `-theta`.
 - Scene-cluster bootstrap uses 10,000 repetitions and seed 42 over the 11 `val_unseen` scenes.
 - The oracle-selected angle is diagnostic only and must never be passed to navigation.
 - Use Chinese in `docs/daily/`; use English in code, tests, plans, specs, JSON keys, CSV headers, and plots.
@@ -161,13 +164,17 @@ Assert literal intersection/union/support counts for:
 Assert:
 
 ```python
+source = world_delta_to_direction_vector(1.0, 0.0)
+expected = world_delta_to_direction_vector(0.0, 1.0)
 rotated = rotate_direction_vectors(
-    np.asarray([[1.0, 0.0], [0.0, 0.0]], dtype=np.float32),
-    90.0,
+    np.asarray([source, (0.0, 0.0)], dtype=np.float32), 90.0
 )
-assert rotated[0] == pytest.approx([0.0, 1.0], abs=1e-6)
+assert rotated[0] == pytest.approx(expected, abs=1e-6)
 assert rotated[1] == pytest.approx([0.0, 0.0], abs=1e-6)
 ```
+
+This anchors the direction sign to the project world/grid conversion rather
+than duplicating the production rotation matrix in the expectation.
 
 Build a symmetric fixture where all four angles tie and assert that
 `select_best_angle(...).angle_degrees == 0.0`.
@@ -248,7 +255,8 @@ because `CELL_SIZE == 0.5 m` and the scale-2 cell is `1 m`.
 Pass an explicit empty prediction with `schema_valid=False` to
 `evaluate_episode`. Assert the episode remains present, every angle IoU and
 delta is zero, identity is selected, target support is retained, and the
-schema-valid field is false.
+schema-valid field is false. Also assert that `schema_valid=False` rejects a
+nonempty prediction grid or nonzero prediction direction vector.
 
 - [ ] **Step 2: Run the focused test and confirm RED**
 
@@ -310,15 +318,18 @@ limit: Optional[int] = None
 quiet: bool = False
 ```
 
-Validate exact angles, positive bootstrap count, distinct output/input paths,
-an absent or positive limit, and required prediction manifests before loading
-examples. A limited run records `"smoke": true` in its manifest and summary.
+Validate exact angles, positive bootstrap count, non-overlapping output/input
+paths, an absent or positive limit, and required prediction manifests before
+loading examples. Reject an output directory equal to, nested under, or an
+ancestor containing `cache_dir` before writing. A limited run records
+`"smoke": true` in its manifest and summary.
 
 Load exactly `R2R val_unseen`, construct `LLMGridDataset(..., scale=2)`, and
 require exactly 1,839 unique `(scene_id, example_id)` identities. Read raw
-prediction text through `llm_navigation_prediction_path`. Parse with
-`parse_grid_text`; on `LLMGridValidationError`, provide an explicit empty grid
-and mark the row invalid. No other exception is swallowed.
+prediction text through `llm_navigation_prediction_path`. On
+`FileNotFoundError` or `LLMGridValidationError`, provide an explicit empty grid
+with zero directions and mark the row invalid. No other exception is
+swallowed.
 
 - [ ] **Step 6: Write failing bootstrap and artifact tests**
 
@@ -362,6 +373,8 @@ Render:
   lines;
 - `angle_distribution.png` with all four declared angles, including zero-count
   bars.
+- `angle_distribution.csv` with stable English headers and one row per angle
+  in declared order, including zero-count angles.
 
 - [ ] **Step 8: Run Task 2 verification**
 

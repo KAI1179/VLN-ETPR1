@@ -102,7 +102,8 @@ outputs/llm_grid_eval/checkpoint-sweep-r1p5/runs/001/
 The analysis population is exactly 1,839 `val_unseen` episodes. Missing or
 schema-invalid predictions remain in the population as empty predictions with
 zero IoU. The analysis must not silently restrict itself to the 1,830
-schema-valid prediction rasters.
+schema-valid prediction rasters. A schema-invalid evaluator input is valid only
+when both its prediction grid and direction vectors are zero.
 
 The navigation-used final cache:
 
@@ -137,7 +138,10 @@ The implementation:
 - keeps ground truth fixed;
 - applies one angle to all 37 semantic channels;
 - uses nearest-neighbor inverse warping of boolean channels;
-- uses the same signed angle to rotate predicted direction vectors;
+- applies the same physical signed angle to predicted direction vectors;
+- accounts for the reflected stored direction basis:
+  `world_delta_to_direction_vector(dx, dz) = (-dz, -dx)`, so a physical grid
+  rotation by `theta` uses a numeric stored-vector rotation by `-theta`;
 - leaves start position and start heading unchanged;
 - records warped support inside and outside the `50×50` target frame;
 - counts all out-of-frame warped support as false positives;
@@ -238,8 +242,11 @@ outputs/llm_grid_analysis/start_centered_registration_r2r_rxr_epoch2/
 - git commit when available.
 
 The experiment refuses missing manifests, unexpected cache keys, a population
-other than 1,839, duplicate identities, or target shape/coordinate violations.
-It does not guess similarly named caches.
+other than 1,839, duplicate identities, target shape/coordinate violations, or
+an output directory equal to, nested under, or containing the input cache
+directory. It does not guess similarly named caches. Missing prediction files
+and schema-validation failures alone become explicit empty invalid rows; other
+I/O and runtime failures remain visible.
 
 ## Experiment Notes
 

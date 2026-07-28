@@ -255,10 +255,10 @@ def _validate_direction_vectors(vectors: NDArray[np.float32], name: str) -> None
 def rotate_direction_vectors(
     vectors: NDArray[np.float32], angle_degrees: float
 ) -> NDArray[np.float32]:
-    """Rotate row-wise two-dimensional direction vectors counter-clockwise."""
+    """Apply a signed physical grid rotation to stored direction vectors."""
     _validate_direction_vectors(vectors, "vectors")
     angle = _require_finite_real(angle_degrees, "angle_degrees")
-    cosine, sine = _rotation_coefficients(angle)
+    cosine, sine = _rotation_coefficients(-angle)
     rotation = np.asarray(((cosine, -sine), (sine, cosine)), dtype=np.float32)
     return np.asarray(np.asarray(vectors, dtype=np.float32) @ rotation.T, dtype=np.float32)
 

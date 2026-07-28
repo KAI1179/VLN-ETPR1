@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Tuple, cast
 
 import numpy as np
 import pytest
 
+from prior.analyze.d2026_07_27 import llm_grid_transform_diagnosis as diagnosis
 from prior.analyze.d2026_07_27.llm_grid_transform_diagnosis import (
     EpisodeTransformResult,
     FourWayDiagnosisArgs,
@@ -70,6 +73,102 @@ def test_invalid_prediction_is_retained_as_zero_scored_identity_episode() -> Non
         270.0: 0.0,
     }
     assert result.target_support == 1
+
+
+@pytest.mark.parametrize("nonzero_input", ("grid", "directions"))
+def test_invalid_prediction_rejects_nonzero_prediction_data(
+    nonzero_input: str,
+) -> None:
+    """Breaks if schema-invalid rows can receive scores from prediction data."""
+    predicted = np.zeros(
+        (OBJECT_CATEGORIES + REGION_CATEGORIES, 2, 2), dtype=np.bool_
+    )
+    directions = np.zeros((5, 2), dtype=np.float32)
+    if nonzero_input == "grid":
+        predicted[0, 0, 0] = True
+    else:
+        directions[0, 0] = 1.0
+
+    with pytest.raises(ValueError, match="schema_valid=False"):
+        evaluate_episode(
+            split="val_unseen",
+            scene_id="scene",
+            example_id="episode",
+            schema_valid=False,
+            predicted_grid=predicted,
+            target_grid=np.zeros_like(predicted),
+            start_position_m=(1.0, 1.0),
+            predicted_direction_vectors=directions,
+            target_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            instruction="",
+            angles=(0.0, 90.0, 180.0, 270.0),
+        )
+
+
+def _install_single_episode_loader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prediction_path: object
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    example = SimpleNamespace(
+        example_id="episode",
+        scene_id="scene",
+        instruction="walk forward",
+    )
+    item = {
+        "example_id": "episode",
+        "target_grid": np.zeros(
+            (OBJECT_CATEGORIES + REGION_CATEGORIES, 50, 50), dtype=np.float32
+        ),
+        "start_position": np.asarray((1.0, 1.0), dtype=np.float32),
+        "target_direction_vectors": np.zeros((5, 2), dtype=np.float32),
+    }
+    monkeypatch.setattr(diagnosis, "_prediction_manifest_path", lambda args: manifest)
+    monkeypatch.setattr(
+        diagnosis,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: SimpleNamespace(examples=(example,)),
+    )
+    monkeypatch.setattr(
+        diagnosis, "LLMGridDataset", lambda examples, scale: (item,)
+    )
+    monkeypatch.setattr(
+        diagnosis,
+        "llm_navigation_prediction_path",
+        lambda *args, **kwargs: prediction_path,
+    )
+
+
+def test_loader_retains_missing_prediction_as_zero_invalid_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if a missing prediction is dropped instead of retained in the denominator."""
+    _install_single_episode_loader(
+        monkeypatch, tmp_path, tmp_path / "missing-prediction.txt"
+    )
+
+    rows, _ = diagnosis._load_episode_rows(FourWayDiagnosisArgs())
+
+    assert len(rows) == 1
+    assert rows[0].schema_valid is False
+    assert rows[0].input_support == 0
+    assert rows[0].direction_cosine_before == 0.0
+    assert all(iou == 0.0 for _, iou in rows[0].angle_ious)
+
+
+class _RuntimeFailingPrediction:
+    def read_text(self, encoding: str) -> str:
+        raise RuntimeError("unexpected read failure")
+
+
+def test_loader_does_not_swallow_unexpected_prediction_read_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if broad exception handling hides unexpected cache failures."""
+    _install_single_episode_loader(monkeypatch, tmp_path, _RuntimeFailingPrediction())
+
+    with pytest.raises(RuntimeError, match="unexpected read failure"):
+        diagnosis._load_episode_rows(FourWayDiagnosisArgs())
 
 
 def test_episode_evaluation_rejects_noncanonical_grid_and_direction_shapes() -> None:
@@ -137,6 +236,34 @@ def test_args_reject_overrides_to_fixed_cache_contract(
 
     with pytest.raises(ValueError, match=field):
         _validate_args(args)
+
+
+@pytest.mark.parametrize("relationship", ("equal", "nested", "ancestor"))
+def test_runner_rejects_output_cache_overlap_before_writes(
+    relationship: str, tmp_path: Path
+) -> None:
+    """Breaks if an overlapping output path can write into or above the input cache."""
+    cache_dir = tmp_path / "cache" / "input"
+    cache_dir.mkdir(parents=True)
+    output_dirs = {
+        "equal": cache_dir,
+        "nested": cache_dir / "analysis",
+        "ancestor": cache_dir.parent,
+    }
+    args = FourWayDiagnosisArgs()
+    args.cache_dir = cache_dir
+    args.output_dir = output_dirs[relationship]
+    args.limit = 1
+
+    with pytest.raises(ValueError, match="overlap"):
+        _run_rows(
+            args,
+            (_synthetic_result("scene", "episode", 0.0),),
+            expected_population=1,
+            prediction_manifest_path=tmp_path / "unused-manifest.json",
+        )
+
+    assert not (args.output_dir / "summary.json").exists()
 
 
 def test_sensitivity_metrics_reuse_the_all_channel_selected_angle() -> None:
@@ -264,9 +391,17 @@ def test_synthetic_runner_writes_artifacts_and_rejects_bad_population(
         "manifest.json",
         "bootstrap.json",
         "episodes.csv",
+        "angle_distribution.csv",
         "iou_delta_distribution.png",
         "angle_distribution.png",
     } <= {path.name for path in tmp_path.iterdir()}
+    assert (tmp_path / "angle_distribution.csv").read_text(encoding="utf-8") == (
+        "angle_degrees,episode_count\n"
+        "0,4\n"
+        "90,0\n"
+        "180,0\n"
+        "270,0\n"
+    )
     assert '"smoke": true' in (tmp_path / "manifest.json").read_text(encoding="utf-8")
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["cell_size_m"] == 1.0

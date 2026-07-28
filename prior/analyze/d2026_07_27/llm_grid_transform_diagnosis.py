@@ -207,6 +207,12 @@ def evaluate_episode(
         predicted_direction_vectors,
         target_direction_vectors,
     )
+    if not schema_valid and (
+        np.any(predicted_grid) or np.any(predicted_direction_vectors)
+    ):
+        raise ValueError(
+            "schema_valid=False requires an empty grid and zero direction vectors"
+        )
     pivot = start_pivot_for_scale(start_position_m, 2)
     best, scores = select_best_angle(predicted_grid, target_grid, pivot, angles)
     try:
@@ -333,8 +339,14 @@ def _validate_args(args: FourWayDiagnosisArgs) -> None:
         isinstance(args.limit, bool) or args.limit <= 0
     ):
         raise ValueError("limit must be absent or positive")
-    if args.cache_dir.resolve() == args.output_dir.resolve():
-        raise ValueError("output_dir must differ from cache_dir")
+    cache_dir = args.cache_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    if (
+        cache_dir == output_dir
+        or cache_dir in output_dir.parents
+        or output_dir in cache_dir.parents
+    ):
+        raise ValueError("output_dir and cache_dir must not overlap")
 
 
 def _prediction_manifest_path(args: FourWayDiagnosisArgs) -> Path:
@@ -387,7 +399,7 @@ def _load_episode_rows(
             )
             predicted_grid = parsed.grid > 0
             predicted_directions = parsed.direction_vectors
-        except LLMGridValidationError:
+        except (FileNotFoundError, LLMGridValidationError):
             schema_valid = False
         target_grid = item["target_grid"] > 0
         if target_grid.shape != GRID_SHAPE:
@@ -584,6 +596,18 @@ def _write_csv(path: Path, rows: Sequence[EpisodeTransformResult]) -> None:
             writer.writerow(record)
 
 
+def _write_angle_distribution_csv(
+    path: Path, rows: Sequence[EpisodeTransformResult]
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, lineterminator="\n")
+        writer.writerow(("angle_degrees", "episode_count"))
+        for angle in _DEFAULT_ANGLES:
+            writer.writerow(
+                (int(angle), sum(row.best_angle_degrees == angle for row in rows))
+            )
+
+
 def _write_plots(output_dir: Path, rows: Sequence[EpisodeTransformResult]) -> None:
     deltas = [row.delta_iou for row in rows]
     figure, axis = plt.subplots(figsize=(7, 4))
@@ -670,6 +694,9 @@ def _run_rows(
     _write_json(args.output_dir / "manifest.json", manifest)
     _write_json(args.output_dir / "bootstrap.json", bootstrap)
     _write_csv(args.output_dir / "episodes.csv", ordered_rows)
+    _write_angle_distribution_csv(
+        args.output_dir / "angle_distribution.csv", ordered_rows
+    )
     _write_plots(args.output_dir, ordered_rows)
     return {
         "summary": summary,
