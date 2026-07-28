@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
+import json
 from pathlib import Path
+import subprocess
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 import pytest
@@ -606,6 +610,12 @@ def test_score_population_emits_canonical_cardinal_and_episode_endpoints() -> No
     assert (row.soft_identity_iou, row.soft_aggregate_iou, row.oracle_iou) == pytest.approx(
         (1.0 / 4.0, 3.0 / 17.0, 1.0 / 4.0)
     )
+    assert (
+        row.soft_identity_object_iou,
+        row.soft_aggregate_object_iou,
+        row.soft_identity_region_iou,
+        row.soft_aggregate_region_iou,
+    ) == pytest.approx((0.0, 1.0 / 7.0, 1.0 / 2.0, 1.0 / 5.0))
     assert (row.identity_object_iou, row.primary_object_iou) == pytest.approx((0.0, 1.0))
     assert (row.identity_region_iou, row.primary_region_iou) == pytest.approx((1.0 / 2.0, 0.0))
     assert (row.primary_predicted_support, row.primary_target_support) == (2, 3)
@@ -651,6 +661,7 @@ def _episode_score_row(
         identity_iou, primary_iou, global_iou, direct, (identity_iou + primary_iou + global_iou + direct) / 4.0,
         identity_iou, soft, max(identity_iou, primary_iou, global_iou, direct),
         identity_iou, primary_iou, identity_iou, primary_iou,
+        identity_iou, soft, identity_iou, soft,
         1, 1, 1, 0, 1, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
     )
 
@@ -762,3 +773,539 @@ def test_decision_gate_requires_explicit_semantic_evidence() -> None:
     gate = getattr(target_free, "classify_decision")
     with pytest.raises(TypeError):
         gate(_contrast(), _contrast(), _contrast(), audit_passed=True)
+
+
+def _artifact_fixture(
+    tmp_path: Path,
+) -> tuple[
+    target_free.ArtifactBundle,
+    target_free.ValidationInputs,
+    tuple[target_free.TargetEpisode, ...],
+    tuple[target_free.TargetEpisode, ...],
+]:
+    development_targets = _mapping_targets(target_free.HeadingMapping(+1, 0.0))
+    selector_lock = target_free.develop_selector(development_targets)
+    test_pairs = (
+        _two_family_target_episode(scene_id="scene-a", example_id="episode-a"),
+        _two_family_target_episode(scene_id="scene-b", example_id="episode-b"),
+    )
+    test_targets = tuple(pair[0] for pair in test_pairs)
+    test_runtime = tuple(target.runtime for target in test_targets)
+    assignments = target_free.assign_population(test_runtime, selector_lock)
+    angle_rows, episode_rows = target_free.score_population(test_targets, assignments)
+    development_population = target_free.PopulationSummary(4, 1, 4, 0)
+    test_population = target_free.PopulationSummary(2, 2, 2, 0)
+    population = target_free.PopulationArtifact(
+        development_population, test_population
+    )
+    summary = target_free._build_summary_artifact(
+        angle_rows, episode_rows, population
+    )
+    bootstrap = target_free._build_bootstrap_artifact(
+        episode_rows, seed=42, repetitions=10_000
+    )
+    development_manifest = Path(
+        "data/llm_navigation/"
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
+        "r2r/val_seen/manifest.json"
+    )
+    test_manifest = Path(
+        "data/llm_navigation/"
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
+        "r2r/val_unseen/manifest.json"
+    )
+    sources = target_free.SourcesArtifact(
+        target_free.SourceArtifact(
+            str(development_manifest),
+            sha256(development_manifest.read_bytes()).hexdigest(),
+            "R2R",
+            "val_seen",
+        ),
+        target_free.SourceArtifact(
+            str(test_manifest),
+            sha256(test_manifest.read_bytes()).hexdigest(),
+            "R2R",
+            "val_unseen",
+        ),
+    )
+    protocol = target_free.ProtocolArtifact(
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+        "gt.legacy.r1p5.direction5.v1",
+        2,
+        (37, 50, 50),
+        (0, 27),
+        (27, 37),
+        target_free.ANGLE_ORDER,
+        tuple(
+            (mapping.sign, int(mapping.offset_degrees))
+            for mapping in (
+                target_free.HeadingMapping(sign, angle)
+                for sign in (+1, -1)
+                for angle in target_free.ANGLE_ORDER
+            )
+        ),
+        target_free.ANGLE_ORDER,
+        0.0,
+        42,
+        10_000,
+        0.01,
+        "llm-grid-target-free-cardinal-v2",
+        (
+            "offline raster overlap is not navigation performance",
+            "oracle and target-vector diagnostics are nondeployable",
+        ),
+    )
+    schemas = target_free.SchemaArtifact(
+        target_free.CsvHeadersArtifact(
+            target_free.DEVELOPMENT_MAPPING_SCORES_HEADER,
+            target_free.TEST_ASSIGNMENTS_HEADER,
+            target_free.TEST_ANGLE_SCORES_HEADER,
+            target_free.TEST_EPISODE_SCORES_HEADER,
+        ),
+        target_free.JsonTopLevelKeysArtifact(
+            target_free.SELECTOR_LOCK_KEYS,
+            target_free.SUMMARY_KEYS,
+            target_free.BOOTSTRAP_KEYS,
+            target_free.MANIFEST_KEYS,
+        ),
+        ".17g finite floats; negative zero normalized to 0",
+        "UTF-8 lexicographic episode keys, then declared candidate/angle order",
+        "UTF-8 sorted compact keys, no NaN, one trailing newline",
+    )
+    artifacts = target_free.build_artifacts(
+        selector_lock,
+        assignments,
+        angle_rows,
+        episode_rows,
+        summary,
+        bootstrap,
+        target_free.ManifestInputs(
+            sources,
+            "a" * 40,
+            protocol,
+            population,
+            schemas,
+        ),
+    )
+    development_contract = target_free.PopulationContract(
+        "val_seen",
+        4,
+        1,
+        4,
+        0,
+        sources.development.sha256,
+    )
+    test_contract = target_free.PopulationContract(
+        "val_unseen",
+        2,
+        2,
+        2,
+        0,
+        sources.test.sha256,
+    )
+    validation_inputs = target_free.ValidationInputs(
+        development_contract,
+        test_contract,
+        tmp_path / "cache",
+        protocol.cache_model_key,
+        protocol.cognitive_map_namespace,
+        True,
+    )
+    return artifacts, validation_inputs, development_targets, test_targets
+
+
+def _install_artifact_loaders(
+    monkeypatch: pytest.MonkeyPatch,
+    development_targets: tuple[target_free.TargetEpisode, ...],
+    test_targets: tuple[target_free.TargetEpisode, ...],
+) -> None:
+    runtime_by_split = {
+        "val_seen": tuple(target.runtime for target in development_targets),
+        "val_unseen": tuple(target.runtime for target in test_targets),
+    }
+    targets_by_split = {
+        "val_seen": development_targets,
+        "val_unseen": test_targets,
+    }
+    monkeypatch.setattr(
+        target_free,
+        "load_runtime_population",
+        lambda split, *_args, **_kwargs: runtime_by_split[split],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "load_target_population",
+        lambda runtimes, *_args, **_kwargs: targets_by_split[runtimes[0].split],
+    )
+
+
+def test_build_artifacts_emits_exact_canonical_transaction_and_decodable_plot(
+    tmp_path: Path,
+) -> None:
+    """Breaks if any artifact filename, schema, hash, row count, or PNG drifts."""
+    artifacts, _, _, _ = _artifact_fixture(tmp_path)
+    files = artifacts.files()
+
+    assert tuple(files) == (
+        "manifest.json",
+        "development_mapping_scores.csv",
+        "selector_lock.json",
+        "test_assignments.csv",
+        "test_angle_scores.csv",
+        "test_episode_scores.csv",
+        "summary.json",
+        "bootstrap.json",
+        "target_free_control_intervals.png",
+    )
+    assert files["development_mapping_scores.csv"].splitlines()[0].decode() == (
+        "candidate_kind,mapping_sign,heading_offset_degrees,global_angle_degrees,"
+        "episode_count,valid_count,all_mean_iou,object_mean_iou,region_mean_iou,selected"
+    )
+    assert files["test_episode_scores.csv"].splitlines()[0].decode() == (
+        "scene_id,example_id,schema_valid,heading_bin_degrees,primary_angle_degrees,"
+        "global_angle_degrees,direct_angle_degrees,identity_iou,primary_iou,global_iou,"
+        "direct_iou,random_expected_iou,soft_identity_iou,soft_aggregate_iou,oracle_iou,"
+        "identity_object_iou,primary_object_iou,identity_region_iou,primary_region_iou,"
+        "soft_identity_object_iou,soft_aggregate_object_iou,soft_identity_region_iou,"
+        "soft_aggregate_region_iou,primary_predicted_support,primary_target_support,"
+        "primary_in_frame_support,primary_out_of_frame_support,primary_union,"
+        "soft_prediction_mass,soft_target_mass,soft_intersection_mass,soft_union_mass,"
+        "primary_direction_cosine,direct_direction_cosine"
+    )
+    manifest = json.loads(files["manifest.json"])
+    assert tuple(manifest) == tuple(sorted(target_free.MANIFEST_KEYS))
+    assert manifest["schema_version"] == "llm-grid-target-free-cardinal-v2"
+    entries = {entry["name"]: entry for entry in manifest["artifacts"]}
+    assert set(entries) == set(files) - {"manifest.json"}
+    for name, payload in files.items():
+        assert payload
+        if name != "manifest.json":
+            assert entries[name]["sha256"] == sha256(payload).hexdigest()
+            assert entries[name]["size_bytes"] == len(payload)
+    image = plt.imread(BytesIO(files["target_free_control_intervals.png"]), format="png")
+    assert image.ndim == 3
+    assert np.isfinite(image).all()
+    summary = json.loads(files["summary.json"])
+    assert summary["means"]["soft_identity"] == pytest.approx(
+        {"all_iou": 0.25, "object_iou": 0.0, "region_iou": 0.5}
+    )
+    assert summary["means"]["soft_aggregate"] == pytest.approx(
+        {"all_iou": 3.0 / 17.0, "object_iou": 1.0 / 7.0, "region_iou": 0.2}
+    )
+    assert summary["decision"]["label"] in {
+        "SELECTOR GO",
+        "FIXED-CORRECTION GO",
+        "PARTIAL",
+        "NO GO",
+    }
+
+
+def test_publish_artifacts_validates_then_atomically_publishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if publication exposes a partial directory or skips semantic validation."""
+    artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
+        tmp_path
+    )
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    output_dir = tmp_path / "published"
+
+    target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+
+    assert output_dir.is_dir()
+    assert {path.name for path in output_dir.iterdir()} == set(artifacts.files())
+    target_free.validate_artifact_directory(
+        output_dir,
+        expected_development_episodes=4,
+        expected_development_scenes=1,
+        expected_development_valid=4,
+        expected_development_invalid=0,
+        expected_test_episodes=2,
+        expected_test_scenes=2,
+        expected_test_valid=2,
+        expected_test_invalid=0,
+    )
+    with pytest.raises(FileExistsError):
+        target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "manifest.json",
+        "development_mapping_scores.csv",
+        "selector_lock.json",
+        "test_assignments.csv",
+        "test_angle_scores.csv",
+        "test_episode_scores.csv",
+        "summary.json",
+        "bootstrap.json",
+        "target_free_control_intervals.png",
+    ),
+)
+def test_validator_rejects_each_tampered_artifact(
+    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if byte, hash, semantic, order, JSON-key, or PNG tampering survives."""
+    artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
+        tmp_path
+    )
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    output_dir = tmp_path / "tampered"
+    target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+    path = output_dir / name
+    if name.endswith(".json"):
+        payload = json.loads(path.read_bytes())
+        payload["unknown_key"] = True
+        path.write_bytes(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        )
+    elif name.endswith(".csv"):
+        lines = path.read_bytes().splitlines(keepends=True)
+        path.write_bytes(b"".join(lines[:1] + list(reversed(lines[1:]))))
+    else:
+        path.write_bytes(b"not a png")
+
+    with pytest.raises(ValueError):
+        target_free.validate_artifact_directory(
+            output_dir,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "field"),
+    (
+        ("selector_lock.json", "chosen_global_angle"),
+        ("summary.json", "decision"),
+        ("bootstrap.json", "repetitions"),
+    ),
+)
+def test_validator_rejects_rehashed_semantic_tampering(
+    name: str,
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Breaks if manifest rehashing can bless a wrong lock, bootstrap, or decision."""
+    artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
+        tmp_path
+    )
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    output_dir = tmp_path / "semantic-tamper"
+    target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+    path = output_dir / name
+    payload = json.loads(path.read_bytes())
+    if field == "chosen_global_angle":
+        payload[field]["angle_degrees"] = 90.0
+    elif field == "decision":
+        payload[field]["label"] = "SELECTOR GO"
+    else:
+        payload[field] = 999
+    changed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    path.write_bytes(changed)
+    manifest_path = output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    entry = next(entry for entry in manifest["artifacts"] if entry["name"] == name)
+    entry["sha256"] = sha256(changed).hexdigest()
+    entry["size_bytes"] = len(changed)
+    manifest_path.write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    )
+
+    with pytest.raises(ValueError):
+        target_free.validate_artifact_directory(
+            output_dir,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
+
+
+def test_validator_rejects_relocated_source_with_identical_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if a manifest can redefine a frozen source path from its own bytes."""
+    artifacts, _, development_targets, test_targets = _artifact_fixture(tmp_path)
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    relocated = tmp_path / "relocated_manifest.json"
+    frozen_source = Path(
+        "data/llm_navigation/"
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
+        "r2r/val_seen/manifest.json"
+    )
+    relocated.write_bytes(frozen_source.read_bytes())
+    manifest = json.loads(artifacts.manifest_json)
+    manifest["sources"]["development"]["path"] = str(relocated)
+    changed_manifest = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    )
+    output_dir = tmp_path / "relocated"
+    output_dir.mkdir()
+    for name, payload in artifacts.files().items():
+        (output_dir / name).write_bytes(
+            changed_manifest if name == "manifest.json" else payload
+        )
+
+    with pytest.raises(ValueError, match="source|frozen|path"):
+        target_free.validate_artifact_directory(
+            output_dir,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("cache_model_key", "other-model"),
+        ("cognitive_map_namespace", "other.namespace"),
+        ("schema_version", "llm-grid-target-free-cardinal-v1"),
+        ("angle_order", [90.0, 0.0, 180.0, 270.0]),
+        ("mapping_order", [[-1, 0]]),
+        ("bootstrap_seed", 7),
+        ("bootstrap_repetitions", 999),
+        ("gate_threshold", 0.02),
+    ),
+)
+def test_validator_rejects_manifest_protocol_drift_from_frozen_constants(
+    field: str,
+    value: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Breaks if scientific expectations are derived from manifest protocol values."""
+    artifacts, _, development_targets, test_targets = _artifact_fixture(tmp_path)
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    manifest = json.loads(artifacts.manifest_json)
+    manifest["protocol"][field] = value
+    changed_manifest = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    )
+    output_dir = tmp_path / f"protocol-{field}"
+    output_dir.mkdir()
+    for name, payload in artifacts.files().items():
+        (output_dir / name).write_bytes(
+            changed_manifest if name == "manifest.json" else payload
+        )
+
+    with pytest.raises(ValueError):
+        target_free.validate_artifact_directory(
+            output_dir,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
+
+
+def test_publish_failure_removes_only_exact_temporary_sibling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if failed validation leaves partial output or removes sibling data."""
+    artifacts, validation_inputs, _, _ = _artifact_fixture(tmp_path)
+    output_dir = tmp_path / "official"
+    preserved = tmp_path / "official.keep"
+    preserved.mkdir()
+    (preserved / "evidence").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(
+        target_free,
+        "_validate_artifact_directory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("injected")),
+    )
+
+    with pytest.raises(ValueError, match="injected"):
+        target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+
+    assert not output_dir.exists()
+    assert (preserved / "evidence").read_text(encoding="utf-8") == "keep"
+    assert not tuple(tmp_path.glob(".official.tmp-*"))
+
+
+def test_fixed_tap_cli_rejects_protocol_and_surface_overrides(tmp_path: Path) -> None:
+    """Breaks if the CLI permits limit/overwrite/resume or scientific drift."""
+    args = target_free.TargetFreeArgs(
+        underscores_to_dashes=True, explicit_bool=True
+    ).parse_args(["--bootstrap-seed", "7"])
+    with pytest.raises(ValueError, match="bootstrap_seed"):
+        target_free._validate_args(args)
+    with pytest.raises(SystemExit):
+        target_free.TargetFreeArgs(underscores_to_dashes=True).parse_args(["--limit", "1"])
+    with pytest.raises(SystemExit):
+        target_free.TargetFreeArgs(underscores_to_dashes=True).parse_args(
+            ["--overwrite"]
+        )
+
+
+def test_fixed_cli_refuses_dirty_worktree_before_loading_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if uncommitted code can produce an ostensibly committed experiment."""
+    def completed(
+        command: tuple[str, ...], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        stdout = " M prior/analyze/dirty.py\n" if command[1] == "status" else "b" * 40 + "\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(target_free.subprocess, "run", completed)
+    monkeypatch.setattr(target_free, "load_runtime_population", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="clean"):
+        target_free._run(target_free.TargetFreeArgs())
+
+
+def test_clean_preflight_returns_exact_committed_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if manifest provenance is captured from a different HEAD."""
+    calls: list[tuple[str, ...]] = []
+
+    def completed(
+        command: tuple[str, ...], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        stdout = "" if command[1] == "status" else "c" * 40 + "\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(target_free.subprocess, "run", completed)
+
+    assert target_free._preflight_git_commit() == "c" * 40
+    assert calls == [
+        ("git", "status", "--porcelain", "--untracked-files=normal"),
+        ("git", "rev-parse", "HEAD"),
+    ]
+
+
+def test_source_preflight_hashes_both_frozen_manifests_before_data_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if the evaluation manifest stays unchecked until after development."""
+    corrupt_test_manifest = tmp_path / "manifest.json"
+    corrupt_test_manifest.write_text('{"corrupt":true}\n', encoding="utf-8")
+    monkeypatch.setattr(target_free, "_TEST_SOURCE_PATH", corrupt_test_manifest)
+    monkeypatch.setattr(target_free, "load_runtime_population", fail_if_called)
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        target_free._preflight_sources(target_free.TargetFreeArgs())

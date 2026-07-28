@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from hashlib import sha256
-from io import StringIO
+from io import BytesIO, StringIO
+import json
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Sequence
+import shutil
+import subprocess
+import tempfile
+from typing import Dict, Optional, Sequence, Tuple, cast
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
+from tap import Tap
 
 from prior.analyze.llm_grid_registration import (
     WarpedGrid,
@@ -48,6 +54,137 @@ _ASSIGNMENT_HEADER = (
     "global_angle_degrees",
     "direct_angle_degrees",
     "direct_margin",
+)
+DEVELOPMENT_MAPPING_SCORES_HEADER = (
+    "candidate_kind",
+    "mapping_sign",
+    "heading_offset_degrees",
+    "global_angle_degrees",
+    "episode_count",
+    "valid_count",
+    "all_mean_iou",
+    "object_mean_iou",
+    "region_mean_iou",
+    "selected",
+)
+TEST_ASSIGNMENTS_HEADER = _ASSIGNMENT_HEADER
+TEST_ANGLE_SCORES_HEADER = (
+    "scene_id",
+    "example_id",
+    "angle_degrees",
+    "all_iou",
+    "object_iou",
+    "region_iou",
+    "direction_cosine",
+    "predicted_support",
+    "target_support",
+    "in_frame_support",
+    "out_of_frame_support",
+    "union",
+)
+TEST_EPISODE_SCORES_HEADER = (
+    "scene_id",
+    "example_id",
+    "schema_valid",
+    "heading_bin_degrees",
+    "primary_angle_degrees",
+    "global_angle_degrees",
+    "direct_angle_degrees",
+    "identity_iou",
+    "primary_iou",
+    "global_iou",
+    "direct_iou",
+    "random_expected_iou",
+    "soft_identity_iou",
+    "soft_aggregate_iou",
+    "oracle_iou",
+    "identity_object_iou",
+    "primary_object_iou",
+    "identity_region_iou",
+    "primary_region_iou",
+    "soft_identity_object_iou",
+    "soft_aggregate_object_iou",
+    "soft_identity_region_iou",
+    "soft_aggregate_region_iou",
+    "primary_predicted_support",
+    "primary_target_support",
+    "primary_in_frame_support",
+    "primary_out_of_frame_support",
+    "primary_union",
+    "soft_prediction_mass",
+    "soft_target_mass",
+    "soft_intersection_mass",
+    "soft_union_mass",
+    "primary_direction_cosine",
+    "direct_direction_cosine",
+)
+SELECTOR_LOCK_KEYS = (
+    "schema_version",
+    "chosen_mapping",
+    "chosen_global_angle",
+    "development",
+    "protocol",
+)
+SUMMARY_KEYS = (
+    "schema_version",
+    "population",
+    "means",
+    "contrasts",
+    "semantic_families",
+    "cell_metrics",
+    "support",
+    "directions",
+    "angles",
+    "cost",
+    "oracle_gain",
+    "decision",
+)
+BOOTSTRAP_KEYS = (
+    "schema_version",
+    "seed",
+    "repetitions",
+    "scene_ids",
+    "intervals",
+    "leave_one_scene_out",
+)
+MANIFEST_KEYS = (
+    "schema_version",
+    "sources",
+    "git_commit",
+    "protocol",
+    "population",
+    "schemas",
+    "artifacts",
+)
+_SCHEMA_VERSION = "llm-grid-target-free-cardinal-v2"
+_DEFAULT_CACHE_DIR = Path("data/llm_navigation")
+_DEFAULT_CACHE_MODEL_KEY = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2"
+_DEFAULT_COGNITIVE_MAP_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
+_DEFAULT_OUTPUT_DIR = Path(
+    "outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2"
+)
+_DEFAULT_BOOTSTRAP_SEED = 42
+_DEFAULT_BOOTSTRAP_REPETITIONS = 10_000
+_GATE_THRESHOLD = 0.01
+_DEVELOPMENT_SOURCE_PATH = (
+    _DEFAULT_CACHE_DIR
+    / _DEFAULT_CACHE_MODEL_KEY
+    / "r2r"
+    / "val_seen"
+    / "manifest.json"
+)
+_TEST_SOURCE_PATH = (
+    _DEFAULT_CACHE_DIR
+    / _DEFAULT_CACHE_MODEL_KEY
+    / "r2r"
+    / "val_unseen"
+    / "manifest.json"
+)
+_DEVELOPMENT_SOURCE_SHA256 = (
+    "1d3eb25eb7583a2c6373f430119da25ef71472d2d065697e673e2f70c307d146"
+)
+_TEST_SOURCE_SHA256 = (
+    "31e7c5f8d186e75222b12f1aa8862b16fa9904c75221a0fd55cfba61f93fa8ce"
 )
 
 
@@ -266,7 +403,12 @@ def uniform_soft_score(
         raise ValueError("hypotheses must contain WarpedGrid values")
     if any(hypothesis.grid.shape[0] != target.shape[0] for hypothesis in hypotheses):
         raise ValueError("hypotheses and target must have the same channel count")
+    return _soft_score(hypotheses, target)
 
+
+def _soft_score(
+    hypotheses: tuple[WarpedGrid, ...], target: NDArray[np.bool_]
+) -> SoftRasterScore:
     row_min = min(0, *(hypothesis.bounds.row_min for hypothesis in hypotheses))
     row_max = max(50, *(hypothesis.bounds.row_max for hypothesis in hypotheses))
     col_min = min(0, *(hypothesis.bounds.col_min for hypothesis in hypotheses))
@@ -302,6 +444,23 @@ def uniform_soft_score(
         f1=f1,
         iou=iou,
     )
+
+
+def _family_soft_score(
+    hypotheses: tuple[WarpedGrid, ...],
+    target: NDArray[np.bool_],
+    start: int,
+    end: int,
+) -> SoftRasterScore:
+    family_hypotheses = tuple(
+        WarpedGrid(
+            hypothesis.grid[start:end],
+            hypothesis.bounds,
+            int(np.count_nonzero(hypothesis.grid[start:end])),
+        )
+        for hypothesis in hypotheses
+    )
+    return _soft_score(family_hypotheses, target[start:end])
 
 
 def _require_finite_float(value: float, name: str) -> float:
@@ -940,6 +1099,10 @@ class EpisodeScoreRow:
     primary_object_iou: float
     identity_region_iou: float
     primary_region_iou: float
+    soft_identity_object_iou: float
+    soft_aggregate_object_iou: float
+    soft_identity_region_iou: float
+    soft_aggregate_region_iou: float
     primary_predicted_support: int
     primary_target_support: int
     primary_in_frame_support: int
@@ -976,6 +1139,10 @@ class EpisodeScoreRow:
             "primary_object_iou",
             "identity_region_iou",
             "primary_region_iou",
+            "soft_identity_object_iou",
+            "soft_aggregate_object_iou",
+            "soft_identity_region_iou",
+            "soft_aggregate_region_iou",
         ):
             value = _require_finite_float(getattr(self, name), name)
             if not 0.0 <= value <= 1.0:
@@ -1136,6 +1303,18 @@ def score_population(
         global_row = rows_by_angle[assignment.global_angle_degrees]
         direct = rows_by_angle[assignment.direct_angle_degrees]
         soft = uniform_soft_score(warps, target.target_grid)
+        soft_identity_object = _family_soft_score(
+            (warps[0],), target.target_grid, 0, _OBJECT_CHANNEL_COUNT
+        )
+        soft_aggregate_object = _family_soft_score(
+            warps, target.target_grid, 0, _OBJECT_CHANNEL_COUNT
+        )
+        soft_identity_region = _family_soft_score(
+            (warps[0],), target.target_grid, _OBJECT_CHANNEL_COUNT, 37
+        )
+        soft_aggregate_region = _family_soft_score(
+            warps, target.target_grid, _OBJECT_CHANNEL_COUNT, 37
+        )
         episode_rows.append(
             EpisodeScoreRow(
                 key,
@@ -1156,6 +1335,10 @@ def score_population(
                 primary.object_iou,
                 identity.region_iou,
                 primary.region_iou,
+                soft_identity_object.iou,
+                soft_aggregate_object.iou,
+                soft_identity_region.iou,
+                soft_aggregate_region.iou,
                 primary.predicted_support,
                 primary.target_support,
                 primary.in_frame_support,
@@ -1360,3 +1543,1357 @@ def classify_decision(
     else:
         label = DecisionLabel.NO_GO
     return DecisionResult(label, selector_conditions, global_conditions)
+
+
+@dataclass(frozen=True)
+class PopulationSummary:
+    episodes: int
+    scenes: int
+    valid: int
+    invalid: int
+
+
+@dataclass(frozen=True)
+class PopulationArtifact:
+    development: PopulationSummary
+    test: PopulationSummary
+
+
+@dataclass(frozen=True)
+class CandidateMeans:
+    all_iou: float
+    object_iou: float
+    region_iou: float
+
+
+@dataclass(frozen=True)
+class MeansSummary:
+    identity: CandidateMeans
+    primary: CandidateMeans
+    global_correction: CandidateMeans
+    direct: CandidateMeans
+    random_expected: CandidateMeans
+    soft_identity: CandidateMeans
+    soft_aggregate: CandidateMeans
+    oracle: CandidateMeans
+
+
+@dataclass(frozen=True)
+class ContrastSummary:
+    mean: float
+    ci_lower: float
+    ci_upper: float
+    loso_min: float
+    loso_max: float
+
+
+@dataclass(frozen=True)
+class ContrastCollection:
+    primary_identity: ContrastSummary
+    primary_global: ContrastSummary
+    global_identity: ContrastSummary
+    direct_identity: ContrastSummary
+    soft_aggregate_identity: ContrastSummary
+
+
+@dataclass(frozen=True)
+class SemanticFamilySummary:
+    primary_object_delta: float
+    primary_region_delta: float
+    global_object_delta: float
+    global_region_delta: float
+
+
+@dataclass(frozen=True)
+class CellMetricSummary:
+    precision: float
+    recall: float
+    f1: float
+
+
+@dataclass(frozen=True)
+class CellMetricsCollection:
+    identity: CellMetricSummary
+    primary: CellMetricSummary
+    global_correction: CellMetricSummary
+    direct: CellMetricSummary
+    soft_identity: CellMetricSummary
+    soft_aggregate: CellMetricSummary
+
+
+@dataclass(frozen=True)
+class SupportSummary:
+    predicted_support: int
+    target_support: int
+    in_frame_support: int
+    out_of_frame_support: int
+    union: int
+    soft_predicted_mass: float
+    soft_target_mass: float
+    soft_intersection_mass: float
+    soft_union_mass: float
+    invalid_count: int
+    empty_prediction_count: int
+    empty_target_count: int
+    empty_union_count: int
+
+
+@dataclass(frozen=True)
+class DirectionSummary:
+    identity_cosine: float
+    primary_cosine: float
+    global_cosine: float
+    direct_cosine: float
+
+
+@dataclass(frozen=True)
+class AngleSummary:
+    primary_counts: tuple[tuple[float, int], ...]
+    global_counts: tuple[tuple[float, int], ...]
+    direct_counts: tuple[tuple[float, int], ...]
+    oracle_counts: tuple[tuple[float, int], ...]
+    primary_oracle_agreement: float
+    direct_oracle_agreement: float
+    heading_angle_counts: tuple[tuple[float, float, int], ...]
+
+
+@dataclass(frozen=True)
+class CostSummary:
+    primary_warps: int
+    global_warps: int
+    direct_warps: int
+    soft_warps: int
+    maximum_materialized_array_bytes: int
+
+
+@dataclass(frozen=True)
+class DecisionSummary:
+    label: str
+    selector_conditions: tuple[bool, ...]
+    global_conditions: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class ChosenMappingArtifact:
+    sign: int
+    offset_degrees: float
+    development_mean_iou: float
+    tied_candidate_count: int
+
+
+@dataclass(frozen=True)
+class ChosenGlobalAngleArtifact:
+    angle_degrees: float
+    development_mean_iou: float
+    tied_candidate_count: int
+
+
+@dataclass(frozen=True)
+class DevelopmentArtifact:
+    population: PopulationSummary
+    candidate_scores: tuple[DevelopmentCandidateScore, ...]
+
+
+@dataclass(frozen=True)
+class LockProtocolArtifact:
+    angle_order: tuple[float, ...]
+    mapping_order: tuple[tuple[int, int], ...]
+    heading_tie_order: tuple[float, ...]
+    invalid_angle: float
+
+
+@dataclass(frozen=True)
+class SelectorLockArtifact:
+    schema_version: str
+    chosen_mapping: ChosenMappingArtifact
+    chosen_global_angle: ChosenGlobalAngleArtifact
+    development: DevelopmentArtifact
+    protocol: LockProtocolArtifact
+
+
+@dataclass(frozen=True)
+class SummaryArtifact:
+    schema_version: str
+    population: PopulationArtifact
+    means: MeansSummary
+    contrasts: ContrastCollection
+    semantic_families: SemanticFamilySummary
+    cell_metrics: CellMetricsCollection
+    support: SupportSummary
+    directions: DirectionSummary
+    angles: AngleSummary
+    cost: CostSummary
+    oracle_gain: OracleGainSummary
+    decision: DecisionSummary
+
+
+@dataclass(frozen=True)
+class LeaveOneSceneOutSummary:
+    primary_identity: tuple[float, float]
+    primary_global: tuple[float, float]
+    global_identity: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class BootstrapArtifact:
+    schema_version: str
+    seed: int
+    repetitions: int
+    scene_ids: tuple[str, ...]
+    intervals: BootstrapIntervals
+    leave_one_scene_out: LeaveOneSceneOutSummary
+
+
+@dataclass(frozen=True)
+class SourceArtifact:
+    path: str
+    sha256: str
+    dataset: str
+    split: str
+
+
+@dataclass(frozen=True)
+class SourcesArtifact:
+    development: SourceArtifact
+    test: SourceArtifact
+
+
+@dataclass(frozen=True)
+class ProtocolArtifact:
+    cache_model_key: str
+    cognitive_map_namespace: str
+    scale: int
+    raster_shape: tuple[int, int, int]
+    object_channels: tuple[int, int]
+    region_channels: tuple[int, int]
+    angle_order: tuple[float, ...]
+    mapping_order: tuple[tuple[int, int], ...]
+    heading_tie_order: tuple[float, ...]
+    invalid_angle: float
+    bootstrap_seed: int
+    bootstrap_repetitions: int
+    gate_threshold: float
+    schema_version: str
+    target_free_limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CsvHeadersArtifact:
+    development_mapping_scores: tuple[str, ...]
+    test_assignments: tuple[str, ...]
+    test_angle_scores: tuple[str, ...]
+    test_episode_scores: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class JsonTopLevelKeysArtifact:
+    selector_lock: tuple[str, ...]
+    summary: tuple[str, ...]
+    bootstrap: tuple[str, ...]
+    manifest: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SchemaArtifact:
+    csv_headers: CsvHeadersArtifact
+    json_top_level_keys: JsonTopLevelKeysArtifact
+    float_format: str
+    row_order: str
+    json_serialization: str
+
+
+@dataclass(frozen=True)
+class ArtifactEntry:
+    name: str
+    sha256: str
+    size_bytes: int
+    data_rows: int
+
+
+@dataclass(frozen=True)
+class ManifestArtifact:
+    schema_version: str
+    sources: SourcesArtifact
+    git_commit: str
+    protocol: ProtocolArtifact
+    population: PopulationArtifact
+    schemas: SchemaArtifact
+    artifacts: tuple[ArtifactEntry, ...]
+
+
+@dataclass(frozen=True)
+class ManifestInputs:
+    sources: SourcesArtifact
+    git_commit: str
+    protocol: ProtocolArtifact
+    population: PopulationArtifact
+    schemas: SchemaArtifact
+
+
+@dataclass(frozen=True)
+class ValidationInputs:
+    development_contract: PopulationContract
+    test_contract: PopulationContract
+    cache_dir: Path
+    cache_model_key: str
+    cognitive_map_namespace: str
+    quiet: bool
+
+
+@dataclass(frozen=True)
+class ArtifactBundle:
+    manifest_json: bytes
+    development_mapping_scores_csv: bytes
+    selector_lock_json: bytes
+    test_assignments_csv: bytes
+    test_angle_scores_csv: bytes
+    test_episode_scores_csv: bytes
+    summary_json: bytes
+    bootstrap_json: bytes
+    target_free_control_intervals_png: bytes
+
+    def files(self) -> Dict[str, bytes]:
+        return {
+            "manifest.json": self.manifest_json,
+            "development_mapping_scores.csv": self.development_mapping_scores_csv,
+            "selector_lock.json": self.selector_lock_json,
+            "test_assignments.csv": self.test_assignments_csv,
+            "test_angle_scores.csv": self.test_angle_scores_csv,
+            "test_episode_scores.csv": self.test_episode_scores_csv,
+            "summary.json": self.summary_json,
+            "bootstrap.json": self.bootstrap_json,
+            "target_free_control_intervals.png": (
+                self.target_free_control_intervals_png
+            ),
+        }
+
+
+class TargetFreeArgs(Tap):
+    """Fixed inputs for the target-free cardinal-selector experiment."""
+
+    cache_dir: Path = _DEFAULT_CACHE_DIR
+    cache_model_key: str = _DEFAULT_CACHE_MODEL_KEY
+    cognitive_map_namespace: str = _DEFAULT_COGNITIVE_MAP_NAMESPACE
+    output_dir: Path = _DEFAULT_OUTPUT_DIR
+    angles: Tuple[float, ...] = ANGLE_ORDER
+    bootstrap_seed: int = _DEFAULT_BOOTSTRAP_SEED
+    bootstrap_repetitions: int = _DEFAULT_BOOTSTRAP_REPETITIONS
+    gate_threshold: float = _GATE_THRESHOLD
+    quiet: bool = False
+
+
+def _json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+
+
+def _csv_cell(value: str | bool | int | float) -> str:
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("CSV strings must be non-empty")
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Integral):
+        return str(int(value))
+    if isinstance(value, Real):
+        return _format_float(float(value))
+    raise ValueError("unsupported CSV cell type")
+
+
+def _csv_bytes(
+    header: tuple[str, ...], rows: Sequence[tuple[str | bool | int | float, ...]]
+) -> bytes:
+    stream = StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(header)
+    for row in rows:
+        if len(row) != len(header):
+            raise ValueError("CSV row width must match its header")
+        writer.writerow(tuple(_csv_cell(value) for value in row))
+    return stream.getvalue().encode("utf-8")
+
+
+def _development_csv(scores: Sequence[DevelopmentCandidateScore]) -> bytes:
+    return _csv_bytes(
+        DEVELOPMENT_MAPPING_SCORES_HEADER,
+        tuple(
+            (
+                score.candidate_kind,
+                score.mapping_sign,
+                score.heading_offset_degrees,
+                score.global_angle_degrees,
+                score.episode_count,
+                score.valid_count,
+                score.all_mean_iou,
+                score.object_mean_iou,
+                score.region_mean_iou,
+                score.selected,
+            )
+            for score in scores
+        ),
+    )
+
+
+def _angle_csv(rows: Sequence[AngleScoreRow]) -> bytes:
+    return _csv_bytes(
+        TEST_ANGLE_SCORES_HEADER,
+        tuple(
+            (
+                row.key.scene_id,
+                row.key.example_id,
+                row.angle_degrees,
+                row.all_iou,
+                row.object_iou,
+                row.region_iou,
+                row.direction_cosine,
+                row.predicted_support,
+                row.target_support,
+                row.in_frame_support,
+                row.out_of_frame_support,
+                row.union,
+            )
+            for row in rows
+        ),
+    )
+
+
+def _episode_csv(rows: Sequence[EpisodeScoreRow]) -> bytes:
+    return _csv_bytes(
+        TEST_EPISODE_SCORES_HEADER,
+        tuple(
+            (
+                row.key.scene_id,
+                row.key.example_id,
+                row.schema_valid,
+                row.heading_bin_degrees,
+                row.primary_angle_degrees,
+                row.global_angle_degrees,
+                row.direct_angle_degrees,
+                row.identity_iou,
+                row.primary_iou,
+                row.global_iou,
+                row.direct_iou,
+                row.random_expected_iou,
+                row.soft_identity_iou,
+                row.soft_aggregate_iou,
+                row.oracle_iou,
+                row.identity_object_iou,
+                row.primary_object_iou,
+                row.identity_region_iou,
+                row.primary_region_iou,
+                row.soft_identity_object_iou,
+                row.soft_aggregate_object_iou,
+                row.soft_identity_region_iou,
+                row.soft_aggregate_region_iou,
+                row.primary_predicted_support,
+                row.primary_target_support,
+                row.primary_in_frame_support,
+                row.primary_out_of_frame_support,
+                row.primary_union,
+                row.soft_prediction_mass,
+                row.soft_target_mass,
+                row.soft_intersection_mass,
+                row.soft_union_mass,
+                row.primary_direction_cosine,
+                row.direct_direction_cosine,
+            )
+            for row in rows
+        ),
+    )
+
+
+def _contrast_summary(interval: ContrastInterval) -> ContrastSummary:
+    return ContrastSummary(
+        interval.mean,
+        interval.ci_lower,
+        interval.ci_upper,
+        interval.loso_min,
+        interval.loso_max,
+    )
+
+
+def _selected_angle_rows(
+    angle_rows: Sequence[AngleScoreRow],
+    episode_rows: Sequence[EpisodeScoreRow],
+    endpoint: str,
+) -> tuple[AngleScoreRow, ...]:
+    by_key_angle = {(row.key, row.angle_degrees): row for row in angle_rows}
+    selected: list[AngleScoreRow] = []
+    for episode in episode_rows:
+        if endpoint == "identity":
+            angle = 0.0
+        elif endpoint == "primary":
+            angle = episode.primary_angle_degrees
+        elif endpoint == "global":
+            angle = episode.global_angle_degrees
+        elif endpoint == "direct":
+            angle = episode.direct_angle_degrees
+        else:
+            raise ValueError("unknown endpoint")
+        selected.append(by_key_angle[(episode.key, angle)])
+    return tuple(selected)
+
+
+def _candidate_means(rows: Sequence[AngleScoreRow]) -> CandidateMeans:
+    return CandidateMeans(
+        float(np.mean([row.all_iou for row in rows])),
+        float(np.mean([row.object_iou for row in rows])),
+        float(np.mean([row.region_iou for row in rows])),
+    )
+
+
+def _cell_metrics(rows: Sequence[AngleScoreRow]) -> CellMetricSummary:
+    predicted = sum(row.predicted_support for row in rows)
+    target = sum(row.target_support for row in rows)
+    intersection = sum(row.all_iou * row.union for row in rows)
+    precision = 0.0 if predicted == 0 else intersection / predicted
+    recall = 0.0 if target == 0 else intersection / target
+    f1 = 0.0 if precision + recall == 0.0 else 2.0 * precision * recall / (
+        precision + recall
+    )
+    return CellMetricSummary(precision, recall, f1)
+
+
+def _soft_metrics(
+    predicted: float, target: float, intersection: float
+) -> CellMetricSummary:
+    precision = 0.0 if predicted == 0.0 else intersection / predicted
+    recall = 0.0 if target == 0.0 else intersection / target
+    f1 = 0.0 if precision + recall == 0.0 else 2.0 * precision * recall / (
+        precision + recall
+    )
+    return CellMetricSummary(precision, recall, f1)
+
+
+def _angle_counts(values: Sequence[float]) -> tuple[tuple[float, int], ...]:
+    return tuple((angle, sum(value == angle for value in values)) for angle in ANGLE_ORDER)
+
+
+def _build_bootstrap_artifact(
+    episode_rows: Sequence[EpisodeScoreRow], *, seed: int, repetitions: int
+) -> BootstrapArtifact:
+    intervals = paired_scene_bootstrap(episode_rows, repetitions, seed)
+    return BootstrapArtifact(
+        _SCHEMA_VERSION,
+        seed,
+        repetitions,
+        tuple(sorted({row.key.scene_id for row in episode_rows})),
+        intervals,
+        LeaveOneSceneOutSummary(
+            leave_one_scene_out(episode_rows, "primary_identity"),
+            leave_one_scene_out(episode_rows, "primary_global"),
+            leave_one_scene_out(episode_rows, "global_identity"),
+        ),
+    )
+
+
+def _build_summary_artifact(
+    angle_rows: Sequence[AngleScoreRow],
+    episode_rows: Sequence[EpisodeScoreRow],
+    population: PopulationArtifact,
+) -> SummaryArtifact:
+    ordered_episodes = _validated_score_rows(episode_rows)
+    expected_angle_order = tuple(
+        (episode.key, angle) for episode in ordered_episodes for angle in ANGLE_ORDER
+    )
+    if tuple((row.key, row.angle_degrees) for row in angle_rows) != expected_angle_order:
+        raise ValueError("angle rows must use sorted episode and declared angle order")
+    interval_values = paired_scene_bootstrap(
+        ordered_episodes, _DEFAULT_BOOTSTRAP_REPETITIONS, _DEFAULT_BOOTSTRAP_SEED
+    )
+    contrasts = ContrastCollection(
+        _contrast_summary(interval_values.primary_identity),
+        _contrast_summary(interval_values.primary_global),
+        _contrast_summary(interval_values.global_identity),
+        _contrast_summary(interval_values.direct_identity),
+        _contrast_summary(interval_values.soft_aggregate_identity),
+    )
+    identity_rows = _selected_angle_rows(angle_rows, ordered_episodes, "identity")
+    primary_rows = _selected_angle_rows(angle_rows, ordered_episodes, "primary")
+    global_rows = _selected_angle_rows(angle_rows, ordered_episodes, "global")
+    direct_rows = _selected_angle_rows(angle_rows, ordered_episodes, "direct")
+    identity_means = _candidate_means(identity_rows)
+    primary_means = _candidate_means(primary_rows)
+    global_means = _candidate_means(global_rows)
+    direct_means = _candidate_means(direct_rows)
+    random_means = _candidate_means(angle_rows)
+    oracle_rows = tuple(
+        max(
+            (row for row in angle_rows if row.key == episode.key),
+            key=lambda row: row.all_iou,
+        )
+        for episode in ordered_episodes
+    )
+    oracle_means = _candidate_means(oracle_rows)
+    soft_all = float(np.mean([row.soft_aggregate_iou for row in ordered_episodes]))
+    soft_identity_means = CandidateMeans(
+        float(np.mean([row.soft_identity_iou for row in ordered_episodes])),
+        float(np.mean([row.soft_identity_object_iou for row in ordered_episodes])),
+        float(np.mean([row.soft_identity_region_iou for row in ordered_episodes])),
+    )
+    soft_aggregate_means = CandidateMeans(
+        soft_all,
+        float(np.mean([row.soft_aggregate_object_iou for row in ordered_episodes])),
+        float(np.mean([row.soft_aggregate_region_iou for row in ordered_episodes])),
+    )
+    means = MeansSummary(
+        identity_means,
+        primary_means,
+        global_means,
+        direct_means,
+        random_means,
+        soft_identity_means,
+        soft_aggregate_means,
+        oracle_means,
+    )
+    primary_object_delta = primary_means.object_iou - identity_means.object_iou
+    primary_region_delta = primary_means.region_iou - identity_means.region_iou
+    global_object_delta = global_means.object_iou - identity_means.object_iou
+    global_region_delta = global_means.region_iou - identity_means.region_iou
+    decision = classify_decision(
+        interval_values.primary_identity,
+        interval_values.primary_global,
+        interval_values.global_identity,
+        primary_object_delta,
+        primary_region_delta,
+        global_object_delta,
+        global_region_delta,
+        population.test.episodes
+        == population.test.valid + population.test.invalid,
+    )
+    predicted_mass = sum(row.soft_prediction_mass for row in ordered_episodes)
+    target_mass = sum(row.soft_target_mass for row in ordered_episodes)
+    intersection_mass = sum(row.soft_intersection_mass for row in ordered_episodes)
+    primary_angles = tuple(row.primary_angle_degrees for row in ordered_episodes)
+    global_angles = tuple(row.global_angle_degrees for row in ordered_episodes)
+    direct_angles = tuple(row.direct_angle_degrees for row in ordered_episodes)
+    oracle_angles = tuple(row.angle_degrees for row in oracle_rows)
+    return SummaryArtifact(
+        _SCHEMA_VERSION,
+        population,
+        means,
+        contrasts,
+        SemanticFamilySummary(
+            primary_object_delta,
+            primary_region_delta,
+            global_object_delta,
+            global_region_delta,
+        ),
+        CellMetricsCollection(
+            _cell_metrics(identity_rows),
+            _cell_metrics(primary_rows),
+            _cell_metrics(global_rows),
+            _cell_metrics(direct_rows),
+            _cell_metrics(identity_rows),
+            _soft_metrics(predicted_mass, target_mass, intersection_mass),
+        ),
+        SupportSummary(
+            sum(row.primary_predicted_support for row in ordered_episodes),
+            sum(row.primary_target_support for row in ordered_episodes),
+            sum(row.primary_in_frame_support for row in ordered_episodes),
+            sum(row.primary_out_of_frame_support for row in ordered_episodes),
+            sum(row.primary_union for row in ordered_episodes),
+            predicted_mass,
+            target_mass,
+            intersection_mass,
+            sum(row.soft_union_mass for row in ordered_episodes),
+            sum(not row.schema_valid for row in ordered_episodes),
+            sum(row.primary_predicted_support == 0 for row in ordered_episodes),
+            sum(row.primary_target_support == 0 for row in ordered_episodes),
+            sum(row.primary_union == 0 for row in ordered_episodes),
+        ),
+        DirectionSummary(
+            float(np.mean([row.direction_cosine for row in identity_rows])),
+            float(np.mean([row.direction_cosine for row in primary_rows])),
+            float(np.mean([row.direction_cosine for row in global_rows])),
+            float(np.mean([row.direction_cosine for row in direct_rows])),
+        ),
+        AngleSummary(
+            _angle_counts(primary_angles),
+            _angle_counts(global_angles),
+            _angle_counts(direct_angles),
+            _angle_counts(oracle_angles),
+            float(np.mean([left == right for left, right in zip(primary_angles, oracle_angles)])),
+            float(np.mean([left == right for left, right in zip(direct_angles, oracle_angles)])),
+            tuple(
+                (
+                    heading,
+                    angle,
+                    sum(
+                        row.heading_bin_degrees == heading
+                        and row.primary_angle_degrees == angle
+                        for row in ordered_episodes
+                    ),
+                )
+                for heading in ANGLE_ORDER
+                for angle in ANGLE_ORDER
+            ),
+        ),
+        CostSummary(
+            len(ordered_episodes),
+            len(ordered_episodes),
+            len(ordered_episodes) * len(ANGLE_ORDER),
+            len(ordered_episodes) * len(ANGLE_ORDER),
+            37 * 100 * 100 * np.dtype(np.float64).itemsize,
+        ),
+        oracle_gain_summary(ordered_episodes),
+        DecisionSummary(
+            decision.label.value,
+            decision.selector_conditions,
+            decision.global_conditions,
+        ),
+    )
+
+
+def _plot_bytes(summary: SummaryArtifact) -> bytes:
+    labels = ("Primary−identity", "Primary−global", "Global−identity")
+    values = (
+        summary.contrasts.primary_identity,
+        summary.contrasts.primary_global,
+        summary.contrasts.global_identity,
+    )
+    figure, axis = plt.subplots(figsize=(7.0, 3.5))
+    means = np.asarray([value.mean for value in values])
+    lower = means - np.asarray([value.ci_lower for value in values])
+    upper = np.asarray([value.ci_upper for value in values]) - means
+    axis.errorbar(
+        means,
+        np.arange(len(labels)),
+        xerr=np.vstack((lower, upper)),
+        fmt="o",
+        color="black",
+        capsize=4,
+    )
+    axis.axvline(0.0, color="gray", linewidth=1)
+    axis.set_yticks(np.arange(len(labels)), labels)
+    axis.set_xlabel("Paired episode-macro IoU contrast")
+    axis.set_title("Target-free cardinal selector controls")
+    figure.tight_layout()
+    stream = BytesIO()
+    figure.savefig(stream, format="png", dpi=150, metadata={"Software": "ETP-R1"})
+    plt.close(figure)
+    return stream.getvalue()
+
+
+def build_artifacts(
+    selector_lock: SelectorLock,
+    assignments: Sequence[SelectorAssignment],
+    angle_rows: Sequence[AngleScoreRow],
+    episode_rows: Sequence[EpisodeScoreRow],
+    summary: SummaryArtifact,
+    bootstrap: BootstrapArtifact,
+    manifest_inputs: ManifestInputs,
+) -> ArtifactBundle:
+    """Build the complete canonical nine-file transaction in memory."""
+    if summary.population != manifest_inputs.population:
+        raise ValueError("summary and manifest populations must match")
+    if summary.schema_version != _SCHEMA_VERSION or bootstrap.schema_version != _SCHEMA_VERSION:
+        raise ValueError("artifact schema versions must match the frozen protocol")
+    if manifest_inputs.protocol.schema_version != _SCHEMA_VERSION:
+        raise ValueError("manifest protocol schema version must be frozen")
+    if tuple(assignments) != tuple(sorted(assignments, key=lambda row: row.key)):
+        raise ValueError("assignments must use canonical key order")
+    expected_angle_order = tuple(
+        (episode.key, angle) for episode in episode_rows for angle in ANGLE_ORDER
+    )
+    if tuple((row.key, row.angle_degrees) for row in angle_rows) != expected_angle_order:
+        raise ValueError("angle rows must use canonical key and angle order")
+    mapping_score = next(
+        score
+        for score in selector_lock.development_scores[:8]
+        if score.selected
+    )
+    global_score = next(
+        score
+        for score in selector_lock.development_scores[8:]
+        if score.selected
+    )
+    lock_artifact = SelectorLockArtifact(
+        _SCHEMA_VERSION,
+        ChosenMappingArtifact(
+            selector_lock.chosen_mapping.sign,
+            selector_lock.chosen_mapping.offset_degrees,
+            mapping_score.all_mean_iou,
+            selector_lock.mapping_tied_candidate_count,
+        ),
+        ChosenGlobalAngleArtifact(
+            selector_lock.chosen_global_angle,
+            global_score.all_mean_iou,
+            selector_lock.global_tied_candidate_count,
+        ),
+        DevelopmentArtifact(
+            manifest_inputs.population.development,
+            selector_lock.development_scores,
+        ),
+        LockProtocolArtifact(
+            manifest_inputs.protocol.angle_order,
+            manifest_inputs.protocol.mapping_order,
+            manifest_inputs.protocol.heading_tie_order,
+            manifest_inputs.protocol.invalid_angle,
+        ),
+    )
+    development_csv = _development_csv(selector_lock.development_scores)
+    lock_json = _json_bytes(asdict(lock_artifact))
+    assignments_csv = assignment_csv_bytes(assignments)
+    angle_csv = _angle_csv(angle_rows)
+    episode_csv = _episode_csv(episode_rows)
+    summary_json = _json_bytes(asdict(summary))
+    bootstrap_json = _json_bytes(asdict(bootstrap))
+    plot_png = _plot_bytes(summary)
+    payloads = (
+        ("development_mapping_scores.csv", development_csv, len(selector_lock.development_scores)),
+        ("selector_lock.json", lock_json, 1),
+        ("test_assignments.csv", assignments_csv, len(assignments)),
+        ("test_angle_scores.csv", angle_csv, len(angle_rows)),
+        ("test_episode_scores.csv", episode_csv, len(episode_rows)),
+        ("summary.json", summary_json, 1),
+        ("bootstrap.json", bootstrap_json, 1),
+        ("target_free_control_intervals.png", plot_png, 0),
+    )
+    entries = tuple(
+        ArtifactEntry(name, sha256(payload).hexdigest(), len(payload), rows)
+        for name, payload, rows in payloads
+    )
+    manifest = ManifestArtifact(
+        _SCHEMA_VERSION,
+        manifest_inputs.sources,
+        manifest_inputs.git_commit,
+        manifest_inputs.protocol,
+        manifest_inputs.population,
+        manifest_inputs.schemas,
+        entries,
+    )
+    return ArtifactBundle(
+        _json_bytes(asdict(manifest)),
+        development_csv,
+        lock_json,
+        assignments_csv,
+        angle_csv,
+        episode_csv,
+        summary_json,
+        bootstrap_json,
+        plot_png,
+    )
+
+
+def _protocol_artifact() -> ProtocolArtifact:
+    return ProtocolArtifact(
+        _DEFAULT_CACHE_MODEL_KEY,
+        _DEFAULT_COGNITIVE_MAP_NAMESPACE,
+        GRID_SCALE,
+        (37, 50, 50),
+        (0, _OBJECT_CHANNEL_COUNT),
+        (_OBJECT_CHANNEL_COUNT, 37),
+        ANGLE_ORDER,
+        tuple(
+            (mapping.sign, int(mapping.offset_degrees))
+            for mapping in _declared_mappings()
+        ),
+        ANGLE_ORDER,
+        0.0,
+        _DEFAULT_BOOTSTRAP_SEED,
+        _DEFAULT_BOOTSTRAP_REPETITIONS,
+        _GATE_THRESHOLD,
+        _SCHEMA_VERSION,
+        (
+            "offline raster overlap is not navigation performance",
+            "oracle and target-vector diagnostics are nondeployable",
+        ),
+    )
+
+
+def _schema_artifact() -> SchemaArtifact:
+    return SchemaArtifact(
+        CsvHeadersArtifact(
+            DEVELOPMENT_MAPPING_SCORES_HEADER,
+            TEST_ASSIGNMENTS_HEADER,
+            TEST_ANGLE_SCORES_HEADER,
+            TEST_EPISODE_SCORES_HEADER,
+        ),
+        JsonTopLevelKeysArtifact(
+            SELECTOR_LOCK_KEYS,
+            SUMMARY_KEYS,
+            BOOTSTRAP_KEYS,
+            MANIFEST_KEYS,
+        ),
+        ".17g finite floats; negative zero normalized to 0",
+        "UTF-8 lexicographic episode keys, then declared candidate/angle order",
+        "UTF-8 sorted compact keys, no NaN, one trailing newline",
+    )
+
+
+def _json_object(payload: bytes, name: str) -> Dict[str, object]:
+    try:
+        decoded = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{name} must be valid UTF-8 JSON") from error
+    if not isinstance(decoded, dict) or not all(
+        isinstance(key, str) for key in decoded
+    ):
+        raise ValueError(f"{name} must contain a JSON object")
+    result = cast(Dict[str, object], decoded)
+    if _json_bytes(result) != payload:
+        raise ValueError(f"{name} must use canonical JSON serialization")
+    return result
+
+
+def _require_object(value: object, name: str) -> Dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError(f"{name} must be a JSON object")
+    return cast(Dict[str, object], value)
+
+
+def _require_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _source_artifact(value: object, name: str) -> SourceArtifact:
+    payload = _require_object(value, name)
+    if set(payload) != {"path", "sha256", "dataset", "split"}:
+        raise ValueError(f"{name} has a mismatched key set")
+    source = SourceArtifact(
+        _require_string(payload["path"], f"{name} path"),
+        _require_string(payload["sha256"], f"{name} sha256"),
+        _require_string(payload["dataset"], f"{name} dataset"),
+        _require_string(payload["split"], f"{name} split"),
+    )
+    path = Path(source.path)
+    if not path.is_file() or sha256(path.read_bytes()).hexdigest() != source.sha256:
+        raise ValueError(f"{name} source hash does not match its file")
+    return source
+
+
+def _parse_csv_bytes(
+    payload: bytes, header: tuple[str, ...], name: str
+) -> tuple[tuple[str, ...], ...]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{name} must be UTF-8 CSV") from error
+    rows = tuple(tuple(row) for row in csv.reader(StringIO(text, newline="")))
+    if not rows or rows[0] != header:
+        raise ValueError(f"{name} has a mismatched exact header")
+    text_fields = {"candidate_kind", "scene_id", "example_id"}
+    boolean_fields = {"selected", "schema_valid"}
+    for row in rows[1:]:
+        if len(row) != len(header) or any(cell == "" for cell in row):
+            raise ValueError(f"{name} contains an empty or wrong-width row")
+        for field, cell in zip(header, row):
+            if field in text_fields:
+                continue
+            if field in boolean_fields:
+                if cell not in {"true", "false"}:
+                    raise ValueError(f"{name} contains a non-canonical boolean")
+                continue
+            try:
+                value = float(cell)
+            except ValueError as error:
+                raise ValueError(f"{name} contains a non-numeric cell") from error
+            if not np.isfinite(value):
+                raise ValueError(f"{name} contains a non-finite numeric cell")
+    return rows
+
+
+def _sources_from_manifest(manifest: Dict[str, object]) -> SourcesArtifact:
+    sources = _require_object(manifest.get("sources"), "manifest sources")
+    if set(sources) != {"development", "test"}:
+        raise ValueError("manifest sources have a mismatched key set")
+    development = _source_artifact(sources["development"], "development source")
+    test = _source_artifact(sources["test"], "test source")
+    if (
+        development.dataset != "R2R"
+        or development.split != "val_seen"
+        or test.dataset != "R2R"
+        or test.split != "val_unseen"
+    ):
+        raise ValueError("manifest sources must be the frozen R2R splits")
+    expected = SourcesArtifact(
+        SourceArtifact(
+            str(_DEVELOPMENT_SOURCE_PATH),
+            _DEVELOPMENT_SOURCE_SHA256,
+            "R2R",
+            "val_seen",
+        ),
+        SourceArtifact(
+            str(_TEST_SOURCE_PATH),
+            _TEST_SOURCE_SHA256,
+            "R2R",
+            "val_unseen",
+        ),
+    )
+    result = SourcesArtifact(development, test)
+    if result != expected:
+        raise ValueError("manifest source paths and hashes must match frozen constants")
+    return result
+
+
+def _expected_artifacts(
+    validation_inputs: ValidationInputs,
+    sources: SourcesArtifact,
+    git_commit: str,
+) -> ArtifactBundle:
+    if validation_inputs.development_contract.manifest_sha256 != sources.development.sha256:
+        raise ValueError("development source does not match validation contract")
+    if validation_inputs.test_contract.manifest_sha256 != sources.test.sha256:
+        raise ValueError("test source does not match validation contract")
+    development_runtime = load_runtime_population(
+        "val_seen",
+        validation_inputs.development_contract,
+        validation_inputs.cache_dir,
+        validation_inputs.cache_model_key,
+        validation_inputs.cognitive_map_namespace,
+        validation_inputs.quiet,
+    )
+    development_targets = load_target_population(
+        development_runtime,
+        validation_inputs.cognitive_map_namespace,
+        validation_inputs.quiet,
+    )
+    selector_lock = develop_selector(development_targets)
+    test_runtime = load_runtime_population(
+        "val_unseen",
+        validation_inputs.test_contract,
+        validation_inputs.cache_dir,
+        validation_inputs.cache_model_key,
+        validation_inputs.cognitive_map_namespace,
+        validation_inputs.quiet,
+    )
+    assignments = assign_population(test_runtime, selector_lock)
+    sealed_assignment_bytes = assignment_csv_bytes(assignments)
+    sealed_assignment_sha256 = sha256(sealed_assignment_bytes).hexdigest()
+    if len(sealed_assignment_sha256) != 64:
+        raise RuntimeError("assignment sealing failed")
+    test_targets = load_target_population(
+        test_runtime,
+        validation_inputs.cognitive_map_namespace,
+        validation_inputs.quiet,
+    )
+    angle_rows, episode_rows = score_population(test_targets, assignments)
+    population = PopulationArtifact(
+        PopulationSummary(
+            validation_inputs.development_contract.episodes,
+            validation_inputs.development_contract.scenes,
+            validation_inputs.development_contract.valid,
+            validation_inputs.development_contract.invalid,
+        ),
+        PopulationSummary(
+            validation_inputs.test_contract.episodes,
+            validation_inputs.test_contract.scenes,
+            validation_inputs.test_contract.valid,
+            validation_inputs.test_contract.invalid,
+        ),
+    )
+    summary = _build_summary_artifact(angle_rows, episode_rows, population)
+    bootstrap = _build_bootstrap_artifact(
+        episode_rows,
+        seed=_DEFAULT_BOOTSTRAP_SEED,
+        repetitions=_DEFAULT_BOOTSTRAP_REPETITIONS,
+    )
+    return build_artifacts(
+        selector_lock,
+        assignments,
+        angle_rows,
+        episode_rows,
+        summary,
+        bootstrap,
+        ManifestInputs(
+            sources,
+            git_commit,
+            _protocol_artifact(),
+            population,
+            _schema_artifact(),
+        ),
+    )
+
+
+def _validate_artifact_directory(
+    output_dir: Path, validation_inputs: ValidationInputs
+) -> None:
+    if not output_dir.is_dir():
+        raise ValueError(f"artifact directory does not exist: {output_dir}")
+    expected_names = set(
+        ArtifactBundle(b"", b"", b"", b"", b"", b"", b"", b"", b"").files()
+    )
+    if {path.name for path in output_dir.iterdir()} != expected_names:
+        raise ValueError("artifact directory has a mismatched exact file set")
+    actual = ArtifactBundle(
+        (output_dir / "manifest.json").read_bytes(),
+        (output_dir / "development_mapping_scores.csv").read_bytes(),
+        (output_dir / "selector_lock.json").read_bytes(),
+        (output_dir / "test_assignments.csv").read_bytes(),
+        (output_dir / "test_angle_scores.csv").read_bytes(),
+        (output_dir / "test_episode_scores.csv").read_bytes(),
+        (output_dir / "summary.json").read_bytes(),
+        (output_dir / "bootstrap.json").read_bytes(),
+        (output_dir / "target_free_control_intervals.png").read_bytes(),
+    )
+    manifest = _json_object(actual.manifest_json, "manifest.json")
+    if set(manifest) != set(MANIFEST_KEYS):
+        raise ValueError("manifest.json has a mismatched exact key set")
+    if manifest.get("schema_version") != _SCHEMA_VERSION:
+        raise ValueError("manifest schema_version must match the frozen v2 constant")
+    if _json_bytes(manifest.get("protocol")) != _json_bytes(
+        asdict(_protocol_artifact())
+    ):
+        raise ValueError("manifest protocol must match frozen constants")
+    if _json_bytes(manifest.get("schemas")) != _json_bytes(asdict(_schema_artifact())):
+        raise ValueError("manifest schemas must match frozen constants")
+    if (
+        validation_inputs.cache_model_key != _DEFAULT_CACHE_MODEL_KEY
+        or validation_inputs.cognitive_map_namespace
+        != _DEFAULT_COGNITIVE_MAP_NAMESPACE
+    ):
+        raise ValueError("validation inputs must match frozen cache constants")
+    sources = _sources_from_manifest(manifest)
+    git_commit = _require_string(manifest.get("git_commit"), "manifest git_commit")
+    if len(git_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in git_commit
+    ):
+        raise ValueError("manifest git_commit must be a lowercase 40-digit hash")
+    for name in ("selector_lock.json", "summary.json", "bootstrap.json"):
+        _json_object(actual.files()[name], name)
+    for name, header in (
+        ("development_mapping_scores.csv", DEVELOPMENT_MAPPING_SCORES_HEADER),
+        ("test_assignments.csv", TEST_ASSIGNMENTS_HEADER),
+        ("test_angle_scores.csv", TEST_ANGLE_SCORES_HEADER),
+        ("test_episode_scores.csv", TEST_EPISODE_SCORES_HEADER),
+    ):
+        _parse_csv_bytes(actual.files()[name], header, name)
+    try:
+        image = plt.imread(
+            BytesIO(actual.target_free_control_intervals_png), format="png"
+        )
+    except Exception as error:
+        raise ValueError("target_free_control_intervals.png must decode") from error
+    if image.ndim != 3 or not np.isfinite(image).all():
+        raise ValueError("target_free_control_intervals.png must be a finite RGB image")
+    expected = _expected_artifacts(validation_inputs, sources, git_commit)
+    for name, payload in actual.files().items():
+        if payload != expected.files()[name]:
+            raise ValueError(f"{name} does not match independent semantic recomputation")
+
+
+def validate_artifact_directory(
+    output_dir: Path,
+    *,
+    expected_development_episodes: int,
+    expected_development_scenes: int,
+    expected_development_valid: int,
+    expected_development_invalid: int,
+    expected_test_episodes: int,
+    expected_test_scenes: int,
+    expected_test_valid: int,
+    expected_test_invalid: int,
+) -> None:
+    """Independently regenerate and validate the complete artifact transaction."""
+    manifest = _json_object((output_dir / "manifest.json").read_bytes(), "manifest.json")
+    sources = _sources_from_manifest(manifest)
+    _validate_artifact_directory(
+        output_dir,
+        ValidationInputs(
+            PopulationContract(
+                "val_seen",
+                expected_development_episodes,
+                expected_development_scenes,
+                expected_development_valid,
+                expected_development_invalid,
+                sources.development.sha256,
+            ),
+            PopulationContract(
+                "val_unseen",
+                expected_test_episodes,
+                expected_test_scenes,
+                expected_test_valid,
+                expected_test_invalid,
+                sources.test.sha256,
+            ),
+            _DEFAULT_CACHE_DIR,
+            _DEFAULT_CACHE_MODEL_KEY,
+            _DEFAULT_COGNITIVE_MAP_NAMESPACE,
+            True,
+        ),
+    )
+
+
+def publish_artifacts(
+    output_dir: Path,
+    artifacts: ArtifactBundle,
+    validation_inputs: ValidationInputs,
+) -> None:
+    """Validate one temporary sibling and atomically publish it."""
+    if output_dir.exists():
+        raise FileExistsError(f"official output already exists: {output_dir}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent)
+    )
+    try:
+        for name, payload in artifacts.files().items():
+            (temporary / name).write_bytes(payload)
+        _validate_artifact_directory(temporary, validation_inputs)
+        temporary.replace(output_dir)
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+
+
+def _validate_args(args: TargetFreeArgs) -> None:
+    if args.cache_dir != _DEFAULT_CACHE_DIR:
+        raise ValueError(f"cache_dir must be exactly {_DEFAULT_CACHE_DIR}")
+    if args.cache_model_key != _DEFAULT_CACHE_MODEL_KEY:
+        raise ValueError(f"cache_model_key must be exactly {_DEFAULT_CACHE_MODEL_KEY!r}")
+    if args.cognitive_map_namespace != _DEFAULT_COGNITIVE_MAP_NAMESPACE:
+        raise ValueError(
+            "cognitive_map_namespace must be exactly "
+            f"{_DEFAULT_COGNITIVE_MAP_NAMESPACE!r}"
+        )
+    if args.output_dir != _DEFAULT_OUTPUT_DIR:
+        raise ValueError(f"output_dir must be exactly {_DEFAULT_OUTPUT_DIR}")
+    if tuple(args.angles) != ANGLE_ORDER:
+        raise ValueError(f"angles must be exactly {ANGLE_ORDER}")
+    if args.bootstrap_seed != _DEFAULT_BOOTSTRAP_SEED:
+        raise ValueError(f"bootstrap_seed must be exactly {_DEFAULT_BOOTSTRAP_SEED}")
+    if args.bootstrap_repetitions != _DEFAULT_BOOTSTRAP_REPETITIONS:
+        raise ValueError(
+            "bootstrap_repetitions must be exactly "
+            f"{_DEFAULT_BOOTSTRAP_REPETITIONS}"
+        )
+    if args.gate_threshold != _GATE_THRESHOLD:
+        raise ValueError(f"gate_threshold must be exactly {_GATE_THRESHOLD}")
+
+
+def _preflight_git_commit() -> str:
+    status = subprocess.run(
+        ("git", "status", "--porcelain", "--untracked-files=normal"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout:
+        raise RuntimeError("fixed experiment requires a clean committed worktree")
+    completed = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = completed.stdout.strip()
+    if len(commit) != 40:
+        raise ValueError("git rev-parse HEAD must return a full commit hash")
+    return commit
+
+
+def _preflight_sources(args: TargetFreeArgs) -> SourcesArtifact:
+    _validate_args(args)
+    sources: list[SourceArtifact] = []
+    for path, expected_sha256, split in (
+        (_DEVELOPMENT_SOURCE_PATH, _DEVELOPMENT_SOURCE_SHA256, "val_seen"),
+        (_TEST_SOURCE_PATH, _TEST_SOURCE_SHA256, "val_unseen"),
+    ):
+        actual_sha256 = sha256(path.read_bytes()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise ValueError(f"{split} manifest SHA-256 does not match frozen protocol")
+        sources.append(
+            SourceArtifact(str(path), actual_sha256, "R2R", split)
+        )
+    return SourcesArtifact(sources[0], sources[1])
+
+
+def _run(args: TargetFreeArgs) -> None:
+    _validate_args(args)
+    if args.output_dir.exists():
+        raise FileExistsError(f"official output already exists: {args.output_dir}")
+    run_commit = _preflight_git_commit()
+    sources = _preflight_sources(args)
+    development_runtime = load_runtime_population(
+        "val_seen",
+        VAL_SEEN_POPULATION,
+        args.cache_dir,
+        args.cache_model_key,
+        args.cognitive_map_namespace,
+        args.quiet,
+    )
+    development_targets = load_target_population(
+        development_runtime, args.cognitive_map_namespace, args.quiet
+    )
+    selector_lock = develop_selector(development_targets)
+    test_runtime = load_runtime_population(
+        "val_unseen",
+        VAL_UNSEEN_POPULATION,
+        args.cache_dir,
+        args.cache_model_key,
+        args.cognitive_map_namespace,
+        args.quiet,
+    )
+    assignments = assign_population(test_runtime, selector_lock)
+    assignment_sha256 = sha256(assignment_csv_bytes(assignments)).hexdigest()
+    if len(assignment_sha256) != 64:
+        raise RuntimeError("test assignment sealing failed")
+    test_targets = load_target_population(
+        test_runtime, args.cognitive_map_namespace, args.quiet
+    )
+    angle_rows, episode_rows = score_population(test_targets, assignments)
+    population = PopulationArtifact(
+        PopulationSummary(778, 53, 770, 8),
+        PopulationSummary(1_839, 11, 1_830, 9),
+    )
+    summary = _build_summary_artifact(angle_rows, episode_rows, population)
+    bootstrap = _build_bootstrap_artifact(
+        episode_rows,
+        seed=args.bootstrap_seed,
+        repetitions=args.bootstrap_repetitions,
+    )
+    artifacts = build_artifacts(
+        selector_lock,
+        assignments,
+        angle_rows,
+        episode_rows,
+        summary,
+        bootstrap,
+        ManifestInputs(
+            sources,
+            run_commit,
+            _protocol_artifact(),
+            population,
+            _schema_artifact(),
+        ),
+    )
+    validation_inputs = ValidationInputs(
+        VAL_SEEN_POPULATION,
+        VAL_UNSEEN_POPULATION,
+        args.cache_dir,
+        args.cache_model_key,
+        args.cognitive_map_namespace,
+        args.quiet,
+    )
+    publish_artifacts(args.output_dir, artifacts, validation_inputs)
+    validate_artifact_directory(
+        args.output_dir,
+        expected_development_episodes=778,
+        expected_development_scenes=53,
+        expected_development_valid=770,
+        expected_development_invalid=8,
+        expected_test_episodes=1_839,
+        expected_test_scenes=11,
+        expected_test_valid=1_830,
+        expected_test_invalid=9,
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = TargetFreeArgs(underscores_to_dashes=True).parse_args(argv)
+    _run(args)
+    if not args.quiet:
+        print(f"Wrote target-free cardinal-selector artifacts to {args.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
