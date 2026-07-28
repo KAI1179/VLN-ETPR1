@@ -10,8 +10,8 @@ import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
-from typing import Sequence, cast
-from zipfile import ZIP_DEFLATED, ZipFile
+from typing import BinaryIO, Sequence, cast
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -333,6 +333,72 @@ def test_source_phase_digest_binds_exact_bytes_and_members(tmp_path: Path) -> No
     ).sha256 == sha256(expected).hexdigest()
 
 
+def test_ordinary_sources_parse_the_same_captured_bytes_they_hash(
+    tmp_path: Path,
+) -> None:
+    """Breaks if gzip JSON or prediction parsing reopens a mutated source."""
+    episode_path = tmp_path / "val_seen.json.gz"
+    episode_a = gzip.compress(b'{"version":"A"}', mtime=0)
+    episode_path.write_bytes(episode_a)
+    episode = target_free._ordinary_source_entry(
+        episode_path,
+        "r2r_episode_source",
+        "val_seen/val_seen.json.gz",
+    )
+    episode_path.write_bytes(gzip.compress(b'{"version":"B"}', mtime=0))
+    assert episode.sha256 == sha256(episode_a).hexdigest()
+    assert target_free._decode_json_source(episode, gzipped=True) == {"version": "A"}
+
+    prediction_path = tmp_path / "prediction.txt"
+    prediction_a_grid = np.zeros((37, 50, 50), dtype=np.float32)
+    prediction_a_grid[0, 3, 4] = 1.0
+    prediction_b_grid = np.zeros((37, 50, 50), dtype=np.float32)
+    prediction_b_grid[0, 8, 9] = 1.0
+    directions = np.asarray(
+        [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
+    prediction_a = serialize_grid_target(
+        prediction_a_grid, direction_vectors=directions
+    ).encode("utf-8")
+    prediction_path.write_bytes(prediction_a)
+    prediction = target_free._ordinary_source_entry(
+        prediction_path,
+        "prediction_text",
+        "val_seen/scene/example.txt",
+    )
+    prediction_path.write_text(
+        serialize_grid_target(prediction_b_grid, direction_vectors=directions),
+        encoding="utf-8",
+    )
+    position_bytes = BytesIO()
+    np.save(
+        position_bytes, np.asarray([10.0, 20.0], dtype=np.float32), allow_pickle=False
+    )
+    direction_bytes = BytesIO()
+    np.save(
+        direction_bytes, np.asarray([0.0, 1.0], dtype=np.float32), allow_pickle=False
+    )
+    position = target_free._captured_source(
+        position_bytes.getvalue(),
+        "cognitive_map_assignment_member",
+        "val_seen/scene/example.npz",
+        "start_position.npy",
+    )
+    direction = target_free._captured_source(
+        direction_bytes.getvalue(),
+        "cognitive_map_assignment_member",
+        "val_seen/scene/example.npz",
+        "start_direction_vector.npy",
+    )
+    selector_input, _ = target_free._selector_input_from_sources(
+        prediction, position, direction
+    )
+    assert prediction.sha256 == sha256(prediction_a).hexdigest()
+    assert selector_input.predicted_grid[0, 3, 4]
+    assert not selector_input.predicted_grid[0, 8, 9]
+
+
 @pytest.mark.parametrize(
     "names",
     (
@@ -633,6 +699,109 @@ def test_npz_member_reader_rejects_duplicates_and_couples_loaded_bytes(
             "val_seen/scene/example.npz",
             ("start_position.npy",),
         )
+
+
+def test_assignment_npz_read_never_touches_or_decompresses_target_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if assignment capture reads whole archives or target members."""
+    path = tmp_path / "raster.npz"
+    target_payload = bytes(range(256)) * 256
+    position = BytesIO()
+    np.save(position, np.asarray([1.0, 2.0], dtype=np.float32), allow_pickle=False)
+    direction = BytesIO()
+    np.save(direction, np.asarray([0.0, 1.0], dtype=np.float32), allow_pickle=False)
+    with ZipFile(path, "w") as archive:
+        archive.writestr("grid.npy", target_payload, compress_type=ZIP_STORED)
+        archive.writestr(
+            "direction_vectors.npy", target_payload, compress_type=ZIP_STORED
+        )
+        archive.writestr(
+            "start_position.npy", position.getvalue(), compress_type=ZIP_DEFLATED
+        )
+        archive.writestr(
+            "start_direction_vector.npy",
+            direction.getvalue(),
+            compress_type=ZIP_DEFLATED,
+        )
+    with ZipFile(path) as archive:
+        target_ranges = tuple(
+            (
+                info.header_offset + len(info.FileHeader()),
+                info.header_offset + len(info.FileHeader()) + info.compress_size,
+            )
+            for info in (
+                archive.getinfo("grid.npy"),
+                archive.getinfo("direction_vectors.npy"),
+            )
+        )
+
+    reads: list[tuple[int, int]] = []
+    decompressed: list[str] = []
+    original_fdopen = target_free.os.fdopen
+    original_zip_read = target_free.ZipFile.read
+
+    class ObservedFile:
+        def __init__(self, stream: BinaryIO) -> None:
+            self._stream = stream
+
+        def read(self, size: int = -1) -> bytes:
+            start = self._stream.tell()
+            data = self._stream.read(size)
+            reads.append((start, start + len(data)))
+            return data
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            return self._stream.seek(offset, whence)
+
+        def tell(self) -> int:
+            return self._stream.tell()
+
+        def seekable(self) -> bool:
+            return self._stream.seekable()
+
+        def close(self) -> None:
+            self._stream.close()
+
+        def __enter__(self) -> "ObservedFile":
+            return self
+
+        def __exit__(
+            self,
+            exception_type: object,
+            exception: object,
+            traceback: object,
+        ) -> None:
+            self.close()
+
+    def observed_fdopen(fd: int, mode: str) -> ObservedFile:
+        return ObservedFile(cast(BinaryIO, original_fdopen(fd, mode)))
+
+    def observed_zip_read(
+        archive: ZipFile, member: str, password: bytes | None = None
+    ) -> bytes:
+        decompressed.append(member)
+        return original_zip_read(archive, member, password)
+
+    monkeypatch.setattr(target_free.os, "fdopen", observed_fdopen)
+    monkeypatch.setattr(target_free.ZipFile, "read", observed_zip_read)
+    captured = target_free._npz_member_sources(
+        path,
+        "cognitive_map_assignment_member",
+        "val_unseen/scene/example.npz",
+        ("start_position.npy", "start_direction_vector.npy"),
+    )
+
+    assert tuple(source.member for source in captured) == (
+        "start_position.npy",
+        "start_direction_vector.npy",
+    )
+    assert decompressed == ["start_position.npy", "start_direction_vector.npy"]
+    assert all(
+        read_end <= target_start or read_start >= target_end
+        for read_start, read_end in reads
+        for target_start, target_end in target_ranges
+    )
 
 
 def test_source_reader_rejects_symlinked_inputs(tmp_path: Path) -> None:
@@ -1636,6 +1805,7 @@ def test_publish_race_preserves_empty_concurrent_destination(
         target_free.publish_artifacts(destination, artifacts, validation_inputs)
     assert destination.is_dir()
     assert tuple(destination.iterdir()) == ()
+    assert tuple(tmp_path.glob(f".{destination.name}.tmp-*")) == ()
 
 
 def test_validator_requires_independently_expected_git_commit(
@@ -1652,6 +1822,23 @@ def test_validator_requires_independently_expected_git_commit(
         target_free.validate_artifact_directory(
             output_dir,
             expected_git_commit="b" * 40,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
+
+
+def test_validator_rejects_omitted_expected_git_commit() -> None:
+    """Breaks if validation can silently trust a manifest without an expectation."""
+    validator = getattr(target_free, "validate_artifact_directory")
+    with pytest.raises(TypeError):
+        validator(
+            Path("unused"),
             expected_development_episodes=4,
             expected_development_scenes=1,
             expected_development_valid=4,
@@ -2010,14 +2197,29 @@ def test_run_seals_assignments_before_test_targets_and_audits_after_score(
         lambda *_args: (events.append("assign"), assignments)[1],
     )
     original_assignment_bytes = target_free.assignment_csv_bytes
+    expected_assignment_bytes = original_assignment_bytes(assignments)
     monkeypatch.setattr(
         target_free,
         "assignment_csv_bytes",
         lambda rows: (
-            events.append("serialize-and-hash"),
+            events.append("serialize"),
             original_assignment_bytes(rows),
         )[1],
     )
+    original_sha256 = target_free.sha256
+
+    def observed_sha256(data: bytes = b"") -> object:
+        if data != expected_assignment_bytes:
+            return original_sha256(data)
+
+        def completed_hexdigest() -> str:
+            digest = original_sha256(data).hexdigest()
+            events.append("assignment-digest-complete")
+            return digest
+
+        return SimpleNamespace(hexdigest=completed_hexdigest)
+
+    monkeypatch.setattr(target_free, "sha256", observed_sha256)
     monkeypatch.setattr(
         target_free,
         "_load_test_targets_coupled",
@@ -2073,7 +2275,8 @@ def test_run_seals_assignments_before_test_targets_and_audits_after_score(
         "lock",
         "load-val_unseen",
         "assign",
-        "serialize-and-hash",
+        "serialize",
+        "assignment-digest-complete",
         "load-test-targets",
         "score",
         "post-score-recheck",

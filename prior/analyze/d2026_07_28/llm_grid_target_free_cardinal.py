@@ -18,7 +18,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from typing import Dict, Optional, Sequence, Tuple, cast
+from typing import BinaryIO, Dict, Optional, Sequence, Tuple, cast
 from zipfile import BadZipFile, ZipFile
 
 import matplotlib.pyplot as plt
@@ -593,7 +593,7 @@ def _validate_logical_source_path(logical_path: str) -> None:
         raise ValueError("source logical path must be split-relative")
 
 
-def _read_regular_unsymlinked(path: Path) -> bytes:
+def _open_regular_unsymlinked(path: Path) -> BinaryIO:
     absolute = path.absolute()
     directory_fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
     final_fd: int | None = None
@@ -610,9 +610,9 @@ def _read_regular_unsymlinked(path: Path) -> bytes:
         directory_fd = -1
         if not stat.S_ISREG(os.fstat(final_fd).st_mode):
             raise ValueError(f"source path must be a regular file: {path}")
-        with os.fdopen(final_fd, "rb") as stream:
-            final_fd = None
-            return stream.read()
+        stream = os.fdopen(final_fd, "rb")
+        final_fd = None
+        return stream
     except OSError as error:
         if error.errno in {errno.ELOOP, errno.ENOTDIR}:
             raise ValueError(
@@ -624,6 +624,11 @@ def _read_regular_unsymlinked(path: Path) -> bytes:
             os.close(directory_fd)
         if final_fd is not None:
             os.close(final_fd)
+
+
+def _read_regular_unsymlinked(path: Path) -> bytes:
+    with _open_regular_unsymlinked(path) as stream:
+        return stream.read()
 
 
 def _captured_source(
@@ -688,9 +693,8 @@ def _npz_member_sources(
 ) -> tuple[_CapturedSource, ...]:
     if len(set(members)) != len(members):
         raise ValueError("requested NPZ members must be unique")
-    archive_bytes = _read_regular_unsymlinked(path)
     try:
-        with ZipFile(BytesIO(archive_bytes)) as archive:
+        with _open_regular_unsymlinked(path) as stream, ZipFile(stream) as archive:
             names = tuple(info.filename for info in archive.infolist())
             result = []
             for member in members:
