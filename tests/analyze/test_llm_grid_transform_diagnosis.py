@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from typing import Tuple, cast
 
 import numpy as np
@@ -267,6 +268,8 @@ def test_synthetic_runner_writes_artifacts_and_rejects_bad_population(
         "angle_distribution.png",
     } <= {path.name for path in tmp_path.iterdir()}
     assert '"smoke": true' in (tmp_path / "manifest.json").read_text(encoding="utf-8")
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["cell_size_m"] == 1.0
     with pytest.raises(ValueError, match="duplicate"):
         _run_rows(
             args,

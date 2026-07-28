@@ -655,7 +655,7 @@ def _run_rows(
         "angles": list(_DEFAULT_ANGLES),
         "shape": list(GRID_SHAPE),
         "scale": GRID_SCALE,
-        "cell_size_m": CELL_SIZE,
+        "cell_size_m": CELL_SIZE * GRID_SCALE,
         "bootstrap": {
             "sampling_unit": "scene",
             "repetitions": args.bootstrap_repetitions,
