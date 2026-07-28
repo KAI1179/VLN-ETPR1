@@ -11,7 +11,9 @@ from io import BytesIO, StringIO
 import json
 from numbers import Integral, Real
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 from typing import Dict, Mapping, Optional, Sequence, Set, Tuple
 
 import matplotlib.pyplot as plt
@@ -1777,9 +1779,27 @@ def _capture_artifact_bundle(
 def _write_artifacts(output_dir: Path, artifacts: _ArtifactBundle) -> None:
     """Validate, capture, and persist one seven-file transaction."""
     validated_files = _validate_artifact_bundle(artifacts)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for filename, data in validated_files:
-        (output_dir / filename).write_bytes(data)
+    if output_dir.exists() and (
+        not output_dir.is_dir() or any(output_dir.iterdir())
+    ):
+        raise ValueError(
+            f"output directory must be empty or absent, got nonempty: {output_dir}"
+        )
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary_dir = Path(
+        tempfile.mkdtemp(
+            dir=str(output_dir.parent),
+            prefix=f".{output_dir.name}.tmp-",
+        )
+    )
+    try:
+        for filename, data in validated_files:
+            (temporary_dir / filename).write_bytes(data)
+        temporary_dir.replace(output_dir)
+    except BaseException:
+        if temporary_dir.exists():
+            shutil.rmtree(temporary_dir)
+        raise
 
 
 def _validate_analysis(
@@ -2455,6 +2475,24 @@ def _validate_artifact_snapshot(
         raise ValueError("pivot_assignments.csv SHA-256 provenance is inconsistent")
     if not artifacts.control_intervals_png.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("crossfit_control_intervals.png is not a PNG artifact")
+    try:
+        decoded_plot = plt.imread(
+            BytesIO(artifacts.control_intervals_png),
+            format="png",
+        )
+    except (OSError, SyntaxError, ValueError) as error:
+        raise ValueError(
+            "crossfit_control_intervals.png must be a valid PNG image"
+        ) from error
+    if (
+        decoded_plot.ndim < 2
+        or decoded_plot.shape[0] <= 0
+        or decoded_plot.shape[1] <= 0
+        or not np.isfinite(decoded_plot.shape[:2]).all()
+    ):
+        raise ValueError(
+            "crossfit_control_intervals.png must have nonempty finite dimensions"
+        )
 
     angle_rows = _decode_csv_rows(
         artifacts.angle_scores_csv,
@@ -2495,6 +2533,26 @@ def _validate_artifact_snapshot(
         raise ValueError("artifact assignments must use stable UTF-8 identity order")
     if len({row.scene_id for row in assignments}) != expected_scenes:
         raise ValueError("artifact scene count is inconsistent")
+    empty_grid = np.zeros(_GRID_SHAPE, dtype=np.bool_)
+    expected_assignments = build_pivot_assignments(
+        tuple(
+            EpisodeCase(
+                split="val_unseen",
+                scene_id=row.scene_id,
+                example_id=row.example_id,
+                schema_valid=True,
+                predicted_grid=empty_grid,
+                target_grid=empty_grid,
+                true_start_pivot=row.true_pivot,
+            )
+            for row in assignments
+        )
+    )
+    if assignments != expected_assignments:
+        raise ValueError(
+            "artifact pivot assignments must equal the frozen SHA-256 "
+            "seed-43 matching"
+        )
     complete = _complete_pivot_results(results)
     if set(complete) != identities:
         raise ValueError("artifact pivot results must cover all assignments")
@@ -2553,6 +2611,40 @@ def _validate_artifact_snapshot(
             )
             if row.pivot != expected_pivot or row.donor_example_id != expected_donor:
                 raise ValueError("artifact pivot or donor identity is inconsistent")
+            if not true_start_valid:
+                for angle_score in row.angle_scores:
+                    for input_support, score in (
+                        (
+                            angle_score.object_input_support,
+                            angle_score.object_score,
+                        ),
+                        (
+                            angle_score.region_input_support,
+                            angle_score.region_score,
+                        ),
+                    ):
+                        if (
+                            input_support != 0
+                            or score.predicted_support != 0
+                            or score.in_frame_support != 0
+                            or score.out_of_frame_support != 0
+                        ):
+                            raise ValueError(
+                                "schema-invalid identities must have empty "
+                                "prediction support at every pivot and angle"
+                            )
+                for directional in (
+                    row.object_to_region,
+                    row.region_to_object,
+                ):
+                    if (
+                        not directional.selector_predicted_support_empty
+                        or not directional.heldout_predicted_support_empty
+                    ):
+                        raise ValueError(
+                            "schema-invalid identities must have empty prediction "
+                            "support and predicted-empty flags in every direction"
+                        )
 
     summaries = summarize_results(results)
     ranges = leave_one_scene_out_ranges(results)

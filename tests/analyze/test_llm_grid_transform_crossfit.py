@@ -937,6 +937,27 @@ def artifact_cases() -> tuple[EpisodeCase, ...]:
     )
 
 
+def assignment_audit_cases() -> tuple[EpisodeCase, ...]:
+    """Population with one scene that has multiple valid derangements."""
+    return four_episode_cases() + (
+        episode_case("episode-e", (5.0, 5.0), scene_id="scene-2"),
+        episode_case("episode-f", (6.0, 6.0), scene_id="scene-2"),
+        episode_case("episode-g", (7.0, 7.0), scene_id="scene-3"),
+        episode_case("episode-h", (8.0, 8.0), scene_id="scene-3"),
+    )
+
+
+def one_invalid_artifact_cases() -> tuple[EpisodeCase, ...]:
+    """Complete synthetic population with one explicit empty prediction."""
+    cases = list(artifact_cases())
+    cases[0] = replace(
+        cases[0],
+        schema_valid=False,
+        predicted_grid=np.zeros_like(cases[0].predicted_grid),
+    )
+    return tuple(cases)
+
+
 def half_iou_artifact_cases() -> tuple[EpisodeCase, ...]:
     cases = []
     for case in artifact_cases():
@@ -959,8 +980,8 @@ def write_artifact_fixture(
         fixture_cases,
         expected_population=len(fixture_cases),
         expected_scenes=3,
-        expected_valid=len(fixture_cases),
-        expected_invalid=0,
+        expected_valid=sum(case.schema_valid for case in fixture_cases),
+        expected_invalid=sum(not case.schema_valid for case in fixture_cases),
         prediction_manifest_path=source_manifest,
     )
     return output_dir, source_manifest, fixture_cases
@@ -1028,6 +1049,32 @@ def mutate_csv_field(
                 checked_row[key] = cell
             rows.append(checked_row)
     rows[row_index][field] = value
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    refresh_artifact_hash(output_dir, filename)
+
+
+def mutate_csv_rows(
+    output_dir: Path,
+    filename: str,
+    mutation: Callable[[Dict[str, str]], None],
+) -> None:
+    path = output_dir / filename
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        assert fieldnames is not None
+        rows: list[Dict[str, str]] = []
+        for row in reader:
+            checked_row: Dict[str, str] = {}
+            for key, cell in row.items():
+                assert key is not None
+                assert cell is not None
+                checked_row[key] = cell
+            mutation(checked_row)
+            rows.append(checked_row)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
@@ -1121,15 +1168,77 @@ def test_artifact_writer_rejects_invalid_raw_bundle_before_output(
     assert not invalid_dir.exists()
 
 
-def test_artifact_writer_writes_valid_raw_bundle(tmp_path: Path) -> None:
+@pytest.mark.parametrize("precreate_empty", (False, True))
+def test_artifact_writer_writes_exact_files_to_absent_or_empty_directory(
+    tmp_path: Path,
+    precreate_empty: bool,
+) -> None:
     output_dir, _, _ = write_artifact_fixture(tmp_path)
     raw = artifact_bundle_from_directory(output_dir)
     written_dir = tmp_path / "written"
+    if precreate_empty:
+        written_dir.mkdir()
 
     crossfit._write_artifacts(written_dir, raw)
 
+    assert {path.name for path in written_dir.iterdir()} == set(raw.files())
     for filename, data in raw.files().items():
         assert (written_dir / filename).read_bytes() == data
+
+
+@pytest.mark.parametrize("precreate_empty", (False, True))
+def test_artifact_writer_failure_never_publishes_partial_final_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    precreate_empty: bool,
+) -> None:
+    """Breaks if a failed write exposes any uncommitted artifact bytes."""
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    written_dir = tmp_path / "written"
+    if precreate_empty:
+        written_dir.mkdir()
+    original_write_bytes = Path.write_bytes
+    writes = 0
+
+    def fail_third_write(path: Path, data: bytes) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 3:
+            raise OSError("injected artifact write failure")
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_third_write)
+
+    with pytest.raises(OSError, match="injected artifact write failure"):
+        crossfit._write_artifacts(written_dir, raw)
+
+    assert written_dir.exists() is precreate_empty
+    if precreate_empty:
+        assert not tuple(written_dir.iterdir())
+    assert not tuple(
+        path
+        for path in tmp_path.iterdir()
+        if path.name.startswith(f".{written_dir.name}.tmp-")
+    )
+
+
+def test_artifact_writer_rejects_nonempty_final_directory_untouched(
+    tmp_path: Path,
+) -> None:
+    """Breaks if the low-level publisher can mix files into a prior run."""
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    written_dir = tmp_path / "written"
+    written_dir.mkdir()
+    marker = written_dir / "existing.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nonempty"):
+        crossfit._write_artifacts(written_dir, raw)
+
+    assert tuple(written_dir.iterdir()) == (marker,)
+    assert marker.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_artifact_writer_captures_stateful_bundle_bytes_once(
@@ -1494,6 +1603,105 @@ def test_artifact_directory_validation_detects_changed_png_tail(
             expected_scenes=3,
             expected_valid=len(cases),
             expected_invalid=0,
+        )
+
+
+def test_validator_rejects_refreshed_hash_nondecodable_png(tmp_path: Path) -> None:
+    """Breaks if a PNG signature can stand in for a decodable image."""
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    plot_path = output_dir / "crossfit_control_intervals.png"
+    plot_path.write_bytes(b"\x89PNG\r\n\x1a\nsignature-is-not-an-image")
+    refresh_artifact_hash(output_dir, plot_path.name)
+
+    with pytest.raises(ValueError, match="valid PNG"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+def test_validator_rejects_refreshed_hash_alternate_valid_derangement(
+    tmp_path: Path,
+) -> None:
+    """Breaks if any valid derangement can replace the frozen seed-43 matching."""
+    output_dir, _, cases = write_artifact_fixture(
+        tmp_path,
+        assignment_audit_cases(),
+    )
+    alternate = {
+        "episode-a": ("episode-d", "4.0", "4.0"),
+        "episode-b": ("episode-a", "1.0", "1.0"),
+        "episode-c": ("episode-b", "2.0", "2.0"),
+        "episode-d": ("episode-c", "3.0", "3.0"),
+    }
+
+    def replace_assignment(row: Dict[str, str]) -> None:
+        if row["scene_id"] != "scene-1":
+            return
+        donor, pivot_row, pivot_column = alternate[row["example_id"]]
+        row["donor_example_id"] = donor
+        row["assigned_pivot_row"] = pivot_row
+        row["assigned_pivot_column"] = pivot_column
+
+    def replace_shuffled_result(row: Dict[str, str]) -> None:
+        if (
+            row["scene_id"] != "scene-1"
+            or row["pivot_mode"] != PivotMode.SHUFFLED_START.value
+        ):
+            return
+        donor, pivot_row, pivot_column = alternate[row["example_id"]]
+        row["donor_example_id"] = donor
+        row["pivot_row"] = pivot_row
+        row["pivot_column"] = pivot_column
+
+    mutate_csv_rows(
+        output_dir,
+        "pivot_assignments.csv",
+        replace_assignment,
+    )
+    mutate_csv_rows(output_dir, "angle_scores.csv", replace_shuffled_result)
+    mutate_csv_rows(output_dir, "crossfit_results.csv", replace_shuffled_result)
+
+    with pytest.raises(ValueError, match="frozen SHA-256 seed-43 matching"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+def test_validator_rejects_count_preserving_valid_invalid_status_swap(
+    tmp_path: Path,
+) -> None:
+    """Breaks if invalid status is not tied to empty prediction support."""
+    output_dir, _, cases = write_artifact_fixture(
+        tmp_path,
+        one_invalid_artifact_cases(),
+    )
+
+    def swap_status(row: Dict[str, str]) -> None:
+        if row["scene_id"] != "scene-0":
+            return
+        if row["example_id"] == "episode-0-0":
+            row["schema_valid"] = "True"
+        elif row["example_id"] == "episode-0-1":
+            row["schema_valid"] = "False"
+
+    mutate_csv_rows(output_dir, "angle_scores.csv", swap_status)
+    mutate_csv_rows(output_dir, "crossfit_results.csv", swap_status)
+
+    with pytest.raises(ValueError, match="schema-invalid.*empty prediction"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases) - 1,
+            expected_invalid=1,
         )
 
 
