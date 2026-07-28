@@ -4,8 +4,12 @@ from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
+from typing import Sequence, cast
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -309,6 +313,247 @@ def frozen_lock() -> target_free.SelectorLock:
 
 def fail_if_called(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("target access during assignment")
+
+
+def test_source_phase_digest_binds_exact_bytes_and_members(tmp_path: Path) -> None:
+    """Breaks if source mutations do not alter the canonical phase commitment."""
+    source = tmp_path / "prediction.txt"
+    source.write_bytes(b"first")
+    first = target_free._ordinary_source_entry(
+        source, "prediction_text", "val_seen/scene/example.txt"
+    )
+    source.write_bytes(b"second")
+    second = target_free._ordinary_source_entry(
+        source, "prediction_text", "val_seen/scene/example.txt"
+    )
+
+    assert first.sha256 != second.sha256
+    assert target_free._source_phase(
+        "development_all_sources", (first,)
+    ).sha256 != target_free._source_phase(
+        "development_all_sources", (second,)
+    ).sha256
+    expected = (
+        b'{"entries":[{"member":"","path":"val_seen/scene/example.txt",'
+        b'"role":"prediction_text","sha256":"'
+        + first.sha256.encode()
+        + b'","size_bytes":5}],"phase":"development_all_sources",'
+        b'"schema_version":"llm-grid-target-free-source-fingerprint-v3"}\n'
+    )
+    assert target_free._source_phase(
+        "development_all_sources", (first,)
+    ).sha256 == sha256(expected).hexdigest()
+
+
+def test_npz_member_reader_rejects_duplicates_and_couples_loaded_bytes(
+    tmp_path: Path,
+) -> None:
+    """Breaks if NPZ members can be substituted after fingerprinting."""
+    path = tmp_path / "raster.npz"
+    original = BytesIO()
+    np.save(original, np.asarray([1.0, 2.0], dtype=np.float32), allow_pickle=False)
+    replacement = BytesIO()
+    np.save(replacement, np.asarray([8.0, 9.0], dtype=np.float32), allow_pickle=False)
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("start_position.npy", original.getvalue())
+
+    captured = target_free._npz_member_sources(
+        path,
+        "cognitive_map_assignment_member",
+        "val_seen/scene/example.npz",
+        ("start_position.npy",),
+    )
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("start_position.npy", replacement.getvalue())
+    loaded = target_free._load_npy_bytes(captured[0].data, "start_position.npy")
+    assert loaded.tolist() == [1.0, 2.0]
+
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("start_position.npy", original.getvalue())
+        archive.writestr("start_position.npy", replacement.getvalue())
+    with pytest.raises(ValueError, match="exactly once"):
+        target_free._npz_member_sources(
+            path,
+            "cognitive_map_assignment_member",
+            "val_seen/scene/example.npz",
+            ("start_position.npy",),
+        )
+
+
+def test_source_reader_rejects_symlinked_inputs(tmp_path: Path) -> None:
+    """Breaks if symlink substitution can evade the frozen inventory."""
+    real = tmp_path / "real.txt"
+    real.write_bytes(b"source")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+    with pytest.raises(ValueError, match="symlink"):
+        target_free._ordinary_source_entry(
+            link, "prediction_text", "val_seen/scene/example.txt"
+        )
+
+
+def test_source_reader_rejects_symlink_swapped_at_final_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if a check/open race can redirect the consumed source bytes."""
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"reviewed")
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_bytes(b"swapped!")
+    original_open = target_free.os.open
+    swapped = False
+
+    def swapping_open(
+        path: str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == source.name and dir_fd is not None and not swapped:
+            swapped = True
+            source.rename(tmp_path / "original.txt")
+            source.symlink_to(replacement)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(target_free.os, "open", swapping_open)
+    with pytest.raises(ValueError, match="symlink"):
+        target_free._ordinary_source_entry(
+            source, "prediction_text", "val_seen/scene/example.txt"
+        )
+
+
+def test_post_score_recheck_detects_same_size_content_changes(tmp_path: Path) -> None:
+    """Breaks if post-score audit relies on metadata instead of source bytes."""
+    ordinary_path = tmp_path / "prediction.txt"
+    ordinary_path.write_bytes(b"AAAA")
+    timestamp = ordinary_path.stat().st_mtime_ns
+    ordinary = target_free._ordinary_source_entry(
+        ordinary_path, "prediction_text", "val_seen/scene/example.txt"
+    )
+    ordinary_path.write_bytes(b"BBBB")
+    os.utime(ordinary_path, ns=(timestamp, timestamp))
+    assert target_free._post_score_sources_verified((ordinary,)) is False
+
+    npz_path = tmp_path / "raster.npz"
+    first = BytesIO()
+    np.save(first, np.asarray([1], dtype=np.int32), allow_pickle=False)
+    second = BytesIO()
+    np.save(second, np.asarray([2], dtype=np.int32), allow_pickle=False)
+    with ZipFile(npz_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("grid.npy", first.getvalue())
+    member = target_free._npz_member_sources(
+        npz_path,
+        "cognitive_map_target_member",
+        "val_unseen/scene/example.npz",
+        ("grid.npy",),
+    )[0]
+    timestamp = npz_path.stat().st_mtime_ns
+    with ZipFile(npz_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("grid.npy", second.getvalue())
+    os.utime(npz_path, ns=(timestamp, timestamp))
+    assert target_free._post_score_sources_verified((member,)) is False
+
+
+def test_schema_v3_protocol_freezes_phase_order_and_reused_eval_limit() -> None:
+    """Breaks if the temporal audit contract or limitation becomes implicit."""
+    protocol = target_free._protocol_artifact()
+    assert protocol.schema_version == "llm-grid-target-free-cardinal-v3"
+    assert protocol.phase_order[4:6] == (
+        "assignment-serialize-and-hash",
+        "test-target-coupled-load-and-fingerprint",
+    )
+    assert protocol.selector_input_schema == (
+        "schema_valid:bool",
+        "start_direction:float32[2]",
+        "predicted_grid:bool[37,50,50]",
+        "predicted_directions:float32[5,2]",
+    )
+    assert protocol.target_free_limitations[-1] == (
+        "val_unseen is a reused evaluation population, not a pristine held-out "
+        "generalisation test"
+    )
+
+
+def test_audit_combined_failure_blocks_go_and_exact_intersection_is_integer() -> None:
+    """Breaks if audit failure passes the gate or IoU is inverted approximately."""
+    audit = target_free.AuditSummary(
+        True,
+        True,
+        True,
+        "a" * 64,
+        True,
+        False,
+        True,
+        True,
+        True,
+        False,
+    )
+    interval = target_free.ContrastInterval(0.02, 0.01, 0.03, 0.01, 0.03)
+    decision = target_free.classify_decision(
+        interval, interval, interval, 0.1, 0.1, 0.1, 0.1, audit.passed
+    )
+    assert decision.label == "PARTIAL"
+    metrics = target_free._cell_metrics(
+        cast(
+            Sequence[target_free.AngleScoreRow],
+            (
+                SimpleNamespace(
+                    predicted_support=18,
+                    target_support=19,
+                    union=22,
+                    all_iou=15.0 / 22.0 + 1e-8,
+                ),
+            ),
+        )
+    )
+    assert metrics.precision == 15.0 / 18.0
+    assert metrics.recall == 15.0 / 19.0
+
+
+@pytest.mark.parametrize(
+    "failed_index",
+    range(8),
+)
+def test_each_audit_boolean_is_required_for_passed(failed_index: int) -> None:
+    """Breaks if any explicit provenance check is omitted from the audit gate."""
+    checks = [True] * 8
+    checks[failed_index] = False
+    audit = target_free.AuditSummary(
+        checks[0],
+        checks[1],
+        checks[2],
+        "c" * 64,
+        checks[3],
+        checks[4],
+        checks[5],
+        checks[6],
+        checks[7],
+        False,
+    )
+    assert audit.passed is False
+    with pytest.raises(ValueError, match="conjunction"):
+        target_free.AuditSummary(
+            checks[0],
+            checks[1],
+            checks[2],
+            "c" * 64,
+            checks[3],
+            checks[4],
+            checks[5],
+            checks[6],
+            checks[7],
+            True,
+        )
+
+
+def test_audit_rejects_non_sha256_assignment_digest() -> None:
+    """Breaks if the assignment seal can carry an unvalidated token."""
+    with pytest.raises(ValueError, match="assignment_sha256"):
+        target_free.AuditSummary(
+            True, True, True, "not-a-digest", True, True, True, True, True, True
+        )
 
 
 def test_population_contract_and_runtime_loader_seal_manifest_and_sort_order(
@@ -798,63 +1043,43 @@ def _artifact_fixture(
     population = target_free.PopulationArtifact(
         development_population, test_population
     )
+    audit = target_free.AuditSummary(
+        True,
+        True,
+        True,
+        sha256(target_free.assignment_csv_bytes(assignments)).hexdigest(),
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+    )
     summary = target_free._build_summary_artifact(
-        angle_rows, episode_rows, population
+        angle_rows, episode_rows, population, audit
     )
     bootstrap = target_free._build_bootstrap_artifact(
         episode_rows, seed=42, repetitions=10_000
     )
-    development_manifest = Path(
-        "data/llm_navigation/"
-        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
-        "r2r/val_seen/manifest.json"
-    )
-    test_manifest = Path(
-        "data/llm_navigation/"
-        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
-        "r2r/val_unseen/manifest.json"
-    )
     sources = target_free.SourcesArtifact(
-        target_free.SourceArtifact(
-            str(development_manifest),
-            sha256(development_manifest.read_bytes()).hexdigest(),
-            "R2R",
-            "val_seen",
+        target_free.SourcePhaseArtifact(
+            "development_all_sources",
+            target_free._SOURCE_PHASE_CONTRACTS["development_all_sources"][1],
+            target_free._SOURCE_PHASE_CONTRACTS["development_all_sources"][0],
         ),
-        target_free.SourceArtifact(
-            str(test_manifest),
-            sha256(test_manifest.read_bytes()).hexdigest(),
-            "R2R",
-            "val_unseen",
+        target_free.SourcePhaseArtifact(
+            "test_assignment_sources",
+            target_free._SOURCE_PHASE_CONTRACTS["test_assignment_sources"][1],
+            target_free._SOURCE_PHASE_CONTRACTS["test_assignment_sources"][0],
         ),
+        target_free.SourcePhaseArtifact(
+            "test_target_sources",
+            target_free._SOURCE_PHASE_CONTRACTS["test_target_sources"][1],
+            target_free._SOURCE_PHASE_CONTRACTS["test_target_sources"][0],
+        ),
+        target_free._COMBINED_SOURCE_SHA256,
     )
-    protocol = target_free.ProtocolArtifact(
-        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
-        "gt.legacy.r1p5.direction5.v1",
-        2,
-        (37, 50, 50),
-        (0, 27),
-        (27, 37),
-        target_free.ANGLE_ORDER,
-        tuple(
-            (mapping.sign, int(mapping.offset_degrees))
-            for mapping in (
-                target_free.HeadingMapping(sign, angle)
-                for sign in (+1, -1)
-                for angle in target_free.ANGLE_ORDER
-            )
-        ),
-        target_free.ANGLE_ORDER,
-        0.0,
-        42,
-        10_000,
-        0.01,
-        "llm-grid-target-free-cardinal-v2",
-        (
-            "offline raster overlap is not navigation performance",
-            "oracle and target-vector diagnostics are nondeployable",
-        ),
-    )
+    protocol = target_free._protocol_artifact()
     schemas = target_free.SchemaArtifact(
         target_free.CsvHeadersArtifact(
             target_free.DEVELOPMENT_MAPPING_SCORES_HEADER,
@@ -893,7 +1118,7 @@ def _artifact_fixture(
         1,
         4,
         0,
-        sources.development.sha256,
+        target_free._DEVELOPMENT_SOURCE_SHA256,
     )
     test_contract = target_free.PopulationContract(
         "val_unseen",
@@ -901,7 +1126,7 @@ def _artifact_fixture(
         2,
         2,
         0,
-        sources.test.sha256,
+        target_free._TEST_SOURCE_SHA256,
     )
     validation_inputs = target_free.ValidationInputs(
         development_contract,
@@ -909,6 +1134,7 @@ def _artifact_fixture(
         tmp_path / "cache",
         protocol.cache_model_key,
         protocol.cognitive_map_namespace,
+        "a" * 40,
         True,
     )
     return artifacts, validation_inputs, development_targets, test_targets
@@ -923,20 +1149,44 @@ def _install_artifact_loaders(
         "val_seen": tuple(target.runtime for target in development_targets),
         "val_unseen": tuple(target.runtime for target in test_targets),
     }
-    targets_by_split = {
-        "val_seen": development_targets,
-        "val_unseen": test_targets,
+    phases = {
+        name: target_free.SourcePhaseArtifact(name, digest, count)
+        for name, (count, digest) in target_free._SOURCE_PHASE_CONTRACTS.items()
     }
+
+    def coupled(
+        split: str, *_args: object, include_targets: bool, **_kwargs: object
+    ) -> tuple[object, ...]:
+        if split == "val_seen":
+            return (
+                runtime_by_split[split],
+                development_targets,
+                (),
+                phases["development_all_sources"],
+            )
+        assert include_targets is False
+        return (
+            runtime_by_split[split],
+            (),
+            (),
+            phases["test_assignment_sources"],
+        )
+
     monkeypatch.setattr(
         target_free,
-        "load_runtime_population",
-        lambda split, *_args, **_kwargs: runtime_by_split[split],
+        "_load_runtime_population_coupled",
+        coupled,
     )
     monkeypatch.setattr(
         target_free,
-        "load_target_population",
-        lambda runtimes, *_args, **_kwargs: targets_by_split[runtimes[0].split],
+        "_load_test_targets_coupled",
+        lambda *_args, **_kwargs: (
+            test_targets,
+            (),
+            phases["test_target_sources"],
+        ),
     )
+    monkeypatch.setattr(target_free, "_post_score_sources_verified", lambda *_args: True)
 
 
 def test_build_artifacts_emits_exact_canonical_transaction_and_decodable_plot(
@@ -974,7 +1224,7 @@ def test_build_artifacts_emits_exact_canonical_transaction_and_decodable_plot(
     )
     manifest = json.loads(files["manifest.json"])
     assert tuple(manifest) == tuple(sorted(target_free.MANIFEST_KEYS))
-    assert manifest["schema_version"] == "llm-grid-target-free-cardinal-v2"
+    assert manifest["schema_version"] == "llm-grid-target-free-cardinal-v3"
     entries = {entry["name"]: entry for entry in manifest["artifacts"]}
     assert set(entries) == set(files) - {"manifest.json"}
     for name, payload in files.items():
@@ -1016,6 +1266,7 @@ def test_publish_artifacts_validates_then_atomically_publishes(
     assert {path.name for path in output_dir.iterdir()} == set(artifacts.files())
     target_free.validate_artifact_directory(
         output_dir,
+        expected_git_commit="a" * 40,
         expected_development_episodes=4,
         expected_development_scenes=1,
         expected_development_valid=4,
@@ -1027,6 +1278,53 @@ def test_publish_artifacts_validates_then_atomically_publishes(
     )
     with pytest.raises(FileExistsError):
         target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+
+
+def test_publish_race_preserves_concurrent_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if publication can overwrite a destination created after preflight."""
+    artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
+        tmp_path
+    )
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    destination = tmp_path / "raced"
+    rename_noreplace = target_free._rename_noreplace
+
+    def race(source: Path, target: Path) -> None:
+        target.mkdir()
+        (target / "owner.txt").write_text("concurrent", encoding="utf-8")
+        rename_noreplace(source, target)
+
+    monkeypatch.setattr(target_free, "_rename_noreplace", race)
+    with pytest.raises(FileExistsError):
+        target_free.publish_artifacts(destination, artifacts, validation_inputs)
+    assert (destination / "owner.txt").read_text(encoding="utf-8") == "concurrent"
+
+
+def test_validator_requires_independently_expected_git_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if the validator trusts the commit declared by the manifest."""
+    artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
+        tmp_path
+    )
+    _install_artifact_loaders(monkeypatch, development_targets, test_targets)
+    output_dir = tmp_path / "git"
+    target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
+    with pytest.raises(ValueError, match="expected_git_commit"):
+        target_free.validate_artifact_directory(
+            output_dir,
+            expected_git_commit="b" * 40,
+            expected_development_episodes=4,
+            expected_development_scenes=1,
+            expected_development_valid=4,
+            expected_development_invalid=0,
+            expected_test_episodes=2,
+            expected_test_scenes=2,
+            expected_test_valid=2,
+            expected_test_invalid=0,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1069,6 +1367,7 @@ def test_validator_rejects_each_tampered_artifact(
     with pytest.raises(ValueError):
         target_free.validate_artifact_directory(
             output_dir,
+            expected_git_commit="a" * 40,
             expected_development_episodes=4,
             expected_development_scenes=1,
             expected_development_valid=4,
@@ -1085,6 +1384,7 @@ def test_validator_rejects_each_tampered_artifact(
     (
         ("selector_lock.json", "chosen_global_angle"),
         ("summary.json", "decision"),
+        ("summary.json", "audit"),
         ("bootstrap.json", "repetitions"),
     ),
 )
@@ -1107,6 +1407,9 @@ def test_validator_rejects_rehashed_semantic_tampering(
         payload[field]["angle_degrees"] = 90.0
     elif field == "decision":
         payload[field]["label"] = "SELECTOR GO"
+    elif field == "audit":
+        payload[field]["combined_sources_verified"] = False
+        payload[field]["passed"] = False
     else:
         payload[field] = 999
     changed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
@@ -1123,6 +1426,7 @@ def test_validator_rejects_rehashed_semantic_tampering(
     with pytest.raises(ValueError):
         target_free.validate_artifact_directory(
             output_dir,
+            expected_git_commit="a" * 40,
             expected_development_episodes=4,
             expected_development_scenes=1,
             expected_development_valid=4,
@@ -1134,21 +1438,14 @@ def test_validator_rejects_rehashed_semantic_tampering(
         )
 
 
-def test_validator_rejects_relocated_source_with_identical_bytes(
+def test_validator_rejects_manifest_defined_source_phase(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Breaks if a manifest can redefine a frozen source path from its own bytes."""
+    """Breaks if a manifest can redefine a frozen source-phase commitment."""
     artifacts, _, development_targets, test_targets = _artifact_fixture(tmp_path)
     _install_artifact_loaders(monkeypatch, development_targets, test_targets)
-    relocated = tmp_path / "relocated_manifest.json"
-    frozen_source = Path(
-        "data/llm_navigation/"
-        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2/"
-        "r2r/val_seen/manifest.json"
-    )
-    relocated.write_bytes(frozen_source.read_bytes())
     manifest = json.loads(artifacts.manifest_json)
-    manifest["sources"]["development"]["path"] = str(relocated)
+    manifest["sources"]["development_all_sources"]["sha256"] = "b" * 64
     changed_manifest = (
         json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     )
@@ -1162,6 +1459,7 @@ def test_validator_rejects_relocated_source_with_identical_bytes(
     with pytest.raises(ValueError, match="source|frozen|path"):
         target_free.validate_artifact_directory(
             output_dir,
+            expected_git_commit="a" * 40,
             expected_development_episodes=4,
             expected_development_scenes=1,
             expected_development_valid=4,
@@ -1183,7 +1481,15 @@ def test_validator_rejects_relocated_source_with_identical_bytes(
         ("mapping_order", [[-1, 0]]),
         ("bootstrap_seed", 7),
         ("bootstrap_repetitions", 999),
+        ("bootstrap_cluster", "episode_id"),
+        ("bootstrap_weighting", "scene-macro"),
+        ("bootstrap_interval", "other"),
         ("gate_threshold", 0.02),
+        ("selector_input_schema", ["other"]),
+        ("coordinate_contract", ["other"]),
+        ("phase_order", ["other"]),
+        ("decision_gate_contract", ["other"]),
+        ("target_free_limitations", ["other"]),
     ),
 )
 def test_validator_rejects_manifest_protocol_drift_from_frozen_constants(
@@ -1210,6 +1516,7 @@ def test_validator_rejects_manifest_protocol_drift_from_frozen_constants(
     with pytest.raises(ValueError):
         target_free.validate_artifact_directory(
             output_dir,
+            expected_git_commit="a" * 40,
             expected_development_episodes=4,
             expected_development_scenes=1,
             expected_development_valid=4,
@@ -1298,14 +1605,172 @@ def test_clean_preflight_returns_exact_committed_head(
     ]
 
 
-def test_source_preflight_hashes_both_frozen_manifests_before_data_load(
+def test_source_phase_contracts_are_literal_frozen_values() -> None:
+    """Breaks if the reviewed source population is silently redefined."""
+    assert target_free._SOURCE_PHASE_CONTRACTS == {
+        "development_all_sources": (
+            3893,
+            "7b0f8ce883a4929679ea51627726e97fc318f9785cb2794afb5908f002a860cc",
+        ),
+        "test_assignment_sources": (
+            5520,
+            "e6065ad984f05bd42950fa52855310bc7364421d424d4e29704e508bda447d10",
+        ),
+        "test_target_sources": (
+            3678,
+            "62307358663497a3bfb98220b4d2a875fe50fb0922ba020186cc6be6cbcf89ef",
+        ),
+    }
+    assert target_free._COMBINED_SOURCE_SHA256 == (
+        "5e8702088364ee294ad0876486d403fe1b68283897bff2468369167c262bf942"
+    )
+
+
+def test_run_seals_assignments_before_test_targets_and_audits_after_score(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Breaks if the evaluation manifest stays unchecked until after development."""
-    corrupt_test_manifest = tmp_path / "manifest.json"
-    corrupt_test_manifest.write_text('{"corrupt":true}\n', encoding="utf-8")
-    monkeypatch.setattr(target_free, "_TEST_SOURCE_PATH", corrupt_test_manifest)
-    monkeypatch.setattr(target_free, "load_runtime_population", fail_if_called)
+    """Breaks if orchestration crosses the frozen target-free phase boundary."""
+    development_targets = _mapping_targets(target_free.HeadingMapping(+1, 0.0))
+    selector_lock = target_free.develop_selector(development_targets)
+    test_targets = (
+        _two_family_target_episode(scene_id="scene-a", example_id="episode-a")[0],
+        _two_family_target_episode(scene_id="scene-b", example_id="episode-b")[0],
+    )
+    test_runtime = tuple(target.runtime for target in test_targets)
+    assignments = target_free.assign_population(test_runtime, selector_lock)
+    angle_rows, episode_rows = target_free.score_population(test_targets, assignments)
+    phases = {
+        name: target_free.SourcePhaseArtifact(name, digest, count)
+        for name, (count, digest) in target_free._SOURCE_PHASE_CONTRACTS.items()
+    }
+    events: list[str] = []
 
-    with pytest.raises(ValueError, match="SHA-256"):
-        target_free._preflight_sources(target_free.TargetFreeArgs())
+    def coupled(
+        split: str, *_args: object, include_targets: bool, **_kwargs: object
+    ) -> tuple[object, ...]:
+        events.append(f"load-{split}")
+        if split == "val_seen":
+            assert include_targets is True
+            return (
+                tuple(target.runtime for target in development_targets),
+                development_targets,
+                (),
+                phases["development_all_sources"],
+            )
+        assert include_targets is False
+        return test_runtime, (), (), phases["test_assignment_sources"]
+
+    monkeypatch.setattr(target_free, "_validate_args", lambda _args: None)
+    monkeypatch.setattr(target_free, "_preflight_git_commit", lambda: "d" * 40)
+    monkeypatch.setattr(target_free, "_load_runtime_population_coupled", coupled)
+    monkeypatch.setattr(
+        target_free,
+        "develop_selector",
+        lambda _targets: (events.append("lock"), selector_lock)[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "assign_population",
+        lambda *_args: (events.append("assign"), assignments)[1],
+    )
+    original_assignment_bytes = target_free.assignment_csv_bytes
+    monkeypatch.setattr(
+        target_free,
+        "assignment_csv_bytes",
+        lambda rows: (
+            events.append("serialize-and-hash"),
+            original_assignment_bytes(rows),
+        )[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "_load_test_targets_coupled",
+        lambda *_args: (
+            events.append("load-test-targets"),
+            test_targets,
+            (),
+            phases["test_target_sources"],
+        )[1:],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "score_population",
+        lambda *_args: (events.append("score"), (angle_rows, episode_rows))[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "_post_score_sources_verified",
+        lambda *_args: (events.append("post-score-recheck"), True)[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "_build_summary_artifact",
+        lambda *_args: (events.append("audit-and-decision"), object())[1],
+    )
+    monkeypatch.setattr(target_free, "_build_bootstrap_artifact", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(target_free, "build_artifacts", lambda *_args: object())
+    monkeypatch.setattr(
+        target_free,
+        "publish_artifacts",
+        lambda *_args: events.append("publish"),
+    )
+    monkeypatch.setattr(
+        target_free,
+        "validate_artifact_directory",
+        lambda *_args, **_kwargs: events.append("validate"),
+    )
+    args = cast(
+        target_free.TargetFreeArgs,
+        SimpleNamespace(
+            output_dir=tmp_path / "official",
+            cache_dir=Path("cache"),
+            cache_model_key="model",
+            cognitive_map_namespace="namespace",
+            quiet=True,
+            bootstrap_seed=42,
+            bootstrap_repetitions=10_000,
+        ),
+    )
+    target_free._run(args)
+    assert events == [
+        "load-val_seen",
+        "lock",
+        "load-val_unseen",
+        "assign",
+        "serialize-and-hash",
+        "load-test-targets",
+        "score",
+        "post-score-recheck",
+        "audit-and-decision",
+        "publish",
+        "validate",
+    ]
+
+
+def test_run_rejects_development_phase_before_locking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if scientific development starts before its source seal passes."""
+    bad_phase = target_free.SourcePhaseArtifact(
+        "development_all_sources", "0" * 64, 3893
+    )
+    monkeypatch.setattr(target_free, "_validate_args", lambda _args: None)
+    monkeypatch.setattr(target_free, "_preflight_git_commit", lambda: "d" * 40)
+    monkeypatch.setattr(
+        target_free,
+        "_load_runtime_population_coupled",
+        lambda *_args, **_kwargs: ((), (), (), bad_phase),
+    )
+    monkeypatch.setattr(target_free, "develop_selector", fail_if_called)
+    args = cast(
+        target_free.TargetFreeArgs,
+        SimpleNamespace(
+            output_dir=tmp_path / "official",
+            cache_dir=Path("cache"),
+            cache_model_key="model",
+            cognitive_map_namespace="namespace",
+            quiet=True,
+        ),
+    )
+    with pytest.raises(ValueError, match="frozen source commitment"):
+        target_free._run(args)

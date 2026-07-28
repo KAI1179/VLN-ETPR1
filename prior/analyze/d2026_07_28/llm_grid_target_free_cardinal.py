@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
+import errno
+import gzip
 from hashlib import sha256
 from io import BytesIO, StringIO
 import json
 from numbers import Integral, Real
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tempfile
 from typing import Dict, Optional, Sequence, Tuple, cast
+from zipfile import BadZipFile, ZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
 
+from prior import R2R_DIR
 from prior.analyze.llm_grid_registration import (
     WarpedGrid,
     direction_cosine,
@@ -39,6 +46,7 @@ from vlnce_baselines.models.etp_llm.navigation import (
     llm_navigation_prediction_path,
     llm_navigation_split_dir,
 )
+from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_path
 
 
 ANGLE_ORDER = (0.0, 90.0, 180.0, 270.0)
@@ -137,6 +145,7 @@ SUMMARY_KEYS = (
     "angles",
     "cost",
     "oracle_gain",
+    "audit",
     "decision",
 )
 BOOTSTRAP_KEYS = (
@@ -156,7 +165,8 @@ MANIFEST_KEYS = (
     "schemas",
     "artifacts",
 )
-_SCHEMA_VERSION = "llm-grid-target-free-cardinal-v2"
+_SCHEMA_VERSION = "llm-grid-target-free-cardinal-v3"
+_SOURCE_SCHEMA_VERSION = "llm-grid-target-free-source-fingerprint-v3"
 _DEFAULT_CACHE_DIR = Path("data/llm_navigation")
 _DEFAULT_CACHE_MODEL_KEY = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2"
 _DEFAULT_COGNITIVE_MAP_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
@@ -166,25 +176,28 @@ _DEFAULT_OUTPUT_DIR = Path(
 _DEFAULT_BOOTSTRAP_SEED = 42
 _DEFAULT_BOOTSTRAP_REPETITIONS = 10_000
 _GATE_THRESHOLD = 0.01
-_DEVELOPMENT_SOURCE_PATH = (
-    _DEFAULT_CACHE_DIR
-    / _DEFAULT_CACHE_MODEL_KEY
-    / "r2r"
-    / "val_seen"
-    / "manifest.json"
-)
-_TEST_SOURCE_PATH = (
-    _DEFAULT_CACHE_DIR
-    / _DEFAULT_CACHE_MODEL_KEY
-    / "r2r"
-    / "val_unseen"
-    / "manifest.json"
-)
 _DEVELOPMENT_SOURCE_SHA256 = (
     "1d3eb25eb7583a2c6373f430119da25ef71472d2d065697e673e2f70c307d146"
 )
 _TEST_SOURCE_SHA256 = (
     "31e7c5f8d186e75222b12f1aa8862b16fa9904c75221a0fd55cfba61f93fa8ce"
+)
+_SOURCE_PHASE_CONTRACTS = {
+    "development_all_sources": (
+        3893,
+        "7b0f8ce883a4929679ea51627726e97fc318f9785cb2794afb5908f002a860cc",
+    ),
+    "test_assignment_sources": (
+        5520,
+        "e6065ad984f05bd42950fa52855310bc7364421d424d4e29704e508bda447d10",
+    ),
+    "test_target_sources": (
+        3678,
+        "62307358663497a3bfb98220b4d2a875fe50fb0922ba020186cc6be6cbcf89ef",
+    ),
+}
+_COMBINED_SOURCE_SHA256 = (
+    "5e8702088364ee294ad0876486d403fe1b68283897bff2468369167c262bf942"
 )
 
 
@@ -535,6 +548,219 @@ POPULATION_CONTRACTS = (VAL_SEEN_POPULATION, VAL_UNSEEN_POPULATION)
 
 
 @dataclass(frozen=True)
+class _CapturedSource:
+    role: str
+    path: str
+    member: str
+    sha256: str
+    size_bytes: int
+    data: bytes
+    filesystem_path: Path
+
+
+@dataclass(frozen=True)
+class SourcePhaseArtifact:
+    name: str
+    sha256: str
+    entry_count: int
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _validate_logical_source_path(logical_path: str) -> None:
+    if (
+        not isinstance(logical_path, str)
+        or not logical_path
+        or "\x00" in logical_path
+        or "\\" in logical_path
+    ):
+        raise ValueError("source logical path is invalid")
+    path = Path(logical_path)
+    if path.is_absolute() or ".." in path.parts or path.parts[0] not in {
+        "val_seen",
+        "val_unseen",
+    }:
+        raise ValueError("source logical path must be split-relative")
+
+
+def _read_regular_unsymlinked(path: Path) -> bytes:
+    absolute = path.absolute()
+    directory_fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    final_fd: int | None = None
+    try:
+        for index, part in enumerate(absolute.parts[1:]):
+            final = index == len(absolute.parts) - 2
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if not final:
+                flags |= os.O_DIRECTORY
+            next_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        final_fd = directory_fd
+        directory_fd = -1
+        if not stat.S_ISREG(os.fstat(final_fd).st_mode):
+            raise ValueError(f"source path must be a regular file: {path}")
+        with os.fdopen(final_fd, "rb") as stream:
+            final_fd = None
+            return stream.read()
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError(
+                f"source path contains a symlink or non-directory component: {path}"
+            ) from error
+        raise
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if final_fd is not None:
+            os.close(final_fd)
+
+
+def _captured_source(
+    data: bytes,
+    role: str,
+    logical_path: str,
+    member: str = "",
+    filesystem_path: Path = Path("."),
+) -> _CapturedSource:
+    _validate_logical_source_path(logical_path)
+    if not isinstance(member, str) or "\x00" in member or "\\" in member:
+        raise ValueError("source member is invalid")
+    parts = Path(logical_path).parts
+    split = parts[0]
+    if role == "r2r_episode_source":
+        valid = len(parts) == 2 and parts[1] == f"{split}.json.gz" and not member
+    elif role == "r2r_ground_truth_source":
+        valid = len(parts) == 2 and parts[1] == f"{split}_gt.json.gz" and not member
+    elif role == "prediction_manifest":
+        valid = len(parts) == 2 and parts[1] == "manifest.json" and not member
+    elif role == "prediction_text":
+        valid = len(parts) == 3 and parts[2].endswith(".txt") and not member
+    elif role == "cognitive_map_assignment_member":
+        valid = (
+            len(parts) == 3
+            and parts[2].endswith(".npz")
+            and member in {"start_position.npy", "start_direction_vector.npy"}
+        )
+    elif role == "cognitive_map_target_member":
+        valid = (
+            len(parts) == 3
+            and parts[2].endswith(".npz")
+            and member in {"grid.npy", "direction_vectors.npy"}
+        )
+    else:
+        valid = False
+    if not valid:
+        raise ValueError("source role, logical path, and member do not match")
+    return _CapturedSource(
+        role,
+        logical_path,
+        member,
+        sha256(data).hexdigest(),
+        len(data),
+        data,
+        filesystem_path,
+    )
+
+
+def _ordinary_source_entry(
+    path: Path, role: str, logical_path: str
+) -> _CapturedSource:
+    data = _read_regular_unsymlinked(path)
+    return _captured_source(data, role, logical_path, filesystem_path=path)
+
+
+def _npz_member_sources(
+    path: Path,
+    role: str,
+    logical_path: str,
+    members: tuple[str, ...],
+) -> tuple[_CapturedSource, ...]:
+    if len(set(members)) != len(members):
+        raise ValueError("requested NPZ members must be unique")
+    archive_bytes = _read_regular_unsymlinked(path)
+    try:
+        with ZipFile(BytesIO(archive_bytes)) as archive:
+            names = tuple(info.filename for info in archive.infolist())
+            result = []
+            for member in members:
+                if names.count(member) != 1:
+                    raise ValueError(f"NPZ member {member!r} must occur exactly once")
+                result.append(
+                    _captured_source(
+                        archive.read(member), role, logical_path, member, path
+                    )
+                )
+    except BadZipFile as error:
+        raise ValueError(f"invalid NPZ archive: {path}") from error
+    return tuple(result)
+
+
+def _source_entry_payload(source: _CapturedSource) -> dict[str, object]:
+    return {
+        "member": source.member,
+        "path": source.path,
+        "role": source.role,
+        "sha256": source.sha256,
+        "size_bytes": source.size_bytes,
+    }
+
+
+def _source_phase(
+    name: str, sources: Sequence[_CapturedSource]
+) -> SourcePhaseArtifact:
+    ordered = sorted(sources, key=lambda source: (source.role, source.path, source.member))
+    if len({(source.role, source.path, source.member) for source in ordered}) != len(
+        ordered
+    ):
+        raise ValueError("source phase contains a duplicate inventory entry")
+    payload = {
+        "entries": [_source_entry_payload(source) for source in ordered],
+        "phase": name,
+        "schema_version": _SOURCE_SCHEMA_VERSION,
+    }
+    return SourcePhaseArtifact(
+        name, sha256(_canonical_json_bytes(payload)).hexdigest(), len(ordered)
+    )
+
+
+def _combined_sources_sha256(phases: Sequence[SourcePhaseArtifact]) -> str:
+    expected_names = tuple(_SOURCE_PHASE_CONTRACTS)
+    by_name = {phase.name: phase.sha256 for phase in phases}
+    if tuple(by_name) != expected_names:
+        raise ValueError("source phases must use the frozen phase order")
+    return sha256(
+        _canonical_json_bytes(
+            {
+                "phase_digests": by_name,
+                "schema_version": _SOURCE_SCHEMA_VERSION,
+            }
+        )
+    ).hexdigest()
+
+
+def _load_npy_bytes(data: bytes, member: str) -> NDArray[np.generic]:
+    try:
+        value = np.load(BytesIO(data), allow_pickle=False)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"invalid NPY member {member!r}") from error
+    if not isinstance(value, np.ndarray):
+        raise ValueError(f"NPY member {member!r} must contain an array")
+    return value
+
+
+@dataclass(frozen=True)
 class RuntimeEpisode:
     key: EpisodeKey
     split: str
@@ -834,6 +1060,276 @@ def load_target_population(
         TargetEpisode(episode, *_load_target_arrays(paths[episode.key]))
         for episode in sorted(runtime_episodes, key=lambda runtime: runtime.key)
     )
+
+
+def _decode_json_source(source: _CapturedSource, *, gzipped: bool) -> dict[str, object]:
+    try:
+        raw = gzip.decompress(source.data) if gzipped else source.data
+        value = json.loads(raw.decode("utf-8"))
+    except (gzip.BadGzipFile, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid JSON source: {source.path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON source must contain an object: {source.path}")
+    return cast(Dict[str, object], value)
+
+
+def _episode_inventory(
+    split: str,
+) -> tuple[tuple[tuple[str, str], ...], tuple[_CapturedSource, ...]]:
+    split_dir = R2R_DIR / split
+    episode = _ordinary_source_entry(
+        split_dir / f"{split}.json.gz",
+        "r2r_episode_source",
+        f"{split}/{split}.json.gz",
+    )
+    ground_truth = _ordinary_source_entry(
+        split_dir / f"{split}_gt.json.gz",
+        "r2r_ground_truth_source",
+        f"{split}/{split}_gt.json.gz",
+    )
+    episode_payload = _decode_json_source(episode, gzipped=True)
+    ground_truth_payload = _decode_json_source(ground_truth, gzipped=True)
+    raw_episodes = episode_payload.get("episodes")
+    if not isinstance(raw_episodes, list):
+        raise ValueError("R2R episode source must contain an episodes list")
+    records: list[tuple[str, str]] = []
+    for raw_value in raw_episodes:
+        if not isinstance(raw_value, dict):
+            raise ValueError("R2R episode entries must be objects")
+        value = cast(Dict[str, object], raw_value)
+        raw_instruction = value.get("instruction")
+        if not isinstance(raw_instruction, dict):
+            raise ValueError("R2R instruction must be an object")
+        instruction = cast(Dict[str, object], raw_instruction)
+        language = instruction.get("language", "en-US")
+        if not isinstance(language, str) or not language.startswith("en-"):
+            continue
+        episode_id = value.get("episode_id")
+        scene_path = value.get("scene_id")
+        if isinstance(episode_id, bool) or not isinstance(episode_id, int):
+            raise ValueError("R2R episode_id must be an integer")
+        if not isinstance(scene_path, str) or not scene_path:
+            raise ValueError("R2R scene_id must be a non-empty string")
+        ground_truth_entry = ground_truth_payload.get(str(episode_id))
+        if not isinstance(ground_truth_entry, dict) or "locations" not in ground_truth_entry:
+            raise ValueError(f"missing R2R ground truth for episode {episode_id}")
+        records.append((Path(scene_path).stem, f"R2R_{split}_{episode_id}"))
+    if len(set(records)) != len(records):
+        raise ValueError("R2R source contains duplicate episode identities")
+    return tuple(records), (episode, ground_truth)
+
+
+def _prediction_source(
+    split: str,
+    scene_id: str,
+    example_id: str,
+    cache_dir: Path,
+    cache_model_key: str,
+) -> _CapturedSource:
+    path = llm_navigation_prediction_path(
+        scene_id,
+        example_id,
+        "R2R",
+        split,
+        cache_dir=cache_dir,
+        model_key=cache_model_key,
+    )
+    return _ordinary_source_entry(
+        path, "prediction_text", f"{split}/{scene_id}/{example_id}.txt"
+    )
+
+
+def _raster_path(
+    scene_id: str, example_id: str, cognitive_map_namespace: str
+) -> Path:
+    return cognitive_map_cache_path(
+        scene_id, example_id, namespace=cognitive_map_namespace
+    )
+
+
+def _selector_input_from_sources(
+    prediction: _CapturedSource,
+    start_position: _CapturedSource,
+    start_direction: _CapturedSource,
+) -> tuple[SelectorInput, tuple[float, float]]:
+    position = _load_npy_bytes(start_position.data, start_position.member)
+    direction = np.asarray(
+        _load_npy_bytes(start_direction.data, start_direction.member), dtype=np.float32
+    )
+    pivot = _start_pivot(position)
+    try:
+        parsed = parse_grid_text(prediction.data.decode("utf-8"))
+        selector_input = SelectorInput(
+            True, direction, parsed.grid > 0, parsed.direction_vectors
+        )
+    except (UnicodeDecodeError, LLMGridValidationError):
+        selector_input = _empty_selector_input(direction)
+    return selector_input, pivot
+
+
+def _load_runtime_population_coupled(
+    split: str,
+    contract: PopulationContract,
+    cache_dir: Path,
+    cache_model_key: str,
+    cognitive_map_namespace: str,
+    *,
+    include_targets: bool,
+) -> tuple[
+    tuple[RuntimeEpisode, ...],
+    tuple[TargetEpisode, ...],
+    tuple[_CapturedSource, ...],
+    SourcePhaseArtifact,
+]:
+    records, dataset_sources = _episode_inventory(split)
+    manifest_path = llm_navigation_split_dir(
+        "R2R", split, cache_dir=cache_dir, model_key=cache_model_key
+    ) / "manifest.json"
+    manifest = _ordinary_source_entry(
+        manifest_path, "prediction_manifest", f"{split}/manifest.json"
+    )
+    if manifest.sha256 != contract.manifest_sha256:
+        raise ValueError("prediction manifest SHA-256 does not match the split contract")
+    sources: list[_CapturedSource] = [*dataset_sources, manifest]
+    runtimes: list[RuntimeEpisode] = []
+    targets: list[TargetEpisode] = []
+    for scene_id, example_id in records:
+        prediction = _prediction_source(
+            split, scene_id, example_id, cache_dir, cache_model_key
+        )
+        logical_raster = f"{split}/{scene_id}/{example_id}.npz"
+        assignment_members = _npz_member_sources(
+            _raster_path(scene_id, example_id, cognitive_map_namespace),
+            "cognitive_map_assignment_member",
+            logical_raster,
+            ("start_position.npy", "start_direction_vector.npy"),
+        )
+        selector_input, pivot = _selector_input_from_sources(
+            prediction, assignment_members[0], assignment_members[1]
+        )
+        runtime = RuntimeEpisode(
+            EpisodeKey(scene_id, example_id), split, selector_input, pivot
+        )
+        runtimes.append(runtime)
+        sources.extend((prediction, *assignment_members))
+        if include_targets:
+            target_members = _npz_member_sources(
+                _raster_path(scene_id, example_id, cognitive_map_namespace),
+                "cognitive_map_target_member",
+                logical_raster,
+                ("grid.npy", "direction_vectors.npy"),
+            )
+            grid = np.asarray(
+                _load_npy_bytes(target_members[0].data, target_members[0].member),
+                dtype=np.float32,
+            )
+            directions = np.asarray(
+                _load_npy_bytes(target_members[1].data, target_members[1].member),
+                dtype=np.float32,
+            )
+            target_grid = np.asarray(
+                downsample_grid(grid, GRID_SCALE) > 0, dtype=np.bool_
+            )
+            targets.append(TargetEpisode(runtime, target_grid, directions))
+            sources.extend(target_members)
+    ordered_runtimes = tuple(sorted(runtimes, key=lambda item: item.key))
+    _validate_runtime_population(ordered_runtimes, contract)
+    by_key = {target.runtime.key: target for target in targets}
+    ordered_targets = (
+        tuple(by_key[runtime.key] for runtime in ordered_runtimes)
+        if include_targets
+        else ()
+    )
+    phase_name = (
+        "development_all_sources" if include_targets else "test_assignment_sources"
+    )
+    phase = _source_phase(phase_name, sources)
+    return ordered_runtimes, ordered_targets, tuple(sources), phase
+
+
+def _load_test_targets_coupled(
+    runtimes: Sequence[RuntimeEpisode], cognitive_map_namespace: str
+) -> tuple[tuple[TargetEpisode, ...], tuple[_CapturedSource, ...], SourcePhaseArtifact]:
+    _validate_runtime_population(runtimes)
+    sources: list[_CapturedSource] = []
+    targets: list[TargetEpisode] = []
+    for runtime in sorted(runtimes, key=lambda item: item.key):
+        logical_raster = (
+            f"{runtime.split}/{runtime.key.scene_id}/{runtime.key.example_id}.npz"
+        )
+        members = _npz_member_sources(
+            _raster_path(
+                runtime.key.scene_id,
+                runtime.key.example_id,
+                cognitive_map_namespace,
+            ),
+            "cognitive_map_target_member",
+            logical_raster,
+            ("grid.npy", "direction_vectors.npy"),
+        )
+        grid = np.asarray(
+            _load_npy_bytes(members[0].data, members[0].member), dtype=np.float32
+        )
+        directions = np.asarray(
+            _load_npy_bytes(members[1].data, members[1].member), dtype=np.float32
+        )
+        targets.append(
+            TargetEpisode(
+                runtime,
+                np.asarray(downsample_grid(grid, GRID_SCALE) > 0, dtype=np.bool_),
+                directions,
+            )
+        )
+        sources.extend(members)
+    phase = _source_phase("test_target_sources", sources)
+    return tuple(targets), tuple(sources), phase
+
+
+def _phase_matches_contract(phase: SourcePhaseArtifact) -> bool:
+    expected_count, expected_sha256 = _SOURCE_PHASE_CONTRACTS[phase.name]
+    return phase.entry_count == expected_count and phase.sha256 == expected_sha256
+
+
+def _require_phase_contract(phase: SourcePhaseArtifact) -> None:
+    if not _phase_matches_contract(phase):
+        raise ValueError(f"{phase.name} does not match its frozen source commitment")
+
+
+def _require_combined_sources(phases: Sequence[SourcePhaseArtifact]) -> str:
+    combined = _combined_sources_sha256(phases)
+    if combined != _COMBINED_SOURCE_SHA256:
+        raise ValueError("combined sources do not match the frozen commitment")
+    return combined
+
+
+def _post_score_sources_verified(sources: Sequence[_CapturedSource]) -> bool:
+    try:
+        ordinary = tuple(source for source in sources if not source.member)
+        for source in ordinary:
+            current = _ordinary_source_entry(
+                source.filesystem_path, source.role, source.path
+            )
+            if current.sha256 != source.sha256 or current.size_bytes != source.size_bytes:
+                return False
+        grouped: dict[tuple[Path, str, str], list[_CapturedSource]] = {}
+        for source in sources:
+            if source.member:
+                grouped.setdefault(
+                    (source.filesystem_path, source.role, source.path), []
+                ).append(source)
+        for (path, role, logical_path), expected in grouped.items():
+            current = _npz_member_sources(
+                path, role, logical_path, tuple(source.member for source in expected)
+            )
+            if tuple(
+                (item.member, item.sha256, item.size_bytes) for item in current
+            ) != tuple(
+                (item.member, item.sha256, item.size_bytes) for item in expected
+            ):
+                return False
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    return True
 
 
 def _candidate_iou(
@@ -1674,6 +2170,41 @@ class DecisionSummary:
 
 
 @dataclass(frozen=True)
+class AuditSummary:
+    development_sources_verified: bool
+    test_assignment_sources_verified: bool
+    assignments_serialized_before_test_targets: bool
+    assignment_sha256: str
+    test_target_sources_verified: bool
+    combined_sources_verified: bool
+    post_score_sources_verified: bool
+    development_contract_exact: bool
+    test_contract_exact: bool
+    passed: bool
+
+    def __post_init__(self) -> None:
+        checks = (
+            self.development_sources_verified,
+            self.test_assignment_sources_verified,
+            self.assignments_serialized_before_test_targets,
+            self.test_target_sources_verified,
+            self.combined_sources_verified,
+            self.post_score_sources_verified,
+            self.development_contract_exact,
+            self.test_contract_exact,
+        )
+        if not all(isinstance(value, bool) for value in checks + (self.passed,)):
+            raise ValueError("audit checks must be booleans")
+        if (
+            len(self.assignment_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.assignment_sha256)
+        ):
+            raise ValueError("assignment_sha256 must be a lowercase SHA-256 digest")
+        if self.passed != all(checks):
+            raise ValueError("audit passed must equal the conjunction of audit checks")
+
+
+@dataclass(frozen=True)
 class ChosenMappingArtifact:
     sign: int
     offset_degrees: float
@@ -1724,6 +2255,7 @@ class SummaryArtifact:
     angles: AngleSummary
     cost: CostSummary
     oracle_gain: OracleGainSummary
+    audit: AuditSummary
     decision: DecisionSummary
 
 
@@ -1745,17 +2277,11 @@ class BootstrapArtifact:
 
 
 @dataclass(frozen=True)
-class SourceArtifact:
-    path: str
-    sha256: str
-    dataset: str
-    split: str
-
-
-@dataclass(frozen=True)
 class SourcesArtifact:
-    development: SourceArtifact
-    test: SourceArtifact
+    development_all_sources: SourcePhaseArtifact
+    test_assignment_sources: SourcePhaseArtifact
+    test_target_sources: SourcePhaseArtifact
+    combined_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1772,7 +2298,14 @@ class ProtocolArtifact:
     invalid_angle: float
     bootstrap_seed: int
     bootstrap_repetitions: int
+    bootstrap_cluster: str
+    bootstrap_weighting: str
+    bootstrap_interval: str
     gate_threshold: float
+    selector_input_schema: tuple[str, ...]
+    coordinate_contract: tuple[str, ...]
+    phase_order: tuple[str, ...]
+    decision_gate_contract: tuple[str, ...]
     schema_version: str
     target_free_limitations: tuple[str, ...]
 
@@ -1837,6 +2370,7 @@ class ValidationInputs:
     cache_dir: Path
     cache_model_key: str
     cognitive_map_namespace: str
+    expected_git_commit: str
     quiet: bool
 
 
@@ -1883,12 +2417,7 @@ class TargetFreeArgs(Tap):
 
 
 def _json_bytes(value: object) -> bytes:
-    return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
-            "utf-8"
-        )
-        + b"\n"
-    )
+    return _canonical_json_bytes(value)
 
 
 def _csv_cell(value: str | bool | int | float) -> str:
@@ -2050,7 +2579,9 @@ def _candidate_means(rows: Sequence[AngleScoreRow]) -> CandidateMeans:
 def _cell_metrics(rows: Sequence[AngleScoreRow]) -> CellMetricSummary:
     predicted = sum(row.predicted_support for row in rows)
     target = sum(row.target_support for row in rows)
-    intersection = sum(row.all_iou * row.union for row in rows)
+    intersection = sum(
+        row.predicted_support + row.target_support - row.union for row in rows
+    )
     precision = 0.0 if predicted == 0 else intersection / predicted
     recall = 0.0 if target == 0 else intersection / target
     f1 = 0.0 if precision + recall == 0.0 else 2.0 * precision * recall / (
@@ -2096,7 +2627,10 @@ def _build_summary_artifact(
     angle_rows: Sequence[AngleScoreRow],
     episode_rows: Sequence[EpisodeScoreRow],
     population: PopulationArtifact,
+    audit: AuditSummary,
 ) -> SummaryArtifact:
+    if not isinstance(audit, AuditSummary):
+        raise ValueError("audit must be an AuditSummary")
     ordered_episodes = _validated_score_rows(episode_rows)
     expected_angle_order = tuple(
         (episode.key, angle) for episode in ordered_episodes for angle in ANGLE_ORDER
@@ -2163,8 +2697,7 @@ def _build_summary_artifact(
         primary_region_delta,
         global_object_delta,
         global_region_delta,
-        population.test.episodes
-        == population.test.valid + population.test.invalid,
+        audit.passed,
     )
     predicted_mass = sum(row.soft_prediction_mass for row in ordered_episodes)
     target_mass = sum(row.soft_target_mass for row in ordered_episodes)
@@ -2242,6 +2775,7 @@ def _build_summary_artifact(
             37 * 100 * 100 * np.dtype(np.float64).itemsize,
         ),
         oracle_gain_summary(ordered_episodes),
+        audit,
         DecisionSummary(
             decision.label.value,
             decision.selector_conditions,
@@ -2398,11 +2932,56 @@ def _protocol_artifact() -> ProtocolArtifact:
         0.0,
         _DEFAULT_BOOTSTRAP_SEED,
         _DEFAULT_BOOTSTRAP_REPETITIONS,
+        "scene_id",
+        "episode-macro scene multiplicity ratio-of-sums",
+        "np.percentile[2.5,97.5]; numpy-1.24 linear",
         _GATE_THRESHOLD,
+        (
+            "schema_valid:bool",
+            "start_direction:float32[2]",
+            "predicted_grid:bool[37,50,50]",
+            "predicted_directions:float32[5,2]",
+        ),
+        (
+            "pivot=start_position/(CELL_SIZE*GRID_SCALE)",
+            "grid_angle=physical-positive",
+            "stored_direction_angle=-grid_angle",
+            "warp=padded-nearest-no-crop",
+        ),
+        (
+            "clean-head",
+            "development-coupled-load-and-fingerprint",
+            "development-lock",
+            "test-assignment-coupled-load-and-fingerprint",
+            "assignment-serialize-and-hash",
+            "test-target-coupled-load-and-fingerprint",
+            "score",
+            "post-score-source-recheck",
+            "audit-and-decision",
+            "artifact-build",
+            "atomic-no-replace-publish-and-validate",
+        ),
+        (
+            "selector_mean>=0.01",
+            "selector_ci_lower>0",
+            "selector_object_delta>0",
+            "selector_region_delta>0",
+            "selector_loso_min>0",
+            "selector_global_ci_lower>0",
+            "global_mean>=0.01",
+            "global_ci_lower>0",
+            "global_object_delta>0",
+            "global_region_delta>0",
+            "global_loso_min>0",
+            "audit_passed",
+            "partial=(selector_mean>=0.01 and selector_ci_lower>0) or (global_mean>=0.01 and global_ci_lower>0)",
+            "precedence=SELECTOR GO,FIXED-CORRECTION GO,PARTIAL,NO GO",
+        ),
         _SCHEMA_VERSION,
         (
             "offline raster overlap is not navigation performance",
             "oracle and target-vector diagnostics are nondeployable",
+            "val_unseen is a reused evaluation population, not a pristine held-out generalisation test",
         ),
     )
 
@@ -2454,20 +3033,18 @@ def _require_string(value: object, name: str) -> str:
     return value
 
 
-def _source_artifact(value: object, name: str) -> SourceArtifact:
+def _source_phase_artifact(value: object, name: str) -> SourcePhaseArtifact:
     payload = _require_object(value, name)
-    if set(payload) != {"path", "sha256", "dataset", "split"}:
+    if set(payload) != {"name", "sha256", "entry_count"}:
         raise ValueError(f"{name} has a mismatched key set")
-    source = SourceArtifact(
-        _require_string(payload["path"], f"{name} path"),
+    entry_count = payload["entry_count"]
+    if isinstance(entry_count, bool) or not isinstance(entry_count, int):
+        raise ValueError(f"{name} entry_count must be an integer")
+    return SourcePhaseArtifact(
+        _require_string(payload["name"], f"{name} name"),
         _require_string(payload["sha256"], f"{name} sha256"),
-        _require_string(payload["dataset"], f"{name} dataset"),
-        _require_string(payload["split"], f"{name} split"),
+        entry_count,
     )
-    path = Path(source.path)
-    if not path.is_file() or sha256(path.read_bytes()).hexdigest() != source.sha256:
-        raise ValueError(f"{name} source hash does not match its file")
-    return source
 
 
 def _parse_csv_bytes(
@@ -2503,34 +3080,42 @@ def _parse_csv_bytes(
 
 def _sources_from_manifest(manifest: Dict[str, object]) -> SourcesArtifact:
     sources = _require_object(manifest.get("sources"), "manifest sources")
-    if set(sources) != {"development", "test"}:
+    if set(sources) != {
+        "development_all_sources",
+        "test_assignment_sources",
+        "test_target_sources",
+        "combined_sha256",
+    }:
         raise ValueError("manifest sources have a mismatched key set")
-    development = _source_artifact(sources["development"], "development source")
-    test = _source_artifact(sources["test"], "test source")
-    if (
-        development.dataset != "R2R"
-        or development.split != "val_seen"
-        or test.dataset != "R2R"
-        or test.split != "val_unseen"
-    ):
-        raise ValueError("manifest sources must be the frozen R2R splits")
     expected = SourcesArtifact(
-        SourceArtifact(
-            str(_DEVELOPMENT_SOURCE_PATH),
-            _DEVELOPMENT_SOURCE_SHA256,
-            "R2R",
-            "val_seen",
+        SourcePhaseArtifact(
+            "development_all_sources", _SOURCE_PHASE_CONTRACTS["development_all_sources"][1],
+            _SOURCE_PHASE_CONTRACTS["development_all_sources"][0],
         ),
-        SourceArtifact(
-            str(_TEST_SOURCE_PATH),
-            _TEST_SOURCE_SHA256,
-            "R2R",
-            "val_unseen",
+        SourcePhaseArtifact(
+            "test_assignment_sources", _SOURCE_PHASE_CONTRACTS["test_assignment_sources"][1],
+            _SOURCE_PHASE_CONTRACTS["test_assignment_sources"][0],
         ),
+        SourcePhaseArtifact(
+            "test_target_sources", _SOURCE_PHASE_CONTRACTS["test_target_sources"][1],
+            _SOURCE_PHASE_CONTRACTS["test_target_sources"][0],
+        ),
+        _COMBINED_SOURCE_SHA256,
     )
-    result = SourcesArtifact(development, test)
+    result = SourcesArtifact(
+        _source_phase_artifact(
+            sources["development_all_sources"], "development source phase"
+        ),
+        _source_phase_artifact(
+            sources["test_assignment_sources"], "test assignment source phase"
+        ),
+        _source_phase_artifact(
+            sources["test_target_sources"], "test target source phase"
+        ),
+        _require_string(sources["combined_sha256"], "combined source sha256"),
+    )
     if result != expected:
-        raise ValueError("manifest source paths and hashes must match frozen constants")
+        raise ValueError("manifest source phases must match frozen constants")
     return result
 
 
@@ -2539,43 +3124,58 @@ def _expected_artifacts(
     sources: SourcesArtifact,
     git_commit: str,
 ) -> ArtifactBundle:
-    if validation_inputs.development_contract.manifest_sha256 != sources.development.sha256:
-        raise ValueError("development source does not match validation contract")
-    if validation_inputs.test_contract.manifest_sha256 != sources.test.sha256:
-        raise ValueError("test source does not match validation contract")
-    development_runtime = load_runtime_population(
+    development_runtime, development_targets, development_inputs, development_phase = (
+        _load_runtime_population_coupled(
         "val_seen",
         validation_inputs.development_contract,
         validation_inputs.cache_dir,
         validation_inputs.cache_model_key,
         validation_inputs.cognitive_map_namespace,
-        validation_inputs.quiet,
+        include_targets=True,
+        )
     )
-    development_targets = load_target_population(
-        development_runtime,
-        validation_inputs.cognitive_map_namespace,
-        validation_inputs.quiet,
-    )
+    _require_phase_contract(development_phase)
     selector_lock = develop_selector(development_targets)
-    test_runtime = load_runtime_population(
+    test_runtime, _, assignment_inputs, assignment_phase = (
+        _load_runtime_population_coupled(
         "val_unseen",
         validation_inputs.test_contract,
         validation_inputs.cache_dir,
         validation_inputs.cache_model_key,
         validation_inputs.cognitive_map_namespace,
-        validation_inputs.quiet,
+        include_targets=False,
+        )
     )
+    _require_phase_contract(assignment_phase)
     assignments = assign_population(test_runtime, selector_lock)
     sealed_assignment_bytes = assignment_csv_bytes(assignments)
     sealed_assignment_sha256 = sha256(sealed_assignment_bytes).hexdigest()
-    if len(sealed_assignment_sha256) != 64:
-        raise RuntimeError("assignment sealing failed")
-    test_targets = load_target_population(
-        test_runtime,
-        validation_inputs.cognitive_map_namespace,
-        validation_inputs.quiet,
+    test_targets, target_inputs, target_phase = _load_test_targets_coupled(
+        test_runtime, validation_inputs.cognitive_map_namespace
+    )
+    _require_phase_contract(target_phase)
+    combined = _require_combined_sources(
+        (development_phase, assignment_phase, target_phase)
     )
     angle_rows, episode_rows = score_population(test_targets, assignments)
+    recomputed_sources = SourcesArtifact(
+        development_phase, assignment_phase, target_phase, combined
+    )
+    if recomputed_sources != sources:
+        raise ValueError("source inventories do not match the artifact manifest")
+    all_inputs = (*development_inputs, *assignment_inputs, *target_inputs)
+    audit = AuditSummary(
+        _phase_matches_contract(development_phase),
+        _phase_matches_contract(assignment_phase),
+        True,
+        sealed_assignment_sha256,
+        _phase_matches_contract(target_phase),
+        combined == _COMBINED_SOURCE_SHA256,
+        _post_score_sources_verified(all_inputs),
+        len(development_runtime) == validation_inputs.development_contract.episodes,
+        len(test_runtime) == validation_inputs.test_contract.episodes,
+        True,
+    )
     population = PopulationArtifact(
         PopulationSummary(
             validation_inputs.development_contract.episodes,
@@ -2590,7 +3190,7 @@ def _expected_artifacts(
             validation_inputs.test_contract.invalid,
         ),
     )
-    summary = _build_summary_artifact(angle_rows, episode_rows, population)
+    summary = _build_summary_artifact(angle_rows, episode_rows, population, audit)
     bootstrap = _build_bootstrap_artifact(
         episode_rows,
         seed=_DEFAULT_BOOTSTRAP_SEED,
@@ -2638,7 +3238,7 @@ def _validate_artifact_directory(
     if set(manifest) != set(MANIFEST_KEYS):
         raise ValueError("manifest.json has a mismatched exact key set")
     if manifest.get("schema_version") != _SCHEMA_VERSION:
-        raise ValueError("manifest schema_version must match the frozen v2 constant")
+        raise ValueError("manifest schema_version must match the frozen v3 constant")
     if _json_bytes(manifest.get("protocol")) != _json_bytes(
         asdict(_protocol_artifact())
     ):
@@ -2657,6 +3257,8 @@ def _validate_artifact_directory(
         character not in "0123456789abcdef" for character in git_commit
     ):
         raise ValueError("manifest git_commit must be a lowercase 40-digit hash")
+    if git_commit != validation_inputs.expected_git_commit:
+        raise ValueError("manifest git_commit does not match expected_git_commit")
     for name in ("selector_lock.json", "summary.json", "bootstrap.json"):
         _json_object(actual.files()[name], name)
     for name, header in (
@@ -2683,6 +3285,7 @@ def _validate_artifact_directory(
 def validate_artifact_directory(
     output_dir: Path,
     *,
+    expected_git_commit: str,
     expected_development_episodes: int,
     expected_development_scenes: int,
     expected_development_valid: int,
@@ -2694,7 +3297,7 @@ def validate_artifact_directory(
 ) -> None:
     """Independently regenerate and validate the complete artifact transaction."""
     manifest = _json_object((output_dir / "manifest.json").read_bytes(), "manifest.json")
-    sources = _sources_from_manifest(manifest)
+    _sources_from_manifest(manifest)
     _validate_artifact_directory(
         output_dir,
         ValidationInputs(
@@ -2704,7 +3307,7 @@ def validate_artifact_directory(
                 expected_development_scenes,
                 expected_development_valid,
                 expected_development_invalid,
-                sources.development.sha256,
+                _DEVELOPMENT_SOURCE_SHA256,
             ),
             PopulationContract(
                 "val_unseen",
@@ -2712,14 +3315,43 @@ def validate_artifact_directory(
                 expected_test_scenes,
                 expected_test_valid,
                 expected_test_invalid,
-                sources.test.sha256,
+                _TEST_SOURCE_SHA256,
             ),
             _DEFAULT_CACHE_DIR,
             _DEFAULT_CACHE_MODEL_KEY,
             _DEFAULT_COGNITIVE_MAP_NAMESPACE,
+            expected_git_commit,
             True,
         ),
     )
+
+
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically move a path without replacing a concurrent destination."""
+    library = ctypes.CDLL(None, use_errno=True)
+    renameat2 = library.renameat2
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    if renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(destination),
+        1,
+    ) == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(
+            error_number, os.strerror(error_number), str(destination)
+        )
+    raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
 def publish_artifacts(
@@ -2738,7 +3370,7 @@ def publish_artifacts(
         for name, payload in artifacts.files().items():
             (temporary / name).write_bytes(payload)
         _validate_artifact_directory(temporary, validation_inputs)
-        temporary.replace(output_dir)
+        _rename_noreplace(temporary, output_dir)
     except BaseException:
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -2791,61 +3423,76 @@ def _preflight_git_commit() -> str:
     return commit
 
 
-def _preflight_sources(args: TargetFreeArgs) -> SourcesArtifact:
-    _validate_args(args)
-    sources: list[SourceArtifact] = []
-    for path, expected_sha256, split in (
-        (_DEVELOPMENT_SOURCE_PATH, _DEVELOPMENT_SOURCE_SHA256, "val_seen"),
-        (_TEST_SOURCE_PATH, _TEST_SOURCE_SHA256, "val_unseen"),
-    ):
-        actual_sha256 = sha256(path.read_bytes()).hexdigest()
-        if actual_sha256 != expected_sha256:
-            raise ValueError(f"{split} manifest SHA-256 does not match frozen protocol")
-        sources.append(
-            SourceArtifact(str(path), actual_sha256, "R2R", split)
-        )
-    return SourcesArtifact(sources[0], sources[1])
-
-
 def _run(args: TargetFreeArgs) -> None:
     _validate_args(args)
     if args.output_dir.exists():
         raise FileExistsError(f"official output already exists: {args.output_dir}")
     run_commit = _preflight_git_commit()
-    sources = _preflight_sources(args)
-    development_runtime = load_runtime_population(
-        "val_seen",
-        VAL_SEEN_POPULATION,
-        args.cache_dir,
-        args.cache_model_key,
-        args.cognitive_map_namespace,
-        args.quiet,
+    development_runtime, development_targets, development_inputs, development_phase = (
+        _load_runtime_population_coupled(
+            "val_seen",
+            VAL_SEEN_POPULATION,
+            args.cache_dir,
+            args.cache_model_key,
+            args.cognitive_map_namespace,
+            include_targets=True,
+        )
     )
-    development_targets = load_target_population(
-        development_runtime, args.cognitive_map_namespace, args.quiet
-    )
+    _require_phase_contract(development_phase)
     selector_lock = develop_selector(development_targets)
-    test_runtime = load_runtime_population(
-        "val_unseen",
-        VAL_UNSEEN_POPULATION,
-        args.cache_dir,
-        args.cache_model_key,
-        args.cognitive_map_namespace,
-        args.quiet,
+    test_runtime, _, assignment_inputs, assignment_phase = (
+        _load_runtime_population_coupled(
+            "val_unseen",
+            VAL_UNSEEN_POPULATION,
+            args.cache_dir,
+            args.cache_model_key,
+            args.cognitive_map_namespace,
+            include_targets=False,
+        )
     )
+    _require_phase_contract(assignment_phase)
     assignments = assign_population(test_runtime, selector_lock)
     assignment_sha256 = sha256(assignment_csv_bytes(assignments)).hexdigest()
-    if len(assignment_sha256) != 64:
-        raise RuntimeError("test assignment sealing failed")
-    test_targets = load_target_population(
-        test_runtime, args.cognitive_map_namespace, args.quiet
+    test_targets, target_inputs, target_phase = _load_test_targets_coupled(
+        test_runtime, args.cognitive_map_namespace
+    )
+    _require_phase_contract(target_phase)
+    combined_sha256 = _require_combined_sources(
+        (development_phase, assignment_phase, target_phase)
     )
     angle_rows, episode_rows = score_population(test_targets, assignments)
+    sources = SourcesArtifact(
+        development_phase, assignment_phase, target_phase, combined_sha256
+    )
+    audit_checks = (
+        _phase_matches_contract(development_phase),
+        _phase_matches_contract(assignment_phase),
+        True,
+        _phase_matches_contract(target_phase),
+        combined_sha256 == _COMBINED_SOURCE_SHA256,
+        _post_score_sources_verified(
+            (*development_inputs, *assignment_inputs, *target_inputs)
+        ),
+        len(development_runtime) == VAL_SEEN_POPULATION.episodes,
+        len(test_runtime) == VAL_UNSEEN_POPULATION.episodes,
+    )
+    audit = AuditSummary(
+        audit_checks[0],
+        audit_checks[1],
+        audit_checks[2],
+        assignment_sha256,
+        audit_checks[3],
+        audit_checks[4],
+        audit_checks[5],
+        audit_checks[6],
+        audit_checks[7],
+        all(audit_checks),
+    )
     population = PopulationArtifact(
         PopulationSummary(778, 53, 770, 8),
         PopulationSummary(1_839, 11, 1_830, 9),
     )
-    summary = _build_summary_artifact(angle_rows, episode_rows, population)
+    summary = _build_summary_artifact(angle_rows, episode_rows, population, audit)
     bootstrap = _build_bootstrap_artifact(
         episode_rows,
         seed=args.bootstrap_seed,
@@ -2872,11 +3519,13 @@ def _run(args: TargetFreeArgs) -> None:
         args.cache_dir,
         args.cache_model_key,
         args.cognitive_map_namespace,
+        run_commit,
         args.quiet,
     )
     publish_artifacts(args.output_dir, artifacts, validation_inputs)
     validate_artifact_directory(
         args.output_dir,
+        expected_git_commit=run_commit,
         expected_development_episodes=778,
         expected_development_scenes=53,
         expected_development_valid=770,
