@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Tuple, cast
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from prior.analyze.d2026_07_27.llm_grid_transform_diagnosis import (
     EpisodeTransformResult,
     FourWayDiagnosisArgs,
+    _validate_args,
     _run_rows,
     evaluate_episode,
     bootstrap_scene_delta,
@@ -22,6 +24,18 @@ def test_scale_two_start_pivot_uses_one_meter_cells() -> None:
     assert start_pivot_for_scale((18.487621, 6.2339373), 2) == pytest.approx(
         (18.487621, 6.2339373)
     )
+
+
+@pytest.mark.parametrize(
+    "start_position_m",
+    ((1.0,), (1.0, np.nan), (np.inf, 1.0)),
+)
+def test_start_pivot_rejects_nonfinite_or_noncoordinate_positions(
+    start_position_m: tuple[float, ...],
+) -> None:
+    """Breaks if malformed start positions reach incidental geometry failures."""
+    with pytest.raises(ValueError, match="start_position_m"):
+        start_pivot_for_scale(cast(Tuple[float, float], start_position_m), 2)
 
 
 def test_invalid_prediction_is_retained_as_zero_scored_identity_episode() -> None:
@@ -55,6 +69,73 @@ def test_invalid_prediction_is_retained_as_zero_scored_identity_episode() -> Non
         270.0: 0.0,
     }
     assert result.target_support == 1
+
+
+def test_episode_evaluation_rejects_noncanonical_grid_and_direction_shapes() -> None:
+    """Breaks if malformed public inputs bypass explicit evaluator validation."""
+    target = np.zeros((OBJECT_CATEGORIES + REGION_CATEGORIES, 2, 2), dtype=np.bool_)
+    with pytest.raises(ValueError, match="37"):
+        evaluate_episode(
+            split="val_unseen",
+            scene_id="scene",
+            example_id="episode",
+            schema_valid=True,
+            predicted_grid=np.zeros((36, 2, 2), dtype=np.bool_),
+            target_grid=np.zeros((36, 2, 2), dtype=np.bool_),
+            start_position_m=(1.0, 1.0),
+            predicted_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            target_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            instruction="",
+            angles=(0.0, 90.0, 180.0, 270.0),
+        )
+    with pytest.raises(ValueError, match="same shape"):
+        evaluate_episode(
+            split="val_unseen",
+            scene_id="scene",
+            example_id="episode",
+            schema_valid=True,
+            predicted_grid=target,
+            target_grid=np.zeros((OBJECT_CATEGORIES + REGION_CATEGORIES, 3, 2), dtype=np.bool_),
+            start_position_m=(1.0, 1.0),
+            predicted_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            target_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            instruction="",
+            angles=(0.0, 90.0, 180.0, 270.0),
+        )
+    with pytest.raises(ValueError, match="predicted_direction_vectors"):
+        evaluate_episode(
+            split="val_unseen",
+            scene_id="scene",
+            example_id="episode",
+            schema_valid=True,
+            predicted_grid=target,
+            target_grid=target,
+            start_position_m=(1.0, 1.0),
+            predicted_direction_vectors=np.zeros((4, 2), dtype=np.float32),
+            target_direction_vectors=np.zeros((5, 2), dtype=np.float32),
+            instruction="",
+            angles=(0.0, 90.0, 180.0, 270.0),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("cache_model_key", "other-cache"),
+        ("cognitive_map_namespace", "other.namespace"),
+        ("bootstrap_repetitions", 99),
+        ("bootstrap_seed", 7),
+    ),
+)
+def test_args_reject_overrides_to_fixed_cache_contract(
+    field: str, invalid_value: object
+) -> None:
+    """Breaks if a CLI override can change the selected cache experiment."""
+    args = FourWayDiagnosisArgs()
+    setattr(args, field, invalid_value)
+
+    with pytest.raises(ValueError, match=field):
+        _validate_args(args)
 
 
 def test_sensitivity_metrics_reuse_the_all_channel_selected_angle() -> None:
@@ -166,13 +247,15 @@ def test_synthetic_runner_writes_artifacts_and_rejects_bad_population(
     )
     args = FourWayDiagnosisArgs()
     args.output_dir = tmp_path
-    args.bootstrap_repetitions = 100
+    args.limit = 4
+    source_manifest = tmp_path / "source-manifest.json"
+    source_manifest.write_text("source", encoding="utf-8")
 
     _run_rows(
         args,
         rows,
         expected_population=4,
-        prediction_manifest_path=tmp_path / "source-manifest.json",
+        prediction_manifest_path=source_manifest,
     )
 
     assert {
@@ -183,17 +266,59 @@ def test_synthetic_runner_writes_artifacts_and_rejects_bad_population(
         "iou_delta_distribution.png",
         "angle_distribution.png",
     } <= {path.name for path in tmp_path.iterdir()}
+    assert '"smoke": true' in (tmp_path / "manifest.json").read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="duplicate"):
         _run_rows(
             args,
             (rows[0], replace(rows[1], example_id="a1"), rows[2], rows[3]),
             expected_population=4,
-            prediction_manifest_path=tmp_path / "source-manifest.json",
+            prediction_manifest_path=source_manifest,
         )
     with pytest.raises(ValueError, match="expected 5"):
         _run_rows(
             args,
             rows,
             expected_population=5,
-            prediction_manifest_path=tmp_path / "source-manifest.json",
+            prediction_manifest_path=source_manifest,
+        )
+
+
+def test_full_runner_rejects_population_without_all_expected_scenes(tmp_path) -> None:
+    """Breaks if a non-smoke population can bootstrap fewer than 11 scenes."""
+    rows = tuple(
+        _synthetic_result(f"scene-{index}", f"episode-{index}", 0.0)
+        for index in range(4)
+    )
+    args = FourWayDiagnosisArgs()
+    args.output_dir = tmp_path
+    source_manifest = tmp_path / "source-manifest.json"
+    source_manifest.write_text("source", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="11 unique scenes"):
+        _run_rows(
+            args,
+            rows,
+            expected_population=4,
+            prediction_manifest_path=source_manifest,
+        )
+
+
+def test_runner_rejects_missing_prediction_manifest(tmp_path) -> None:
+    """Breaks if provenance records a missing manifest with a null hash."""
+    rows = (
+        _synthetic_result("scene-a", "a1", 0.0),
+        _synthetic_result("scene-a", "a2", 0.0),
+        _synthetic_result("scene-b", "b1", 0.0),
+        _synthetic_result("scene-b", "b2", 0.0),
+    )
+    args = FourWayDiagnosisArgs()
+    args.output_dir = tmp_path
+    args.limit = 4
+
+    with pytest.raises(FileNotFoundError, match="prediction_manifest_path"):
+        _run_rows(
+            args,
+            rows,
+            expected_population=4,
+            prediction_manifest_path=tmp_path / "missing-manifest.json",
         )

@@ -41,21 +41,26 @@ from vlnce_baselines.models.etp_llm.navigation import (
 
 _BROAD_OBJECT_NAMES = frozenset(("void", "structure", "other", "free-space"))
 _EXPECTED_EXAMPLES = 1_839
+_EXPECTED_SCENES = 11
 _DEFAULT_ANGLES = (0.0, 90.0, 180.0, 270.0)
+_DEFAULT_CACHE_MODEL_KEY = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2"
+_DEFAULT_COGNITIVE_MAP_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
+_DEFAULT_BOOTSTRAP_REPETITIONS = 10_000
+_DEFAULT_BOOTSTRAP_SEED = 42
 
 
 class FourWayDiagnosisArgs(Tap):
     """Inputs and outputs for the fixed epoch-2 R2R transform diagnosis."""
 
     cache_dir: Path = Path("data/llm_navigation")
-    cache_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2"
-    cognitive_map_namespace: str = "gt.legacy.r1p5.direction5.v1"
+    cache_model_key: str = _DEFAULT_CACHE_MODEL_KEY
+    cognitive_map_namespace: str = _DEFAULT_COGNITIVE_MAP_NAMESPACE
     output_dir: Path = Path(
         "outputs/llm_grid_analysis/start_centered_registration_r2r_rxr_epoch2"
     )
     angles: Tuple[float, ...] = _DEFAULT_ANGLES
-    bootstrap_repetitions: int = 10_000
-    bootstrap_seed: int = 42
+    bootstrap_repetitions: int = _DEFAULT_BOOTSTRAP_REPETITIONS
+    bootstrap_seed: int = _DEFAULT_BOOTSTRAP_SEED
     limit: Optional[int] = None
     quiet: bool = False
 
@@ -107,8 +112,17 @@ def start_pivot_for_scale(
     """Convert level-local metres to the row/column grid pivot at ``scale``."""
     if scale <= 0:
         raise ValueError("scale must be positive")
+    if len(start_position_m) != 2:
+        raise ValueError("start_position_m must contain exactly two coordinates")
+    try:
+        row_m = float(start_position_m[0])
+        col_m = float(start_position_m[1])
+    except (TypeError, ValueError) as error:
+        raise ValueError("start_position_m coordinates must be finite") from error
+    if not np.isfinite(row_m) or not np.isfinite(col_m):
+        raise ValueError("start_position_m coordinates must be finite")
     cell_width_m = CELL_SIZE * scale
-    return start_position_m[0] / cell_width_m, start_position_m[1] / cell_width_m
+    return row_m / cell_width_m, col_m / cell_width_m
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -147,6 +161,31 @@ def _quantiles(values: Sequence[float]) -> dict[str, float]:
     }
 
 
+def _validate_episode_inputs(
+    predicted_grid: NDArray[np.bool_],
+    target_grid: NDArray[np.bool_],
+    predicted_direction_vectors: NDArray[np.float32],
+    target_direction_vectors: NDArray[np.float32],
+) -> None:
+    expected_channels = GRID_SHAPE[0]
+    if predicted_grid.ndim != 3 or predicted_grid.shape[0] != expected_channels:
+        raise ValueError(
+            f"predicted_grid must have shape ({expected_channels}, H, W), "
+            f"got {predicted_grid.shape}"
+        )
+    if target_grid.ndim != 3 or target_grid.shape[0] != expected_channels:
+        raise ValueError(
+            f"target_grid must have shape ({expected_channels}, H, W), "
+            f"got {target_grid.shape}"
+        )
+    if predicted_grid.shape != target_grid.shape:
+        raise ValueError("predicted_grid and target_grid must have the same shape")
+    if predicted_direction_vectors.shape != (5, 2):
+        raise ValueError("predicted_direction_vectors must have shape (5, 2)")
+    if target_direction_vectors.shape != (5, 2):
+        raise ValueError("target_direction_vectors must have shape (5, 2)")
+
+
 def evaluate_episode(
     *,
     split: str,
@@ -162,6 +201,12 @@ def evaluate_episode(
     angles: tuple[float, ...],
 ) -> EpisodeTransformResult:
     """Score one retained episode with one all-channel selected angle."""
+    _validate_episode_inputs(
+        predicted_grid,
+        target_grid,
+        predicted_direction_vectors,
+        target_direction_vectors,
+    )
     pivot = start_pivot_for_scale(start_position_m, 2)
     best, scores = select_best_angle(predicted_grid, target_grid, pivot, angles)
     try:
@@ -268,10 +313,22 @@ def evaluate_episode(
 
 
 def _validate_args(args: FourWayDiagnosisArgs) -> None:
+    if args.cache_model_key != _DEFAULT_CACHE_MODEL_KEY:
+        raise ValueError(f"cache_model_key must be exactly {_DEFAULT_CACHE_MODEL_KEY!r}")
+    if args.cognitive_map_namespace != _DEFAULT_COGNITIVE_MAP_NAMESPACE:
+        raise ValueError(
+            "cognitive_map_namespace must be exactly "
+            f"{_DEFAULT_COGNITIVE_MAP_NAMESPACE!r}"
+        )
     if tuple(args.angles) != _DEFAULT_ANGLES:
         raise ValueError(f"angles must be exactly {_DEFAULT_ANGLES}")
-    if isinstance(args.bootstrap_repetitions, bool) or args.bootstrap_repetitions <= 0:
-        raise ValueError("bootstrap_repetitions must be positive")
+    if args.bootstrap_repetitions != _DEFAULT_BOOTSTRAP_REPETITIONS:
+        raise ValueError(
+            "bootstrap_repetitions must be exactly "
+            f"{_DEFAULT_BOOTSTRAP_REPETITIONS}"
+        )
+    if args.bootstrap_seed != _DEFAULT_BOOTSTRAP_SEED:
+        raise ValueError(f"bootstrap_seed must be exactly {_DEFAULT_BOOTSTRAP_SEED}")
     if args.limit is not None and (
         isinstance(args.limit, bool) or args.limit <= 0
     ):
@@ -572,6 +629,13 @@ def _run_rows(
     """Private synthetic runner with an injected population contract for tests."""
     _validate_args(args)
     _validate_rows(rows, expected_population)
+    if args.limit is None and len({row.scene_id for row in rows}) != _EXPECTED_SCENES:
+        raise ValueError(f"expected {_EXPECTED_SCENES} unique scenes for a full run")
+    if not prediction_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"prediction_manifest_path must be a file: {prediction_manifest_path}"
+        )
+    prediction_manifest_sha256 = _sha256_file(prediction_manifest_path)
     ordered_rows = tuple(sorted(rows, key=lambda row: (row.scene_id, row.example_id)))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary = _summary(ordered_rows)
@@ -583,11 +647,7 @@ def _run_rows(
     manifest = {
         "cache_dir": str(args.cache_dir),
         "prediction_manifest_path": str(prediction_manifest_path),
-        "prediction_manifest_sha256": (
-            _sha256_file(prediction_manifest_path)
-            if prediction_manifest_path.is_file()
-            else None
-        ),
+        "prediction_manifest_sha256": prediction_manifest_sha256,
         "cache_model_key": args.cache_model_key,
         "cognitive_map_namespace": args.cognitive_map_namespace,
         "dataset": "R2R",
