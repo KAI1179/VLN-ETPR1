@@ -122,6 +122,16 @@ _PIVOT_ASSIGNMENT_HEADER = (
     "assigned_pivot_row",
     "assigned_pivot_column",
 )
+_ROW_METADATA_FIELDS = (
+    "split",
+    "scene_id",
+    "example_id",
+    "schema_valid",
+    "pivot_mode",
+    "pivot_row",
+    "pivot_column",
+    "donor_example_id",
+)
 
 
 class CrossFitArgs(Tap):
@@ -1735,22 +1745,23 @@ class _ArtifactBundle:
         }
 
 
-def _write_artifacts(output_dir: Path, artifacts: _ArtifactBundle) -> None:
+@dataclass(frozen=True)
+class _ValidatedArtifactBundle:
+    """Opaque capability returned only after full artifact validation."""
+
+    _serialized: _ArtifactBundle
+
+    def files(self) -> Dict[str, bytes]:
+        return self._serialized.files()
+
+
+def _write_artifacts(
+    output_dir: Path, artifacts: _ValidatedArtifactBundle
+) -> None:
     """Persist an already validated and serialized seven-file transaction."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "manifest.json").write_bytes(artifacts.manifest_json)
-    (output_dir / "angle_scores.csv").write_bytes(artifacts.angle_scores_csv)
-    (output_dir / "crossfit_results.csv").write_bytes(
-        artifacts.crossfit_results_csv
-    )
-    (output_dir / "pivot_assignments.csv").write_bytes(
-        artifacts.pivot_assignments_csv
-    )
-    (output_dir / "summary.json").write_bytes(artifacts.summary_json)
-    (output_dir / "bootstrap.json").write_bytes(artifacts.bootstrap_json)
-    (output_dir / "crossfit_control_intervals.png").write_bytes(
-        artifacts.control_intervals_png
-    )
+    for filename, data in artifacts.files().items():
+        (output_dir / filename).write_bytes(data)
 
 
 def _validate_analysis(
@@ -2094,7 +2105,8 @@ def _csv_bool(row: Mapping[str, str], field: str) -> bool:
 
 
 def _raster_from_csv(row: Mapping[str, str], prefix: str) -> RasterScore:
-    return RasterScore(
+    serialized_iou = _csv_float(row, f"{prefix}_iou")
+    score = RasterScore(
         intersection=_csv_int(row, f"{prefix}_intersection"),
         union=_csv_int(row, f"{prefix}_union"),
         predicted_support=_csv_int(row, f"{prefix}_predicted_support"),
@@ -2102,6 +2114,11 @@ def _raster_from_csv(row: Mapping[str, str], prefix: str) -> RasterScore:
         in_frame_support=_csv_int(row, f"{prefix}_in_frame_support"),
         out_of_frame_support=_csv_int(row, f"{prefix}_out_of_frame_support"),
     )
+    if not _is_close(serialized_iou, score.iou):
+        raise ValueError(
+            f"{prefix}_iou does not match the reconstructed RasterScore.iou"
+        )
+    return score
 
 
 def _crossfit_from_csv(row: Mapping[str, str]) -> CrossFitResult:
@@ -2197,15 +2214,11 @@ def _artifact_models(
         ):
             raise ValueError("serialized family support partitions are inconsistent")
         if any(
-            (
-                row["scene_id"],
-                row["example_id"],
-                row["pivot_mode"],
-            )
-            != (key[0], key[1], key[2].value)
+            tuple(row[field] for field in _ROW_METADATA_FIELDS)
+            != tuple(first[field] for field in _ROW_METADATA_FIELDS)
             for row in group
         ):
-            raise ValueError("angle score group identity is inconsistent")
+            raise ValueError("angle score group metadata is inconsistent")
         angles_by_key[key] = scores
         metadata_by_key[key] = first
 
@@ -2224,15 +2237,11 @@ def _artifact_models(
             raise ValueError("cross-fit pivot membership is invalid") from error
         key = (first["scene_id"], first["example_id"], pivot_mode)
         if any(
-            (
-                row["scene_id"],
-                row["example_id"],
-                row["pivot_mode"],
-            )
-            != (key[0], key[1], key[2].value)
+            tuple(row[field] for field in _ROW_METADATA_FIELDS)
+            != tuple(first[field] for field in _ROW_METADATA_FIELDS)
             for row in group
         ):
-            raise ValueError("cross-fit result group identity is inconsistent")
+            raise ValueError("cross-fit result group metadata is inconsistent")
         directional = tuple(_crossfit_from_csv(row) for row in group)
         if tuple(result.direction for result in directional) != tuple(Direction):
             raise ValueError("cross-fit direction membership or ordering is invalid")
@@ -2245,19 +2254,9 @@ def _artifact_models(
     for key, scores in angles_by_key.items():
         metadata = metadata_by_key[key]
         crossfit_metadata = crossfit_metadata_by_key[key]
-        metadata_fields = (
-            "split",
-            "scene_id",
-            "example_id",
-            "schema_valid",
-            "pivot_mode",
-            "pivot_row",
-            "pivot_column",
-            "donor_example_id",
-        )
         if any(
             metadata[field] != crossfit_metadata[field]
-            for field in metadata_fields
+            for field in _ROW_METADATA_FIELDS
         ):
             raise ValueError("angle and cross-fit metadata are inconsistent")
         directional = crossfit_by_key[key]
@@ -2294,7 +2293,7 @@ def _validate_artifact_bundle(
     expected_scenes: int,
     expected_valid: int,
     expected_invalid: int,
-) -> None:
+) -> _ValidatedArtifactBundle:
     for value, name in (
         (expected_population, "expected_population"),
         (expected_scenes, "expected_scenes"),
@@ -2416,6 +2415,7 @@ def _validate_artifact_bundle(
         "pivot_assignments.csv": artifacts.pivot_assignments_csv,
         "summary.json": artifacts.summary_json,
         "bootstrap.json": artifacts.bootstrap_json,
+        "crossfit_control_intervals.png": artifacts.control_intervals_png,
     }
     if set(hashes) != set(hashed_bytes):
         raise ValueError("manifest artifact_sha256 has a mismatched file set")
@@ -2578,6 +2578,7 @@ def _validate_artifact_bundle(
         raise ValueError("manifest bootstrap contract is inconsistent")
     if decoded_manifest.get("gate_decision") != decision.value:
         raise ValueError("manifest gate decision is inconsistent")
+    return _ValidatedArtifactBundle(artifacts)
 
 
 def validate_artifact_directory(
@@ -2739,6 +2740,9 @@ def _run_cases(
         "pivot_assignments.csv": sha256(pivot_assignments_csv).hexdigest(),
         "summary.json": sha256(summary_json).hexdigest(),
         "bootstrap.json": sha256(bootstrap_json).hexdigest(),
+        "crossfit_control_intervals.png": sha256(
+            control_intervals_png
+        ).hexdigest(),
     }
     manifest: Dict[str, object] = {
         "dataset": "R2R",
@@ -2827,7 +2831,7 @@ def _run_cases(
         bootstrap_json=bootstrap_json,
         control_intervals_png=control_intervals_png,
     )
-    _validate_artifact_bundle(
+    validated_artifacts = _validate_artifact_bundle(
         artifacts,
         manifest,
         expected_population=expected_population,
@@ -2840,7 +2844,7 @@ def _run_cases(
         raise ValueError(
             f"output directory must be empty or absent, got nonempty: {output_dir}"
         )
-    _write_artifacts(output_dir, artifacts)
+    _write_artifacts(output_dir, validated_artifacts)
     return {
         "output_dir": output_dir,
         "manifest": manifest,

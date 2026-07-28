@@ -5,7 +5,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional
+from typing import Callable, cast, Dict, Mapping, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -937,6 +937,144 @@ def artifact_cases() -> tuple[EpisodeCase, ...]:
     )
 
 
+def write_artifact_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, tuple[EpisodeCase, ...]]:
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+    crossfit._run_cases(
+        fixed_args(output_dir=output_dir),
+        cases,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+        prediction_manifest_path=source_manifest,
+    )
+    return output_dir, source_manifest, cases
+
+
+def refresh_artifact_hash(output_dir: Path, filename: str) -> None:
+    manifest_path = output_dir / "manifest.json"
+    manifest: Dict[str, object] = json.loads(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    artifact_hashes = checked_json_object(manifest["artifact_sha256"])
+    artifact_hashes[filename] = sha256((output_dir / filename).read_bytes()).hexdigest()
+    if filename == "pivot_assignments.csv":
+        manifest["pivot_assignments_sha256"] = artifact_hashes[filename]
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def mutate_csv_field(
+    output_dir: Path,
+    filename: str,
+    *,
+    row_index: int,
+    field: str,
+    value: str,
+) -> None:
+    path = output_dir / filename
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        assert fieldnames is not None
+        rows: list[Dict[str, str]] = []
+        for row in reader:
+            checked_row: Dict[str, str] = {}
+            for key, cell in row.items():
+                assert key is not None
+                assert cell is not None
+                checked_row[key] = cell
+            rows.append(checked_row)
+    rows[row_index][field] = value
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    refresh_artifact_hash(output_dir, filename)
+
+
+def checked_json_object(value: object) -> Dict[str, object]:
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return cast(Dict[str, object], value)
+
+
+def write_json_artifact(
+    output_dir: Path,
+    filename: str,
+    payload: Mapping[str, object],
+) -> None:
+    (output_dir / filename).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    refresh_artifact_hash(output_dir, filename)
+
+
+@pytest.mark.parametrize("family", ["object", "region"])
+def test_validator_rejects_refreshed_hash_iou_corruption(
+    tmp_path: Path,
+    family: str,
+) -> None:
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    mutate_csv_field(
+        output_dir,
+        "angle_scores.csv",
+        row_index=0,
+        field=f"{family}_iou",
+        value="0.25",
+    )
+
+    with pytest.raises(ValueError, match=rf"{family}_iou"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("filename", "row_index", "field", "value"),
+    (
+        ("angle_scores.csv", 1, "split", "corrupted_split"),
+        ("crossfit_results.csv", 1, "schema_valid", "False"),
+    ),
+)
+def test_validator_checks_metadata_on_every_serialized_row(
+    tmp_path: Path,
+    filename: str,
+    row_index: int,
+    field: str,
+    value: str,
+) -> None:
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    mutate_csv_field(
+        output_dir,
+        filename,
+        row_index=row_index,
+        field=field,
+        value=value,
+    )
+
+    with pytest.raises(ValueError, match="metadata"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
 def test_artifact_runner_writes_exact_output_set(tmp_path: Path) -> None:
     """Breaks if the validated transaction omits or adds an output artifact."""
     cases = artifact_cases()
@@ -1134,7 +1272,11 @@ def test_artifact_json_is_complete_hashed_and_byte_stable(tmp_path: Path) -> Non
         "pivot_assignments.csv",
         "summary.json",
         "bootstrap.json",
+        "crossfit_control_intervals.png",
     }
+    assert manifest["artifact_sha256"]["crossfit_control_intervals.png"] == sha256(
+        (first_dir / "crossfit_control_intervals.png").read_bytes()
+    ).hexdigest()
 
     summary = json.loads((first_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["population"] == manifest["population"]
@@ -1218,6 +1360,207 @@ def test_artifact_directory_validation_detects_changed_csv_byte(
             expected_valid=len(cases),
             expected_invalid=0,
         )
+
+
+def test_artifact_directory_validation_detects_changed_png_tail(
+    tmp_path: Path,
+) -> None:
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    plot_path = output_dir / "crossfit_control_intervals.png"
+    plot_path.write_bytes(plot_path.read_bytes() + b"corrupt-tail")
+
+    with pytest.raises(
+        ValueError,
+        match="crossfit_control_intervals.png.*SHA-256",
+    ):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    (
+        ("duplicate_identity", "identities"),
+        ("assignment_donor", "pivot assignments"),
+        ("support_arithmetic", "support"),
+        ("nonfinite_metric", "finite"),
+        ("undeclared_angle", "angle"),
+        ("paired_contrast", "summary.json"),
+        ("bootstrap_interval", "bootstrap.json"),
+        ("gate_input", "bootstrap.json"),
+        ("gate_boolean", "summary.json"),
+        ("gate_decision", "gate decision"),
+        ("fixed_provenance", "provenance"),
+        ("source_sha", "prediction source"),
+        ("row_count", "row invariant"),
+        ("header", "header invariant"),
+    ),
+)
+def test_validator_rejects_semantic_corruption_after_hash_refresh(
+    tmp_path: Path,
+    corruption: str,
+    message: str,
+) -> None:
+    output_dir, _, cases = write_artifact_fixture(tmp_path)
+    if corruption == "duplicate_identity":
+        mutate_csv_field(
+            output_dir,
+            "pivot_assignments.csv",
+            row_index=2,
+            field="scene_id",
+            value="scene-0",
+        )
+        mutate_csv_field(
+            output_dir,
+            "pivot_assignments.csv",
+            row_index=2,
+            field="example_id",
+            value="episode-0-0",
+        )
+    elif corruption == "assignment_donor":
+        mutate_csv_field(
+            output_dir,
+            "pivot_assignments.csv",
+            row_index=0,
+            field="donor_example_id",
+            value="not-an-episode",
+        )
+    elif corruption == "support_arithmetic":
+        mutate_csv_field(
+            output_dir,
+            "angle_scores.csv",
+            row_index=0,
+            field="object_input_support",
+            value="2",
+        )
+    elif corruption == "nonfinite_metric":
+        mutate_csv_field(
+            output_dir,
+            "crossfit_results.csv",
+            row_index=0,
+            field="delta_iou",
+            value="nan",
+        )
+    elif corruption == "undeclared_angle":
+        mutate_csv_field(
+            output_dir,
+            "angle_scores.csv",
+            row_index=0,
+            field="angle_degrees",
+            value="45",
+        )
+    elif corruption in {"paired_contrast", "gate_boolean"}:
+        summary_path = output_dir / "summary.json"
+        summary = checked_json_object(
+            json.loads(summary_path.read_text(encoding="utf-8"))
+        )
+        if corruption == "paired_contrast":
+            contrasts = checked_json_object(summary["start_specific_contrasts"])
+            center = checked_json_object(contrasts["true_start_minus_map_center"])
+            center["mean_delta_iou"] = 0.5
+        else:
+            gate = checked_json_object(summary["gate"])
+            conditions = checked_json_object(gate["conditions"])
+            conditions["true_start_symmetric_ci_lower_above_zero"] = True
+        write_json_artifact(output_dir, "summary.json", summary)
+    elif corruption in {"bootstrap_interval", "gate_input"}:
+        bootstrap_path = output_dir / "bootstrap.json"
+        bootstrap = checked_json_object(
+            json.loads(bootstrap_path.read_text(encoding="utf-8"))
+        )
+        endpoints = checked_json_object(bootstrap["endpoints"])
+        endpoint = checked_json_object(endpoints["true_start_symmetric"])
+        if corruption == "bootstrap_interval":
+            endpoint["ci_lower"] = -99.0
+        else:
+            endpoint["mean"] = 0.5
+        write_json_artifact(output_dir, "bootstrap.json", bootstrap)
+    elif corruption in {
+        "gate_decision",
+        "fixed_provenance",
+        "source_sha",
+    }:
+        manifest_path = output_dir / "manifest.json"
+        manifest = checked_json_object(
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+        )
+        if corruption == "gate_decision":
+            manifest["gate_decision"] = GateDecision.GO.value
+        elif corruption == "fixed_provenance":
+            manifest["cache_model_key"] = "corrupted-model-key"
+        else:
+            manifest["prediction_manifest_sha256"] = "0" * 64
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    elif corruption == "row_count":
+        path = output_dir / "crossfit_results.csv"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        refresh_artifact_hash(output_dir, "crossfit_results.csv")
+    elif corruption == "header":
+        path = output_dir / "angle_scores.csv"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("split", "bad_split", 1), encoding="utf-8")
+        refresh_artifact_hash(output_dir, "angle_scores.csv")
+    else:
+        raise AssertionError(f"unhandled corruption fixture: {corruption}")
+
+    with pytest.raises(ValueError, match=message):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+def test_malformed_analysis_is_rejected_before_output_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+    original_evaluate = crossfit.evaluate_episode
+    call_count = 0
+
+    def inconsistent_evaluate(
+        episode: EpisodeCase,
+        assignment: PivotAssignment,
+        angles: tuple[float, ...],
+    ) -> tuple[EpisodePivotResult, ...]:
+        nonlocal call_count
+        call_count += 1
+        results = original_evaluate(episode, assignment, angles)
+        if call_count <= len(cases):
+            return (
+                replace(results[0], schema_valid=not results[0].schema_valid),
+                *results[1:],
+            )
+        return results
+
+    monkeypatch.setattr(crossfit, "evaluate_episode", inconsistent_evaluate)
+
+    with pytest.raises(ValueError, match="evaluation from typed cases"):
+        crossfit._run_cases(
+            fixed_args(output_dir=output_dir),
+            cases,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+            prediction_manifest_path=source_manifest,
+        )
+    assert not output_dir.exists()
 
 
 def test_output_transaction_rejects_nonempty_directory_untouched(
