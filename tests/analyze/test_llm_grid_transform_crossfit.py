@@ -980,6 +980,16 @@ def artifact_bundle_from_directory(output_dir: Path) -> crossfit._ArtifactBundle
     )
 
 
+class StatefulArtifactBundle(crossfit._ArtifactBundle):
+    files_calls = 0
+
+    def files(self) -> Dict[str, bytes]:
+        type(self).files_calls += 1
+        if type(self).files_calls == 1:
+            return super().files()
+        return {"malicious.txt": b"unvalidated\n"}
+
+
 def refresh_artifact_hash(output_dir: Path, filename: str) -> None:
     manifest_path = output_dir / "manifest.json"
     manifest: Dict[str, object] = json.loads(
@@ -1095,45 +1105,56 @@ def test_validator_rejects_sub_tolerance_iou_corruption(
         )
 
 
-def test_artifact_writer_rejects_raw_serialized_bundle(tmp_path: Path) -> None:
+def test_artifact_writer_rejects_invalid_raw_bundle_before_output(
+    tmp_path: Path,
+) -> None:
     output_dir, _, _ = write_artifact_fixture(tmp_path)
     raw = artifact_bundle_from_directory(output_dir)
-    bypass_dir = tmp_path / "raw-bypass"
-
-    with pytest.raises(TypeError, match="validator-issued"):
-        crossfit._write_artifacts(bypass_dir, raw)
-    assert not bypass_dir.exists()
-
-
-def test_validated_bundle_rejects_ordinary_construction(tmp_path: Path) -> None:
-    output_dir, _, _ = write_artifact_fixture(tmp_path)
-    raw = artifact_bundle_from_directory(output_dir)
-
-    with pytest.raises(ValueError, match="validator-issued"):
-        crossfit._ValidatedArtifactBundle(raw)
-
-
-def test_validator_issued_bundle_can_be_written(tmp_path: Path) -> None:
-    output_dir, _, cases = write_artifact_fixture(tmp_path)
-    raw = artifact_bundle_from_directory(output_dir)
-    manifest = checked_json_object(
-        json.loads(raw.manifest_json.decode("utf-8"))
-    )
-    validated = crossfit._validate_artifact_bundle(
+    invalid = replace(
         raw,
-        manifest,
-        expected_population=len(cases),
-        expected_scenes=3,
-        expected_valid=len(cases),
-        expected_invalid=0,
+        angle_scores_csv=raw.angle_scores_csv + b"corrupt\n",
     )
-    validated_dir = tmp_path / "validated"
+    invalid_dir = tmp_path / "invalid"
 
-    crossfit._write_artifacts(validated_dir, validated)
+    with pytest.raises(ValueError, match="angle_scores.csv.*SHA-256"):
+        crossfit._write_artifacts(invalid_dir, invalid)
+    assert not invalid_dir.exists()
 
-    assert {
-        path.name for path in validated_dir.iterdir()
-    } == set(raw.files())
+
+def test_artifact_writer_writes_valid_raw_bundle(tmp_path: Path) -> None:
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    written_dir = tmp_path / "written"
+
+    crossfit._write_artifacts(written_dir, raw)
+
+    for filename, data in raw.files().items():
+        assert (written_dir / filename).read_bytes() == data
+
+
+def test_artifact_writer_captures_stateful_bundle_bytes_once(
+    tmp_path: Path,
+) -> None:
+    output_dir, _, _ = write_artifact_fixture(tmp_path)
+    raw = artifact_bundle_from_directory(output_dir)
+    StatefulArtifactBundle.files_calls = 0
+    stateful = StatefulArtifactBundle(
+        manifest_json=raw.manifest_json,
+        angle_scores_csv=raw.angle_scores_csv,
+        crossfit_results_csv=raw.crossfit_results_csv,
+        pivot_assignments_csv=raw.pivot_assignments_csv,
+        summary_json=raw.summary_json,
+        bootstrap_json=raw.bootstrap_json,
+        control_intervals_png=raw.control_intervals_png,
+    )
+    written_dir = tmp_path / "stateful"
+
+    crossfit._write_artifacts(written_dir, stateful)
+
+    assert StatefulArtifactBundle.files_calls <= 1
+    for filename, data in raw.files().items():
+        assert (written_dir / filename).read_bytes() == data
+    assert not (written_dir / "malicious.txt").exists()
 
 
 @pytest.mark.parametrize(

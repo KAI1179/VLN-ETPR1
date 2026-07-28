@@ -1745,32 +1745,40 @@ class _ArtifactBundle:
         }
 
 
-_ARTIFACT_VALIDATION_TOKEN = object()
+_ArtifactFiles = Tuple[Tuple[str, bytes], ...]
 
 
-@dataclass(frozen=True)
-class _ValidatedArtifactBundle:
-    """Opaque capability returned only after full artifact validation."""
+def _capture_artifact_bundle(
+    artifacts: _ArtifactBundle,
+) -> Tuple[_ArtifactBundle, _ArtifactFiles]:
+    captured = _ArtifactBundle(
+        manifest_json=artifacts.manifest_json,
+        angle_scores_csv=artifacts.angle_scores_csv,
+        crossfit_results_csv=artifacts.crossfit_results_csv,
+        pivot_assignments_csv=artifacts.pivot_assignments_csv,
+        summary_json=artifacts.summary_json,
+        bootstrap_json=artifacts.bootstrap_json,
+        control_intervals_png=artifacts.control_intervals_png,
+    )
+    return captured, (
+        ("manifest.json", captured.manifest_json),
+        ("angle_scores.csv", captured.angle_scores_csv),
+        ("crossfit_results.csv", captured.crossfit_results_csv),
+        ("pivot_assignments.csv", captured.pivot_assignments_csv),
+        ("summary.json", captured.summary_json),
+        ("bootstrap.json", captured.bootstrap_json),
+        (
+            "crossfit_control_intervals.png",
+            captured.control_intervals_png,
+        ),
+    )
 
-    _serialized: _ArtifactBundle
-    _token: object = None
 
-    def __post_init__(self) -> None:
-        if self._token is not _ARTIFACT_VALIDATION_TOKEN:
-            raise ValueError(
-                "validated artifacts require a validator-issued capability"
-            )
-
-    def files(self) -> Dict[str, bytes]:
-        return self._serialized.files()
-
-
-def _write_artifacts(output_dir: Path, artifacts: object) -> None:
-    """Persist an already validated and serialized seven-file transaction."""
-    if not isinstance(artifacts, _ValidatedArtifactBundle):
-        raise TypeError("artifacts must be a validator-issued bundle")
+def _write_artifacts(output_dir: Path, artifacts: _ArtifactBundle) -> None:
+    """Validate, capture, and persist one seven-file transaction."""
+    validated_files = _validate_artifact_bundle(artifacts)
     output_dir.mkdir(parents=True, exist_ok=True)
-    for filename, data in artifacts.files().items():
+    for filename, data in validated_files:
         (output_dir / filename).write_bytes(data)
 
 
@@ -2049,6 +2057,15 @@ def _require_json_object(value: object, name: str) -> Dict[str, object]:
     return result
 
 
+def _manifest_population_count(
+    population: Mapping[str, object], field: str
+) -> int:
+    value = population.get(field)
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+        raise ValueError(f"manifest population {field} must be a non-negative integer")
+    return int(value)
+
+
 def _decode_json_object(data: bytes, name: str) -> Dict[str, object]:
     text = data.decode("utf-8")
     if not text.endswith("\n"):
@@ -2295,7 +2312,7 @@ def _artifact_models(
     return assignments, tuple(results)
 
 
-def _validate_artifact_bundle(
+def _validate_artifact_snapshot(
     artifacts: _ArtifactBundle,
     manifest: Mapping[str, object],
     *,
@@ -2303,7 +2320,7 @@ def _validate_artifact_bundle(
     expected_scenes: int,
     expected_valid: int,
     expected_invalid: int,
-) -> _ValidatedArtifactBundle:
+) -> None:
     for value, name in (
         (expected_population, "expected_population"),
         (expected_scenes, "expected_scenes"),
@@ -2588,7 +2605,48 @@ def _validate_artifact_bundle(
         raise ValueError("manifest bootstrap contract is inconsistent")
     if decoded_manifest.get("gate_decision") != decision.value:
         raise ValueError("manifest gate decision is inconsistent")
-    return _ValidatedArtifactBundle(artifacts, _ARTIFACT_VALIDATION_TOKEN)
+
+
+def _validate_artifact_bundle_against_contract(
+    artifacts: _ArtifactBundle,
+    manifest: Mapping[str, object],
+    *,
+    expected_population: int,
+    expected_scenes: int,
+    expected_valid: int,
+    expected_invalid: int,
+) -> _ArtifactFiles:
+    captured, files = _capture_artifact_bundle(artifacts)
+    _validate_artifact_snapshot(
+        captured,
+        manifest,
+        expected_population=expected_population,
+        expected_scenes=expected_scenes,
+        expected_valid=expected_valid,
+        expected_invalid=expected_invalid,
+    )
+    return files
+
+
+def _validate_artifact_bundle(
+    artifacts: _ArtifactBundle,
+) -> _ArtifactFiles:
+    captured, files = _capture_artifact_bundle(artifacts)
+    manifest = _decode_json_object(captured.manifest_json, "manifest.json")
+    population = _require_json_object(
+        manifest.get("population"), "manifest population"
+    )
+    _validate_artifact_snapshot(
+        captured,
+        manifest,
+        expected_population=_manifest_population_count(population, "episodes"),
+        expected_scenes=_manifest_population_count(population, "scenes"),
+        expected_valid=_manifest_population_count(population, "schema_valid"),
+        expected_invalid=_manifest_population_count(
+            population, "schema_invalid"
+        ),
+    )
+    return files
 
 
 def validate_artifact_directory(
@@ -2627,7 +2685,7 @@ def validate_artifact_directory(
         ).read_bytes(),
     )
     manifest = _decode_json_object(artifacts.manifest_json, "manifest.json")
-    _validate_artifact_bundle(
+    _validate_artifact_bundle_against_contract(
         artifacts,
         manifest,
         expected_population=expected_population,
@@ -2841,7 +2899,7 @@ def _run_cases(
         bootstrap_json=bootstrap_json,
         control_intervals_png=control_intervals_png,
     )
-    validated_artifacts = _validate_artifact_bundle(
+    _validate_artifact_bundle_against_contract(
         artifacts,
         manifest,
         expected_population=expected_population,
@@ -2854,7 +2912,7 @@ def _run_cases(
         raise ValueError(
             f"output directory must be empty or absent, got nonempty: {output_dir}"
         )
-    _write_artifacts(output_dir, validated_artifacts)
+    _write_artifacts(output_dir, artifacts)
     return {
         "output_dir": output_dir,
         "manifest": manifest,
