@@ -4,7 +4,9 @@ import numpy as np
 from numpy.typing import NDArray
 import pytest
 
+from prior.analyze.d2026_07_28 import llm_grid_transform_crossfit as crossfit
 from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
+    CrossFitResult,
     Direction,
     EpisodeCase,
     FamilyAngleScore,
@@ -12,7 +14,7 @@ from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     crossfit_scores,
     score_angle_families,
 )
-from prior.analyze.llm_grid_registration import RasterScore, SpatialBounds
+from prior.analyze.llm_grid_registration import RasterScore, SpatialBounds, WarpedGrid
 
 
 def family_score(
@@ -59,6 +61,7 @@ def test_crossfit_selection_uses_only_declared_family() -> None:
     region_to_object = crossfit_scores(scores, Direction.REGION_TO_OBJECT)
 
     assert object_to_region.selected_angle_degrees == 90.0
+    assert object_to_region.selector_second_iou == 0.2
     assert object_to_region.heldout_selected_iou == 0.1
     assert object_to_region.delta_iou == pytest.approx(-0.7)
     assert region_to_object.selected_angle_degrees == 0.0
@@ -84,14 +87,25 @@ def test_crossfit_tie_retains_declared_identity_angle() -> None:
 
 def test_score_angle_families_preserves_family_support_and_out_of_frame_pixels(
     canonical_grids: tuple[NDArray[np.bool_], NDArray[np.bool_]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Breaks if family scoring rewarps slices or drops rotated false positives."""
     predicted, target = canonical_grids
     predicted[0, 10, 10] = True
     predicted[27, 12, 12] = True
     target[:] = predicted
+    calls: list[tuple[NDArray[np.bool_], tuple[float, float], float]] = []
+    real_warp = crossfit.warp_grid_about_pivot
 
-    scores = score_angle_families(
+    def spy_warp(
+        grid: NDArray[np.bool_], pivot: tuple[float, float], angle: float
+    ) -> WarpedGrid:
+        calls.append((grid, pivot, angle))
+        return real_warp(grid, pivot, angle)
+
+    monkeypatch.setattr(crossfit, "warp_grid_about_pivot", spy_warp)
+
+    scores = crossfit.score_angle_families(
         predicted,
         target,
         pivot=(0.5, 0.5),
@@ -105,6 +119,8 @@ def test_score_angle_families_preserves_family_support_and_out_of_frame_pixels(
     assert scores[0].region_input_support == 1
     assert scores[0].object_score.out_of_frame_support == 1
     assert scores[0].region_score.out_of_frame_support == 1
+    assert [call[2] for call in calls] == [180.0, 0.0, 90.0]
+    assert all(call[0].shape == (37, 50, 50) for call in calls)
 
 
 def test_score_angle_families_rejects_malformed_grid_or_pivot(
@@ -121,9 +137,13 @@ def test_score_angle_families_rejects_malformed_grid_or_pivot(
         score_angle_families(
             predicted[:36], target[:36], (1.0, 1.0), (0.0,)
         )
-    with pytest.raises(ValueError, match="same spatial shape"):
+    with pytest.raises(ValueError, match="shape"):
         score_angle_families(
             predicted, target[:, :49], (1.0, 1.0), (0.0,)
+        )
+    with pytest.raises(ValueError, match="shape"):
+        score_angle_families(
+            predicted[:, :, :49], target[:, :, :49], (1.0, 1.0), (0.0,)
         )
     with pytest.raises(ValueError, match="pivot"):
         score_angle_families(predicted, target, (np.nan, 1.0), (0.0,))
@@ -175,6 +195,16 @@ def test_episode_case_rejects_noncanonical_grid_or_empty_identity(
             target_grid=target,
             true_start_pivot=(1.0, 1.0),
         )
+    with pytest.raises(ValueError, match="shape"):
+        EpisodeCase(
+            split="val_unseen",
+            scene_id="scene",
+            example_id="example",
+            schema_valid=True,
+            predicted_grid=predicted[:, :, :49],
+            target_grid=target[:, :, :49],
+            true_start_pivot=(1.0, 1.0),
+        )
     with pytest.raises(ValueError, match="boolean"):
         EpisodeCase(
             split="val_unseen",
@@ -184,4 +214,27 @@ def test_episode_case_rejects_noncanonical_grid_or_empty_identity(
             predicted_grid=predicted.astype(np.float32),
             target_grid=target,
             true_start_pivot=(1.0, 1.0),
+        )
+
+
+def test_crossfit_result_rejects_inconsistent_selector_margin() -> None:
+    """Breaks if a serialized result can report a margin unrelated to its scores."""
+    with pytest.raises(ValueError, match="selector_margin"):
+        CrossFitResult(
+            direction=Direction.OBJECT_TO_REGION,
+            selected_angle_degrees=90.0,
+            second_angle_degrees=0.0,
+            selector_identity_iou=0.2,
+            selector_selected_iou=0.9,
+            selector_second_iou=0.2,
+            selector_margin=0.6,
+            heldout_identity_iou=0.8,
+            heldout_selected_iou=0.1,
+            delta_iou=-0.7,
+            selector_predicted_support_empty=False,
+            selector_target_support_empty=False,
+            selector_union_empty=False,
+            heldout_predicted_support_empty=False,
+            heldout_target_support_empty=False,
+            heldout_union_empty=False,
         )

@@ -21,6 +21,7 @@ from prior.analyze.llm_grid_registration import (
 
 _CHANNEL_COUNT = 37
 _OBJECT_CHANNEL_COUNT = 27
+_GRID_SHAPE = (_CHANNEL_COUNT, 50, 50)
 
 
 def _require_nonempty_string(value: str, name: str) -> None:
@@ -52,12 +53,10 @@ def _require_iou(value: float, name: str) -> float:
 def _require_boolean_grid(
     grid: NDArray[np.bool_], name: str
 ) -> NDArray[np.bool_]:
-    if not isinstance(grid, np.ndarray) or grid.ndim != 3:
-        raise ValueError(f"{name} must have shape (37, rows, cols)")
+    if not isinstance(grid, np.ndarray) or grid.shape != _GRID_SHAPE:
+        raise ValueError(f"{name} must have shape {_GRID_SHAPE}")
     if grid.dtype != np.bool_:
         raise ValueError(f"{name} must have boolean dtype")
-    if grid.shape[0] != _CHANNEL_COUNT:
-        raise ValueError(f"{name} must have {_CHANNEL_COUNT} channels")
     return grid
 
 
@@ -136,6 +135,7 @@ class CrossFitResult:
     second_angle_degrees: float
     selector_identity_iou: float
     selector_selected_iou: float
+    selector_second_iou: float
     selector_margin: float
     heldout_identity_iou: float
     heldout_selected_iou: float
@@ -156,6 +156,9 @@ class CrossFitResult:
         selector_selected = _require_iou(
             self.selector_selected_iou, "selector_selected_iou"
         )
+        selector_second = _require_iou(
+            self.selector_second_iou, "selector_second_iou"
+        )
         margin = _require_iou(self.selector_margin, "selector_margin")
         heldout_identity = _require_iou(
             self.heldout_identity_iou, "heldout_identity_iou"
@@ -166,7 +169,7 @@ class CrossFitResult:
         delta = _require_finite_real(self.delta_iou, "delta_iou")
         if not -1.0 <= delta <= 1.0:
             raise ValueError("delta_iou must be within [-1, 1]")
-        if not _is_close(margin, selector_selected - self._second_iou()):
+        if not _is_close(margin, selector_selected - selector_second):
             raise ValueError("selector_margin must equal selected minus second IoU")
         if not _is_close(delta, heldout_selected - heldout_identity):
             raise ValueError("delta_iou must equal heldout selected minus identity IoU")
@@ -181,10 +184,6 @@ class CrossFitResult:
         for flag, name in flags:
             if not isinstance(flag, bool):
                 raise ValueError(f"{name} must be a boolean")
-
-    def _second_iou(self) -> float:
-        return self.selector_selected_iou - self.selector_margin
-
 
 def score_angle_families(
     predicted_grid: NDArray[np.bool_],
@@ -276,6 +275,7 @@ def crossfit_scores(
         second_angle_degrees=rows[second_index].angle_degrees,
         selector_identity_iou=selector_identity.iou,
         selector_selected_iou=selector_selected.iou,
+        selector_second_iou=selector_second.iou,
         selector_margin=selector_selected.iou - selector_second.iou,
         heldout_identity_iou=heldout_identity.iou,
         heldout_selected_iou=heldout_selected.iou,
