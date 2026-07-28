@@ -691,7 +691,10 @@ values and close its figure.
 recomputes hashes, development selection, test assignments, per-angle and
 per-episode scores, bootstrap, LOSO, summary, and decision; and rejects any
 mismatch. It accepts exact expected development/test contracts as keyword-only
-arguments.
+arguments and independently compares source paths and hashes, cache key,
+namespace, schema v2, angle and mapping orders, bootstrap seed and repetitions,
+and gate threshold against frozen module constants. It must not derive those
+expected values from `manifest.json`.
 
 `publish_artifacts` fails if the official directory exists, creates one
 temporary sibling directory, writes all nine files there, validates the
@@ -746,7 +749,16 @@ git commit -m "feat: publish target-free selector audit"
 - Consumes: the committed fixed CLI and exact validator from Task 4.
 - Produces: one validated official artifact directory and one Chinese finding.
 
-- [ ] **Step 1: Run a clean pre-experiment verification**
+- [ ] **Step 1: Obtain independent pre-run code and protocol review**
+
+Give a fresh reviewer the frozen spec, plan, and final Task 4 code/test diff.
+Require Critical/Important/Minor findings covering temporal target separation,
+frozen-constant enforcement, schema-v2 soft semantic endpoints, transaction
+safety, validator independence, and CLI immutability. Resolve every
+Critical/Important finding with TDD and obtain clean re-review before
+unsealing. Record the accepted committed Task 4 HEAD.
+
+- [ ] **Step 2: Run a clean pre-experiment verification**
 
 Run:
 
@@ -756,14 +768,16 @@ pytest tests/analyze -q
 ruff check prior/analyze/d2026_07_28 tests/analyze
 ty check prior/analyze/d2026_07_28/llm_grid_target_free_cardinal.py tests/analyze/test_llm_grid_target_free_cardinal.py
 git diff --check
-git status --short --branch
+test -z "$(git status --porcelain)"
 test ! -e outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2
 ```
 
 Stop and repair any failure. Do not remove or overwrite an existing official
-output directory.
+output directory. The worktree must be clean and the reviewed Task 4
+implementation must be committed. The eventual manifest must record this
+exact HEAD.
 
-- [ ] **Step 2: Run the fixed command exactly once**
+- [ ] **Step 3: Run the fixed command exactly once**
 
 Run exactly:
 
@@ -775,43 +789,55 @@ Do not rerun it to fix notes, plots, formatting, or interpretation. Any
 artifact failure after this command is a failed experiment requiring explicit
 diagnosis before a new protocol/run.
 
-- [ ] **Step 3: Independently validate and inspect the result**
+- [ ] **Step 4: Externally anchor, validate, and inspect the result**
 
 Run the public validator in a fresh Python process with exact
 `778/53/770/8` and `1839/11/1830/9` contracts. Confirm exactly nine output
-files. Inspect `selector_lock.json`, `summary.json`, `bootstrap.json`, and the
-decoded interval plot. Recompute the selected mapping, global angle, primary
-contrasts, all decision conditions, and label without trusting console text.
+files. Immediately compute and retain the SHA-256 of `manifest.json`; this
+externally anchors the manifest that hashes the other eight artifacts. Confirm
+that the validator independently enforces the frozen source paths and hashes,
+cache key, namespace, schema v2, angle and mapping orders, bootstrap constants,
+and gate threshold. Inspect `selector_lock.json`, `summary.json`,
+`bootstrap.json`, and the decoded interval plot. Recompute the selected
+mapping, global angle, primary contrasts, all decision conditions, and label
+without trusting console text.
 
-- [ ] **Step 4: Obtain independent scientific and code review**
+- [ ] **Step 5: Obtain independent scientific artifact review**
 
 Give one reviewer the frozen spec plus artifacts, but not the implementation
 author's interpretation. Require it to check target independence, population,
 development/test separation, bootstrap, LOSO, gate arithmetic, and conclusion.
-Give a second reviewer the final code/test diff and require
-Critical/Important/Minor findings.
+Require the review to acknowledge that `val_unseen` is a reused evaluation
+population and that the result is not an independent generalisation estimate.
 
 Repair code or documentation findings with TDD without rerunning the fixed
 experiment or modifying artifact bytes. If a valid repair would change an
 artifact, stop and report that the run is invalid instead of editing evidence.
+Recompute the external manifest digest after review and require it to match.
 
-- [ ] **Step 5: Record the finding and checklist status in Chinese**
+- [ ] **Step 6: Record the finding and checklist status in Chinese**
 
 Append to `docs/daily/2026-07-28.md`:
 
 - exact chosen heading mapping and global angle;
 - development and test populations/provenance;
 - identity, primary, global, direct, soft, and oracle means;
+- exact soft identity/aggregate object and region IoUs and paired deltas,
+  independently confirmed to come from soft rasters rather than boolean
+  per-angle proxy values;
 - paired contrasts, CIs, LOSO ranges, object/region results, and support;
 - all gate booleans and the literal decision;
-- leakage audit and assignment hash;
+- leakage audit, assignment hash, reviewed run commit, and external
+  `manifest.json` SHA-256;
 - limitations and the one authorised next action.
 
 Mark P3 complete. Mark P4 active only for `SELECTOR GO` or
 `FIXED-CORRECTION GO`; for `PARTIAL` or `NO GO`, record the separately
-preregistered follow-up authorised by the frozen rules instead.
+preregistered follow-up authorised by the frozen rules instead. In every case,
+describe the result as a preregistered target-hidden replay on a reused
+evaluation population, never as pristine held-out generalisation.
 
-- [ ] **Step 6: Final verification and finding commit**
+- [ ] **Step 7: Final verification and finding commit**
 
 Run fresh:
 
@@ -821,6 +847,7 @@ pytest tests/analyze -q
 ruff check prior/analyze/d2026_07_28 tests/analyze
 ty check prior/analyze/d2026_07_28/llm_grid_target_free_cardinal.py tests/analyze/test_llm_grid_target_free_cardinal.py
 python -c "from pathlib import Path; from prior.analyze.d2026_07_28.llm_grid_target_free_cardinal import validate_artifact_directory; validate_artifact_directory(Path('outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2'), expected_development_episodes=778, expected_development_scenes=53, expected_development_valid=770, expected_development_invalid=8, expected_test_episodes=1839, expected_test_scenes=11, expected_test_valid=1830, expected_test_invalid=9)"
+sha256sum outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2/manifest.json
 git diff --check
 ```
 

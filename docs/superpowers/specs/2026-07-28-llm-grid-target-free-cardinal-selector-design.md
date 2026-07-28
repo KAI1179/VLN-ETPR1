@@ -4,8 +4,10 @@
 
 Accepted on 2026-07-28 under the user's delegated spec-approval authority.
 Amended before the P3 run to schema v2 so soft aggregation reports exact
-object/region endpoints instead of an unrelated proxy. This document freezes
-P2 before the P3 test result is calculated.
+object/region endpoints instead of an unrelated proxy, and to state explicitly
+that `val_unseen` is a reused evaluation population rather than a pristine
+generalisation test. This document freezes P2 before the P3 result is
+calculated.
 
 ## Purpose
 
@@ -15,8 +17,11 @@ episode start. They did not produce a deployable correction because every
 selected angle still depended on ground-truth target cells.
 
 This experiment asks whether a deterministic correction chosen only from
-runtime-available start metadata generalises from R2R `val_seen` to the sealed
-R2R `val_unseen` population. It distinguishes three conclusions:
+runtime-available start metadata transfers from R2R `val_seen` to a
+target-hidden replay on R2R `val_unseen`. P0 and P1 already exposed aggregate
+`val_unseen` behavior and motivated this selector family, so this is a
+preregistered follow-up on a reused evaluation population, not an independent
+generalisation estimate. It distinguishes three within-population conclusions:
 
 1. a heading-conditioned selector is useful;
 2. one fixed global correction is sufficient;
@@ -82,7 +87,7 @@ The development split is exactly:
 - prediction manifest SHA-256
   `1d3eb25eb7583a2c6373f430119da25ef71472d2d065697e673e2f70c307d146`.
 
-The sealed test split is exactly:
+The sealed-within-run evaluation split is exactly:
 
 - R2R `val_unseen`;
 - 1,839 episodes from 11 scenes;
@@ -102,6 +107,13 @@ Both splits use:
 Every expected episode remains in the denominator. An invalid or missing
 prediction is an empty raster, selects identity, and contributes zero
 improvement. No repair or fallback prediction is permitted.
+
+“Sealed” refers only to temporal separation inside this run: evaluation
+assignments are serialized and hashed before evaluation targets are loaded.
+It does not erase the prior P0/P1 exposure to aggregate `val_unseen` results.
+Accordingly, the result may support the frozen next experiment but cannot be
+reported as performance on a pristine held-out test set or as independent
+generalisation evidence.
 
 The known start direction must contain exactly two finite components and have
 unit norm within absolute tolerance `1e-4`. Corrupt start metadata aborts the
@@ -470,9 +482,12 @@ The validator requires the exact file set, exact stable CSV headers and row
 orders, finite numeric values, exact counts, canonical JSON, decodable PNG
 bytes, matching hashes, recomputed selector assignments, recomputed endpoints,
 recomputed bootstrap values, and a decision label derived from the frozen
-gate. Any mismatch is an explicit failure. Publication uses a temporary sibling
-directory and an atomic directory rename so a failed run leaves no partial
-official output.
+gate. It compares source paths and hashes, cache key, namespace, schema v2,
+angle and mapping orders, bootstrap seed and repetitions, and gate threshold
+against frozen module constants rather than trusting values read from the
+manifest. Any mismatch is an explicit failure. Publication uses a temporary
+sibling directory and an atomic directory rename so a failed run leaves no
+partial official output.
 
 The fixed output directory is:
 
@@ -515,9 +530,12 @@ Before the fixed run:
 - Ruff passes on the date-scoped analysis and analysis tests;
 - ty passes on the new module and test;
 - `git diff --check` passes;
+- an independent code and protocol review is accepted before the fixed run;
+- the worktree is clean and Task 4 is committed before the fixed run;
 - a synthetic artifact directory passes full validation.
 
 After the one fixed run, independently validate the exact artifact directory
-and record the result in `docs/daily/2026-07-28.md`. Mark P2 complete and P3
-complete only after the committed design and implementation, validated
-artifacts, and documented finding agree.
+and record the result plus the external SHA-256 of `manifest.json` in
+`docs/daily/2026-07-28.md`. Recheck that digest after all reviews. Mark P2
+complete and P3 complete only after the committed design and implementation,
+validated artifacts, and documented finding agree.
