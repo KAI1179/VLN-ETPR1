@@ -39,7 +39,6 @@ from prior.llm_grid_samples import downsample_grid
 from vlnce_baselines.models.etp_llm.llm_grid_train import (
     GRID_SCALE,
     LLMGridValidationError,
-    load_llm_grid_examples,
     parse_grid_text,
 )
 from vlnce_baselines.models.etp_llm.navigation import (
@@ -737,9 +736,9 @@ def _source_phase(
 
 def _combined_sources_sha256(phases: Sequence[SourcePhaseArtifact]) -> str:
     expected_names = tuple(_SOURCE_PHASE_CONTRACTS)
-    by_name = {phase.name: phase.sha256 for phase in phases}
-    if tuple(by_name) != expected_names:
+    if tuple(phase.name for phase in phases) != expected_names:
         raise ValueError("source phases must use the frozen phase order")
+    by_name = {phase.name: phase.sha256 for phase in phases}
     return sha256(
         _canonical_json_bytes(
             {
@@ -956,110 +955,6 @@ def _validate_runtime_population(
             raise ValueError("runtime population does not match its split contract")
         if len(runtime_episodes) - valid_count != contract.invalid:
             raise ValueError("runtime population does not match its split contract")
-
-
-def load_runtime_population(
-    split: str,
-    contract: PopulationContract,
-    cache_dir: Path,
-    cache_model_key: str,
-    cognitive_map_namespace: str,
-    quiet: bool,
-) -> tuple[RuntimeEpisode, ...]:
-    """Load only selector-eligible inputs and seal their fixed split contract."""
-    if not isinstance(contract, PopulationContract) or split != contract.split:
-        raise ValueError("split must match the PopulationContract")
-    manifest_path = llm_navigation_split_dir(
-        "R2R", split, cache_dir=cache_dir, model_key=cache_model_key
-    ) / "manifest.json"
-    if sha256(manifest_path.read_bytes()).hexdigest() != contract.manifest_sha256:
-        raise ValueError("prediction manifest SHA-256 does not match the split contract")
-    loaded = load_llm_grid_examples(
-        (split,),
-        quiet=quiet,
-        cognitive_map_namespace=cognitive_map_namespace,
-        datasets=("R2R",),
-    )
-    episodes: list[RuntimeEpisode] = []
-    for example in loaded.examples:
-        if example.dataset != "R2R" or example.split != split:
-            raise ValueError("LLM-Grid loader returned a non-R2R requested-split example")
-        with np.load(example.raster_path, allow_pickle=False) as raster:
-            start_position = np.asarray(raster["start_position"])
-            start_direction = np.asarray(
-                raster["start_direction_vector"], dtype=np.float32
-            )
-        pivot = _start_pivot(start_position)
-        prediction_path = llm_navigation_prediction_path(
-            example.scene_id,
-            example.example_id,
-            "R2R",
-            split,
-            cache_dir=cache_dir,
-            model_key=cache_model_key,
-        )
-        try:
-            parsed = parse_grid_text(prediction_path.read_text(encoding="utf-8"))
-            selector_input = SelectorInput(
-                schema_valid=True,
-                start_direction=start_direction,
-                predicted_grid=parsed.grid > 0,
-                predicted_directions=parsed.direction_vectors,
-            )
-        except (FileNotFoundError, UnicodeDecodeError, LLMGridValidationError):
-            selector_input = _empty_selector_input(start_direction)
-        episodes.append(
-            RuntimeEpisode(
-                key=EpisodeKey(example.scene_id, example.example_id),
-                split=split,
-                selector_input=selector_input,
-                start_pivot=pivot,
-            )
-        )
-    result = tuple(sorted(episodes, key=lambda episode: episode.key))
-    _validate_runtime_population(result, contract)
-    return result
-
-
-def _load_target_arrays(path: Path) -> tuple[NDArray[np.bool_], NDArray[np.float32]]:
-    """Read the target-only cache arrays and apply the authoritative scale-two raster."""
-    with np.load(path, allow_pickle=False) as raster:
-        grid = np.asarray(raster["grid"], dtype=np.float32)
-        directions = np.asarray(raster["direction_vectors"], dtype=np.float32)
-    target_grid = np.asarray(downsample_grid(grid, GRID_SCALE) > 0, dtype=np.bool_)
-    return _require_boolean_grid(target_grid), _require_float32_array(
-        directions, (5, 2), "target_directions"
-    )
-
-
-def load_target_population(
-    runtime_episodes: Sequence[RuntimeEpisode],
-    cognitive_map_namespace: str,
-    quiet: bool,
-) -> tuple[TargetEpisode, ...]:
-    """Join target-bearing rasters only after the runtime population is sealed."""
-    _validate_runtime_population(runtime_episodes)
-    split = runtime_episodes[0].split
-    loaded = load_llm_grid_examples(
-        (split,),
-        quiet=quiet,
-        cognitive_map_namespace=cognitive_map_namespace,
-        datasets=("R2R",),
-    )
-    paths: dict[EpisodeKey, Path] = {}
-    for example in loaded.examples:
-        if example.dataset != "R2R" or example.split != split:
-            raise ValueError("LLM-Grid loader returned a non-R2R requested-split example")
-        key = EpisodeKey(example.scene_id, example.example_id)
-        if key in paths:
-            raise ValueError("target population must have unique EpisodeKey values")
-        paths[key] = example.raster_path
-    if set(paths) != {episode.key for episode in runtime_episodes}:
-        raise ValueError("target population keys must exactly match runtime population keys")
-    return tuple(
-        TargetEpisode(episode, *_load_target_arrays(paths[episode.key]))
-        for episode in sorted(runtime_episodes, key=lambda runtime: runtime.key)
-    )
 
 
 def _decode_json_source(source: _CapturedSource, *, gzipped: bool) -> dict[str, object]:

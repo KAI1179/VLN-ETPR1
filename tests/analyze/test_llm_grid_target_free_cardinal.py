@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import fields
+import errno
+import gzip
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -229,20 +231,6 @@ def test_uniform_soft_score_returns_zero_metrics_for_empty_union() -> None:
     assert score == target_free.SoftRasterScore(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-@dataclass(frozen=True)
-class _Example:
-    example_id: str
-    dataset: str
-    split: str
-    scene_id: str
-    raster_path: Path
-
-
-@dataclass(frozen=True)
-class _LoadedExamples:
-    examples: tuple[_Example, ...]
-
-
 def _selector_grid() -> NDArray[np.bool_]:
     grid = np.zeros((37, 50, 50), dtype=np.bool_)
     grid[0, 10, 12] = True
@@ -345,6 +333,273 @@ def test_source_phase_digest_binds_exact_bytes_and_members(tmp_path: Path) -> No
     ).sha256 == sha256(expected).hexdigest()
 
 
+@pytest.mark.parametrize(
+    "names",
+    (
+        (
+            "development_all_sources",
+            "test_assignment_sources",
+            "test_assignment_sources",
+            "test_target_sources",
+        ),
+        (
+            "development_all_sources",
+            "test_assignment_sources",
+            "test_target_sources",
+            "extra",
+        ),
+        (
+            "test_assignment_sources",
+            "development_all_sources",
+            "test_target_sources",
+        ),
+    ),
+)
+def test_combined_sources_rejects_nonexact_raw_phase_name_sequence(
+    names: tuple[str, ...],
+) -> None:
+    """Breaks if dict construction hides duplicate, extra, or reordered phases."""
+    phases = tuple(
+        target_free.SourcePhaseArtifact(name, str(index) * 64, index)
+        for index, name in enumerate(names, start=1)
+    )
+    with pytest.raises(ValueError, match="frozen phase order"):
+        target_free._combined_sources_sha256(phases)
+
+
+def _independent_source_entry(
+    role: str, logical_path: str, data: bytes, member: str = ""
+) -> dict[str, object]:
+    return {
+        "member": member,
+        "path": logical_path,
+        "role": role,
+        "sha256": sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
+
+
+def _independent_phase_digest(
+    phase: str, entries: Sequence[dict[str, object]]
+) -> str:
+    payload = {
+        "entries": sorted(
+            entries,
+            key=lambda entry: (
+                str(entry["role"]),
+                str(entry["path"]),
+                str(entry["member"]),
+            ),
+        ),
+        "phase": phase,
+        "schema_version": "llm-grid-target-free-source-fingerprint-v3",
+    }
+    canonical = (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    return sha256(canonical).hexdigest()
+
+
+def _install_synthetic_coupled_sources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, split: str
+) -> tuple[target_free.PopulationContract, tuple[dict[str, object], ...]]:
+    dataset_directory = tmp_path / "datasets" / split
+    dataset_directory.mkdir(parents=True)
+    scene_id = "scene"
+    example_id = f"R2R_{split}_1"
+    episode_bytes = gzip.compress(
+        json.dumps(
+            {
+                "episodes": [
+                    {
+                        "episode_id": 1,
+                        "scene_id": f"data/scene_datasets/mp3d/{scene_id}.glb",
+                        "instruction": {"language": "en-US"},
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        mtime=0,
+    )
+    ground_truth_bytes = gzip.compress(
+        b'{"1":{"locations":[[0,0,0]]}}', mtime=0
+    )
+    episode_path = dataset_directory / f"{split}.json.gz"
+    ground_truth_path = dataset_directory / f"{split}_gt.json.gz"
+    episode_path.write_bytes(episode_bytes)
+    ground_truth_path.write_bytes(ground_truth_bytes)
+    manifest_path = tmp_path / "predictions" / split / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_bytes = b'{"model":"synthetic"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    prediction_path = manifest_path.parent / scene_id / f"{example_id}.txt"
+    prediction_path.parent.mkdir()
+    predicted_grid = np.zeros((37, 50, 50), dtype=np.float32)
+    predicted_grid[0, 3, 4] = 1.0
+    prediction_bytes = serialize_grid_target(
+        predicted_grid,
+        direction_vectors=np.asarray(
+            [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        ),
+    ).encode("utf-8")
+    prediction_path.write_bytes(prediction_bytes)
+    raster_path = tmp_path / "rasters" / scene_id / f"{example_id}.npz"
+    raster_path.parent.mkdir(parents=True)
+    raw_grid = np.zeros((37, 100, 100), dtype=np.float32)
+    raw_grid[0, 6:8, 8:10] = 1.0
+    target_directions = np.asarray(
+        [[0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
+    np.savez_compressed(
+        raster_path,
+        start_position=np.asarray([10.0, 20.0], dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        grid=raw_grid,
+        direction_vectors=target_directions,
+    )
+    with ZipFile(raster_path) as archive:
+        member_bytes = {
+            member: archive.read(member)
+            for member in (
+                "start_position.npy",
+                "start_direction_vector.npy",
+                "grid.npy",
+                "direction_vectors.npy",
+            )
+        }
+    monkeypatch.setattr(target_free, "R2R_DIR", tmp_path / "datasets")
+    monkeypatch.setattr(
+        target_free,
+        "llm_navigation_split_dir",
+        lambda *_args, **_kwargs: manifest_path.parent,
+    )
+    monkeypatch.setattr(
+        target_free,
+        "llm_navigation_prediction_path",
+        lambda *_args, **_kwargs: prediction_path,
+    )
+    monkeypatch.setattr(
+        target_free,
+        "_raster_path",
+        lambda *_args, **_kwargs: raster_path,
+    )
+    logical_raster = f"{split}/{scene_id}/{example_id}.npz"
+    entries = (
+        _independent_source_entry(
+            "r2r_episode_source", f"{split}/{split}.json.gz", episode_bytes
+        ),
+        _independent_source_entry(
+            "r2r_ground_truth_source",
+            f"{split}/{split}_gt.json.gz",
+            ground_truth_bytes,
+        ),
+        _independent_source_entry(
+            "prediction_manifest", f"{split}/manifest.json", manifest_bytes
+        ),
+        _independent_source_entry(
+            "prediction_text",
+            f"{split}/{scene_id}/{example_id}.txt",
+            prediction_bytes,
+        ),
+        _independent_source_entry(
+            "cognitive_map_assignment_member",
+            logical_raster,
+            member_bytes["start_position.npy"],
+            "start_position.npy",
+        ),
+        _independent_source_entry(
+            "cognitive_map_assignment_member",
+            logical_raster,
+            member_bytes["start_direction_vector.npy"],
+            "start_direction_vector.npy",
+        ),
+        _independent_source_entry(
+            "cognitive_map_target_member",
+            logical_raster,
+            member_bytes["grid.npy"],
+            "grid.npy",
+        ),
+        _independent_source_entry(
+            "cognitive_map_target_member",
+            logical_raster,
+            member_bytes["direction_vectors.npy"],
+            "direction_vectors.npy",
+        ),
+    )
+    return (
+        target_free.PopulationContract(
+            split, 1, 1, 1, 0, sha256(manifest_bytes).hexdigest()
+        ),
+        entries,
+    )
+
+
+def test_development_coupled_loader_parses_exact_independently_hashed_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if development science and its eight-entry inventory diverge."""
+    contract, entries = _install_synthetic_coupled_sources(
+        monkeypatch, tmp_path, "val_seen"
+    )
+    runtimes, targets, captured, phase = target_free._load_runtime_population_coupled(
+        "val_seen",
+        contract,
+        tmp_path,
+        "model",
+        "namespace",
+        include_targets=True,
+    )
+    assert len(runtimes) == len(targets) == 1
+    assert runtimes[0].selector_input.predicted_grid[0, 3, 4]
+    assert targets[0].target_grid[0, 3, 4]
+    assert len(captured) == phase.entry_count == 8
+    assert phase.sha256 == _independent_phase_digest(
+        "development_all_sources", entries
+    )
+
+
+def test_test_coupled_loaders_split_assignment_and_target_exact_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if assignment loading inspects targets or target inventory diverges."""
+    contract, entries = _install_synthetic_coupled_sources(
+        monkeypatch, tmp_path, "val_unseen"
+    )
+    runtimes, no_targets, assignment_sources, assignment_phase = (
+        target_free._load_runtime_population_coupled(
+            "val_unseen",
+            contract,
+            tmp_path,
+            "model",
+            "namespace",
+            include_targets=False,
+        )
+    )
+    assert no_targets == ()
+    assert len(assignment_sources) == assignment_phase.entry_count == 6
+    assert assignment_phase.sha256 == _independent_phase_digest(
+        "test_assignment_sources", entries[:6]
+    )
+    targets, target_sources, target_phase = target_free._load_test_targets_coupled(
+        runtimes, "namespace"
+    )
+    assert len(targets) == 1
+    assert len(target_sources) == target_phase.entry_count == 2
+    assert target_phase.sha256 == _independent_phase_digest(
+        "test_target_sources", entries[6:]
+    )
+
+
 def test_npz_member_reader_rejects_duplicates_and_couples_loaded_bytes(
     tmp_path: Path,
 ) -> None:
@@ -392,6 +647,21 @@ def test_source_reader_rejects_symlinked_inputs(tmp_path: Path) -> None:
         )
 
 
+def test_source_reader_rejects_symlinked_intermediate_directory(tmp_path: Path) -> None:
+    """Breaks if only the final source component is protected from symlinks."""
+    real_directory = tmp_path / "real"
+    real_directory.mkdir()
+    (real_directory / "source.txt").write_bytes(b"source")
+    linked_directory = tmp_path / "linked"
+    linked_directory.symlink_to(real_directory, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        target_free._ordinary_source_entry(
+            linked_directory / "source.txt",
+            "prediction_text",
+            "val_seen/scene/example.txt",
+        )
+
+
 def test_source_reader_rejects_symlink_swapped_at_final_open(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -421,6 +691,43 @@ def test_source_reader_rejects_symlink_swapped_at_final_open(
     with pytest.raises(ValueError, match="symlink"):
         target_free._ordinary_source_entry(
             source, "prediction_text", "val_seen/scene/example.txt"
+        )
+
+
+def test_source_reader_rejects_intermediate_component_swapped_at_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if an intermediate component can redirect anchored traversal."""
+    parent = tmp_path / "parent"
+    directory = parent / "directory"
+    directory.mkdir(parents=True)
+    (directory / "source.txt").write_bytes(b"reviewed")
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    (attacker / "source.txt").write_bytes(b"swapped!")
+    original_open = target_free.os.open
+    swapped = False
+
+    def swapping_open(
+        path: str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == directory.name and dir_fd is not None and not swapped:
+            swapped = True
+            directory.rename(parent / "original")
+            directory.symlink_to(attacker, target_is_directory=True)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(target_free.os, "open", swapping_open)
+    with pytest.raises(ValueError, match="symlink"):
+        target_free._ordinary_source_entry(
+            directory / "source.txt",
+            "prediction_text",
+            "val_seen/scene/example.txt",
         )
 
 
@@ -456,23 +763,107 @@ def test_post_score_recheck_detects_same_size_content_changes(tmp_path: Path) ->
     assert target_free._post_score_sources_verified((member,)) is False
 
 
-def test_schema_v3_protocol_freezes_phase_order_and_reused_eval_limit() -> None:
-    """Breaks if the temporal audit contract or limitation becomes implicit."""
+def test_schema_v3_protocol_is_the_complete_literal_typed_contract() -> None:
+    """Breaks if any protocol field, value, order, or runtime type drifts."""
     protocol = target_free._protocol_artifact()
-    assert protocol.schema_version == "llm-grid-target-free-cardinal-v3"
-    assert protocol.phase_order[4:6] == (
-        "assignment-serialize-and-hash",
-        "test-target-coupled-load-and-fingerprint",
+    expected = target_free.ProtocolArtifact(
+        "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2",
+        "gt.legacy.r1p5.direction5.v1",
+        2,
+        (37, 50, 50),
+        (0, 27),
+        (27, 37),
+        (0.0, 90.0, 180.0, 270.0),
+        (
+            (1, 0),
+            (1, 90),
+            (1, 180),
+            (1, 270),
+            (-1, 0),
+            (-1, 90),
+            (-1, 180),
+            (-1, 270),
+        ),
+        (0.0, 90.0, 180.0, 270.0),
+        0.0,
+        42,
+        10_000,
+        "scene_id",
+        "episode-macro scene multiplicity ratio-of-sums",
+        "np.percentile[2.5,97.5]; numpy-1.24 linear",
+        0.01,
+        (
+            "schema_valid:bool",
+            "start_direction:float32[2]",
+            "predicted_grid:bool[37,50,50]",
+            "predicted_directions:float32[5,2]",
+        ),
+        (
+            "pivot=start_position/(CELL_SIZE*GRID_SCALE)",
+            "grid_angle=physical-positive",
+            "stored_direction_angle=-grid_angle",
+            "warp=padded-nearest-no-crop",
+        ),
+        (
+            "clean-head",
+            "development-coupled-load-and-fingerprint",
+            "development-lock",
+            "test-assignment-coupled-load-and-fingerprint",
+            "assignment-serialize-and-hash",
+            "test-target-coupled-load-and-fingerprint",
+            "score",
+            "post-score-source-recheck",
+            "audit-and-decision",
+            "artifact-build",
+            "atomic-no-replace-publish-and-validate",
+        ),
+        (
+            "selector_mean>=0.01",
+            "selector_ci_lower>0",
+            "selector_object_delta>0",
+            "selector_region_delta>0",
+            "selector_loso_min>0",
+            "selector_global_ci_lower>0",
+            "global_mean>=0.01",
+            "global_ci_lower>0",
+            "global_object_delta>0",
+            "global_region_delta>0",
+            "global_loso_min>0",
+            "audit_passed",
+            "partial=(selector_mean>=0.01 and selector_ci_lower>0) or (global_mean>=0.01 and global_ci_lower>0)",
+            "precedence=SELECTOR GO,FIXED-CORRECTION GO,PARTIAL,NO GO",
+        ),
+        "llm-grid-target-free-cardinal-v3",
+        (
+            "offline raster overlap is not navigation performance",
+            "oracle and target-vector diagnostics are nondeployable",
+            "val_unseen is a reused evaluation population, not a pristine held-out generalisation test",
+        ),
     )
-    assert protocol.selector_input_schema == (
-        "schema_valid:bool",
-        "start_direction:float32[2]",
-        "predicted_grid:bool[37,50,50]",
-        "predicted_directions:float32[5,2]",
-    )
-    assert protocol.target_free_limitations[-1] == (
-        "val_unseen is a reused evaluation population, not a pristine held-out "
-        "generalisation test"
+    assert protocol == expected
+    assert tuple(type(getattr(protocol, field.name)) for field in fields(protocol)) == (
+        str,
+        str,
+        int,
+        tuple,
+        tuple,
+        tuple,
+        tuple,
+        tuple,
+        tuple,
+        float,
+        int,
+        int,
+        str,
+        str,
+        str,
+        float,
+        tuple,
+        tuple,
+        tuple,
+        tuple,
+        str,
+        tuple,
     )
 
 
@@ -553,99 +944,6 @@ def test_audit_rejects_non_sha256_assignment_digest() -> None:
     with pytest.raises(ValueError, match="assignment_sha256"):
         target_free.AuditSummary(
             True, True, True, "not-a-digest", True, True, True, True, True, True
-        )
-
-
-def test_population_contract_and_runtime_loader_seal_manifest_and_sort_order(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Breaks if runtime loading uses an unsealed or target-bearing population."""
-    root = tmp_path / "cache"
-    root.mkdir()
-    manifest = root / "manifest.json"
-    manifest.write_text('{"split":"val_seen"}', encoding="utf-8")
-    first_raster = tmp_path / "first.npz"
-    second_raster = tmp_path / "second.npz"
-    for raster in (first_raster, second_raster):
-        np.savez_compressed(
-            raster,
-            grid=np.ones((37, 100, 100), dtype=np.float32),
-            direction_vectors=np.ones((5, 2), dtype=np.float32),
-            start_position=np.asarray([10.0, 20.0], dtype=np.float32),
-            start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
-        )
-    examples = _LoadedExamples(
-        (
-            _Example("late", "R2R", "val_seen", "scene-z", second_raster),
-            _Example("early", "R2R", "val_seen", "scene-a", first_raster),
-        )
-    )
-    valid_text = serialize_grid_target(
-        np.zeros((37, 50, 50), dtype=np.float32),
-        direction_vectors=np.zeros((5, 2), dtype=np.float32),
-    )
-    paths = {"late": tmp_path / "late.txt", "early": tmp_path / "early.txt"}
-    paths["late"].write_text("malformed", encoding="utf-8")
-    paths["early"].write_text(valid_text, encoding="utf-8")
-    monkeypatch.setattr(target_free, "load_llm_grid_examples", lambda *_args, **_kwargs: examples)
-    monkeypatch.setattr(target_free, "llm_navigation_split_dir", lambda *_args, **_kwargs: root)
-    monkeypatch.setattr(
-        target_free,
-        "llm_navigation_prediction_path",
-        lambda _scene, example, *_args, **_kwargs: paths[example],
-    )
-    contract = target_free.PopulationContract(
-        "val_seen", 2, 2, 1, 1, sha256(manifest.read_bytes()).hexdigest()
-    )
-
-    population = target_free.load_runtime_population(
-        "val_seen", contract, tmp_path, "model", "namespace", quiet=True
-    )
-
-    assert [episode.key for episode in population] == [
-        target_free.EpisodeKey("scene-a", "early"),
-        target_free.EpisodeKey("scene-z", "late"),
-    ]
-    assert population[0].selector_input.schema_valid is True
-    assert population[1].selector_input.schema_valid is False
-    assert not population[1].selector_input.predicted_grid.any()
-    assert population[0].start_pivot == pytest.approx((10.0, 20.0))
-
-
-def test_runtime_loader_rejects_corrupt_start_metadata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Breaks if corrupt runtime anchors are mistaken for bad predictions."""
-    raster = tmp_path / "corrupt.npz"
-    np.savez_compressed(
-        raster,
-        start_position=np.asarray([0.0, 0.0], dtype=np.float32),
-        start_direction_vector=np.asarray([0.0, 0.0], dtype=np.float32),
-    )
-    root = tmp_path / "cache"
-    root.mkdir()
-    manifest = root / "manifest.json"
-    manifest.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(
-        target_free,
-        "load_llm_grid_examples",
-        lambda *_args, **_kwargs: _LoadedExamples(
-            (_Example("bad", "R2R", "val_seen", "scene-a", raster),)
-        ),
-    )
-    monkeypatch.setattr(target_free, "llm_navigation_split_dir", lambda *_args, **_kwargs: root)
-    monkeypatch.setattr(
-        target_free,
-        "llm_navigation_prediction_path",
-        lambda *_args, **_kwargs: tmp_path / "missing.txt",
-    )
-    contract = target_free.PopulationContract(
-        "val_seen", 1, 1, 0, 1, sha256(manifest.read_bytes()).hexdigest()
-    )
-
-    with pytest.raises(ValueError, match="start_direction"):
-        target_free.load_runtime_population(
-            "val_seen", contract, tmp_path, "model", "namespace", quiet=True
         )
 
 
@@ -731,10 +1029,8 @@ def test_develop_selector_keeps_declared_order_on_aggregate_ties_and_scores_inva
 
 
 def test_assignments_are_target_free_sorted_and_canonical(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Breaks if assignment sealing reads targets or emits unstable CSV bytes."""
-    monkeypatch.setattr(target_free, "_load_target_arrays", fail_if_called)
     assignments = target_free.assign_population(synthetic_runtime_population(), frozen_lock())
     payload = target_free.assignment_csv_bytes(assignments)
 
@@ -1280,10 +1576,50 @@ def test_publish_artifacts_validates_then_atomically_publishes(
         target_free.publish_artifacts(output_dir, artifacts, validation_inputs)
 
 
-def test_publish_race_preserves_concurrent_destination(
+def test_rename_noreplace_uses_exact_linux_abi_and_preserves_both_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Breaks if publication can overwrite a destination created after preflight."""
+    """Breaks if libc flags drift or EEXIST mutates either directory."""
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeRenameAt2:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *args: object) -> int:
+            calls.append(args)
+            target_free.ctypes.set_errno(errno.EEXIST)
+            return -1
+
+    renameat2 = FakeRenameAt2()
+    monkeypatch.setattr(
+        target_free.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(renameat2=renameat2),
+    )
+    with pytest.raises(FileExistsError):
+        target_free._rename_noreplace(source, destination)
+    assert calls == [
+        (
+            -100,
+            os.fsencode(source),
+            -100,
+            os.fsencode(destination),
+            1,
+        )
+    ]
+    assert source.is_dir()
+    assert destination.is_dir()
+
+
+def test_publish_race_preserves_empty_concurrent_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if an empty destination created after preflight can be replaced."""
     artifacts, validation_inputs, development_targets, test_targets = _artifact_fixture(
         tmp_path
     )
@@ -1293,13 +1629,13 @@ def test_publish_race_preserves_concurrent_destination(
 
     def race(source: Path, target: Path) -> None:
         target.mkdir()
-        (target / "owner.txt").write_text("concurrent", encoding="utf-8")
         rename_noreplace(source, target)
 
     monkeypatch.setattr(target_free, "_rename_noreplace", race)
     with pytest.raises(FileExistsError):
         target_free.publish_artifacts(destination, artifacts, validation_inputs)
-    assert (destination / "owner.txt").read_text(encoding="utf-8") == "concurrent"
+    assert destination.is_dir()
+    assert tuple(destination.iterdir()) == ()
 
 
 def test_validator_requires_independently_expected_git_commit(
@@ -1577,7 +1913,7 @@ def test_fixed_cli_refuses_dirty_worktree_before_loading_data(
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(target_free.subprocess, "run", completed)
-    monkeypatch.setattr(target_free, "load_runtime_population", fail_if_called)
+    monkeypatch.setattr(target_free, "_load_runtime_population_coupled", fail_if_called)
 
     with pytest.raises(RuntimeError, match="clean"):
         target_free._run(target_free.TargetFreeArgs())
@@ -1747,21 +2083,85 @@ def test_run_seals_assignments_before_test_targets_and_audits_after_score(
     ]
 
 
-def test_run_rejects_development_phase_before_locking(
+@pytest.mark.parametrize(
+    ("failed_phase", "expected_events"),
+    (
+        ("development_all_sources", ("load-development",)),
+        (
+            "test_assignment_sources",
+            ("load-development", "lock", "load-assignment"),
+        ),
+        (
+            "test_target_sources",
+            (
+                "load-development",
+                "lock",
+                "load-assignment",
+                "assign",
+                "serialize",
+                "load-target",
+            ),
+        ),
+    ),
+)
+def test_run_rejects_each_phase_before_its_first_scientific_consumer(
+    failed_phase: str,
+    expected_events: tuple[str, ...],
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Breaks if scientific development starts before its source seal passes."""
-    bad_phase = target_free.SourcePhaseArtifact(
-        "development_all_sources", "0" * 64, 3893
+    """Breaks if a mismatched phase reaches lock, assignment, or scoring."""
+    phases = {
+        name: target_free.SourcePhaseArtifact(name, digest, count)
+        for name, (count, digest) in target_free._SOURCE_PHASE_CONTRACTS.items()
+    }
+    expected_count = target_free._SOURCE_PHASE_CONTRACTS[failed_phase][0]
+    phases[failed_phase] = target_free.SourcePhaseArtifact(
+        failed_phase, "0" * 64, expected_count
     )
+    events: list[str] = []
+
+    def coupled(
+        split: str, *_args: object, **_kwargs: object
+    ) -> tuple[object, ...]:
+        if split == "val_seen":
+            events.append("load-development")
+            return (), (), (), phases["development_all_sources"]
+        events.append("load-assignment")
+        return (), (), (), phases["test_assignment_sources"]
+
     monkeypatch.setattr(target_free, "_validate_args", lambda _args: None)
     monkeypatch.setattr(target_free, "_preflight_git_commit", lambda: "d" * 40)
+    monkeypatch.setattr(target_free, "_load_runtime_population_coupled", coupled)
     monkeypatch.setattr(
         target_free,
-        "_load_runtime_population_coupled",
-        lambda *_args, **_kwargs: ((), (), (), bad_phase),
+        "develop_selector",
+        lambda *_args: (events.append("lock"), object())[1],
     )
-    monkeypatch.setattr(target_free, "develop_selector", fail_if_called)
+    monkeypatch.setattr(
+        target_free,
+        "assign_population",
+        lambda *_args: (events.append("assign"), ())[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "assignment_csv_bytes",
+        lambda *_args: (events.append("serialize"), b"assignments\n")[1],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "_load_test_targets_coupled",
+        lambda *_args: (
+            events.append("load-target"),
+            (),
+            (),
+            phases["test_target_sources"],
+        )[1:],
+    )
+    monkeypatch.setattr(
+        target_free,
+        "score_population",
+        lambda *_args: (events.append("score"), fail_if_called())[1],
+    )
     args = cast(
         target_free.TargetFreeArgs,
         SimpleNamespace(
@@ -1774,3 +2174,4 @@ def test_run_rejects_development_phase_before_locking(
     )
     with pytest.raises(ValueError, match="frozen source commitment"):
         target_free._run(args)
+    assert tuple(events) == expected_events
