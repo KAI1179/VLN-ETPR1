@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from numbers import Integral, Real
+from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
+from tap import Tap
 
 from prior.analyze.llm_grid_registration import (
     RasterScore,
@@ -19,11 +21,52 @@ from prior.analyze.llm_grid_registration import (
     score_warped_grid,
     warp_grid_about_pivot,
 )
+from prior.constants import CELL_SIZE
+from vlnce_baselines.models.etp_llm.llm_grid_train import (
+    GRID_SCALE,
+    GRID_SHAPE,
+    LLMGridDataset,
+    LLMGridValidationError,
+    load_llm_grid_examples,
+    parse_grid_text,
+)
+from vlnce_baselines.models.etp_llm.navigation import (
+    llm_navigation_prediction_path,
+    llm_navigation_split_dir,
+    validate_llm_navigation_manifest,
+)
 
 
 _CHANNEL_COUNT = 37
 _OBJECT_CHANNEL_COUNT = 27
-_GRID_SHAPE = (_CHANNEL_COUNT, 50, 50)
+_GRID_SHAPE = GRID_SHAPE
+_EXPECTED_EPISODES = 1_839
+_EXPECTED_SCENES = 11
+_EXPECTED_VALID_EPISODES = 1_830
+_EXPECTED_INVALID_EPISODES = 9
+_DEFAULT_ANGLES = (0.0, 90.0, 180.0, 270.0)
+_DEFAULT_CACHE_MODEL_KEY = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree-epoch-2"
+_DEFAULT_COGNITIVE_MAP_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
+_DEFAULT_SHUFFLE_SEED = 43
+_DEFAULT_BOOTSTRAP_REPETITIONS = 10_000
+_DEFAULT_BOOTSTRAP_SEED = 42
+
+
+class CrossFitArgs(Tap):
+    """Fixed inputs for the full R2R cross-fit registration control."""
+
+    cache_dir: Path = Path("data/llm_navigation")
+    cache_model_key: str = _DEFAULT_CACHE_MODEL_KEY
+    cognitive_map_namespace: str = _DEFAULT_COGNITIVE_MAP_NAMESPACE
+    output_dir: Path = Path(
+        "outputs/llm_grid_analysis/"
+        "start_centered_crossfit_controls_r2r_rxr_epoch2"
+    )
+    angles: Tuple[float, ...] = _DEFAULT_ANGLES
+    shuffle_seed: int = _DEFAULT_SHUFFLE_SEED
+    bootstrap_repetitions: int = _DEFAULT_BOOTSTRAP_REPETITIONS
+    bootstrap_seed: int = _DEFAULT_BOOTSTRAP_SEED
+    quiet: bool = False
 
 
 def _require_nonempty_string(value: str, name: str) -> None:
@@ -223,6 +266,160 @@ class EpisodeCase:
         if predicted.shape[1:] != target.shape[1:]:
             raise ValueError("predicted_grid and target_grid must have the same spatial shape")
         _require_pivot(self.true_start_pivot, "true_start_pivot")
+
+
+def _validate_args(args: CrossFitArgs) -> None:
+    """Reject every override that would change the frozen control experiment."""
+    if args.cache_model_key != _DEFAULT_CACHE_MODEL_KEY:
+        raise ValueError(f"cache_model_key must be exactly {_DEFAULT_CACHE_MODEL_KEY!r}")
+    if args.cognitive_map_namespace != _DEFAULT_COGNITIVE_MAP_NAMESPACE:
+        raise ValueError(
+            "cognitive_map_namespace must be exactly "
+            f"{_DEFAULT_COGNITIVE_MAP_NAMESPACE!r}"
+        )
+    if tuple(args.angles) != _DEFAULT_ANGLES:
+        raise ValueError(f"angles must be exactly {_DEFAULT_ANGLES}")
+    if args.shuffle_seed != _DEFAULT_SHUFFLE_SEED:
+        raise ValueError(f"shuffle_seed must be exactly {_DEFAULT_SHUFFLE_SEED}")
+    if args.bootstrap_repetitions != _DEFAULT_BOOTSTRAP_REPETITIONS:
+        raise ValueError(
+            "bootstrap_repetitions must be exactly "
+            f"{_DEFAULT_BOOTSTRAP_REPETITIONS}"
+        )
+    if args.bootstrap_seed != _DEFAULT_BOOTSTRAP_SEED:
+        raise ValueError(f"bootstrap_seed must be exactly {_DEFAULT_BOOTSTRAP_SEED}")
+    cache_dir = args.cache_dir.resolve()
+    output_dir = args.output_dir.resolve()
+    if (
+        cache_dir == output_dir
+        or cache_dir in output_dir.parents
+        or output_dir in cache_dir.parents
+    ):
+        raise ValueError("output_dir and cache_dir must not overlap")
+
+
+def _prediction_manifest_path(args: CrossFitArgs) -> Path:
+    """Validate and return the manifest for the one permitted prediction cache."""
+    _validate_args(args)
+    split_dir = llm_navigation_split_dir(
+        "R2R", "val_unseen", cache_dir=args.cache_dir, model_key=args.cache_model_key
+    )
+    validate_llm_navigation_manifest(
+        split_dir,
+        {
+            "dataset": "R2R",
+            "split": "val_unseen",
+            "generator": "llm-grid",
+            "scale": GRID_SCALE,
+            "cache_model_key": args.cache_model_key,
+        },
+    )
+    return split_dir / "manifest.json"
+
+
+def _start_pivot(start_position: Sequence[float]) -> tuple[float, float]:
+    """Convert the two level-local start coordinates to the scale-two grid."""
+    if len(start_position) != 2:
+        raise ValueError("start_position must contain exactly two coordinates")
+    try:
+        row_m = float(start_position[0])
+        column_m = float(start_position[1])
+    except (TypeError, ValueError) as error:
+        raise ValueError("start_position coordinates must be finite") from error
+    if not np.isfinite(row_m) or not np.isfinite(column_m):
+        raise ValueError("start_position coordinates must be finite")
+    return row_m / (CELL_SIZE * GRID_SCALE), column_m / (CELL_SIZE * GRID_SCALE)
+
+
+def _validate_episode_population(cases: Sequence[EpisodeCase]) -> None:
+    """Require the complete fixed R2R val_unseen population before scoring."""
+    identities: Set[tuple[str, str]] = set()
+    valid_count = 0
+    invalid_count = 0
+    scene_ids: Set[str] = set()
+    for case in cases:
+        if not isinstance(case, EpisodeCase):
+            raise ValueError("population must contain EpisodeCase rows")
+        if case.split != "val_unseen":
+            raise ValueError("population must contain only val_unseen rows")
+        identity = (case.scene_id, case.example_id)
+        if identity in identities:
+            raise ValueError("population must have unique scene/example identities")
+        identities.add(identity)
+        scene_ids.add(case.scene_id)
+        if case.schema_valid:
+            valid_count += 1
+        else:
+            invalid_count += 1
+            if np.any(case.predicted_grid):
+                raise ValueError("invalid predictions must use an empty grid")
+    if len(cases) != _EXPECTED_EPISODES:
+        raise ValueError(f"population must contain exactly {_EXPECTED_EPISODES} rows")
+    if len(scene_ids) != _EXPECTED_SCENES:
+        raise ValueError(f"population must contain exactly {_EXPECTED_SCENES} scenes")
+    if valid_count != _EXPECTED_VALID_EPISODES:
+        raise ValueError(
+            f"population must contain exactly {_EXPECTED_VALID_EPISODES} valid rows"
+        )
+    if invalid_count != _EXPECTED_INVALID_EPISODES:
+        raise ValueError(
+            f"population must contain exactly {_EXPECTED_INVALID_EPISODES} invalid rows"
+        )
+
+
+def _load_episode_cases(
+    args: CrossFitArgs,
+) -> tuple[tuple[EpisodeCase, ...], Path]:
+    """Load the fixed R2R population without repairing unexpected failures."""
+    _validate_args(args)
+    prediction_manifest_path = _prediction_manifest_path(args)
+    loaded = load_llm_grid_examples(
+        ("val_unseen",),
+        quiet=args.quiet,
+        cognitive_map_namespace=args.cognitive_map_namespace,
+        datasets=("R2R",),
+    )
+    dataset = LLMGridDataset(loaded.examples, scale=GRID_SCALE)
+    if len(dataset) != len(loaded.examples):
+        raise ValueError("LLM-Grid dataset cardinality changed during cross-fit loading")
+    cases: list[EpisodeCase] = []
+    for example, item in zip(loaded.examples, dataset):
+        if example.dataset != "R2R" or example.split != "val_unseen":
+            raise ValueError("LLM-Grid loader returned a non-R2R val_unseen example")
+        if item["example_id"] != example.example_id:
+            raise ValueError("LLM-Grid dataset order changed during cross-fit loading")
+        target_grid = item["target_grid"] > 0
+        prediction_path = llm_navigation_prediction_path(
+            example.scene_id,
+            example.example_id,
+            "R2R",
+            "val_unseen",
+            cache_dir=args.cache_dir,
+            model_key=args.cache_model_key,
+        )
+        schema_valid = True
+        predicted_grid = np.zeros(GRID_SHAPE, dtype=np.bool_)
+        try:
+            parsed = parse_grid_text(
+                prediction_path.read_text(encoding="utf-8"), shape=GRID_SHAPE
+            )
+            predicted_grid = parsed.grid > 0
+        except (FileNotFoundError, LLMGridValidationError):
+            schema_valid = False
+        cases.append(
+            EpisodeCase(
+                split="val_unseen",
+                scene_id=example.scene_id,
+                example_id=example.example_id,
+                schema_valid=schema_valid,
+                predicted_grid=predicted_grid,
+                target_grid=target_grid,
+                true_start_pivot=_start_pivot(item["start_position"]),
+            )
+        )
+    result = tuple(cases)
+    _validate_episode_population(result)
+    return result, prediction_manifest_path
 
 
 @dataclass(frozen=True)

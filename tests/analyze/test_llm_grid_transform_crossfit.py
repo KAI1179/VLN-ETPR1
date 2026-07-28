@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Mapping, Optional
 
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 
 from prior.analyze.d2026_07_28 import llm_grid_transform_crossfit as crossfit
 from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
+    CrossFitArgs,
     CrossFitResult,
     Direction,
     EndpointEstimate,
@@ -19,6 +21,9 @@ from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     PivotAssignment,
     PivotMode,
     _bootstrap_episode_macro,
+    _load_episode_cases,
+    _prediction_manifest_path,
+    _validate_args,
     build_pivot_assignments,
     bootstrap_results,
     classify_gate,
@@ -30,6 +35,7 @@ from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     score_angle_families,
     summarize_results,
 )
+from vlnce_baselines.models.etp_llm.llm_grid_train import LLMGridValidationError
 from prior.analyze.llm_grid_registration import (
     RasterScore,
     SpatialBounds,
@@ -894,3 +900,283 @@ def test_gate_is_literal(
         start_minus_center=center,
         start_minus_shuffled=shuffle,
     ) is expected
+
+
+def fixed_args(**overrides: object) -> CrossFitArgs:
+    """Build the frozen loader arguments, allowing one deliberate mutation."""
+    args = CrossFitArgs()
+    for field, value in overrides.items():
+        setattr(args, field, value)
+    return args
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("cache_model_key", "other"),
+        ("cognitive_map_namespace", "other.namespace"),
+        ("angles", (0.0, 90.0)),
+        ("shuffle_seed", 44),
+        ("bootstrap_repetitions", 9999),
+        ("bootstrap_seed", 41),
+    ),
+)
+def test_args_reject_scientific_overrides(field: str, value: object) -> None:
+    """Breaks if a caller can alter a fixed cross-fit scientific control."""
+    with pytest.raises(ValueError):
+        _validate_args(fixed_args(**{field: value}))
+
+
+def test_args_cli_uses_dashed_names_and_has_no_partial_population_control() -> None:
+    """Breaks if the public CLI reintroduces underlined or partial-run flags."""
+    parsed = CrossFitArgs(underscores_to_dashes=True).parse_args(
+        ["--cache-dir", "cache", "--output-dir", "output", "--quiet"]
+    )
+
+    assert parsed.cache_dir == Path("cache")
+    assert parsed.output_dir == Path("output")
+    assert parsed.quiet
+    assert "limit" not in parsed.class_variables
+    assert "partial_population" not in parsed.class_variables
+
+    with pytest.raises(SystemExit):
+        CrossFitArgs(underscores_to_dashes=True).parse_args(["--limit", "1"])
+
+
+@pytest.mark.parametrize(
+    ("cache_dir", "output_dir"),
+    (
+        (Path("same"), Path("same")),
+        (Path("cache"), Path("cache/output")),
+        (Path("output/cache"), Path("output")),
+    ),
+)
+def test_args_reject_overlapping_cache_and_output_paths(
+    cache_dir: Path, output_dir: Path
+) -> None:
+    """Breaks if reads and derived artifacts can share a directory tree."""
+    with pytest.raises(ValueError, match="must not overlap"):
+        _validate_args(fixed_args(cache_dir=cache_dir, output_dir=output_dir))
+
+
+def test_prediction_manifest_requires_frozen_r2r_val_unseen_provenance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if manifest validation stops pinning the cache provenance."""
+    observed: dict[str, object] = {}
+    split_dir = tmp_path / "split"
+
+    def fake_split_dir(
+        dataset: str, split: str, *, cache_dir: Path, model_key: str
+    ) -> Path:
+        observed["split"] = (dataset, split, cache_dir, model_key)
+        return split_dir
+
+    def fake_validate(path: Path, expected: Mapping[str, object]) -> None:
+        observed["manifest"] = (path, expected)
+
+    monkeypatch.setattr(crossfit, "llm_navigation_split_dir", fake_split_dir)
+    monkeypatch.setattr(crossfit, "validate_llm_navigation_manifest", fake_validate)
+    args = fixed_args(cache_dir=tmp_path / "cache", output_dir=tmp_path / "output")
+
+    assert _prediction_manifest_path(args) == split_dir / "manifest.json"
+    assert observed["split"] == (
+        "R2R",
+        "val_unseen",
+        args.cache_dir,
+        args.cache_model_key,
+    )
+    assert observed["manifest"] == (
+        split_dir,
+        {
+            "dataset": "R2R",
+            "split": "val_unseen",
+            "generator": "llm-grid",
+            "scale": 2,
+            "cache_model_key": args.cache_model_key,
+        },
+    )
+
+
+def test_loader_converts_grids_and_start_to_the_scale_two_pivot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if the loader changes examples, grid booleans, or pivot scale."""
+    example = type(
+        "Example",
+        (),
+        {
+            "example_id": "episode",
+            "scene_id": "scene",
+            "dataset": "R2R",
+            "split": "val_unseen",
+        },
+    )()
+    target = np.zeros((37, 50, 50), dtype=np.float32)
+    target[0, 1, 2] = 1.0
+    prediction = np.zeros((37, 50, 50), dtype=np.float32)
+    prediction[27, 3, 4] = 1.0
+    item = {
+        "example_id": "episode",
+        "target_grid": target,
+        "start_position": (1.0, 2.0),
+    }
+    calls: dict[str, object] = {}
+
+    def fake_load(*args: object, **kwargs: object) -> object:
+        calls["load"] = (args, kwargs)
+        return type("Loaded", (), {"examples": (example,)})()
+
+    monkeypatch.setattr(crossfit, "load_llm_grid_examples", fake_load)
+    monkeypatch.setattr(crossfit, "LLMGridDataset", lambda examples, scale: (item,))
+    monkeypatch.setattr(
+        crossfit,
+        "llm_navigation_prediction_path",
+        lambda *args, **kwargs: tmp_path / "prediction.txt",
+    )
+    monkeypatch.setattr(
+        crossfit.Path,
+        "read_text",
+        lambda self, *, encoding: "{}",
+    )
+    monkeypatch.setattr(
+        crossfit,
+        "parse_grid_text",
+        lambda text, *, shape: type("Parsed", (), {"grid": prediction})(),
+    )
+    monkeypatch.setattr(crossfit, "_prediction_manifest_path", lambda args: tmp_path / "manifest.json")
+    monkeypatch.setattr(crossfit, "_validate_episode_population", lambda cases: None)
+
+    cases, manifest_path = _load_episode_cases(
+        fixed_args(cache_dir=tmp_path / "cache", output_dir=tmp_path / "output")
+    )
+
+    assert manifest_path == tmp_path / "manifest.json"
+    assert calls["load"] == (
+        (("val_unseen",),),
+        {
+            "quiet": False,
+            "cognitive_map_namespace": "gt.legacy.r1p5.direction5.v1",
+            "datasets": ("R2R",),
+        },
+    )
+    assert len(cases) == 1
+    assert cases[0].split == "val_unseen"
+    assert cases[0].scene_id == "scene"
+    assert cases[0].example_id == "episode"
+    assert cases[0].schema_valid
+    assert np.array_equal(cases[0].predicted_grid, prediction > 0)
+    assert np.array_equal(cases[0].target_grid, target > 0)
+    assert cases[0].true_start_pivot == (1.0, 2.0)
+
+
+@pytest.mark.parametrize("failure", (FileNotFoundError(), LLMGridValidationError("bad")))
+def test_loader_keeps_missing_or_invalid_predictions_as_empty_cases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: Exception
+) -> None:
+    """Breaks if expected generation failures leave the evaluation denominator."""
+    example = type(
+        "Example",
+        (),
+        {
+            "example_id": "episode",
+            "scene_id": "scene",
+            "dataset": "R2R",
+            "split": "val_unseen",
+        },
+    )()
+    item = {
+        "example_id": "episode",
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "start_position": (0.0, 0.0),
+    }
+    monkeypatch.setattr(
+        crossfit,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: type("Loaded", (), {"examples": (example,)})(),
+    )
+    monkeypatch.setattr(crossfit, "LLMGridDataset", lambda examples, scale: (item,))
+    monkeypatch.setattr(
+        crossfit,
+        "llm_navigation_prediction_path",
+        lambda *args, **kwargs: tmp_path / "prediction.txt",
+    )
+    monkeypatch.setattr(crossfit.Path, "read_text", lambda self, *, encoding: (_ for _ in ()).throw(failure))
+    monkeypatch.setattr(crossfit, "_prediction_manifest_path", lambda args: tmp_path / "manifest.json")
+    monkeypatch.setattr(crossfit, "_validate_episode_population", lambda cases: None)
+
+    cases, _ = _load_episode_cases(
+        fixed_args(cache_dir=tmp_path / "cache", output_dir=tmp_path / "output")
+    )
+
+    assert len(cases) == 1
+    assert not cases[0].schema_valid
+    assert not np.any(cases[0].predicted_grid)
+
+
+@pytest.mark.parametrize("failure", (OSError("disk"), RuntimeError("parser")))
+def test_loader_propagates_unexpected_prediction_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: Exception
+) -> None:
+    """Breaks if unexpected I/O or parser faults are silently reclassified."""
+    example = type(
+        "Example",
+        (),
+        {
+            "example_id": "episode",
+            "scene_id": "scene",
+            "dataset": "R2R",
+            "split": "val_unseen",
+        },
+    )()
+    item = {
+        "example_id": "episode",
+        "target_grid": np.zeros((37, 50, 50), dtype=np.float32),
+        "start_position": (0.0, 0.0),
+    }
+    monkeypatch.setattr(
+        crossfit,
+        "load_llm_grid_examples",
+        lambda *args, **kwargs: type("Loaded", (), {"examples": (example,)})(),
+    )
+    monkeypatch.setattr(crossfit, "LLMGridDataset", lambda examples, scale: (item,))
+    monkeypatch.setattr(
+        crossfit,
+        "llm_navigation_prediction_path",
+        lambda *args, **kwargs: tmp_path / "prediction.txt",
+    )
+    monkeypatch.setattr(crossfit, "_prediction_manifest_path", lambda args: tmp_path / "manifest.json")
+    monkeypatch.setattr(crossfit, "_validate_episode_population", lambda cases: None)
+    if isinstance(failure, OSError):
+        monkeypatch.setattr(crossfit.Path, "read_text", lambda self, *, encoding: (_ for _ in ()).throw(failure))
+    else:
+        monkeypatch.setattr(crossfit.Path, "read_text", lambda self, *, encoding: "{}")
+        monkeypatch.setattr(crossfit, "parse_grid_text", lambda text, *, shape: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(type(failure), match=str(failure)):
+        _load_episode_cases(
+            fixed_args(cache_dir=tmp_path / "cache", output_dir=tmp_path / "output")
+        )
+
+
+@pytest.mark.parametrize(
+    "cases",
+    (
+        (episode_case("same", (0.0, 0.0)), episode_case("same", (1.0, 1.0))),
+        (episode_case("one", (0.0, 0.0), scene_id="only"),),
+        (
+            episode_case(
+                "invalid",
+                (0.0, 0.0),
+                schema_valid=False,
+                predicted_grid=np.ones((37, 50, 50), dtype=np.bool_),
+            ),
+        ),
+    ),
+)
+def test_population_validator_rejects_identity_scene_and_invalid_grid_failures(
+    cases: tuple[EpisodeCase, ...]
+) -> None:
+    """Breaks if malformed fixed-population cases survive to scoring."""
+    with pytest.raises(ValueError):
+        crossfit._validate_episode_population(cases)
