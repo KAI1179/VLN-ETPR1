@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
@@ -379,9 +380,14 @@ def build_pivot_assignments(
         scene_rows = tuple(row for row in result if row.scene_id == scene_id)
         donor_ids = {row.donor_example_id for row in scene_rows}
         expected_donor_ids = {episode.example_id for episode in scene_episodes}
+        assigned_pivots = Counter(row.assigned_pivot for row in scene_rows)
+        expected_pivots = Counter(
+            episode.true_start_pivot for episode in scene_episodes
+        )
         if (
             len(scene_rows) != len(scene_episodes)
             or donor_ids != expected_donor_ids
+            or assigned_pivots != expected_pivots
             or any(
                 row.example_id == row.donor_example_id
                 or row.true_pivot == row.assigned_pivot

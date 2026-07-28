@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
@@ -141,6 +142,56 @@ def test_pivot_matching_rejects_duplicate_pivots_without_eligible_edges() -> Non
         build_pivot_assignments(episodes)
 
 
+def test_pivot_matching_excludes_equal_edges_with_solvable_duplicate_pivots() -> None:
+    """Breaks if a solvable duplicate-start scene uses an equal-pivot donor."""
+    episodes = (
+        episode_case("episode-a", (1.0, 1.0)),
+        episode_case("episode-b", (1.0, 1.0)),
+        episode_case("episode-c", (2.0, 2.0)),
+        episode_case("episode-d", (2.0, 2.0)),
+    )
+
+    assignments = build_pivot_assignments(episodes)
+
+    assert len(assignments) == len(episodes)
+    assert len({row.donor_example_id for row in assignments}) == len(episodes)
+    assert all(row.true_pivot != row.assigned_pivot for row in assignments)
+    assert sorted(row.assigned_pivot for row in assignments) == sorted(
+        episode.true_start_pivot for episode in episodes
+    )
+
+
+def test_pivot_matching_rejects_postmatch_assigned_pivot_multiset_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if validation accepts donor IDs with a corrupted pivot multiset."""
+    episodes = four_episode_cases()
+    assignments = build_pivot_assignments(episodes)
+    corrupted_assignments = tuple(
+        replace(row, assigned_pivot=(9.0, 9.0))
+        if row.example_id == "episode-a"
+        else row
+        for row in assignments
+    )
+
+    def corrupted_scene_match(
+        scene_id: str, scene_episodes: tuple[EpisodeCase, ...]
+    ) -> tuple[PivotAssignment, ...]:
+        assert scene_id == "scene-1"
+        assert tuple(scene_episodes) == episodes
+        return corrupted_assignments
+
+    monkeypatch.setattr(
+        crossfit, "_build_scene_pivot_assignments", corrupted_scene_match
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="scene scene-1 has no valid shuffled-start perfect matching",
+    ):
+        build_pivot_assignments(episodes)
+
+
 @pytest.mark.parametrize(
     ("episodes", "scene_id"),
     (
@@ -181,7 +232,9 @@ def test_pivot_for_mode_returns_declared_control_pivots() -> None:
     assert pivot_for_mode(episode, assignment, PivotMode.SHUFFLED_START) == (12.0, 16.0)
 
 
-def test_evaluate_episode_true_start_beats_center_and_shuffled_pivots() -> None:
+def test_evaluate_episode_true_start_beats_center_and_shuffled_pivots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Breaks if all three controls do not score their own pivot geometry."""
     predicted = np.zeros((37, 50, 50), dtype=np.bool_)
     predicted[0, 10, 11] = True
@@ -211,11 +264,40 @@ def test_evaluate_episode_true_start_beats_center_and_shuffled_pivots() -> None:
         true_pivot=true_pivot,
         assigned_pivot=(2.5, 2.5),
     )
+    calls: list[tuple[tuple[float, float], tuple[float, ...]]] = []
+    real_score_angle_families = crossfit.score_angle_families
+
+    def spy_score_angle_families(
+        scored_prediction: NDArray[np.bool_],
+        scored_target: NDArray[np.bool_],
+        pivot: tuple[float, float],
+        angles: tuple[float, ...],
+    ) -> tuple[FamilyAngleScore, ...]:
+        assert scored_prediction is predicted
+        assert scored_target is target
+        calls.append((pivot, angles))
+        return real_score_angle_families(
+            scored_prediction, scored_target, pivot, angles
+        )
+
+    monkeypatch.setattr(crossfit, "score_angle_families", spy_score_angle_families)
 
     results = evaluate_episode(episode, assignment, (0.0, 90.0))
 
     assert all(isinstance(result, EpisodePivotResult) for result in results)
     assert tuple(result.pivot_mode for result in results) == tuple(PivotMode)
+    assert calls == [
+        (true_pivot, (0.0, 90.0)),
+        ((25.0, 25.0), (0.0, 90.0)),
+        ((2.5, 2.5), (0.0, 90.0)),
+    ]
+    assert all(
+        result.object_to_region
+        == crossfit.crossfit_scores(result.angle_scores, Direction.OBJECT_TO_REGION)
+        and result.region_to_object
+        == crossfit.crossfit_scores(result.angle_scores, Direction.REGION_TO_OBJECT)
+        for result in results
+    )
     deltas = {result.pivot_mode: result.symmetric_delta for result in results}
     assert deltas[PivotMode.TRUE_START] > deltas[PivotMode.MAP_CENTER]
     assert deltas[PivotMode.TRUE_START] > deltas[PivotMode.SHUFFLED_START]
