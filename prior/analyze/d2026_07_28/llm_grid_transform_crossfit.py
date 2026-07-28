@@ -976,32 +976,29 @@ def _direction_summary(rows: Sequence[CrossFitResult]) -> Tuple[
         (angle, sum(row.selected_angle_degrees == angle for row in rows))
         for angle in sorted({row.selected_angle_degrees for row in rows})
     )
-    empty_flags = (
-        "selector_predicted_support_empty",
-        "selector_target_support_empty",
-        "selector_union_empty",
-        "heldout_predicted_support_empty",
-        "heldout_target_support_empty",
-        "heldout_union_empty",
-    )
-    empty_rates = tuple(
-        _mean(
-            tuple(float(getattr(row, flag)) for row in rows),
-            f"{flag} values",
+    empty_flags = tuple(
+        (
+            row.selector_predicted_support_empty,
+            row.selector_target_support_empty,
+            row.selector_union_empty,
+            row.heldout_predicted_support_empty,
+            row.heldout_target_support_empty,
+            row.heldout_union_empty,
         )
-        for flag in empty_flags
+        for row in rows
+    )
+    empty_rates = (
+        _mean(tuple(float(flags[0]) for flags in empty_flags), "selector predicted"),
+        _mean(tuple(float(flags[1]) for flags in empty_flags), "selector target"),
+        _mean(tuple(float(flags[2]) for flags in empty_flags), "selector union"),
+        _mean(tuple(float(flags[3]) for flags in empty_flags), "heldout predicted"),
+        _mean(tuple(float(flags[4]) for flags in empty_flags), "heldout target"),
+        _mean(tuple(float(flags[5]) for flags in empty_flags), "heldout union"),
     )
     return (
         _mean(tuple(row.delta_iou for row in rows), "directional deltas"),
         angle_counts,
-        (
-            empty_rates[0],
-            empty_rates[1],
-            empty_rates[2],
-            empty_rates[3],
-            empty_rates[4],
-            empty_rates[5],
-        ),
+        empty_rates,
     )
 
 

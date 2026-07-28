@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Optional
+from typing import Mapping, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -550,9 +550,10 @@ def synthetic_crossfit_result(
     delta: float,
     *,
     selected_angle: float = 90.0,
-    empty: bool = False,
+    empty_flags: Optional[tuple[bool, bool, bool, bool, bool, bool]] = None,
 ) -> CrossFitResult:
     """Builds a valid held-out result; breaks if test fixtures stop matching records."""
+    flags = (False,) * 6 if empty_flags is None else empty_flags
     return CrossFitResult(
         direction=direction,
         selected_angle_degrees=selected_angle,
@@ -564,12 +565,12 @@ def synthetic_crossfit_result(
         heldout_identity_iou=0.5,
         heldout_selected_iou=0.5 + delta,
         delta_iou=delta,
-        selector_predicted_support_empty=empty,
-        selector_target_support_empty=empty,
-        selector_union_empty=empty,
-        heldout_predicted_support_empty=empty,
-        heldout_target_support_empty=empty,
-        heldout_union_empty=empty,
+        selector_predicted_support_empty=flags[0],
+        selector_target_support_empty=flags[1],
+        selector_union_empty=flags[2],
+        heldout_predicted_support_empty=flags[3],
+        heldout_target_support_empty=flags[4],
+        heldout_union_empty=flags[5],
     )
 
 
@@ -581,7 +582,8 @@ def synthetic_pivot_result(
     region_delta: float,
     *,
     schema_valid: bool = True,
-    empty: bool = False,
+    object_empty_flags: Optional[tuple[bool, bool, bool, bool, bool, bool]] = None,
+    region_empty_flags: Optional[tuple[bool, bool, bool, bool, bool, bool]] = None,
 ) -> EpisodePivotResult:
     """Builds one real typed pivot row with literal directional deltas."""
     return EpisodePivotResult(
@@ -597,27 +599,58 @@ def synthetic_pivot_result(
             Direction.OBJECT_TO_REGION,
             object_delta,
             selected_angle=90.0,
-            empty=empty,
+            empty_flags=object_empty_flags,
         ),
         region_to_object=synthetic_crossfit_result(
             Direction.REGION_TO_OBJECT,
             region_delta,
             selected_angle=180.0,
-            empty=empty,
+            empty_flags=region_empty_flags,
         ),
     )
 
 
+def object_empty_flag_pattern(index: int) -> tuple[bool, bool, bool, bool, bool, bool]:
+    """Returns six different retained-row rates for the object direction."""
+    return (
+        index < 0,
+        index < 1,
+        index < 2,
+        index < 3,
+        index < 4,
+        index < 5,
+    )
+
+
+def region_empty_flag_pattern(index: int) -> tuple[bool, bool, bool, bool, bool, bool]:
+    """Returns the reverse six-rate pattern for the region direction."""
+    return (
+        index < 6,
+        index < 5,
+        index < 4,
+        index < 3,
+        index < 2,
+        index < 1,
+    )
+
+
 def inference_rows() -> tuple[EpisodePivotResult, ...]:
-    """Two unequal scenes retain an invalid row in every declared pivot."""
+    """Three unequal scenes retain an invalid row in every declared pivot."""
     rows: list[EpisodePivotResult] = []
     values = (
-        ("A", "a", True, False, (0.4, 0.2), (0.0, 0.0), (0.1, 0.1)),
-        ("B", "b1", True, False, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
-        ("B", "b2", True, False, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
-        ("B", "b3", False, True, (0.0, 0.0), (0.2, 0.2), (0.1, 0.1)),
+        ("A", "a", True, (0.10, -0.10), (0.05, 0.20), (0.15, 0.05)),
+        ("B", "b1", True, (0.20, 0.00), (0.10, 0.10), (0.05, -0.10)),
+        ("B", "b2", True, (0.30, 0.10), (0.15, 0.00), (0.10, 0.00)),
+        ("C", "c1", True, (0.00, 0.20), (-0.05, -0.10), (0.20, 0.10)),
+        ("C", "c2", True, (0.10, 0.10), (0.00, 0.00), (0.10, 0.20)),
+        ("C", "c3", True, (0.20, 0.00), (0.05, 0.10), (0.00, 0.30)),
+        ("C", "c4", False, (0.30, -0.10), (0.10, 0.20), (-0.10, 0.40)),
     )
-    for scene_id, example_id, schema_valid, empty, true, center, shuffled in values:
+    for index, (scene_id, example_id, schema_valid, true, center, shuffled) in enumerate(
+        values
+    ):
+        object_empty_flags = object_empty_flag_pattern(index)
+        region_empty_flags = region_empty_flag_pattern(index)
         rows.extend(
             (
                 synthetic_pivot_result(
@@ -626,7 +659,8 @@ def inference_rows() -> tuple[EpisodePivotResult, ...]:
                     PivotMode.TRUE_START,
                     *true,
                     schema_valid=schema_valid,
-                    empty=empty,
+                    object_empty_flags=object_empty_flags,
+                    region_empty_flags=region_empty_flags,
                 ),
                 synthetic_pivot_result(
                     scene_id,
@@ -634,7 +668,6 @@ def inference_rows() -> tuple[EpisodePivotResult, ...]:
                     PivotMode.MAP_CENTER,
                     *center,
                     schema_valid=schema_valid,
-                    empty=empty,
                 ),
                 synthetic_pivot_result(
                     scene_id,
@@ -642,7 +675,6 @@ def inference_rows() -> tuple[EpisodePivotResult, ...]:
                     PivotMode.SHUFFLED_START,
                     *shuffled,
                     schema_valid=schema_valid,
-                    empty=empty,
                 ),
             )
         )
@@ -667,24 +699,44 @@ def test_scene_bootstrap_multiplicities_are_seeded_and_scene_sorted() -> None:
     first_scenes, first = scene_bootstrap_multiplicities(rows)
     second_scenes, second = scene_bootstrap_multiplicities(tuple(reversed(rows)))
 
-    assert first_scenes == ("A", "B")
+    assert first_scenes == ("A", "B", "C")
     assert second_scenes == first_scenes
     np.testing.assert_array_equal(second, first)
-    assert first.shape == (10_000, 2)
+    assert first.shape == (10_000, 3)
     assert first.dtype == np.int64
 
 
-def test_inference_uses_shared_bootstrap_and_episode_paired_contrasts() -> None:
-    """Breaks if endpoints resample independently or contrast after scene averaging."""
-    rows = inference_rows()
+def _fixed_multiplicities() -> NDArray[np.int64]:
+    return np.asarray(((1, 1, 1), (3, 0, 0), (0, 2, 1), (0, 0, 3)), dtype=np.int64)
 
-    estimates = bootstrap_results(rows)
 
-    assert estimates.true_start_object_to_region.mean == pytest.approx(0.1)
-    assert estimates.true_start_region_to_object.mean == pytest.approx(0.05)
-    assert estimates.true_start_symmetric.mean == pytest.approx(0.075)
-    assert estimates.true_start_minus_map_center.mean == pytest.approx(-0.075)
-    assert estimates.true_start_minus_shuffled.mean == pytest.approx(-0.025)
+def test_all_pivot_endpoints_use_hand_calculated_means_and_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if any directional/symmetric endpoint is wired to the wrong pivot."""
+    monkeypatch.setattr(
+        crossfit,
+        "scene_bootstrap_multiplicities",
+        lambda _: (("A", "B", "C"), _fixed_multiplicities()),
+    )
+
+    estimates = bootstrap_results(inference_rows())
+
+    expected = (
+        (estimates.true_start_object_to_region, 0.1714285714, 0.10375, 0.1978571429),
+        (estimates.true_start_region_to_object, 0.0285714286, -0.0903571429, 0.05),
+        (estimates.true_start_symmetric, 0.1, 0.0075, 0.123125),
+        (estimates.map_center_object_to_region, 0.0571428571, 0.026875, 0.0736607143),
+        (estimates.map_center_region_to_object, 0.0714285714, 0.05, 0.1903571429),
+        (estimates.map_center_symmetric, 0.0642857143, 0.039375, 0.1204464286),
+        (estimates.shuffled_start_object_to_region, 0.0714285714, 0.0509375, 0.1441071429),
+        (estimates.shuffled_start_region_to_object, 0.1357142857, 0.05375, 0.2414285714),
+        (estimates.shuffled_start_symmetric, 0.1035714286, 0.08265625, 0.1465178571),
+    )
+    for estimate_value, mean, lower, upper in expected:
+        assert estimate_value.mean == pytest.approx(mean)
+        assert estimate_value.ci_lower == pytest.approx(lower)
+        assert estimate_value.ci_upper == pytest.approx(upper)
     for estimate in estimates.all():
         assert np.isfinite(
             (
@@ -701,15 +753,15 @@ def test_all_endpoints_receive_the_same_bootstrap_matrix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Breaks if an endpoint draws its own scene bootstrap matrix."""
-    received: list[NDArray[np.int64]] = []
+    received: list[tuple[Mapping[str, tuple[float, ...]], NDArray[np.int64]]] = []
     real_bootstrap = crossfit._bootstrap_episode_macro
 
     def capture_bootstrap(
-        values: dict[str, tuple[float, ...]],
+        values: Mapping[str, tuple[float, ...]],
         scene_ids: tuple[str, ...],
         multiplicities: NDArray[np.int64],
     ) -> NDArray[np.float64]:
-        received.append(multiplicities)
+        received.append((values, multiplicities))
         return real_bootstrap(values, scene_ids, multiplicities)
 
     monkeypatch.setattr(crossfit, "_bootstrap_episode_macro", capture_bootstrap)
@@ -717,15 +769,21 @@ def test_all_endpoints_receive_the_same_bootstrap_matrix(
     bootstrap_results(inference_rows())
 
     assert len(received) == 11
-    assert all(matrix is received[0] for matrix in received)
+    assert all(matrix is received[0][1] for _, matrix in received)
+    expected_center = {"A": (-0.125,), "B": (0.0, 0.125), "C": (0.175, 0.1, 0.025, -0.05)}
+    expected_shuffled = {"A": (-0.1,), "B": (0.125, 0.15), "C": (-0.05, -0.05, -0.05, -0.05)}
+    for captured, expected in ((received[9][0], expected_center), (received[10][0], expected_shuffled)):
+        assert tuple(captured) == ("A", "B", "C")
+        for scene_id, values in expected.items():
+            assert captured[scene_id] == pytest.approx(values)
 
 
 def test_leave_one_scene_out_reports_only_episode_macro_range() -> None:
     """Breaks if LOSO averages remaining scenes equally rather than episodes."""
     ranges = leave_one_scene_out_ranges(inference_rows())
 
-    assert ranges.true_start_symmetric == pytest.approx((0.0, 0.3))
-    assert ranges.true_start_minus_map_center == pytest.approx((-0.2, 0.3))
+    assert ranges.true_start_symmetric == pytest.approx((0.08, 0.1166666667))
+    assert ranges.true_start_minus_map_center == pytest.approx((0.0, 0.0625))
 
 
 def test_summary_retains_invalid_rows_and_all_empty_rates() -> None:
@@ -733,13 +791,50 @@ def test_summary_retains_invalid_rows_and_all_empty_rates() -> None:
     summary = summarize_results(inference_rows())
     true_start = summary[PivotMode.TRUE_START]
 
-    assert true_start.object_to_region_mean == pytest.approx(0.1)
-    assert true_start.region_to_object_mean == pytest.approx(0.05)
-    assert true_start.symmetric_mean == pytest.approx(0.075)
-    assert true_start.object_to_region_angle_counts == ((90.0, 4),)
-    assert true_start.region_to_object_angle_counts == ((180.0, 4),)
-    assert true_start.object_to_region_empty_rates == (0.25,) * 6
-    assert true_start.region_to_object_empty_rates == (0.25,) * 6
+    assert true_start.object_to_region_mean == pytest.approx(0.1714285714)
+    assert true_start.region_to_object_mean == pytest.approx(0.0285714286)
+    assert true_start.symmetric_mean == pytest.approx(0.1)
+    assert true_start.object_to_region_angle_counts == ((90.0, 7),)
+    assert true_start.region_to_object_angle_counts == ((180.0, 7),)
+    assert true_start.object_to_region_empty_rates == pytest.approx(
+        (0.0, 1.0 / 7.0, 2.0 / 7.0, 3.0 / 7.0, 4.0 / 7.0, 5.0 / 7.0)
+    )
+    assert true_start.region_to_object_empty_rates == pytest.approx(
+        (6.0 / 7.0, 5.0 / 7.0, 4.0 / 7.0, 3.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0)
+    )
+
+
+@pytest.mark.parametrize(
+    ("values", "scene_ids", "multiplicities", "match"),
+    (
+        ({"A": (1.0,)}, ("A", "B"), np.ones((1, 2), dtype=np.int64), "keys"),
+        ({"A": (), "B": (1.0,)}, ("A", "B"), np.ones((1, 2), dtype=np.int64), "scene"),
+        ({"A": (np.nan,), "B": (1.0,)}, ("A", "B"), np.ones((1, 2), dtype=np.int64), "finite"),
+        ({"A": (1.0,), "B": (1.0,)}, ("A", "B"), np.ones((1, 2), dtype=np.float64), "integer"),
+        ({"A": (1.0,), "B": (1.0,)}, ("A", "B"), np.asarray(((1, -1),), dtype=np.int64), "nonnegative"),
+        ({"A": (1.0,), "B": (1.0,)}, ("A", "B"), np.ones(2, dtype=np.int64), "two-dimensional"),
+        ({"A": (1.0,), "B": (1.0,)}, ("A", "B"), np.zeros((1, 2), dtype=np.int64), "every replicate"),
+    ),
+)
+def test_bootstrap_rejects_invalid_scene_values_and_multiplicities(
+    values: Mapping[str, tuple[float, ...]],
+    scene_ids: tuple[str, ...],
+    multiplicities: np.ndarray,
+    match: str,
+) -> None:
+    """Breaks if malformed bootstrap inputs silently alter the estimand."""
+    with pytest.raises(ValueError, match=match):
+        _bootstrap_episode_macro(values, scene_ids, multiplicities)
+
+
+@pytest.mark.parametrize("case", ("duplicate", "incomplete"))
+def test_inference_rejects_duplicate_or_incomplete_pivot_triples(case: str) -> None:
+    """Breaks if inference aggregates duplicated or missing episode pivot rows."""
+    rows = inference_rows()
+    malformed = rows + (rows[0],) if case == "duplicate" else rows[:-1]
+
+    with pytest.raises(ValueError, match="duplicate|complete pivot triple"):
+        bootstrap_results(malformed)
 
 
 def estimate(*, mean: float, lower: float) -> EndpointEstimate:
