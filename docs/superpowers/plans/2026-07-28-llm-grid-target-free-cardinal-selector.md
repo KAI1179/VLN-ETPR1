@@ -64,7 +64,9 @@ Matplotlib, standard-library CSV/JSON/hash/path utilities, Pytest, Ruff, ty.
 
 - [ ] **Step 1: Write failing validation and heading tests**
 
-Add imports for the future module and tests equivalent to:
+Create the production module with only its module docstring so importing the
+test target succeeds without implementing behavior. Add imports and tests
+equivalent to:
 
 ```python
 def test_quantize_heading_uses_clockwise_display_frame_and_declared_ties() -> None:
@@ -97,7 +99,8 @@ Run:
 pytest tests/analyze/test_llm_grid_target_free_cardinal.py -q
 ```
 
-Expected: collection failure because the new module and types do not exist.
+Expected: test failures for missing attributes such as
+`quantize_heading` and `SelectorInput`; collection itself succeeds.
 
 - [ ] **Step 3: Implement the narrow domain types**
 
