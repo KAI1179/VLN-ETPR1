@@ -101,12 +101,24 @@ Every expected episode remains in the denominator. An invalid or missing
 prediction is an empty raster, selects identity, and contributes zero
 improvement. No repair or fallback prediction is permitted.
 
+The known start direction must contain exactly two finite components and have
+unit norm within absolute tolerance `1e-4`. Corrupt start metadata aborts the
+entire run because it violates the runtime-input contract; it is not a
+prediction failure. Predicted direction vectors must be finite and each row
+must be unit length within `1e-4` or exact zero padding. A raw prediction that
+violates that schema is handled as the already-declared invalid empty
+prediction.
+
 ## Coordinate and Hypothesis Contract
 
 For each valid prediction, construct four hypotheses with the existing padded
 nearest-neighbour warp in `prior.analyze.llm_grid_registration`. Rotate the
 complete 37-channel prediction around the scale-2 continuous start pivot.
 Rotate the LLM-predicted `direction_vectors` consistently with the grid.
+Positive `angle` means the physical grid rotation accepted by
+`warp_grid_about_pivot`; the stored display-frame `[right, up]` vector is
+therefore transformed numerically by `-angle`, exactly as implemented by
+`rotate_direction_vectors`.
 
 The episode `start_position` and `start_direction_vector` are external
 world-frame anchors and remain fixed. The generic cognitive-map rotation helper
@@ -194,7 +206,7 @@ For each hypothesis, rotate the predicted direction vectors consistently and
 calculate cosine similarity between the first nonzero predicted vector and the
 fixed known start direction. Select the maximum with declared-angle-order tie
 breaking. If every predicted vector is zero or the prediction is invalid,
-select identity.
+select identity and record `direct_margin=0`.
 
 ### Uniform Random-Angle Expectation
 
@@ -214,6 +226,15 @@ sum(min(prediction, target)) / sum(max(prediction, target))
 The same soft formula is applied to the boolean identity raster for its paired
 contrast. An empty union scores zero. Do not threshold, tune, OR, or take
 consensus after observing either split.
+
+The common canvas has inclusive bounds equal to the componentwise minimum and
+maximum of the four padded hypothesis bounds and the target frame bounds
+`rows=[0,49], columns=[0,49]`. Cells outside an individual hypothesis are zero.
+Soft intersection is `sum(min(prediction, target))`; predicted and target mass
+are their respective sums; soft union is predicted mass plus target mass minus
+intersection. Soft precision and recall use the same intersection divided by
+predicted and target mass, respectively, and are zero when their denominator
+is zero. Soft F1 is zero when soft precision plus recall is zero.
 
 ### Oracle Ceiling
 
@@ -241,6 +262,16 @@ The implementation must enforce phase separation with typed inputs. Tests must
 show that changing target rasters or vectors cannot change assignment bytes.
 Artifact validation independently regenerates the lock and assignments from
 allowed inputs and requires byte equality before validating scores.
+
+An `EpisodeKey(scene_id, example_id)` envelope associates selector inputs,
+assignments, and scores and establishes stable row order. The key is never
+passed to candidate logic. Every CSV is sorted lexicographically by
+`(scene_id, example_id)` and then by the declared candidate or angle order.
+
+If the official output directory already exists, the command fails before
+loading development or test data. It never resumes, merges, or overwrites an
+official result. Re-running requires the user to move or remove that exact
+directory explicitly.
 
 The command is fixed and is run exactly once after tests and a small synthetic
 artifact smoke pass:
@@ -271,11 +302,28 @@ Also report:
 - direction-vector cosine as a target-scored secondary diagnostic only;
 - predicted, target, in-frame, out-of-frame, and union support;
 - invalid, empty-prediction, empty-target, and empty-union counts;
-- development ties and test per-episode selector margins where defined;
-- per-candidate wall time and exact materialized array bytes.
+- development ties and the direct selector's top-minus-second cosine margin;
+- deterministic warp count and maximum materialized array bytes per candidate.
 
 Angle agreement with the oracle is descriptive, not a primary endpoint,
 because oracle labels can tie or have negligible margins.
+
+Oracle-gain recovery is calculated from aggregate episode sums:
+
+```text
+sum(candidate_iou - identity_iou) /
+sum(oracle_iou - identity_iou)
+```
+
+When the denominator is nonpositive, report `0.0` and
+`oracle_gain_available=false`; otherwise report the ratio and
+`oracle_gain_available=true`. Do not average unstable per-episode ratios.
+
+Direction-vector cosine uses the existing `direction_cosine` contract: average
+cosine only over paired rows where both vectors are nonzero, clip each cosine
+to `[-1,1]`, and return zero when no pair is eligible. Timing is excluded from
+the reproducible artifact payload; only deterministic operation and array-byte
+counts are recorded.
 
 ## Statistical Contract
 
@@ -287,7 +335,8 @@ Use one shared paired scene-cluster bootstrap:
 - sampling: draw 11 scenes with replacement;
 - weighting: preserve episode multiplicity by summing episode outcomes over
   sampled scenes and dividing by the summed episode count;
-- interval: 2.5th and 97.5th percentiles.
+- interval: `np.percentile` at 2.5 and 97.5 using its NumPy 1.24 default linear
+  interpolation.
 
 Calculate paired per-episode differences before resampling. Reuse the same
 sampled scene-index matrix for every reported candidate contrast. Also report
@@ -318,21 +367,28 @@ authorise an unreviewed navigation run or a core-code change.
 ### Fixed-Correction GO
 
 The conclusion is **FIXED-CORRECTION GO** when the calibrated global correction
-passes conditions 1–4 and 6 above against identity, but the heading selector
-does not satisfy condition 5. The honest action is then to test one pre-rotated
-map cache in a separately designed navigation ablation, not to build a dynamic
-selector.
+passes conditions 1–4 and 6 above against identity and the heading selector
+does not pass all six selector conditions. The honest action is then to test
+one pre-rotated map cache in a separately designed navigation ablation, not to
+build a dynamic selector.
 
 ### Partial Evidence and No Go
 
-Classify the result as **PARTIAL** when a candidate has positive evidence but
-misses a robustness, semantic-family, or selector-over-global condition.
-Classify it as **NO GO** when neither primary nor global correction satisfies
-the mean-gain and positive-CI conditions.
+After both GO predicates fail, classify the result as **PARTIAL** if either the
+heading selector or global correction has mean gain at least `+0.01` and a
+paired 95% bootstrap lower bound above zero, but misses another required
+robustness, semantic-family, or selector-over-global condition. Classify every
+other result as **NO GO**. These predicates are mutually exclusive.
 
 The direct selector and soft aggregator cannot be promoted after seeing
 `val_unseen`. A promising descriptive result may authorise only a separately
 preregistered follow-up.
+
+Decision precedence is exact: evaluate `SELECTOR GO`, then
+`FIXED-CORRECTION GO`, then `PARTIAL`, then `NO GO`. Post-unsealing angle
+scores, oracle values, target-vector cosines, direct-selector margins, and
+descriptive baselines cannot alter assignments or the decision except where a
+quantity is explicitly named in the frozen gate.
 
 ## Exact Artifact Transaction
 
@@ -349,6 +405,59 @@ summary.json
 bootstrap.json
 target_free_control_intervals.png
 ```
+
+CSV uses Python's standard `csv` writer with comma delimiter, minimal quoting,
+UTF-8, and `\n` line endings. Integers use base-10 text, booleans use
+`true`/`false`, and every finite float uses `format(value, ".17g")`. Negative
+zero is normalised to `0`. JSON uses UTF-8, sorted keys, compact separators,
+`allow_nan=False`, and one trailing newline.
+
+The exact CSV headers are:
+
+```text
+development_mapping_scores.csv
+candidate_kind,mapping_sign,heading_offset_degrees,global_angle_degrees,episode_count,valid_count,all_mean_iou,object_mean_iou,region_mean_iou,selected
+
+test_assignments.csv
+scene_id,example_id,schema_valid,heading_bin_degrees,primary_angle_degrees,global_angle_degrees,direct_angle_degrees,direct_margin
+
+test_angle_scores.csv
+scene_id,example_id,angle_degrees,all_iou,object_iou,region_iou,direction_cosine,predicted_support,target_support,in_frame_support,out_of_frame_support,union
+
+test_episode_scores.csv
+scene_id,example_id,schema_valid,heading_bin_degrees,primary_angle_degrees,global_angle_degrees,direct_angle_degrees,identity_iou,primary_iou,global_iou,direct_iou,random_expected_iou,soft_identity_iou,soft_aggregate_iou,oracle_iou,identity_object_iou,primary_object_iou,identity_region_iou,primary_region_iou,primary_predicted_support,primary_target_support,primary_in_frame_support,primary_out_of_frame_support,primary_union,soft_prediction_mass,soft_target_mass,soft_intersection_mass,soft_union_mass,primary_direction_cosine,direct_direction_cosine
+```
+
+Development rows contain the eight heading mappings followed by the four global
+angles. A non-applicable integer field uses `-1`; CSV contains no empty cells.
+Test angle rows contain four rows per episode in declared angle order.
+Assignment and episode files contain one row per episode.
+
+The exact top-level JSON keys are:
+
+```text
+selector_lock.json:
+schema_version,chosen_mapping,chosen_global_angle,development,protocol
+
+summary.json:
+schema_version,population,means,contrasts,semantic_families,cell_metrics,
+support,directions,angles,cost,oracle_gain,decision
+
+bootstrap.json:
+schema_version,seed,repetitions,scene_ids,intervals,leave_one_scene_out
+
+manifest.json:
+schema_version,sources,git_commit,protocol,population,schemas,artifacts
+```
+
+`schema_version` is the exact string
+`llm-grid-target-free-cardinal-v1`. JSON array order follows the declared
+candidate, angle, or sorted scene order. Nested key sets and value types are
+represented by typed frozen dataclasses and are asserted exactly by tests and
+the validator; unknown or missing keys fail validation. The implementation
+plan must enumerate every nested dataclass field before code is written.
+Changing that field list after the plan is accepted requires a design
+amendment and a new schema version, not an implementation-only choice.
 
 `manifest.json` records protocol constants, source-manifest paths and hashes,
 git commit, exact populations, mappings, candidates, angle order, coordinate
