@@ -51,25 +51,28 @@ For the fixed population the ordered scene quotas are:
 8, 1, 4, 8, 7, 4, 4, 5, 1, 3, 5
 ```
 
-Within a scene, each canonical observation row is serialized as compact UTF-8
-JSON with sorted keys and no insignificant whitespace. The row contains the
-observation ID, scene ID, exact start position and rotation, sorted example
-aliases, and pinned oracle-artifact SHA-256. Selection order is:
+Within a scene, each canonical selection key is serialized as compact UTF-8
+JSON with sorted keys and no insignificant whitespace. It contains only the
+observation ID, scene ID, exact start position and normalized rotation, and
+sorted example aliases. Selection order is:
 
 ```text
 SHA-256(
-  b"etp-r1:rgbd-segmenter-benchmark:cohort-v1\0" + canonical_row_bytes
+  b"etp-r1:rgbd-segmenter-benchmark:cohort-v1\0" + canonical_selection_key_bytes
 )
 ```
 
-with observation ID as the collision tie break. The selected manifest is
-ordered first by lexical scene ID and then by this digest. It is published and
-independently validated before rendering. It records the source hashes,
-algorithm/version, scene populations and quotas, all selected canonical rows,
-and a `selection_sha256` over the concatenated canonical selected-row bytes.
-The complete manifest has an external SHA-256 recorded after publication; it
-does not contain its own hash. Selection code must never load oracle arrays or
-images.
+with observation ID as the collision tie break. The pinned oracle-artifact
+SHA-256 is excluded from the selection key so semantic artifact contents cannot
+influence membership or order. It remains in each published cohort row solely
+as provenance. The sealed two-file package is ordered first by lexical scene ID
+and then by the selection digest. It is published and independently validated
+before rendering. `cohort.jsonl` records all selected canonical rows; the
+manifest records the source hashes, algorithm/version, scene populations and
+quotas, and a `selection_sha256` over the concatenated published selected-row
+bytes. The complete manifest has an external SHA-256 recorded after
+publication; it does not contain its own hash. Selection code must never load
+oracle arrays or images.
 
 The inferential target is this fixed sealed cohort. Results must not be
 described as pristine held-out generalization or as an estimate over all 393
