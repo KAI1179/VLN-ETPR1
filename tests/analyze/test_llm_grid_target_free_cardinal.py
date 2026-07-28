@@ -2091,8 +2091,12 @@ def test_fixed_tap_cli_rejects_protocol_and_surface_overrides(tmp_path: Path) ->
 
 def test_fixed_cli_refuses_dirty_worktree_before_loading_data(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Breaks if uncommitted code can produce an ostensibly committed experiment."""
+    isolated_output_dir = tmp_path / "official"
+    monkeypatch.setattr(target_free, "_DEFAULT_OUTPUT_DIR", isolated_output_dir)
+
     def completed(
         command: tuple[str, ...], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -2101,9 +2105,11 @@ def test_fixed_cli_refuses_dirty_worktree_before_loading_data(
 
     monkeypatch.setattr(target_free.subprocess, "run", completed)
     monkeypatch.setattr(target_free, "_load_runtime_population_coupled", fail_if_called)
+    args = target_free.TargetFreeArgs()
+    args.output_dir = isolated_output_dir
 
     with pytest.raises(RuntimeError, match="clean"):
-        target_free._run(target_free.TargetFreeArgs())
+        target_free._run(args)
 
 
 def test_clean_preflight_returns_exact_committed_head(
