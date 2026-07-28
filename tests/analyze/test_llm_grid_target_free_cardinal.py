@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+
 import numpy as np
 from numpy.typing import NDArray
 import pytest
@@ -9,6 +13,7 @@ from prior.analyze.llm_grid_registration import (
     WarpedGrid,
     warp_grid_about_pivot,
 )
+from prior.llm_grid_samples import serialize_grid_target
 
 
 def test_quantize_heading_uses_clockwise_display_frame_and_declared_ties() -> None:
@@ -205,3 +210,305 @@ def test_uniform_soft_score_returns_zero_metrics_for_empty_union() -> None:
     score = target_free.uniform_soft_score(hypotheses, empty)
 
     assert score == target_free.SoftRasterScore(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class _Example:
+    example_id: str
+    dataset: str
+    split: str
+    scene_id: str
+    raster_path: Path
+
+
+@dataclass(frozen=True)
+class _LoadedExamples:
+    examples: tuple[_Example, ...]
+
+
+def _selector_grid() -> NDArray[np.bool_]:
+    grid = np.zeros((37, 50, 50), dtype=np.bool_)
+    grid[0, 10, 12] = True
+    grid[27, 11, 12] = True
+    return grid
+
+
+def _runtime(
+    scene_id: str,
+    example_id: str,
+    heading: NDArray[np.float32],
+    *,
+    schema_valid: bool = True,
+) -> target_free.RuntimeEpisode:
+    return target_free.RuntimeEpisode(
+        key=target_free.EpisodeKey(scene_id, example_id),
+        split="val_seen",
+        selector_input=target_free.SelectorInput(
+            schema_valid=schema_valid,
+            start_direction=heading,
+            predicted_grid=_selector_grid() if schema_valid else empty_target(),
+            predicted_directions=(
+                np.asarray(
+                    [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+                    dtype=np.float32,
+                )
+                if schema_valid
+                else np.zeros((5, 2), dtype=np.float32)
+            ),
+        ),
+        start_pivot=(25.0, 25.0),
+    )
+
+
+def synthetic_runtime_population() -> tuple[target_free.RuntimeEpisode, ...]:
+    return (
+        _runtime("scene-z", "example-z", np.asarray([0.0, 1.0], np.float32)),
+        _runtime("scene-a", "example-a", np.asarray([1.0, 0.0], np.float32)),
+        _runtime(
+            "scene-b",
+            "invalid",
+            np.asarray([0.0, -1.0], np.float32),
+            schema_valid=False,
+        ),
+    )
+
+
+def frozen_lock() -> target_free.SelectorLock:
+    mapping = target_free.HeadingMapping(+1, 0.0)
+    scores = tuple(
+        target_free.DevelopmentCandidateScore(
+            "mapping", candidate.sign, int(candidate.offset_degrees), -1,
+            1, 1, 1.0, 1.0, 1.0, candidate == mapping,
+        )
+        for candidate in (
+            target_free.HeadingMapping(sign, offset)
+            for sign in (+1, -1)
+            for offset in target_free.ANGLE_ORDER
+        )
+    ) + tuple(
+        target_free.DevelopmentCandidateScore(
+            "global", -1, -1, int(angle), 1, 1, 1.0, 1.0, 1.0, angle == 0.0
+        )
+        for angle in target_free.ANGLE_ORDER
+    )
+    return target_free.SelectorLock(mapping, 0.0, scores, 8, 4)
+
+
+def fail_if_called(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("target access during assignment")
+
+
+def test_population_contract_and_runtime_loader_seal_manifest_and_sort_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if runtime loading uses an unsealed or target-bearing population."""
+    root = tmp_path / "cache"
+    root.mkdir()
+    manifest = root / "manifest.json"
+    manifest.write_text('{"split":"val_seen"}', encoding="utf-8")
+    first_raster = tmp_path / "first.npz"
+    second_raster = tmp_path / "second.npz"
+    for raster in (first_raster, second_raster):
+        np.savez_compressed(
+            raster,
+            grid=np.ones((37, 100, 100), dtype=np.float32),
+            direction_vectors=np.ones((5, 2), dtype=np.float32),
+            start_position=np.asarray([10.0, 20.0], dtype=np.float32),
+            start_direction_vector=np.asarray([0.0, 1.0], dtype=np.float32),
+        )
+    examples = _LoadedExamples(
+        (
+            _Example("late", "R2R", "val_seen", "scene-z", second_raster),
+            _Example("early", "R2R", "val_seen", "scene-a", first_raster),
+        )
+    )
+    valid_text = serialize_grid_target(
+        np.zeros((37, 50, 50), dtype=np.float32),
+        direction_vectors=np.zeros((5, 2), dtype=np.float32),
+    )
+    paths = {"late": tmp_path / "late.txt", "early": tmp_path / "early.txt"}
+    paths["late"].write_text("malformed", encoding="utf-8")
+    paths["early"].write_text(valid_text, encoding="utf-8")
+    monkeypatch.setattr(target_free, "load_llm_grid_examples", lambda *_args, **_kwargs: examples)
+    monkeypatch.setattr(target_free, "llm_navigation_split_dir", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(
+        target_free,
+        "llm_navigation_prediction_path",
+        lambda _scene, example, *_args, **_kwargs: paths[example],
+    )
+    contract = target_free.PopulationContract(
+        "val_seen", 2, 2, 1, 1, sha256(manifest.read_bytes()).hexdigest()
+    )
+
+    population = target_free.load_runtime_population(
+        "val_seen", contract, tmp_path, "model", "namespace", quiet=True
+    )
+
+    assert [episode.key for episode in population] == [
+        target_free.EpisodeKey("scene-a", "early"),
+        target_free.EpisodeKey("scene-z", "late"),
+    ]
+    assert population[0].selector_input.schema_valid is True
+    assert population[1].selector_input.schema_valid is False
+    assert not population[1].selector_input.predicted_grid.any()
+    assert population[0].start_pivot == pytest.approx((10.0, 20.0))
+
+
+def test_runtime_loader_rejects_corrupt_start_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if corrupt runtime anchors are mistaken for bad predictions."""
+    raster = tmp_path / "corrupt.npz"
+    np.savez_compressed(
+        raster,
+        start_position=np.asarray([0.0, 0.0], dtype=np.float32),
+        start_direction_vector=np.asarray([0.0, 0.0], dtype=np.float32),
+    )
+    root = tmp_path / "cache"
+    root.mkdir()
+    manifest = root / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        target_free,
+        "load_llm_grid_examples",
+        lambda *_args, **_kwargs: _LoadedExamples(
+            (_Example("bad", "R2R", "val_seen", "scene-a", raster),)
+        ),
+    )
+    monkeypatch.setattr(target_free, "llm_navigation_split_dir", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(
+        target_free,
+        "llm_navigation_prediction_path",
+        lambda *_args, **_kwargs: tmp_path / "missing.txt",
+    )
+    contract = target_free.PopulationContract(
+        "val_seen", 1, 1, 0, 1, sha256(manifest.read_bytes()).hexdigest()
+    )
+
+    with pytest.raises(ValueError, match="start_direction"):
+        target_free.load_runtime_population(
+            "val_seen", contract, tmp_path, "model", "namespace", quiet=True
+        )
+
+
+def _target_for(
+    runtime: target_free.RuntimeEpisode, angle: float
+) -> target_free.TargetEpisode:
+    target = warp_grid_about_pivot(
+        runtime.selector_input.predicted_grid, runtime.start_pivot, angle
+    ).grid
+    return target_free.TargetEpisode(
+        runtime,
+        target,
+        np.zeros((5, 2), dtype=np.float32),
+    )
+
+
+def _mapping_targets(mapping: target_free.HeadingMapping) -> tuple[target_free.TargetEpisode, ...]:
+    headings = (
+        np.asarray([0.0, 1.0], np.float32),
+        np.asarray([1.0, 0.0], np.float32),
+        np.asarray([0.0, -1.0], np.float32),
+        np.asarray([-1.0, 0.0], np.float32),
+    )
+    runtimes = tuple(
+        _runtime("scene", f"episode-{index}", heading)
+        for index, heading in enumerate(headings)
+    )
+    return tuple(
+        _target_for(runtime, mapping.angle_for(runtime.selector_input.start_direction))
+        for runtime in runtimes
+    )
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    tuple(
+        target_free.HeadingMapping(sign, offset)
+        for sign in (+1, -1)
+        for offset in target_free.ANGLE_ORDER
+    ),
+)
+def test_develop_selector_can_uniquely_lock_each_heading_mapping(
+    mapping: target_free.HeadingMapping,
+) -> None:
+    """Breaks if mapping calibration omits or aliases a declared candidate."""
+    lock = target_free.develop_selector(_mapping_targets(mapping))
+
+    assert lock.chosen_mapping == mapping
+    assert lock.mapping_tied_candidate_count == 1
+    assert len(lock.development_scores) == 12
+    assert [score.candidate_kind for score in lock.development_scores] == [
+        "mapping"
+    ] * 8 + ["global"] * 4
+
+
+@pytest.mark.parametrize("angle", target_free.ANGLE_ORDER)
+def test_develop_selector_can_uniquely_lock_each_global_angle(angle: float) -> None:
+    """Breaks if global calibration is not a complete declared-angle search."""
+    targets = tuple(_target_for(runtime, angle) for runtime in synthetic_runtime_population()[:2])
+    lock = target_free.develop_selector(targets)
+
+    assert lock.chosen_global_angle == angle
+    assert lock.global_tied_candidate_count == 1
+
+
+def test_develop_selector_keeps_declared_order_on_aggregate_ties_and_scores_invalid_rows(
+) -> None:
+    """Breaks if ties or denominator accounting depend on valid-only filtering."""
+    invalid = _runtime(
+        "scene", "invalid", np.asarray([0.0, 1.0], np.float32), schema_valid=False
+    )
+    empty = target_free.TargetEpisode(
+        invalid, empty_target(), np.zeros((5, 2), dtype=np.float32)
+    )
+    lock = target_free.develop_selector((empty,))
+
+    assert lock.chosen_mapping == target_free.HeadingMapping(+1, 0.0)
+    assert lock.chosen_global_angle == 0.0
+    assert lock.mapping_tied_candidate_count == 8
+    assert lock.global_tied_candidate_count == 4
+    assert {score.episode_count for score in lock.development_scores} == {1}
+    assert {score.valid_count for score in lock.development_scores} == {0}
+
+
+def test_assignments_are_target_free_sorted_and_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if assignment sealing reads targets or emits unstable CSV bytes."""
+    monkeypatch.setattr(target_free, "_load_target_arrays", fail_if_called)
+    assignments = target_free.assign_population(synthetic_runtime_population(), frozen_lock())
+    payload = target_free.assignment_csv_bytes(assignments)
+
+    assert [assignment.key for assignment in assignments] == sorted(
+        assignment.key for assignment in assignments
+    )
+    invalid = next(assignment for assignment in assignments if not assignment.schema_valid)
+    assert (invalid.primary_angle_degrees, invalid.global_angle_degrees) == (0.0, 0.0)
+    assert b"schema_valid" in payload
+    assert b"false" in payload
+    assert b"-0" not in payload
+    assert all(cell for row in payload.decode("utf-8").splitlines() for cell in row.split(","))
+
+
+def test_assignment_csv_uses_exact_float_boolean_and_target_independent_bytes() -> None:
+    """Breaks if serialization changes canonical evidence after target mutation."""
+    assignment = target_free.SelectorAssignment(
+        target_free.EpisodeKey("scene-z", "example"),
+        True,
+        -0.0,
+        0.0,
+        0.0,
+        270.0,
+        1.2345678901234567,
+    )
+    baseline = target_free.assignment_csv_bytes((assignment,))
+    target = _target_for(_runtime("scene", "target", np.asarray([0.0, 1.0], np.float32)), 0.0)
+    mutated = target.target_grid.copy()
+    mutated[0, 0, 0] = ~mutated[0, 0, 0]
+    changed_target = target_free.TargetEpisode(target.runtime, mutated, target.target_directions)
+
+    assert changed_target.target_grid[0, 0, 0] != target.target_grid[0, 0, 0]
+    assert target_free.assignment_csv_bytes((assignment,)) == baseline
+    assert b"1.2345678901234567" in baseline
+    assert b"true" in baseline

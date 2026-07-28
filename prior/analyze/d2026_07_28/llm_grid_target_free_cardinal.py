@@ -2,18 +2,51 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import csv
+from dataclasses import dataclass, replace
+from hashlib import sha256
+from io import StringIO
 from numbers import Integral, Real
+from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 from numpy.typing import NDArray
 
-from prior.analyze.llm_grid_registration import WarpedGrid, rotate_direction_vectors
+from prior.analyze.llm_grid_registration import (
+    WarpedGrid,
+    rotate_direction_vectors,
+    score_warped_grid,
+    warp_grid_about_pivot,
+)
+from prior.constants import CELL_SIZE
+from prior.llm_grid_samples import downsample_grid
+from vlnce_baselines.models.etp_llm.llm_grid_train import (
+    GRID_SCALE,
+    LLMGridValidationError,
+    load_llm_grid_examples,
+    parse_grid_text,
+)
+from vlnce_baselines.models.etp_llm.navigation import (
+    llm_navigation_prediction_path,
+    llm_navigation_split_dir,
+)
 
 
 ANGLE_ORDER = (0.0, 90.0, 180.0, 270.0)
 _DIRECTION_TOLERANCE = 1e-4
 _HEADING_TIE_TOLERANCE = 1e-6
+_OBJECT_CHANNEL_COUNT = 27
+_ASSIGNMENT_HEADER = (
+    "scene_id",
+    "example_id",
+    "schema_valid",
+    "heading_bin_degrees",
+    "primary_angle_degrees",
+    "global_angle_degrees",
+    "direct_angle_degrees",
+    "direct_margin",
+)
 
 
 def _require_boolean(value: bool, name: str) -> None:
@@ -127,6 +160,25 @@ class SelectorAssignment:
     global_angle_degrees: float
     direct_angle_degrees: float
     direct_margin: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, EpisodeKey):
+            raise ValueError("key must be an EpisodeKey")
+        _require_boolean(self.schema_valid, "schema_valid")
+        heading = _require_cardinal_angle(self.heading_bin_degrees, "heading_bin_degrees")
+        primary = _require_cardinal_angle(self.primary_angle_degrees, "primary_angle_degrees")
+        global_angle = _require_cardinal_angle(
+            self.global_angle_degrees, "global_angle_degrees"
+        )
+        direct = _require_cardinal_angle(self.direct_angle_degrees, "direct_angle_degrees")
+        margin = _require_finite_float(self.direct_margin, "direct_margin")
+        if not 0.0 <= margin <= 2.0:
+            raise ValueError("direct_margin must be within [0, 2]")
+        object.__setattr__(self, "heading_bin_degrees", heading)
+        object.__setattr__(self, "primary_angle_degrees", primary)
+        object.__setattr__(self, "global_angle_degrees", global_angle)
+        object.__setattr__(self, "direct_angle_degrees", direct)
+        object.__setattr__(self, "direct_margin", margin)
 
 
 @dataclass(frozen=True)
@@ -242,3 +294,565 @@ def uniform_soft_score(
         f1=f1,
         iou=iou,
     )
+
+
+def _require_finite_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+        raise ValueError(f"{name} must be a finite real number")
+    result = float(value)
+    return 0.0 if result == 0.0 else result
+
+
+def _require_cardinal_angle(value: float, name: str) -> float:
+    angle = _require_finite_float(value, name)
+    if angle not in ANGLE_ORDER:
+        raise ValueError(f"{name} must be a declared cardinal angle")
+    return angle
+
+
+def _require_nonnegative_int(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return int(value)
+
+
+@dataclass(frozen=True)
+class PopulationContract:
+    split: str
+    episodes: int
+    scenes: int
+    valid: int
+    invalid: int
+    manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.split, str) or not self.split:
+            raise ValueError("split must be a non-empty string")
+        episodes = _require_nonnegative_int(self.episodes, "episodes")
+        scenes = _require_nonnegative_int(self.scenes, "scenes")
+        valid = _require_nonnegative_int(self.valid, "valid")
+        invalid = _require_nonnegative_int(self.invalid, "invalid")
+        if episodes == 0 or scenes == 0:
+            raise ValueError("episodes and scenes must be positive")
+        if valid + invalid != episodes:
+            raise ValueError("valid plus invalid must equal episodes")
+        if (
+            not isinstance(self.manifest_sha256, str)
+            or len(self.manifest_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.manifest_sha256)
+        ):
+            raise ValueError("manifest_sha256 must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "episodes", episodes)
+        object.__setattr__(self, "scenes", scenes)
+        object.__setattr__(self, "valid", valid)
+        object.__setattr__(self, "invalid", invalid)
+
+
+VAL_SEEN_POPULATION = PopulationContract(
+    "val_seen",
+    778,
+    53,
+    770,
+    8,
+    "1d3eb25eb7583a2c6373f430119da25ef71472d2d065697e673e2f70c307d146",
+)
+VAL_UNSEEN_POPULATION = PopulationContract(
+    "val_unseen",
+    1839,
+    11,
+    1830,
+    9,
+    "31e7c5f8d186e75222b12f1aa8862b16fa9904c75221a0fd55cfba61f93fa8ce",
+)
+POPULATION_CONTRACTS = (VAL_SEEN_POPULATION, VAL_UNSEEN_POPULATION)
+
+
+@dataclass(frozen=True)
+class RuntimeEpisode:
+    key: EpisodeKey
+    split: str
+    selector_input: SelectorInput
+    start_pivot: tuple[float, float]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, EpisodeKey):
+            raise ValueError("key must be an EpisodeKey")
+        if not isinstance(self.split, str) or not self.split:
+            raise ValueError("split must be a non-empty string")
+        if not isinstance(self.selector_input, SelectorInput):
+            raise ValueError("selector_input must be a SelectorInput")
+        if len(self.start_pivot) != 2:
+            raise ValueError("start_pivot must contain exactly two coordinates")
+        pivot = (
+            _require_finite_float(self.start_pivot[0], "start_pivot row"),
+            _require_finite_float(self.start_pivot[1], "start_pivot column"),
+        )
+        if not self.selector_input.schema_valid and (
+            np.any(self.selector_input.predicted_grid)
+            or np.any(self.selector_input.predicted_directions)
+        ):
+            raise ValueError("invalid selector_input must be empty")
+        object.__setattr__(self, "start_pivot", pivot)
+
+
+@dataclass(frozen=True)
+class TargetEpisode:
+    runtime: RuntimeEpisode
+    target_grid: NDArray[np.bool_]
+    target_directions: NDArray[np.float32]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime, RuntimeEpisode):
+            raise ValueError("runtime must be a RuntimeEpisode")
+        object.__setattr__(self, "target_grid", _require_boolean_grid(self.target_grid))
+        object.__setattr__(
+            self,
+            "target_directions",
+            _require_float32_array(self.target_directions, (5, 2), "target_directions"),
+        )
+
+
+@dataclass(frozen=True)
+class DevelopmentCandidateScore:
+    candidate_kind: str
+    mapping_sign: int
+    heading_offset_degrees: int
+    global_angle_degrees: int
+    episode_count: int
+    valid_count: int
+    all_mean_iou: float
+    object_mean_iou: float
+    region_mean_iou: float
+    selected: bool
+
+    def __post_init__(self) -> None:
+        if self.candidate_kind not in ("mapping", "global"):
+            raise ValueError("candidate_kind must be mapping or global")
+        if self.candidate_kind == "mapping":
+            HeadingMapping(self.mapping_sign, float(self.heading_offset_degrees))
+            if self.global_angle_degrees != -1:
+                raise ValueError("mapping global_angle_degrees must be -1")
+        elif (
+            self.mapping_sign != -1
+            or self.heading_offset_degrees != -1
+            or self.global_angle_degrees not in tuple(int(angle) for angle in ANGLE_ORDER)
+        ):
+            raise ValueError("global candidates must use mapping sentinels and cardinal angle")
+        episodes = _require_nonnegative_int(self.episode_count, "episode_count")
+        valid = _require_nonnegative_int(self.valid_count, "valid_count")
+        if episodes == 0 or valid > episodes:
+            raise ValueError("valid_count must be within a non-empty episode_count")
+        scores = (
+            _require_finite_float(self.all_mean_iou, "all_mean_iou"),
+            _require_finite_float(self.object_mean_iou, "object_mean_iou"),
+            _require_finite_float(self.region_mean_iou, "region_mean_iou"),
+        )
+        if any(not 0.0 <= score <= 1.0 for score in scores):
+            raise ValueError("mean IoU values must be within [0, 1]")
+        _require_boolean(self.selected, "selected")
+        object.__setattr__(self, "episode_count", episodes)
+        object.__setattr__(self, "valid_count", valid)
+        object.__setattr__(self, "all_mean_iou", scores[0])
+        object.__setattr__(self, "object_mean_iou", scores[1])
+        object.__setattr__(self, "region_mean_iou", scores[2])
+
+
+def _declared_mappings() -> tuple[HeadingMapping, ...]:
+    return tuple(
+        HeadingMapping(sign, angle) for sign in (+1, -1) for angle in ANGLE_ORDER
+    )
+
+
+@dataclass(frozen=True)
+class SelectorLock:
+    chosen_mapping: HeadingMapping
+    chosen_global_angle: float
+    development_scores: tuple[DevelopmentCandidateScore, ...]
+    mapping_tied_candidate_count: int
+    global_tied_candidate_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.chosen_mapping, HeadingMapping):
+            raise ValueError("chosen_mapping must be a HeadingMapping")
+        global_angle = _require_cardinal_angle(
+            self.chosen_global_angle, "chosen_global_angle"
+        )
+        scores = self.development_scores
+        if len(scores) != 12 or not all(
+            isinstance(score, DevelopmentCandidateScore) for score in scores
+        ):
+            raise ValueError("development_scores must contain eight mappings and four globals")
+        expected_mappings = _declared_mappings()
+        mapping_scores = scores[:8]
+        global_scores = scores[8:]
+        if any(score.candidate_kind != "mapping" for score in mapping_scores) or any(
+            score.candidate_kind != "global" for score in global_scores
+        ):
+            raise ValueError("development scores must use declared candidate order")
+        if tuple(
+            HeadingMapping(score.mapping_sign, float(score.heading_offset_degrees))
+            for score in mapping_scores
+        ) != expected_mappings or tuple(float(score.global_angle_degrees) for score in global_scores) != ANGLE_ORDER:
+            raise ValueError("development scores must use declared candidate order")
+        selected_mappings = tuple(score for score in mapping_scores if score.selected)
+        selected_globals = tuple(score for score in global_scores if score.selected)
+        if len(selected_mappings) != 1 or len(selected_globals) != 1:
+            raise ValueError("development scores must select one mapping and one global angle")
+        if HeadingMapping(
+            selected_mappings[0].mapping_sign,
+            float(selected_mappings[0].heading_offset_degrees),
+        ) != self.chosen_mapping or float(selected_globals[0].global_angle_degrees) != global_angle:
+            raise ValueError("selected development rows must match the lock")
+        mapping_ties = _require_nonnegative_int(
+            self.mapping_tied_candidate_count, "mapping_tied_candidate_count"
+        )
+        global_ties = _require_nonnegative_int(
+            self.global_tied_candidate_count, "global_tied_candidate_count"
+        )
+        if mapping_ties == 0 or global_ties == 0:
+            raise ValueError("tie counts must be positive")
+        best_mapping = max(score.all_mean_iou for score in mapping_scores)
+        best_global = max(score.all_mean_iou for score in global_scores)
+        if mapping_ties != sum(
+            score.all_mean_iou == best_mapping for score in mapping_scores
+        ) or global_ties != sum(score.all_mean_iou == best_global for score in global_scores):
+            raise ValueError("tie counts must match exact aggregate ties")
+        object.__setattr__(self, "chosen_global_angle", global_angle)
+
+
+def _start_pivot(start_position: NDArray[np.generic]) -> tuple[float, float]:
+    if start_position.shape != (2,):
+        raise ValueError("start_position must have shape (2,)")
+    row = _require_finite_float(float(start_position[0]), "start_position row")
+    column = _require_finite_float(float(start_position[1]), "start_position column")
+    return row / (CELL_SIZE * GRID_SCALE), column / (CELL_SIZE * GRID_SCALE)
+
+
+def _empty_selector_input(start_direction: NDArray[np.float32]) -> SelectorInput:
+    return SelectorInput(
+        schema_valid=False,
+        start_direction=start_direction,
+        predicted_grid=np.zeros((37, 50, 50), dtype=np.bool_),
+        predicted_directions=np.zeros((5, 2), dtype=np.float32),
+    )
+
+
+def _validate_runtime_population(
+    runtime_episodes: Sequence[RuntimeEpisode], contract: PopulationContract | None = None
+) -> None:
+    if not runtime_episodes:
+        raise ValueError("runtime population must not be empty")
+    keys: set[EpisodeKey] = set()
+    scenes: set[str] = set()
+    valid_count = 0
+    split = runtime_episodes[0].split
+    for episode in runtime_episodes:
+        if not isinstance(episode, RuntimeEpisode):
+            raise ValueError("runtime population must contain RuntimeEpisode values")
+        if episode.split != split:
+            raise ValueError("runtime population must contain one split")
+        if episode.key in keys:
+            raise ValueError("runtime population must have unique EpisodeKey values")
+        keys.add(episode.key)
+        scenes.add(episode.key.scene_id)
+        valid_count += int(episode.selector_input.schema_valid)
+    if contract is not None:
+        if split != contract.split or len(runtime_episodes) != contract.episodes:
+            raise ValueError("runtime population does not match its split contract")
+        if len(scenes) != contract.scenes or valid_count != contract.valid:
+            raise ValueError("runtime population does not match its split contract")
+        if len(runtime_episodes) - valid_count != contract.invalid:
+            raise ValueError("runtime population does not match its split contract")
+
+
+def load_runtime_population(
+    split: str,
+    contract: PopulationContract,
+    cache_dir: Path,
+    cache_model_key: str,
+    cognitive_map_namespace: str,
+    quiet: bool,
+) -> tuple[RuntimeEpisode, ...]:
+    """Load only selector-eligible inputs and seal their fixed split contract."""
+    if not isinstance(contract, PopulationContract) or split != contract.split:
+        raise ValueError("split must match the PopulationContract")
+    manifest_path = llm_navigation_split_dir(
+        "R2R", split, cache_dir=cache_dir, model_key=cache_model_key
+    ) / "manifest.json"
+    if sha256(manifest_path.read_bytes()).hexdigest() != contract.manifest_sha256:
+        raise ValueError("prediction manifest SHA-256 does not match the split contract")
+    loaded = load_llm_grid_examples(
+        (split,),
+        quiet=quiet,
+        cognitive_map_namespace=cognitive_map_namespace,
+        datasets=("R2R",),
+    )
+    episodes: list[RuntimeEpisode] = []
+    for example in loaded.examples:
+        if example.dataset != "R2R" or example.split != split:
+            raise ValueError("LLM-Grid loader returned a non-R2R requested-split example")
+        with np.load(example.raster_path, allow_pickle=False) as raster:
+            start_position = np.asarray(raster["start_position"])
+            start_direction = np.asarray(
+                raster["start_direction_vector"], dtype=np.float32
+            )
+        pivot = _start_pivot(start_position)
+        prediction_path = llm_navigation_prediction_path(
+            example.scene_id,
+            example.example_id,
+            "R2R",
+            split,
+            cache_dir=cache_dir,
+            model_key=cache_model_key,
+        )
+        try:
+            parsed = parse_grid_text(prediction_path.read_text(encoding="utf-8"))
+            selector_input = SelectorInput(
+                schema_valid=True,
+                start_direction=start_direction,
+                predicted_grid=parsed.grid > 0,
+                predicted_directions=parsed.direction_vectors,
+            )
+        except (FileNotFoundError, UnicodeDecodeError, LLMGridValidationError):
+            selector_input = _empty_selector_input(start_direction)
+        episodes.append(
+            RuntimeEpisode(
+                key=EpisodeKey(example.scene_id, example.example_id),
+                split=split,
+                selector_input=selector_input,
+                start_pivot=pivot,
+            )
+        )
+    result = tuple(sorted(episodes, key=lambda episode: episode.key))
+    _validate_runtime_population(result, contract)
+    return result
+
+
+def _load_target_arrays(path: Path) -> tuple[NDArray[np.bool_], NDArray[np.float32]]:
+    """Read the target-only cache arrays and apply the authoritative scale-two raster."""
+    with np.load(path, allow_pickle=False) as raster:
+        grid = np.asarray(raster["grid"], dtype=np.float32)
+        directions = np.asarray(raster["direction_vectors"], dtype=np.float32)
+    target_grid = np.asarray(downsample_grid(grid, GRID_SCALE) > 0, dtype=np.bool_)
+    return _require_boolean_grid(target_grid), _require_float32_array(
+        directions, (5, 2), "target_directions"
+    )
+
+
+def load_target_population(
+    runtime_episodes: Sequence[RuntimeEpisode],
+    cognitive_map_namespace: str,
+    quiet: bool,
+) -> tuple[TargetEpisode, ...]:
+    """Join target-bearing rasters only after the runtime population is sealed."""
+    _validate_runtime_population(runtime_episodes)
+    split = runtime_episodes[0].split
+    loaded = load_llm_grid_examples(
+        (split,),
+        quiet=quiet,
+        cognitive_map_namespace=cognitive_map_namespace,
+        datasets=("R2R",),
+    )
+    paths: dict[EpisodeKey, Path] = {}
+    for example in loaded.examples:
+        if example.dataset != "R2R" or example.split != split:
+            raise ValueError("LLM-Grid loader returned a non-R2R requested-split example")
+        key = EpisodeKey(example.scene_id, example.example_id)
+        if key in paths:
+            raise ValueError("target population must have unique EpisodeKey values")
+        paths[key] = example.raster_path
+    if set(paths) != {episode.key for episode in runtime_episodes}:
+        raise ValueError("target population keys must exactly match runtime population keys")
+    return tuple(
+        TargetEpisode(episode, *_load_target_arrays(paths[episode.key]))
+        for episode in sorted(runtime_episodes, key=lambda runtime: runtime.key)
+    )
+
+
+def _candidate_iou(
+    target: TargetEpisode, angle: float
+) -> tuple[float, float, float]:
+    runtime = target.runtime
+    if not runtime.selector_input.schema_valid:
+        angle = 0.0
+    warped = warp_grid_about_pivot(
+        runtime.selector_input.predicted_grid, runtime.start_pivot, angle
+    )
+    all_score = score_warped_grid(warped, target.target_grid).iou
+
+    def family_iou(start: int, end: int) -> float:
+        family = warped.grid[start:end]
+        family_warp = WarpedGrid(
+            family,
+            warped.bounds,
+            int(np.count_nonzero(family)),
+        )
+        return score_warped_grid(family_warp, target.target_grid[start:end]).iou
+
+    return all_score, family_iou(0, _OBJECT_CHANNEL_COUNT), family_iou(
+        _OBJECT_CHANNEL_COUNT, 37
+    )
+
+
+def _candidate_score(
+    candidate_kind: str,
+    mapping: HeadingMapping | None,
+    angle: float | None,
+    development_targets: Sequence[TargetEpisode],
+) -> DevelopmentCandidateScore:
+    if candidate_kind == "mapping" and mapping is None:
+        raise ValueError("mapping candidate requires a HeadingMapping")
+    if candidate_kind == "global" and angle is None:
+        raise ValueError("global candidate requires an angle")
+    values: list[tuple[float, float, float]] = []
+    valid_count = 0
+    for target in development_targets:
+        runtime = target.runtime
+        valid_count += int(runtime.selector_input.schema_valid)
+        selected_angle = (
+            mapping.angle_for(runtime.selector_input.start_direction)
+            if mapping is not None
+            else angle
+        )
+        if selected_angle is None:
+            raise RuntimeError("candidate must define an angle")
+        values.append(_candidate_iou(target, selected_angle))
+    means = tuple(float(np.mean([value[index] for value in values])) for index in range(3))
+    if mapping is not None:
+        return DevelopmentCandidateScore(
+            "mapping",
+            mapping.sign,
+            int(mapping.offset_degrees),
+            -1,
+            len(values),
+            valid_count,
+            means[0],
+            means[1],
+            means[2],
+            False,
+        )
+    if angle is None:
+        raise RuntimeError("global candidate must define an angle")
+    return DevelopmentCandidateScore(
+        "global",
+        -1,
+        -1,
+        int(angle),
+        len(values),
+        valid_count,
+        means[0],
+        means[1],
+        means[2],
+        False,
+    )
+
+
+def develop_selector(development_targets: Sequence[TargetEpisode]) -> SelectorLock:
+    """Calibrate one mapping and one global angle on the complete development split."""
+    if not development_targets or not all(
+        isinstance(target, TargetEpisode) for target in development_targets
+    ):
+        raise ValueError("development_targets must contain TargetEpisode values")
+    runtime_episodes = tuple(target.runtime for target in development_targets)
+    _validate_runtime_population(runtime_episodes)
+    if len({target.runtime.key for target in development_targets}) != len(development_targets):
+        raise ValueError("development targets must have unique EpisodeKey values")
+    mappings = _declared_mappings()
+    mapping_scores = tuple(
+        _candidate_score("mapping", mapping, None, development_targets)
+        for mapping in mappings
+    )
+    global_scores = tuple(
+        _candidate_score("global", None, angle, development_targets) for angle in ANGLE_ORDER
+    )
+    best_mapping_score = max(score.all_mean_iou for score in mapping_scores)
+    best_global_score = max(score.all_mean_iou for score in global_scores)
+    chosen_mapping_index = next(
+        index
+        for index, score in enumerate(mapping_scores)
+        if score.all_mean_iou == best_mapping_score
+    )
+    chosen_global_index = next(
+        index
+        for index, score in enumerate(global_scores)
+        if score.all_mean_iou == best_global_score
+    )
+    scores = tuple(
+        replace(score, selected=index == chosen_mapping_index)
+        for index, score in enumerate(mapping_scores)
+    ) + tuple(
+        replace(score, selected=index == chosen_global_index)
+        for index, score in enumerate(global_scores)
+    )
+    return SelectorLock(
+        mappings[chosen_mapping_index],
+        ANGLE_ORDER[chosen_global_index],
+        scores,
+        sum(score.all_mean_iou == best_mapping_score for score in mapping_scores),
+        sum(score.all_mean_iou == best_global_score for score in global_scores),
+    )
+
+
+def assign_population(
+    runtime_episodes: Sequence[RuntimeEpisode], selector_lock: SelectorLock
+) -> tuple[SelectorAssignment, ...]:
+    """Seal target-free assignments from runtime selector inputs and a frozen lock."""
+    _validate_runtime_population(runtime_episodes)
+    if not isinstance(selector_lock, SelectorLock):
+        raise ValueError("selector_lock must be a SelectorLock")
+    assignments: list[SelectorAssignment] = []
+    for runtime in sorted(runtime_episodes, key=lambda episode: episode.key):
+        selector_input = runtime.selector_input
+        heading = quantize_heading(selector_input.start_direction)
+        if selector_input.schema_valid:
+            primary = selector_lock.chosen_mapping.angle_for(selector_input.start_direction)
+            global_angle = selector_lock.chosen_global_angle
+            direct_angle, direct_margin = direct_heading_assignment(selector_input)
+        else:
+            primary = 0.0
+            global_angle = 0.0
+            direct_angle = 0.0
+            direct_margin = 0.0
+        assignments.append(
+            SelectorAssignment(
+                runtime.key,
+                selector_input.schema_valid,
+                heading,
+                primary,
+                global_angle,
+                direct_angle,
+                direct_margin,
+            )
+        )
+    return tuple(assignments)
+
+
+def _format_float(value: float) -> str:
+    finite = _require_finite_float(value, "CSV float")
+    return "0" if finite == 0.0 else format(finite, ".17g")
+
+
+def assignment_csv_bytes(assignments: Sequence[SelectorAssignment]) -> bytes:
+    """Return canonical, sorted target-free assignment evidence bytes."""
+    if not all(isinstance(assignment, SelectorAssignment) for assignment in assignments):
+        raise ValueError("assignments must contain SelectorAssignment values")
+    ordered = tuple(sorted(assignments, key=lambda assignment: assignment.key))
+    if len({assignment.key for assignment in ordered}) != len(ordered):
+        raise ValueError("assignments must have unique EpisodeKey values")
+    stream = StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(_ASSIGNMENT_HEADER)
+    for assignment in ordered:
+        writer.writerow(
+            (
+                assignment.key.scene_id,
+                assignment.key.example_id,
+                "true" if assignment.schema_valid else "false",
+                _format_float(assignment.heading_bin_degrees),
+                _format_float(assignment.primary_angle_degrees),
+                _format_float(assignment.global_angle_degrees),
+                _format_float(assignment.direct_angle_degrees),
+                _format_float(assignment.direct_margin),
+            )
+        )
+    return stream.getvalue().encode("utf-8")
