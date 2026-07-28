@@ -1,5 +1,10 @@
 # RGB-D Segmenter Benchmark Design
 
+> Operational details are frozen by
+> `2026-07-28-rgbd-segmenter-benchmark-contract.md`, which supersedes ambiguous
+> cohort, branch, metric, latency, statistics, provenance, and gate language in
+> this design.
+
 ## Purpose
 
 Select a deployable RGB-D perception front end to replace the GT semantic
