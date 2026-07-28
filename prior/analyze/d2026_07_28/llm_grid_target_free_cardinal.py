@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, replace
+from enum import Enum
 from hashlib import sha256
 from io import StringIO
 from numbers import Integral, Real
@@ -15,6 +16,7 @@ from numpy.typing import NDArray
 
 from prior.analyze.llm_grid_registration import (
     WarpedGrid,
+    direction_cosine,
     rotate_direction_vectors,
     score_warped_grid,
     warp_grid_about_pivot,
@@ -862,3 +864,455 @@ def assignment_csv_bytes(assignments: Sequence[SelectorAssignment]) -> bytes:
             )
         )
     return stream.getvalue().encode("utf-8")
+
+
+@dataclass(frozen=True)
+class AngleScoreRow:
+    key: EpisodeKey
+    angle_degrees: float
+    all_iou: float
+    object_iou: float
+    region_iou: float
+    direction_cosine: float
+    predicted_support: int
+    target_support: int
+    in_frame_support: int
+    out_of_frame_support: int
+    union: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, EpisodeKey):
+            raise ValueError("key must be an EpisodeKey")
+        object.__setattr__(
+            self, "angle_degrees", _require_cardinal_angle(self.angle_degrees, "angle_degrees")
+        )
+        for name in ("all_iou", "object_iou", "region_iou"):
+            value = _require_finite_float(getattr(self, name), name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [0, 1]")
+            object.__setattr__(self, name, value)
+        cosine = _require_finite_float(self.direction_cosine, "direction_cosine")
+        if not -1.0 <= cosine <= 1.0:
+            raise ValueError("direction_cosine must be within [-1, 1]")
+        object.__setattr__(self, "direction_cosine", cosine)
+        supports = tuple(
+            _require_nonnegative_int(getattr(self, name), name)
+            for name in (
+                "predicted_support",
+                "target_support",
+                "in_frame_support",
+                "out_of_frame_support",
+                "union",
+            )
+        )
+        if supports[2] + supports[3] != supports[0]:
+            raise ValueError("frame supports must partition predicted_support")
+        for name, value in zip(
+            (
+                "predicted_support",
+                "target_support",
+                "in_frame_support",
+                "out_of_frame_support",
+                "union",
+            ),
+            supports,
+        ):
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True)
+class EpisodeScoreRow:
+    key: EpisodeKey
+    schema_valid: bool
+    heading_bin_degrees: float
+    primary_angle_degrees: float
+    global_angle_degrees: float
+    direct_angle_degrees: float
+    identity_iou: float
+    primary_iou: float
+    global_iou: float
+    direct_iou: float
+    random_expected_iou: float
+    soft_identity_iou: float
+    soft_aggregate_iou: float
+    oracle_iou: float
+    identity_object_iou: float
+    primary_object_iou: float
+    identity_region_iou: float
+    primary_region_iou: float
+    primary_predicted_support: int
+    primary_target_support: int
+    primary_in_frame_support: int
+    primary_out_of_frame_support: int
+    primary_union: int
+    soft_prediction_mass: float
+    soft_target_mass: float
+    soft_intersection_mass: float
+    soft_union_mass: float
+    primary_direction_cosine: float
+    direct_direction_cosine: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, EpisodeKey):
+            raise ValueError("key must be an EpisodeKey")
+        _require_boolean(self.schema_valid, "schema_valid")
+        for name in (
+            "heading_bin_degrees",
+            "primary_angle_degrees",
+            "global_angle_degrees",
+            "direct_angle_degrees",
+        ):
+            object.__setattr__(self, name, _require_cardinal_angle(getattr(self, name), name))
+        for name in (
+            "identity_iou",
+            "primary_iou",
+            "global_iou",
+            "direct_iou",
+            "random_expected_iou",
+            "soft_identity_iou",
+            "soft_aggregate_iou",
+            "oracle_iou",
+            "identity_object_iou",
+            "primary_object_iou",
+            "identity_region_iou",
+            "primary_region_iou",
+        ):
+            value = _require_finite_float(getattr(self, name), name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [0, 1]")
+            object.__setattr__(self, name, value)
+        supports = tuple(
+            _require_nonnegative_int(getattr(self, name), name)
+            for name in (
+                "primary_predicted_support",
+                "primary_target_support",
+                "primary_in_frame_support",
+                "primary_out_of_frame_support",
+                "primary_union",
+            )
+        )
+        if supports[2] + supports[3] != supports[0]:
+            raise ValueError("primary frame supports must partition predicted_support")
+        for name, value in zip(
+            (
+                "primary_predicted_support",
+                "primary_target_support",
+                "primary_in_frame_support",
+                "primary_out_of_frame_support",
+                "primary_union",
+            ),
+            supports,
+        ):
+            object.__setattr__(self, name, value)
+        masses = tuple(
+            _require_finite_float(getattr(self, name), name)
+            for name in (
+                "soft_prediction_mass",
+                "soft_target_mass",
+                "soft_intersection_mass",
+                "soft_union_mass",
+            )
+        )
+        if any(value < 0.0 for value in masses) or masses[2] > masses[3]:
+            raise ValueError("soft masses must be nonnegative with intersection at most union")
+        for name, value in zip(
+            (
+                "soft_prediction_mass",
+                "soft_target_mass",
+                "soft_intersection_mass",
+                "soft_union_mass",
+            ),
+            masses,
+        ):
+            object.__setattr__(self, name, value)
+        for name in ("primary_direction_cosine", "direct_direction_cosine"):
+            value = _require_finite_float(getattr(self, name), name)
+            if not -1.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [-1, 1]")
+            object.__setattr__(self, name, value)
+
+
+def _family_score(warped: WarpedGrid, target: NDArray[np.bool_], start: int, end: int) -> float:
+    family = warped.grid[start:end]
+    return score_warped_grid(
+        WarpedGrid(family, warped.bounds, int(np.count_nonzero(family))), target[start:end]
+    ).iou
+
+
+def score_population(
+    targets: Sequence[TargetEpisode], assignments: Sequence[SelectorAssignment]
+) -> tuple[tuple[AngleScoreRow, ...], tuple[EpisodeScoreRow, ...]]:
+    """Score sealed assignments using all four precomputed cardinal warps per episode."""
+    if not targets or not all(isinstance(target, TargetEpisode) for target in targets):
+        raise ValueError("targets must contain TargetEpisode values")
+    if not all(isinstance(assignment, SelectorAssignment) for assignment in assignments):
+        raise ValueError("assignments must contain SelectorAssignment values")
+    target_by_key = {target.runtime.key: target for target in targets}
+    assignment_by_key = {assignment.key: assignment for assignment in assignments}
+    if len(target_by_key) != len(targets) or len(assignment_by_key) != len(assignments):
+        raise ValueError("targets and assignments must have unique EpisodeKey values")
+    if set(target_by_key) != set(assignment_by_key):
+        raise ValueError("target and assignment keys must exactly match")
+
+    angle_rows: list[AngleScoreRow] = []
+    episode_rows: list[EpisodeScoreRow] = []
+    for key in sorted(target_by_key):
+        target = target_by_key[key]
+        assignment = assignment_by_key[key]
+        runtime = target.runtime
+        if assignment.schema_valid != runtime.selector_input.schema_valid:
+            raise ValueError("assignment schema_valid must match its target runtime")
+        warps = tuple(
+            warp_grid_about_pivot(runtime.selector_input.predicted_grid, runtime.start_pivot, angle)
+            for angle in ANGLE_ORDER
+        )
+        rows_by_angle: dict[float, AngleScoreRow] = {}
+        for angle, warped in zip(ANGLE_ORDER, warps):
+            raster = score_warped_grid(warped, target.target_grid)
+            row = AngleScoreRow(
+                key,
+                angle,
+                raster.iou,
+                _family_score(warped, target.target_grid, 0, _OBJECT_CHANNEL_COUNT),
+                _family_score(warped, target.target_grid, _OBJECT_CHANNEL_COUNT, 37),
+                direction_cosine(
+                    rotate_direction_vectors(runtime.selector_input.predicted_directions, angle),
+                    target.target_directions,
+                ),
+                raster.predicted_support,
+                raster.target_support,
+                raster.in_frame_support,
+                raster.out_of_frame_support,
+                raster.union,
+            )
+            rows_by_angle[angle] = row
+            angle_rows.append(row)
+        identity = rows_by_angle[0.0]
+        primary = rows_by_angle[assignment.primary_angle_degrees]
+        global_row = rows_by_angle[assignment.global_angle_degrees]
+        direct = rows_by_angle[assignment.direct_angle_degrees]
+        soft = uniform_soft_score(warps, target.target_grid)
+        episode_rows.append(
+            EpisodeScoreRow(
+                key,
+                assignment.schema_valid,
+                assignment.heading_bin_degrees,
+                assignment.primary_angle_degrees,
+                assignment.global_angle_degrees,
+                assignment.direct_angle_degrees,
+                identity.all_iou,
+                primary.all_iou,
+                global_row.all_iou,
+                direct.all_iou,
+                float(np.mean([row.all_iou for row in rows_by_angle.values()])),
+                identity.all_iou,
+                soft.iou,
+                max(row.all_iou for row in rows_by_angle.values()),
+                identity.object_iou,
+                primary.object_iou,
+                identity.region_iou,
+                primary.region_iou,
+                primary.predicted_support,
+                primary.target_support,
+                primary.in_frame_support,
+                primary.out_of_frame_support,
+                primary.union,
+                soft.predicted_mass,
+                soft.target_mass,
+                soft.intersection_mass,
+                soft.union_mass,
+                primary.direction_cosine,
+                direct.direction_cosine,
+            )
+        )
+    return tuple(angle_rows), tuple(episode_rows)
+
+
+@dataclass(frozen=True)
+class ContrastInterval:
+    mean: float
+    ci_lower: float
+    ci_upper: float
+    loso_min: float
+    loso_max: float
+
+    def __post_init__(self) -> None:
+        for name in ("mean", "ci_lower", "ci_upper", "loso_min", "loso_max"):
+            object.__setattr__(self, name, _require_finite_float(getattr(self, name), name))
+        if self.ci_lower > self.ci_upper:
+            raise ValueError("ci_lower must not exceed ci_upper")
+        if self.loso_min > self.loso_max:
+            raise ValueError("loso_min must not exceed loso_max")
+
+
+@dataclass(frozen=True)
+class BootstrapIntervals:
+    primary_identity: ContrastInterval
+    primary_global: ContrastInterval
+    global_identity: ContrastInterval
+    direct_identity: ContrastInterval
+    soft_aggregate_identity: ContrastInterval
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, ContrastInterval) for value in self.__dict__.values()):
+            raise ValueError("bootstrap intervals must contain ContrastInterval values")
+
+
+def _contrast_values(rows: Sequence[EpisodeScoreRow], contrast_name: str) -> tuple[float, ...]:
+    attributes = {
+        "primary_identity": ("primary_iou", "identity_iou"),
+        "primary_global": ("primary_iou", "global_iou"),
+        "global_identity": ("global_iou", "identity_iou"),
+        "direct_identity": ("direct_iou", "identity_iou"),
+        "soft_aggregate_identity": ("soft_aggregate_iou", "soft_identity_iou"),
+    }
+    if contrast_name not in attributes:
+        raise ValueError("contrast_name must be a declared contrast")
+    positive, baseline = attributes[contrast_name]
+    return tuple(float(getattr(row, positive) - getattr(row, baseline)) for row in rows)
+
+
+def _validated_score_rows(rows: Sequence[EpisodeScoreRow]) -> tuple[EpisodeScoreRow, ...]:
+    if not rows or not all(isinstance(row, EpisodeScoreRow) for row in rows):
+        raise ValueError("rows must contain EpisodeScoreRow values")
+    ordered = tuple(sorted(rows, key=lambda row: row.key))
+    if len({row.key for row in ordered}) != len(ordered):
+        raise ValueError("rows must have unique EpisodeKey values")
+    return ordered
+
+
+def leave_one_scene_out(rows: Sequence[EpisodeScoreRow], contrast_name: str) -> tuple[float, float]:
+    """Return the episode-macro contrast range after omitting each scene once."""
+    ordered = _validated_score_rows(rows)
+    values = _contrast_values(ordered, contrast_name)
+    scene_ids = tuple(sorted({row.key.scene_id for row in ordered}))
+    if len(scene_ids) < 2:
+        raise ValueError("leave-one-scene-out requires at least two scenes")
+    means = tuple(
+        float(np.mean([value for row, value in zip(ordered, values) if row.key.scene_id != scene_id]))
+        for scene_id in scene_ids
+    )
+    return min(means), max(means)
+
+
+def paired_scene_bootstrap(
+    rows: Sequence[EpisodeScoreRow], repetitions: int, seed: int
+) -> BootstrapIntervals:
+    """Estimate every frozen contrast from one shared paired scene bootstrap."""
+    ordered = _validated_score_rows(rows)
+    repetitions = _require_nonnegative_int(repetitions, "repetitions")
+    if repetitions == 0:
+        raise ValueError("repetitions must be positive")
+    if isinstance(seed, bool) or not isinstance(seed, Integral):
+        raise ValueError("seed must be an integer")
+    scene_ids = tuple(sorted({row.key.scene_id for row in ordered}))
+    draws = np.random.default_rng(int(seed)).integers(
+        0, len(scene_ids), size=(repetitions, len(scene_ids))
+    )
+    multiplicities = np.asarray(
+        [np.count_nonzero(draws == index, axis=1) for index in range(len(scene_ids))],
+        dtype=np.int64,
+    ).T
+    scene_counts = np.asarray(
+        [sum(row.key.scene_id == scene_id for row in ordered) for scene_id in scene_ids],
+        dtype=np.int64,
+    )
+    denominator = multiplicities @ scene_counts
+    intervals: list[ContrastInterval] = []
+    for name in (
+        "primary_identity",
+        "primary_global",
+        "global_identity",
+        "direct_identity",
+        "soft_aggregate_identity",
+    ):
+        values = _contrast_values(ordered, name)
+        scene_sums = np.asarray(
+            [
+                sum(value for row, value in zip(ordered, values) if row.key.scene_id == scene_id)
+                for scene_id in scene_ids
+            ],
+            dtype=np.float64,
+        )
+        replicates = (multiplicities @ scene_sums) / denominator
+        ci_lower, ci_upper = np.percentile(replicates, (2.5, 97.5))
+        loso_min, loso_max = leave_one_scene_out(ordered, name)
+        intervals.append(
+            ContrastInterval(
+                float(np.mean(values)), float(ci_lower), float(ci_upper), loso_min, loso_max
+            )
+        )
+    return BootstrapIntervals(*intervals)
+
+
+class DecisionLabel(str, Enum):
+    SELECTOR_GO = "SELECTOR GO"
+    FIXED_CORRECTION_GO = "FIXED-CORRECTION GO"
+    PARTIAL = "PARTIAL"
+    NO_GO = "NO GO"
+
+
+@dataclass(frozen=True)
+class DecisionResult:
+    label: DecisionLabel
+    selector_conditions: tuple[bool, ...]
+    global_conditions: tuple[bool, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.label, DecisionLabel):
+            raise ValueError("label must be a DecisionLabel")
+        if not all(isinstance(value, bool) for value in self.selector_conditions + self.global_conditions):
+            raise ValueError("decision conditions must be booleans")
+
+
+def classify_decision(
+    selector_identity: ContrastInterval,
+    selector_global: ContrastInterval,
+    global_identity: ContrastInterval,
+    selector_object_mean: float = 1.0,
+    selector_region_mean: float = 1.0,
+    global_object_mean: float = 1.0,
+    global_region_mean: float = 1.0,
+    audit_passed: bool = False,
+) -> DecisionResult:
+    """Classify the preregistered selector result in its frozen precedence order."""
+    if not all(
+        isinstance(interval, ContrastInterval)
+        for interval in (selector_identity, selector_global, global_identity)
+    ):
+        raise ValueError("contrasts must be ContrastInterval values")
+    _require_boolean(audit_passed, "audit_passed")
+    selector_semantic = (
+        _require_finite_float(selector_object_mean, "selector_object_mean") > 0.0
+        and _require_finite_float(selector_region_mean, "selector_region_mean") > 0.0
+    )
+    global_semantic = (
+        _require_finite_float(global_object_mean, "global_object_mean") > 0.0
+        and _require_finite_float(global_region_mean, "global_region_mean") > 0.0
+    )
+    selector_conditions = (
+        selector_identity.mean >= 0.01,
+        selector_identity.ci_lower > 0.0,
+        selector_semantic,
+        selector_identity.loso_min > 0.0,
+        selector_global.ci_lower > 0.0,
+        audit_passed,
+    )
+    global_conditions = (
+        global_identity.mean >= 0.01,
+        global_identity.ci_lower > 0.0,
+        global_semantic,
+        global_identity.loso_min > 0.0,
+        audit_passed,
+    )
+    if all(selector_conditions):
+        label = DecisionLabel.SELECTOR_GO
+    elif all(global_conditions):
+        label = DecisionLabel.FIXED_CORRECTION_GO
+    elif (
+        selector_identity.mean >= 0.01 and selector_identity.ci_lower > 0.0
+    ) or (global_identity.mean >= 0.01 and global_identity.ci_lower > 0.0):
+        label = DecisionLabel.PARTIAL
+    else:
+        label = DecisionLabel.NO_GO
+    return DecisionResult(label, selector_conditions, global_conditions)

@@ -521,3 +521,187 @@ def test_assignment_csv_uses_exact_float_boolean_and_target_independent_bytes() 
     assert target_free.assignment_csv_bytes((assignment,)) == baseline
     assert b"1.2345678901234567" in baseline
     assert b"true" in baseline
+
+
+def _two_family_target_episode(
+    *, scene_id: str = "scene-a", example_id: str = "episode-a", schema_valid: bool = True
+) -> tuple[target_free.TargetEpisode, target_free.SelectorAssignment]:
+    """Build a literal two-family raster whose cardinal scores are hand-checkable."""
+    prediction = np.zeros((37, 50, 50), dtype=np.bool_)
+    prediction[0, 24, 25] = True
+    prediction[27, 25, 26] = True
+    runtime = target_free.RuntimeEpisode(
+        key=target_free.EpisodeKey(scene_id, example_id),
+        split="val_unseen",
+        selector_input=target_free.SelectorInput(
+            schema_valid=schema_valid,
+            start_direction=np.asarray([0.0, 1.0], dtype=np.float32),
+            predicted_grid=prediction if schema_valid else empty_target(),
+            predicted_directions=(
+                np.asarray(
+                    [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+                    dtype=np.float32,
+                )
+                if schema_valid
+                else np.zeros((5, 2), dtype=np.float32)
+            ),
+        ),
+        start_pivot=(25.0, 25.0),
+    )
+    target_grid = empty_target()
+    target_grid[0, 25, 24] = True
+    target_grid[27, 25, 26] = True
+    target = target_free.TargetEpisode(
+        runtime,
+        target_grid,
+        np.asarray(
+            [[-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
+    assignment = target_free.SelectorAssignment(
+        runtime.key,
+        schema_valid,
+        0.0,
+        180.0 if schema_valid else 0.0,
+        0.0,
+        90.0 if schema_valid else 0.0,
+        1.0 if schema_valid else 0.0,
+    )
+    return target, assignment
+
+
+def test_score_population_emits_canonical_cardinal_and_episode_endpoints() -> None:
+    """Breaks if a target score omits a frozen endpoint or reselects an angle."""
+    target, assignment = _two_family_target_episode()
+
+    angle_rows, episode_rows = target_free.score_population((target,), (assignment,))
+
+    assert [row.angle_degrees for row in angle_rows] == list(target_free.ANGLE_ORDER)
+    assert [row.key for row in angle_rows] == [target.runtime.key] * 4
+    assert [(row.all_iou, row.object_iou, row.region_iou) for row in angle_rows] == [
+        pytest.approx((1.0 / 3.0, 0.0, 1.0)),
+        pytest.approx((0.0, 0.0, 0.0)),
+        pytest.approx((1.0 / 3.0, 1.0, 0.0)),
+        pytest.approx((0.0, 0.0, 0.0)),
+    ]
+    assert [(row.predicted_support, row.target_support, row.in_frame_support, row.out_of_frame_support, row.union) for row in angle_rows] == [
+        (2, 2, 2, 0, 3),
+        (2, 2, 2, 0, 4),
+        (2, 2, 2, 0, 3),
+        (2, 2, 2, 0, 4),
+    ]
+    assert [row.direction_cosine for row in angle_rows] == pytest.approx((-1.0, 0.0, 1.0, 0.0))
+
+    assert len(episode_rows) == 1
+    row = episode_rows[0]
+    assert row.key == target.runtime.key
+    assert (row.identity_iou, row.primary_iou, row.global_iou, row.direct_iou) == pytest.approx(
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0)
+    )
+    assert row.random_expected_iou == pytest.approx(1.0 / 6.0)
+    assert (row.soft_identity_iou, row.soft_aggregate_iou, row.oracle_iou) == pytest.approx(
+        (1.0 / 3.0, 1.0 / 7.0, 1.0 / 3.0)
+    )
+    assert (row.identity_object_iou, row.primary_object_iou) == pytest.approx((0.0, 1.0))
+    assert (row.identity_region_iou, row.primary_region_iou) == pytest.approx((1.0, 0.0))
+    assert (row.primary_predicted_support, row.primary_target_support) == (2, 2)
+    assert (row.primary_in_frame_support, row.primary_out_of_frame_support, row.primary_union) == (2, 0, 3)
+    assert (row.soft_prediction_mass, row.soft_target_mass, row.soft_intersection_mass, row.soft_union_mass) == pytest.approx(
+        (2.0, 2.0, 0.5, 3.5)
+    )
+    assert (row.primary_direction_cosine, row.direct_direction_cosine) == pytest.approx((1.0, 0.0))
+
+
+def test_score_population_keeps_invalid_empty_denominator_rows_and_rejects_key_mismatch() -> None:
+    """Breaks if invalid episodes disappear or targets and sealed assignments drift."""
+    invalid_target, invalid_assignment = _two_family_target_episode(schema_valid=False)
+
+    angle_rows, episode_rows = target_free.score_population((invalid_target,), (invalid_assignment,))
+
+    assert len(angle_rows) == 4
+    assert len(episode_rows) == 1
+    assert {row.all_iou for row in angle_rows} == {0.0}
+    assert episode_rows[0].oracle_iou == 0.0
+    wrong_assignment = target_free.SelectorAssignment(
+        target_free.EpisodeKey("other-scene", "other-episode"), True, 0.0, 0.0, 0.0, 0.0, 0.0
+    )
+    with pytest.raises(ValueError, match="exactly match"):
+        target_free.score_population((invalid_target,), (wrong_assignment,))
+
+
+def _episode_score_row(
+    scene_id: str,
+    example_id: str,
+    *,
+    identity_iou: float,
+    primary_iou: float,
+    global_iou: float,
+    direct_iou: float | None = None,
+    soft_aggregate_iou: float | None = None,
+) -> target_free.EpisodeScoreRow:
+    """Build an otherwise-neutral score row with explicit contrast endpoints."""
+    direct = identity_iou if direct_iou is None else direct_iou
+    soft = identity_iou if soft_aggregate_iou is None else soft_aggregate_iou
+    return target_free.EpisodeScoreRow(
+        target_free.EpisodeKey(scene_id, example_id), True, 0.0, 0.0, 0.0, 0.0,
+        identity_iou, primary_iou, global_iou, direct, (identity_iou + primary_iou + global_iou + direct) / 4.0,
+        identity_iou, soft, max(identity_iou, primary_iou, global_iou, direct),
+        identity_iou, primary_iou, identity_iou, primary_iou,
+        1, 1, 1, 0, 1, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+    )
+
+
+def test_paired_scene_bootstrap_uses_shared_duplicate_scene_resamples() -> None:
+    """Breaks if scenes are independently resampled or unequal sizes become scene-macro."""
+    rows = (
+        _episode_score_row("scene-a", "one", identity_iou=0.2, primary_iou=0.2, global_iou=0.1),
+        _episode_score_row("scene-a", "two", identity_iou=0.2, primary_iou=0.4, global_iou=0.2),
+        _episode_score_row("scene-b", "one", identity_iou=0.2, primary_iou=1.0, global_iou=0.2),
+    )
+
+    intervals = target_free.paired_scene_bootstrap(rows, repetitions=10_000, seed=42)
+
+    draws = np.random.default_rng(42).integers(0, 2, size=(10_000, 2))
+    multiplicities = np.stack(((draws == 0).sum(axis=1), (draws == 1).sum(axis=1)), axis=1)
+    expected = (multiplicities @ np.asarray((0.2, 0.8))) / (multiplicities @ np.asarray((2, 1)))
+    assert intervals.primary_identity.mean == pytest.approx(1.0 / 3.0)
+    assert (intervals.primary_identity.ci_lower, intervals.primary_identity.ci_upper) == pytest.approx(
+        tuple(np.percentile(expected, (2.5, 97.5)))
+    )
+    expected_primary_global = (multiplicities @ np.asarray((0.3, 0.8))) / (
+        multiplicities @ np.asarray((2, 1))
+    )
+    assert (intervals.primary_global.ci_lower, intervals.primary_global.ci_upper) == pytest.approx(
+        tuple(np.percentile(expected_primary_global, (2.5, 97.5)))
+    )
+    assert intervals.global_identity.mean == pytest.approx(-1.0 / 30.0)
+
+
+def test_leave_one_scene_out_uses_episode_macro_paired_difference() -> None:
+    """Breaks if LOSO averages scene means or subtracts independent aggregates."""
+    rows = (
+        _episode_score_row("scene-a", "one", identity_iou=0.2, primary_iou=0.2, global_iou=0.1),
+        _episode_score_row("scene-a", "two", identity_iou=0.2, primary_iou=0.4, global_iou=0.2),
+        _episode_score_row("scene-b", "one", identity_iou=0.2, primary_iou=1.0, global_iou=0.2),
+    )
+
+    assert target_free.leave_one_scene_out(rows, "primary_identity") == pytest.approx((0.1, 0.8))
+    with pytest.raises(ValueError, match="at least two"):
+        target_free.leave_one_scene_out(rows[:2], "primary_identity")
+
+
+def _contrast(
+    *, mean: float = 0.02, ci_lower: float = 0.001, loso_min: float = 0.001
+) -> target_free.ContrastInterval:
+    return target_free.ContrastInterval(mean, ci_lower, 0.1, loso_min, 0.2)
+
+
+def test_decision_gate_is_mutually_exclusive_with_frozen_precedence() -> None:
+    """Breaks if any decision predicate is reordered, weakened, or uses inclusive zero."""
+    selector = _contrast()
+    global_interval = _contrast()
+    assert target_free.classify_decision(selector, selector, global_interval, 0.01, 0.01, 0.01, 0.01, True).label is target_free.DecisionLabel.SELECTOR_GO
+    assert target_free.classify_decision(selector, _contrast(ci_lower=0.0), global_interval, 0.01, 0.01, 0.01, 0.01, True).label is target_free.DecisionLabel.FIXED_CORRECTION_GO
+    assert target_free.classify_decision(_contrast(loso_min=0.0), selector, global_interval, 0.01, 0.01, 0.0, 0.0, True).label is target_free.DecisionLabel.PARTIAL
+    assert target_free.classify_decision(_contrast(mean=0.009, ci_lower=0.005), _contrast(mean=0.0, ci_lower=0.0), _contrast(mean=0.0, ci_lower=0.0), 0.0, 0.0, 0.0, 0.0, True).label is target_free.DecisionLabel.NO_GO
