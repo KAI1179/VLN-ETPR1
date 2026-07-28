@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from collections import Counter
+import csv
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
+from io import BytesIO, StringIO
+import json
 from numbers import Integral, Real
 from pathlib import Path
+import subprocess
 from typing import Dict, Mapping, Optional, Sequence, Set, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from tap import Tap
@@ -50,6 +55,73 @@ _DEFAULT_COGNITIVE_MAP_NAMESPACE = "gt.legacy.r1p5.direction5.v1"
 _DEFAULT_SHUFFLE_SEED = 43
 _DEFAULT_BOOTSTRAP_REPETITIONS = 10_000
 _DEFAULT_BOOTSTRAP_SEED = 42
+
+_ANGLE_SCORE_HEADER = (
+    "split",
+    "scene_id",
+    "example_id",
+    "schema_valid",
+    "pivot_mode",
+    "pivot_row",
+    "pivot_column",
+    "donor_example_id",
+    "angle_degrees",
+    "bounds_row_min",
+    "bounds_row_max",
+    "bounds_col_min",
+    "bounds_col_max",
+    "object_input_support",
+    "object_intersection",
+    "object_union",
+    "object_predicted_support",
+    "object_target_support",
+    "object_in_frame_support",
+    "object_out_of_frame_support",
+    "object_iou",
+    "region_input_support",
+    "region_intersection",
+    "region_union",
+    "region_predicted_support",
+    "region_target_support",
+    "region_in_frame_support",
+    "region_out_of_frame_support",
+    "region_iou",
+)
+_CROSSFIT_RESULT_HEADER = (
+    "split",
+    "scene_id",
+    "example_id",
+    "schema_valid",
+    "pivot_mode",
+    "pivot_row",
+    "pivot_column",
+    "donor_example_id",
+    "direction",
+    "selected_angle_degrees",
+    "second_angle_degrees",
+    "selector_identity_iou",
+    "selector_selected_iou",
+    "selector_second_iou",
+    "selector_margin",
+    "heldout_identity_iou",
+    "heldout_selected_iou",
+    "delta_iou",
+    "selector_predicted_support_empty",
+    "selector_target_support_empty",
+    "selector_union_empty",
+    "heldout_predicted_support_empty",
+    "heldout_target_support_empty",
+    "heldout_union_empty",
+)
+_PIVOT_ASSIGNMENT_HEADER = (
+    "scene_id",
+    "example_id",
+    "donor_example_id",
+    "true_pivot_row",
+    "true_pivot_column",
+    "assigned_pivot_row",
+    "assigned_pivot_column",
+)
 
 
 class CrossFitArgs(Tap):
@@ -133,6 +205,45 @@ class GateDecision(str, Enum):
     GO = "GO"
     PARTIAL_EVIDENCE = "partial_evidence"
     NO_GO = "NO_GO"
+
+
+@dataclass(frozen=True)
+class _GateConditions:
+    true_start_symmetric_mean_at_least_0_01: bool
+    true_start_symmetric_ci_lower_above_zero: bool
+    both_true_start_directional_means_above_zero: bool
+    true_start_minus_map_center_ci_lower_above_zero: bool
+    true_start_minus_shuffled_ci_lower_above_zero: bool
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.true_start_symmetric_mean_at_least_0_01,
+            self.true_start_symmetric_ci_lower_above_zero,
+            self.both_true_start_directional_means_above_zero,
+            self.true_start_minus_map_center_ci_lower_above_zero,
+            self.true_start_minus_shuffled_ci_lower_above_zero,
+        ):
+            if not isinstance(value, bool):
+                raise ValueError("gate conditions must be booleans")
+
+    def payload(self) -> Dict[str, object]:
+        return {
+            "true_start_symmetric_mean_at_least_0_01": (
+                self.true_start_symmetric_mean_at_least_0_01
+            ),
+            "true_start_symmetric_ci_lower_above_zero": (
+                self.true_start_symmetric_ci_lower_above_zero
+            ),
+            "both_true_start_directional_means_above_zero": (
+                self.both_true_start_directional_means_above_zero
+            ),
+            "true_start_minus_map_center_ci_lower_above_zero": (
+                self.true_start_minus_map_center_ci_lower_above_zero
+            ),
+            "true_start_minus_shuffled_ci_lower_above_zero": (
+                self.true_start_minus_shuffled_ci_lower_above_zero
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -1262,3 +1373,1504 @@ def classify_gate(
     ):
         return GateDecision.GO
     return GateDecision.PARTIAL_EVIDENCE
+
+
+def _gate_conditions(estimates: InferenceEstimates) -> _GateConditions:
+    return _GateConditions(
+        true_start_symmetric_mean_at_least_0_01=(
+            estimates.true_start_symmetric.mean >= 0.01
+        ),
+        true_start_symmetric_ci_lower_above_zero=(
+            estimates.true_start_symmetric.ci_lower > 0.0
+        ),
+        both_true_start_directional_means_above_zero=(
+            estimates.true_start_object_to_region.mean > 0.0
+            and estimates.true_start_region_to_object.mean > 0.0
+        ),
+        true_start_minus_map_center_ci_lower_above_zero=(
+            estimates.true_start_minus_map_center.ci_lower > 0.0
+        ),
+        true_start_minus_shuffled_ci_lower_above_zero=(
+            estimates.true_start_minus_shuffled.ci_lower > 0.0
+        ),
+    )
+
+
+def _angle_score_rows(
+    results: Sequence[EpisodePivotResult],
+) -> tuple[Dict[str, object], ...]:
+    rows: list[Dict[str, object]] = []
+    for result in results:
+        for angle_score in result.angle_scores:
+            object_score = angle_score.object_score
+            region_score = angle_score.region_score
+            rows.append(
+                {
+                    "split": result.split,
+                    "scene_id": result.scene_id,
+                    "example_id": result.example_id,
+                    "schema_valid": result.schema_valid,
+                    "pivot_mode": result.pivot_mode.value,
+                    "pivot_row": result.pivot[0],
+                    "pivot_column": result.pivot[1],
+                    "donor_example_id": result.donor_example_id or "",
+                    "angle_degrees": angle_score.angle_degrees,
+                    "bounds_row_min": angle_score.bounds.row_min,
+                    "bounds_row_max": angle_score.bounds.row_max,
+                    "bounds_col_min": angle_score.bounds.col_min,
+                    "bounds_col_max": angle_score.bounds.col_max,
+                    "object_input_support": angle_score.object_input_support,
+                    "object_intersection": object_score.intersection,
+                    "object_union": object_score.union,
+                    "object_predicted_support": object_score.predicted_support,
+                    "object_target_support": object_score.target_support,
+                    "object_in_frame_support": object_score.in_frame_support,
+                    "object_out_of_frame_support": object_score.out_of_frame_support,
+                    "object_iou": object_score.iou,
+                    "region_input_support": angle_score.region_input_support,
+                    "region_intersection": region_score.intersection,
+                    "region_union": region_score.union,
+                    "region_predicted_support": region_score.predicted_support,
+                    "region_target_support": region_score.target_support,
+                    "region_in_frame_support": region_score.in_frame_support,
+                    "region_out_of_frame_support": region_score.out_of_frame_support,
+                    "region_iou": region_score.iou,
+                }
+            )
+    return tuple(rows)
+
+
+def _crossfit_result_rows(
+    results: Sequence[EpisodePivotResult],
+) -> tuple[Dict[str, object], ...]:
+    rows: list[Dict[str, object]] = []
+    for episode_result in results:
+        for result in (
+            episode_result.object_to_region,
+            episode_result.region_to_object,
+        ):
+            rows.append(
+                {
+                    "split": episode_result.split,
+                    "scene_id": episode_result.scene_id,
+                    "example_id": episode_result.example_id,
+                    "schema_valid": episode_result.schema_valid,
+                    "pivot_mode": episode_result.pivot_mode.value,
+                    "pivot_row": episode_result.pivot[0],
+                    "pivot_column": episode_result.pivot[1],
+                    "donor_example_id": episode_result.donor_example_id or "",
+                    "direction": result.direction.value,
+                    "selected_angle_degrees": result.selected_angle_degrees,
+                    "second_angle_degrees": result.second_angle_degrees,
+                    "selector_identity_iou": result.selector_identity_iou,
+                    "selector_selected_iou": result.selector_selected_iou,
+                    "selector_second_iou": result.selector_second_iou,
+                    "selector_margin": result.selector_margin,
+                    "heldout_identity_iou": result.heldout_identity_iou,
+                    "heldout_selected_iou": result.heldout_selected_iou,
+                    "delta_iou": result.delta_iou,
+                    "selector_predicted_support_empty": (
+                        result.selector_predicted_support_empty
+                    ),
+                    "selector_target_support_empty": (
+                        result.selector_target_support_empty
+                    ),
+                    "selector_union_empty": result.selector_union_empty,
+                    "heldout_predicted_support_empty": (
+                        result.heldout_predicted_support_empty
+                    ),
+                    "heldout_target_support_empty": (
+                        result.heldout_target_support_empty
+                    ),
+                    "heldout_union_empty": result.heldout_union_empty,
+                }
+            )
+    return tuple(rows)
+
+
+def _pivot_assignment_rows(
+    assignments: Sequence[PivotAssignment],
+) -> tuple[Dict[str, object], ...]:
+    return tuple(
+        {
+            "scene_id": assignment.scene_id,
+            "example_id": assignment.example_id,
+            "donor_example_id": assignment.donor_example_id,
+            "true_pivot_row": assignment.true_pivot[0],
+            "true_pivot_column": assignment.true_pivot[1],
+            "assigned_pivot_row": assignment.assigned_pivot[0],
+            "assigned_pivot_column": assignment.assigned_pivot[1],
+        }
+        for assignment in assignments
+    )
+
+
+def _csv_bytes(
+    header: tuple[str, ...],
+    rows: Sequence[Mapping[str, object]],
+) -> bytes:
+    stream = StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=header, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue().encode("utf-8")
+
+
+def _json_bytes(payload: Mapping[str, object]) -> bytes:
+    stream = StringIO()
+    json.dump(payload, stream, sort_keys=True, indent=2)
+    stream.write("\n")
+    return stream.getvalue().encode("utf-8")
+
+
+def _git_commit() -> str:
+    completed = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = completed.stdout.strip()
+    _require_nonempty_string(commit, "git commit")
+    return commit
+
+
+def _estimates_by_name(
+    estimates: InferenceEstimates,
+) -> Dict[str, EndpointEstimate]:
+    return {
+        "true_start_object_to_region": estimates.true_start_object_to_region,
+        "true_start_region_to_object": estimates.true_start_region_to_object,
+        "true_start_symmetric": estimates.true_start_symmetric,
+        "map_center_object_to_region": estimates.map_center_object_to_region,
+        "map_center_region_to_object": estimates.map_center_region_to_object,
+        "map_center_symmetric": estimates.map_center_symmetric,
+        "shuffled_start_object_to_region": (
+            estimates.shuffled_start_object_to_region
+        ),
+        "shuffled_start_region_to_object": (
+            estimates.shuffled_start_region_to_object
+        ),
+        "shuffled_start_symmetric": estimates.shuffled_start_symmetric,
+        "true_start_minus_map_center": estimates.true_start_minus_map_center,
+        "true_start_minus_shuffled": estimates.true_start_minus_shuffled,
+    }
+
+
+def _ranges_by_name(ranges: InferenceRanges) -> Dict[str, Tuple[float, float]]:
+    return {
+        "true_start_object_to_region": ranges.true_start_object_to_region,
+        "true_start_region_to_object": ranges.true_start_region_to_object,
+        "true_start_symmetric": ranges.true_start_symmetric,
+        "map_center_object_to_region": ranges.map_center_object_to_region,
+        "map_center_region_to_object": ranges.map_center_region_to_object,
+        "map_center_symmetric": ranges.map_center_symmetric,
+        "shuffled_start_object_to_region": (
+            ranges.shuffled_start_object_to_region
+        ),
+        "shuffled_start_region_to_object": (
+            ranges.shuffled_start_region_to_object
+        ),
+        "shuffled_start_symmetric": ranges.shuffled_start_symmetric,
+        "true_start_minus_map_center": ranges.true_start_minus_map_center,
+        "true_start_minus_shuffled": ranges.true_start_minus_shuffled,
+    }
+
+
+_EMPTY_RATE_NAMES = (
+    "selector_predicted_support_empty",
+    "selector_target_support_empty",
+    "selector_union_empty",
+    "heldout_predicted_support_empty",
+    "heldout_target_support_empty",
+    "heldout_union_empty",
+)
+
+
+def _direction_summary_payload(
+    mean: float,
+    angle_counts: Sequence[Tuple[float, int]],
+    empty_rates: Sequence[float],
+) -> Dict[str, object]:
+    return {
+        "mean_delta_iou": mean,
+        "selected_angle_counts": [
+            {"angle_degrees": angle, "episodes": count}
+            for angle, count in angle_counts
+        ],
+        "empty_rates": {
+            name: rate for name, rate in zip(_EMPTY_RATE_NAMES, empty_rates)
+        },
+    }
+
+
+def _summary_payload(
+    *,
+    population: Mapping[str, object],
+    summaries: Mapping[PivotMode, PivotSummary],
+    ranges: InferenceRanges,
+    estimates: InferenceEstimates,
+    gate_conditions: _GateConditions,
+    decision: GateDecision,
+) -> Dict[str, object]:
+    pivot_payload: Dict[str, object] = {}
+    for pivot_mode in _PIVOT_MODES:
+        summary = summaries[pivot_mode]
+        pivot_payload[pivot_mode.value] = {
+            Direction.OBJECT_TO_REGION.value: _direction_summary_payload(
+                summary.object_to_region_mean,
+                summary.object_to_region_angle_counts,
+                summary.object_to_region_empty_rates,
+            ),
+            Direction.REGION_TO_OBJECT.value: _direction_summary_payload(
+                summary.region_to_object_mean,
+                summary.region_to_object_angle_counts,
+                summary.region_to_object_empty_rates,
+            ),
+            "symmetric_mean_delta_iou": summary.symmetric_mean,
+        }
+    named_ranges = _ranges_by_name(ranges)
+    range_payload = {
+        name: {"minimum": bounds[0], "maximum": bounds[1]}
+        for name, bounds in named_ranges.items()
+    }
+    return {
+        "population": dict(population),
+        "pivots": pivot_payload,
+        "leave_one_scene_out_ranges": range_payload,
+        "start_specific_contrasts": {
+            "true_start_minus_map_center": {
+                "mean_delta_iou": estimates.true_start_minus_map_center.mean
+            },
+            "true_start_minus_shuffled": {
+                "mean_delta_iou": estimates.true_start_minus_shuffled.mean
+            },
+        },
+        "gate": {
+            "conditions": gate_conditions.payload(),
+            "decision": decision.value,
+        },
+    }
+
+
+def _bootstrap_payload(
+    estimates: InferenceEstimates, scene_count: int
+) -> Dict[str, object]:
+    endpoints = {
+        name: {
+            "mean": estimate.mean,
+            "ci_lower": estimate.ci_lower,
+            "ci_upper": estimate.ci_upper,
+            "leave_one_scene_out_min": estimate.leave_one_scene_out_min,
+            "leave_one_scene_out_max": estimate.leave_one_scene_out_max,
+        }
+        for name, estimate in _estimates_by_name(estimates).items()
+    }
+    return {
+        "contract": {
+            "clusters": scene_count,
+            "interval": "percentile",
+            "pairing": "shared_scene_multiplicity_matrix",
+            "percentiles": [2.5, 97.5],
+            "repetitions": _DEFAULT_BOOTSTRAP_REPETITIONS,
+            "sampling_unit": "scene",
+            "seed": _DEFAULT_BOOTSTRAP_SEED,
+            "weighting": "episode_macro",
+        },
+        "endpoints": endpoints,
+    }
+
+
+def _plot_bytes(estimates: InferenceEstimates) -> bytes:
+    named = _estimates_by_name(estimates)
+    endpoint_names = _ENDPOINT_FIELDS
+    means = [named[name].mean for name in endpoint_names]
+    lower_errors = [
+        named[name].mean - named[name].ci_lower for name in endpoint_names
+    ]
+    upper_errors = [
+        named[name].ci_upper - named[name].mean for name in endpoint_names
+    ]
+    labels = [name.replace("_", "\n") for name in endpoint_names]
+    figure, axis = plt.subplots(figsize=(14, 6))
+    positions = np.arange(len(endpoint_names))
+    axis.errorbar(
+        positions,
+        means,
+        yerr=np.asarray((lower_errors, upper_errors)),
+        fmt="o",
+        capsize=4,
+    )
+    axis.axhline(0.0, color="black", linewidth=1)
+    axis.set_xticks(positions)
+    axis.set_xticklabels(labels, fontsize=7)
+    axis.set_ylabel("Held-out category-aware IoU delta")
+    axis.set_title("ground-truth cross-fit diagnostic (not deployable performance)")
+    figure.tight_layout()
+    stream = BytesIO()
+    figure.savefig(stream, format="png", dpi=160, metadata={"Date": None})
+    plt.close(figure)
+    return stream.getvalue()
+
+
+@dataclass(frozen=True)
+class _ArtifactBundle:
+    manifest_json: bytes
+    angle_scores_csv: bytes
+    crossfit_results_csv: bytes
+    pivot_assignments_csv: bytes
+    summary_json: bytes
+    bootstrap_json: bytes
+    control_intervals_png: bytes
+
+    def files(self) -> Dict[str, bytes]:
+        return {
+            "manifest.json": self.manifest_json,
+            "angle_scores.csv": self.angle_scores_csv,
+            "crossfit_results.csv": self.crossfit_results_csv,
+            "pivot_assignments.csv": self.pivot_assignments_csv,
+            "summary.json": self.summary_json,
+            "bootstrap.json": self.bootstrap_json,
+            "crossfit_control_intervals.png": self.control_intervals_png,
+        }
+
+
+def _write_artifacts(output_dir: Path, artifacts: _ArtifactBundle) -> None:
+    """Persist an already validated and serialized seven-file transaction."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "manifest.json").write_bytes(artifacts.manifest_json)
+    (output_dir / "angle_scores.csv").write_bytes(artifacts.angle_scores_csv)
+    (output_dir / "crossfit_results.csv").write_bytes(
+        artifacts.crossfit_results_csv
+    )
+    (output_dir / "pivot_assignments.csv").write_bytes(
+        artifacts.pivot_assignments_csv
+    )
+    (output_dir / "summary.json").write_bytes(artifacts.summary_json)
+    (output_dir / "bootstrap.json").write_bytes(artifacts.bootstrap_json)
+    (output_dir / "crossfit_control_intervals.png").write_bytes(
+        artifacts.control_intervals_png
+    )
+
+
+def _validate_analysis(
+    *,
+    cases: Sequence[EpisodeCase],
+    assignments: Sequence[PivotAssignment],
+    results: Sequence[EpisodePivotResult],
+    summaries: Mapping[PivotMode, PivotSummary],
+    ranges: InferenceRanges,
+    estimates: InferenceEstimates,
+    gate_conditions: _GateConditions,
+    decision: GateDecision,
+    angle_rows: Sequence[Mapping[str, object]],
+    crossfit_rows: Sequence[Mapping[str, object]],
+    pivot_assignment_rows: Sequence[Mapping[str, object]],
+    summary_payload: Mapping[str, object],
+    bootstrap_payload: Mapping[str, object],
+    expected_population: int,
+    expected_scenes: int,
+    expected_valid: int,
+    expected_invalid: int,
+    angles: tuple[float, ...],
+) -> None:
+    """Validate every scientific and relational invariant before serialization."""
+    for value, name in (
+        (expected_population, "expected_population"),
+        (expected_scenes, "expected_scenes"),
+        (expected_valid, "expected_valid"),
+        (expected_invalid, "expected_invalid"),
+    ):
+        _require_nonnegative_int(value, name)
+    if expected_valid + expected_invalid != expected_population:
+        raise ValueError("valid and invalid counts must partition the population")
+    if expected_scenes < 2:
+        raise ValueError("analysis requires at least two scenes")
+    if tuple(angles) != _DEFAULT_ANGLES:
+        raise ValueError(f"angle membership must be exactly {_DEFAULT_ANGLES}")
+
+    episode_rows = tuple(cases)
+    if len(episode_rows) != expected_population:
+        raise ValueError("episode row count does not match the population contract")
+    identities: Set[Tuple[str, str]] = set()
+    by_identity: Dict[Tuple[str, str], EpisodeCase] = {}
+    for case in episode_rows:
+        if not isinstance(case, EpisodeCase):
+            raise ValueError("cases must contain only EpisodeCase rows")
+        case.__post_init__()
+        identity = (case.scene_id, case.example_id)
+        if identity in identities:
+            raise ValueError("cases must have unique scene/example identities")
+        identities.add(identity)
+        by_identity[identity] = case
+        if case.split != "val_unseen":
+            raise ValueError("cases must contain only val_unseen rows")
+        if not case.schema_valid and np.any(case.predicted_grid):
+            raise ValueError("invalid predictions must use an empty grid")
+    if len({case.scene_id for case in episode_rows}) != expected_scenes:
+        raise ValueError("scene count does not match the population contract")
+    if sum(case.schema_valid for case in episode_rows) != expected_valid:
+        raise ValueError("valid count does not match the population contract")
+    if sum(not case.schema_valid for case in episode_rows) != expected_invalid:
+        raise ValueError("invalid count does not match the population contract")
+
+    assignment_rows = tuple(assignments)
+    if len(assignment_rows) != expected_population:
+        raise ValueError("pivot assignment row count must match the population")
+    assignment_by_identity: Dict[Tuple[str, str], PivotAssignment] = {}
+    for assignment in assignment_rows:
+        if not isinstance(assignment, PivotAssignment):
+            raise ValueError("assignments must contain only PivotAssignment rows")
+        assignment.__post_init__()
+        identity = (assignment.scene_id, assignment.example_id)
+        if identity in assignment_by_identity:
+            raise ValueError("pivot assignments must have unique receiver identities")
+        case = by_identity.get(identity)
+        if case is None:
+            raise ValueError("pivot assignment identity is absent from cases")
+        if assignment.true_pivot != case.true_start_pivot:
+            raise ValueError("pivot assignment true pivot does not match its case")
+        donor = by_identity.get((assignment.scene_id, assignment.donor_example_id))
+        if donor is None:
+            raise ValueError("pivot assignment donor must be in the receiver scene")
+        if assignment.assigned_pivot != donor.true_start_pivot:
+            raise ValueError("pivot assignment does not use the donor true pivot")
+        assignment_by_identity[identity] = assignment
+    if set(assignment_by_identity) != identities:
+        raise ValueError("pivot assignments must cover every case identity")
+    for scene_id in {case.scene_id for case in episode_rows}:
+        scene_cases = tuple(case for case in episode_rows if case.scene_id == scene_id)
+        scene_assignments = tuple(
+            assignment
+            for assignment in assignment_rows
+            if assignment.scene_id == scene_id
+        )
+        if (
+            Counter(row.donor_example_id for row in scene_assignments)
+            != Counter(row.example_id for row in scene_cases)
+            or Counter(row.assigned_pivot for row in scene_assignments)
+            != Counter(row.true_start_pivot for row in scene_cases)
+        ):
+            raise ValueError("pivot assignments must preserve each scene donor/pivot multiset")
+
+    result_rows = tuple(results)
+    if len(result_rows) != expected_population * len(PivotMode):
+        raise ValueError("pivot result row count does not match population times pivots")
+    complete_results = _complete_pivot_results(result_rows)
+    if set(complete_results) != identities:
+        raise ValueError("pivot results must cover every case identity")
+    expected_result_order = tuple(
+        (case.scene_id, case.example_id, pivot_mode)
+        for case in sorted(
+            episode_rows,
+            key=lambda row: (
+                row.scene_id.encode("utf-8"),
+                row.example_id.encode("utf-8"),
+            ),
+        )
+        for pivot_mode in _PIVOT_MODES
+    )
+    actual_result_order = tuple(
+        (row.scene_id, row.example_id, row.pivot_mode) for row in result_rows
+    )
+    if actual_result_order != expected_result_order:
+        raise ValueError("pivot results must use stable identity/pivot row ordering")
+    if any(
+        tuple(score.angle_degrees for score in row.angle_scores) != angles
+        for row in result_rows
+    ):
+        raise ValueError("angle membership or ordering is inconsistent")
+    reevaluated_results = tuple(
+        reevaluated
+        for case in sorted(
+            episode_rows,
+            key=lambda row: (
+                row.scene_id.encode("utf-8"),
+                row.example_id.encode("utf-8"),
+            ),
+        )
+        for reevaluated in evaluate_episode(
+            case,
+            assignment_by_identity[(case.scene_id, case.example_id)],
+            angles,
+        )
+    )
+    if result_rows != reevaluated_results:
+        raise ValueError(
+            "pivot bounds and raster scores must match evaluation from typed cases"
+        )
+
+    for row in result_rows:
+        row.__post_init__()
+        identity = (row.scene_id, row.example_id)
+        case = by_identity[identity]
+        assignment = assignment_by_identity[identity]
+        if row.split != case.split or row.schema_valid != case.schema_valid:
+            raise ValueError("pivot result identity metadata does not match its case")
+        if row.pivot != pivot_for_mode(case, assignment, row.pivot_mode):
+            raise ValueError("pivot result uses the wrong pivot coordinates")
+        expected_donor = (
+            assignment.donor_example_id
+            if row.pivot_mode is PivotMode.SHUFFLED_START
+            else None
+        )
+        if row.donor_example_id != expected_donor:
+            raise ValueError("pivot result donor metadata is inconsistent")
+        row_angles = tuple(score.angle_degrees for score in row.angle_scores)
+        if row_angles != angles:
+            raise ValueError("angle membership or ordering is inconsistent")
+        object_input_support = int(
+            np.count_nonzero(case.predicted_grid[:_OBJECT_CHANNEL_COUNT])
+        )
+        region_input_support = int(
+            np.count_nonzero(case.predicted_grid[_OBJECT_CHANNEL_COUNT:])
+        )
+        object_target_support = int(
+            np.count_nonzero(case.target_grid[:_OBJECT_CHANNEL_COUNT])
+        )
+        region_target_support = int(
+            np.count_nonzero(case.target_grid[_OBJECT_CHANNEL_COUNT:])
+        )
+        for score in row.angle_scores:
+            score.__post_init__()
+            score.object_score.__post_init__()
+            score.region_score.__post_init__()
+            if (
+                score.object_input_support != object_input_support
+                or score.region_input_support != region_input_support
+                or score.object_score.predicted_support != object_input_support
+                or score.region_score.predicted_support != region_input_support
+                or score.object_score.target_support != object_target_support
+                or score.region_score.target_support != region_target_support
+            ):
+                raise ValueError("family support partitions are inconsistent")
+            _require_iou(score.object_score.iou, "object IoU")
+            _require_iou(score.region_score.iou, "region IoU")
+        for crossfit_result in (row.object_to_region, row.region_to_object):
+            crossfit_result.__post_init__()
+            expected_crossfit = crossfit_scores(
+                row.angle_scores, crossfit_result.direction
+            )
+            if crossfit_result != expected_crossfit:
+                raise ValueError("cross-fit selection, margin, or delta is inconsistent")
+
+    required_pivots = set(_PIVOT_MODES)
+    if set(summaries) != required_pivots:
+        raise ValueError("summaries must contain every pivot")
+    for summary in summaries.values():
+        if not isinstance(summary, PivotSummary):
+            raise ValueError("summaries must contain only PivotSummary values")
+    if dict(summaries) != summarize_results(result_rows):
+        raise ValueError("summary inputs do not match pivot results")
+    if not isinstance(ranges, InferenceRanges):
+        raise ValueError("ranges must be an InferenceRanges")
+    ranges.__post_init__()
+    if ranges != leave_one_scene_out_ranges(result_rows):
+        raise ValueError("leave-one-scene-out ranges do not match pivot results")
+    if not isinstance(estimates, InferenceEstimates):
+        raise ValueError("estimates must be an InferenceEstimates")
+    estimates.__post_init__()
+    for estimate in estimates.all():
+        estimate.__post_init__()
+    if estimates != bootstrap_results(result_rows):
+        raise ValueError("bootstrap intervals or contrast arithmetic are inconsistent")
+    if not isinstance(decision, GateDecision):
+        raise ValueError("decision must be a GateDecision")
+    if not isinstance(gate_conditions, _GateConditions):
+        raise ValueError("gate_conditions must be a _GateConditions")
+    gate_conditions.__post_init__()
+    if gate_conditions != _gate_conditions(estimates):
+        raise ValueError("gate condition inputs are inconsistent")
+    true_start = summaries[PivotMode.TRUE_START]
+    expected_decision = classify_gate(
+        true_start_symmetric=estimates.true_start_symmetric,
+        true_start_object_to_region_mean=true_start.object_to_region_mean,
+        true_start_region_to_object_mean=true_start.region_to_object_mean,
+        start_minus_center=estimates.true_start_minus_map_center,
+        start_minus_shuffled=estimates.true_start_minus_shuffled,
+    )
+    if decision is not expected_decision:
+        raise ValueError("gate inputs and final decision are inconsistent")
+
+    if tuple(angle_rows) != _angle_score_rows(result_rows):
+        raise ValueError("angle score output rows are inconsistent")
+    if tuple(crossfit_rows) != _crossfit_result_rows(result_rows):
+        raise ValueError("cross-fit output rows are inconsistent")
+    if tuple(pivot_assignment_rows) != _pivot_assignment_rows(assignment_rows):
+        raise ValueError("pivot assignment output rows are inconsistent")
+    expected_population_payload: Dict[str, object] = {
+        "episodes": expected_population,
+        "scenes": expected_scenes,
+        "schema_valid": expected_valid,
+        "schema_invalid": expected_invalid,
+    }
+    if dict(summary_payload) != _summary_payload(
+        population=expected_population_payload,
+        summaries=summaries,
+        ranges=ranges,
+        estimates=estimates,
+        gate_conditions=gate_conditions,
+        decision=decision,
+    ):
+        raise ValueError("summary output payload is inconsistent")
+    if dict(bootstrap_payload) != _bootstrap_payload(estimates, expected_scenes):
+        raise ValueError("bootstrap output payload is inconsistent")
+
+
+def _require_json_object(value: object, name: str) -> Dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    result: Dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{name} keys must be strings")
+        result[key] = item
+    return result
+
+
+def _decode_json_object(data: bytes, name: str) -> Dict[str, object]:
+    text = data.decode("utf-8")
+    if not text.endswith("\n"):
+        raise ValueError(f"{name} must end with a newline")
+    payload: object = json.loads(text)
+    result = _require_json_object(payload, name)
+    expected_text = json.dumps(result, sort_keys=True, indent=2) + "\n"
+    if text != expected_text:
+        raise ValueError(f"{name} must use sorted deterministic JSON")
+    return result
+
+
+def _decode_csv_rows(
+    data: bytes,
+    name: str,
+    expected_header: tuple[str, ...],
+    expected_rows: int,
+) -> tuple[Dict[str, str], ...]:
+    stream = StringIO(data.decode("utf-8"), newline="")
+    reader = csv.DictReader(stream)
+    if tuple(reader.fieldnames or ()) != expected_header:
+        raise ValueError(f"{name} has a mismatched header invariant")
+    rows: list[Dict[str, str]] = []
+    for row in reader:
+        checked: Dict[str, str] = {}
+        for key, value in row.items():
+            if key is None or value is None:
+                raise ValueError(f"{name} contains a malformed CSV row")
+            checked[key] = value
+        rows.append(checked)
+    if len(rows) != expected_rows:
+        raise ValueError(
+            f"{name} has a mismatched row invariant: "
+            f"expected {expected_rows}, got {len(rows)}"
+        )
+    return tuple(rows)
+
+
+def _csv_int(row: Mapping[str, str], field: str) -> int:
+    try:
+        return int(row[field])
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"{field} must be an integer") from error
+
+
+def _csv_float(row: Mapping[str, str], field: str) -> float:
+    try:
+        value = float(row[field])
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"{field} must be a finite real number") from error
+    return _require_finite_real(value, field)
+
+
+def _csv_bool(row: Mapping[str, str], field: str) -> bool:
+    try:
+        value = row[field]
+    except KeyError as error:
+        raise ValueError(f"{field} must be a boolean") from error
+    if value == "True":
+        return True
+    if value == "False":
+        return False
+    raise ValueError(f"{field} must be a boolean")
+
+
+def _raster_from_csv(row: Mapping[str, str], prefix: str) -> RasterScore:
+    return RasterScore(
+        intersection=_csv_int(row, f"{prefix}_intersection"),
+        union=_csv_int(row, f"{prefix}_union"),
+        predicted_support=_csv_int(row, f"{prefix}_predicted_support"),
+        target_support=_csv_int(row, f"{prefix}_target_support"),
+        in_frame_support=_csv_int(row, f"{prefix}_in_frame_support"),
+        out_of_frame_support=_csv_int(row, f"{prefix}_out_of_frame_support"),
+    )
+
+
+def _crossfit_from_csv(row: Mapping[str, str]) -> CrossFitResult:
+    try:
+        direction = Direction(row["direction"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("cross-fit direction membership is invalid") from error
+    return CrossFitResult(
+        direction=direction,
+        selected_angle_degrees=_csv_float(row, "selected_angle_degrees"),
+        second_angle_degrees=_csv_float(row, "second_angle_degrees"),
+        selector_identity_iou=_csv_float(row, "selector_identity_iou"),
+        selector_selected_iou=_csv_float(row, "selector_selected_iou"),
+        selector_second_iou=_csv_float(row, "selector_second_iou"),
+        selector_margin=_csv_float(row, "selector_margin"),
+        heldout_identity_iou=_csv_float(row, "heldout_identity_iou"),
+        heldout_selected_iou=_csv_float(row, "heldout_selected_iou"),
+        delta_iou=_csv_float(row, "delta_iou"),
+        selector_predicted_support_empty=_csv_bool(
+            row, "selector_predicted_support_empty"
+        ),
+        selector_target_support_empty=_csv_bool(
+            row, "selector_target_support_empty"
+        ),
+        selector_union_empty=_csv_bool(row, "selector_union_empty"),
+        heldout_predicted_support_empty=_csv_bool(
+            row, "heldout_predicted_support_empty"
+        ),
+        heldout_target_support_empty=_csv_bool(
+            row, "heldout_target_support_empty"
+        ),
+        heldout_union_empty=_csv_bool(row, "heldout_union_empty"),
+    )
+
+
+def _artifact_models(
+    angle_rows: Sequence[Mapping[str, str]],
+    crossfit_rows: Sequence[Mapping[str, str]],
+    assignment_rows: Sequence[Mapping[str, str]],
+) -> tuple[tuple[PivotAssignment, ...], tuple[EpisodePivotResult, ...]]:
+    assignments = tuple(
+        PivotAssignment(
+            scene_id=row["scene_id"],
+            example_id=row["example_id"],
+            donor_example_id=row["donor_example_id"],
+            true_pivot=(
+                _csv_float(row, "true_pivot_row"),
+                _csv_float(row, "true_pivot_column"),
+            ),
+            assigned_pivot=(
+                _csv_float(row, "assigned_pivot_row"),
+                _csv_float(row, "assigned_pivot_column"),
+            ),
+        )
+        for row in assignment_rows
+    )
+    angles_by_key: Dict[
+        Tuple[str, str, PivotMode], tuple[FamilyAngleScore, ...]
+    ] = {}
+    metadata_by_key: Dict[Tuple[str, str, PivotMode], Mapping[str, str]] = {}
+    for offset in range(0, len(angle_rows), len(_DEFAULT_ANGLES)):
+        group = tuple(angle_rows[offset : offset + len(_DEFAULT_ANGLES)])
+        first = group[0]
+        try:
+            pivot_mode = PivotMode(first["pivot_mode"])
+        except (KeyError, ValueError) as error:
+            raise ValueError("angle pivot membership is invalid") from error
+        key = (first["scene_id"], first["example_id"], pivot_mode)
+        if key in angles_by_key:
+            raise ValueError("angle score identities must be unique")
+        scores = tuple(
+            FamilyAngleScore(
+                angle_degrees=_csv_float(row, "angle_degrees"),
+                bounds=SpatialBounds(
+                    row_min=_csv_int(row, "bounds_row_min"),
+                    row_max=_csv_int(row, "bounds_row_max"),
+                    col_min=_csv_int(row, "bounds_col_min"),
+                    col_max=_csv_int(row, "bounds_col_max"),
+                ),
+                object_input_support=_csv_int(row, "object_input_support"),
+                region_input_support=_csv_int(row, "region_input_support"),
+                object_score=_raster_from_csv(row, "object"),
+                region_score=_raster_from_csv(row, "region"),
+            )
+            for row in group
+        )
+        if tuple(score.angle_degrees for score in scores) != _DEFAULT_ANGLES:
+            raise ValueError("angle membership or ordering is inconsistent")
+        if any(
+            score.object_input_support != score.object_score.predicted_support
+            or score.region_input_support != score.region_score.predicted_support
+            for score in scores
+        ):
+            raise ValueError("serialized family support partitions are inconsistent")
+        if any(
+            (
+                row["scene_id"],
+                row["example_id"],
+                row["pivot_mode"],
+            )
+            != (key[0], key[1], key[2].value)
+            for row in group
+        ):
+            raise ValueError("angle score group identity is inconsistent")
+        angles_by_key[key] = scores
+        metadata_by_key[key] = first
+
+    crossfit_by_key: Dict[
+        Tuple[str, str, PivotMode], tuple[CrossFitResult, CrossFitResult]
+    ] = {}
+    crossfit_metadata_by_key: Dict[
+        Tuple[str, str, PivotMode], Mapping[str, str]
+    ] = {}
+    for offset in range(0, len(crossfit_rows), len(Direction)):
+        group = tuple(crossfit_rows[offset : offset + len(Direction)])
+        first = group[0]
+        try:
+            pivot_mode = PivotMode(first["pivot_mode"])
+        except (KeyError, ValueError) as error:
+            raise ValueError("cross-fit pivot membership is invalid") from error
+        key = (first["scene_id"], first["example_id"], pivot_mode)
+        if any(
+            (
+                row["scene_id"],
+                row["example_id"],
+                row["pivot_mode"],
+            )
+            != (key[0], key[1], key[2].value)
+            for row in group
+        ):
+            raise ValueError("cross-fit result group identity is inconsistent")
+        directional = tuple(_crossfit_from_csv(row) for row in group)
+        if tuple(result.direction for result in directional) != tuple(Direction):
+            raise ValueError("cross-fit direction membership or ordering is invalid")
+        crossfit_by_key[key] = (directional[0], directional[1])
+        crossfit_metadata_by_key[key] = first
+
+    if set(angles_by_key) != set(crossfit_by_key):
+        raise ValueError("angle and cross-fit pivot identities must match")
+    results = []
+    for key, scores in angles_by_key.items():
+        metadata = metadata_by_key[key]
+        crossfit_metadata = crossfit_metadata_by_key[key]
+        metadata_fields = (
+            "split",
+            "scene_id",
+            "example_id",
+            "schema_valid",
+            "pivot_mode",
+            "pivot_row",
+            "pivot_column",
+            "donor_example_id",
+        )
+        if any(
+            metadata[field] != crossfit_metadata[field]
+            for field in metadata_fields
+        ):
+            raise ValueError("angle and cross-fit metadata are inconsistent")
+        directional = crossfit_by_key[key]
+        donor = metadata["donor_example_id"] or None
+        result = EpisodePivotResult(
+            split=metadata["split"],
+            scene_id=key[0],
+            example_id=key[1],
+            schema_valid=_csv_bool(metadata, "schema_valid"),
+            pivot_mode=key[2],
+            pivot=(
+                _csv_float(metadata, "pivot_row"),
+                _csv_float(metadata, "pivot_column"),
+            ),
+            donor_example_id=donor,
+            angle_scores=scores,
+            object_to_region=directional[0],
+            region_to_object=directional[1],
+        )
+        for directional_result in directional:
+            if directional_result != crossfit_scores(
+                scores, directional_result.direction
+            ):
+                raise ValueError("serialized cross-fit arithmetic is inconsistent")
+        results.append(result)
+    return assignments, tuple(results)
+
+
+def _validate_artifact_bundle(
+    artifacts: _ArtifactBundle,
+    manifest: Mapping[str, object],
+    *,
+    expected_population: int,
+    expected_scenes: int,
+    expected_valid: int,
+    expected_invalid: int,
+) -> None:
+    for value, name in (
+        (expected_population, "expected_population"),
+        (expected_scenes, "expected_scenes"),
+        (expected_valid, "expected_valid"),
+        (expected_invalid, "expected_invalid"),
+    ):
+        _require_nonnegative_int(value, name)
+    if expected_valid + expected_invalid != expected_population:
+        raise ValueError("artifact status counts must partition the population")
+    population: Dict[str, object] = {
+        "episodes": expected_population,
+        "scenes": expected_scenes,
+        "schema_valid": expected_valid,
+        "schema_invalid": expected_invalid,
+    }
+    decoded_manifest = _decode_json_object(
+        artifacts.manifest_json, "manifest.json"
+    )
+    if decoded_manifest != dict(manifest):
+        raise ValueError("manifest.json does not match the validated manifest")
+    if decoded_manifest.get("population") != population:
+        raise ValueError("manifest population contract is inconsistent")
+    if decoded_manifest.get("oracle_only_limitation") != (
+        "Angle selection uses ground-truth target raster cells and is not "
+        "deployable performance."
+    ):
+        raise ValueError("manifest must state the oracle-only limitation")
+    for field in (
+        "cache_dir",
+        "prediction_manifest_path",
+        "prediction_manifest_sha256",
+        "git_commit",
+    ):
+        value = decoded_manifest.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"manifest {field} must be a nonempty string")
+    if decoded_manifest.get("cache_model_key") != _DEFAULT_CACHE_MODEL_KEY:
+        raise ValueError("manifest cache model key provenance is inconsistent")
+    if (
+        decoded_manifest.get("cognitive_map_namespace")
+        != _DEFAULT_COGNITIVE_MAP_NAMESPACE
+    ):
+        raise ValueError("manifest cognitive-map provenance is inconsistent")
+    prediction_manifest_value = decoded_manifest["prediction_manifest_path"]
+    prediction_sha_value = decoded_manifest["prediction_manifest_sha256"]
+    if not isinstance(prediction_manifest_value, str) or not isinstance(
+        prediction_sha_value, str
+    ):
+        raise ValueError("manifest prediction provenance must be strings")
+    prediction_manifest_path = Path(prediction_manifest_value)
+    if not prediction_manifest_path.is_file():
+        raise ValueError("manifest prediction source file does not exist")
+    if sha256(prediction_manifest_path.read_bytes()).hexdigest() != (
+        prediction_sha_value
+    ):
+        raise ValueError("manifest prediction source SHA-256 is inconsistent")
+    if decoded_manifest.get("dataset") != "R2R" or decoded_manifest.get(
+        "split"
+    ) != "val_unseen":
+        raise ValueError("manifest dataset/split provenance is inconsistent")
+    if (
+        decoded_manifest.get("raster_shape") != list(_GRID_SHAPE)
+        or decoded_manifest.get("grid_scale") != GRID_SCALE
+        or decoded_manifest.get("cell_size_m") != CELL_SIZE * GRID_SCALE
+        or decoded_manifest.get("angles_degrees") != list(_DEFAULT_ANGLES)
+    ):
+        raise ValueError("manifest raster/angle provenance is inconsistent")
+    if (
+        decoded_manifest.get("angle_tie_breaking")
+        != "first declared angle, identity first"
+        or decoded_manifest.get("aggregation_unit") != "episode"
+        or decoded_manifest.get("invalid_prediction_policy")
+        != (
+            "retain missing or schema-invalid predictions as explicit empty "
+            "predictions in the full denominator"
+        )
+    ):
+        raise ValueError("manifest analysis protocol provenance is inconsistent")
+    if decoded_manifest.get("channel_folds") != {
+        "object": {"start_inclusive": 0, "stop_exclusive": 27},
+        "region": {"start_inclusive": 27, "stop_exclusive": 37},
+    }:
+        raise ValueError("manifest channel fold provenance is inconsistent")
+    if decoded_manifest.get("pivot_definitions") != {
+        PivotMode.TRUE_START.value: "continuous scale-2 episode start coordinates",
+        PivotMode.MAP_CENTER.value: [25.0, 25.0],
+        PivotMode.SHUFFLED_START.value: (
+            "within-scene one-to-one assigned true start"
+        ),
+    }:
+        raise ValueError("manifest pivot provenance is inconsistent")
+    shuffle = _require_json_object(decoded_manifest.get("shuffle"), "shuffle")
+    if (
+        shuffle.get("algorithm")
+        != (
+            "SHA-256-seeded receiver-ordered augmenting-path "
+            "bipartite matching"
+        )
+        or
+        shuffle.get("seed") != _DEFAULT_SHUFFLE_SEED
+        or shuffle.get("preserves_scene_pivot_multiset") is not True
+    ):
+        raise ValueError("manifest shuffle provenance is inconsistent")
+    if decoded_manifest.get("gate_thresholds") != {
+        "true_start_symmetric_mean_minimum": 0.01,
+        "true_start_symmetric_ci_lower_strictly_above": 0.0,
+        "both_true_start_directional_means_strictly_above": 0.0,
+        "true_start_minus_map_center_ci_lower_strictly_above": 0.0,
+        "true_start_minus_shuffled_ci_lower_strictly_above": 0.0,
+    }:
+        raise ValueError("manifest gate provenance is inconsistent")
+
+    hashes = _require_json_object(
+        decoded_manifest.get("artifact_sha256"), "manifest artifact_sha256"
+    )
+    hashed_bytes = {
+        "angle_scores.csv": artifacts.angle_scores_csv,
+        "crossfit_results.csv": artifacts.crossfit_results_csv,
+        "pivot_assignments.csv": artifacts.pivot_assignments_csv,
+        "summary.json": artifacts.summary_json,
+        "bootstrap.json": artifacts.bootstrap_json,
+    }
+    if set(hashes) != set(hashed_bytes):
+        raise ValueError("manifest artifact_sha256 has a mismatched file set")
+    for filename, data in hashed_bytes.items():
+        if hashes[filename] != sha256(data).hexdigest():
+            raise ValueError(f"{filename} SHA-256 mismatch")
+    if decoded_manifest.get("pivot_assignments_sha256") != hashes[
+        "pivot_assignments.csv"
+    ]:
+        raise ValueError("pivot_assignments.csv SHA-256 provenance is inconsistent")
+    if not artifacts.control_intervals_png.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("crossfit_control_intervals.png is not a PNG artifact")
+
+    angle_rows = _decode_csv_rows(
+        artifacts.angle_scores_csv,
+        "angle_scores.csv",
+        _ANGLE_SCORE_HEADER,
+        expected_population * len(PivotMode) * len(_DEFAULT_ANGLES),
+    )
+    crossfit_rows = _decode_csv_rows(
+        artifacts.crossfit_results_csv,
+        "crossfit_results.csv",
+        _CROSSFIT_RESULT_HEADER,
+        expected_population * len(PivotMode) * len(Direction),
+    )
+    assignment_rows = _decode_csv_rows(
+        artifacts.pivot_assignments_csv,
+        "pivot_assignments.csv",
+        _PIVOT_ASSIGNMENT_HEADER,
+        expected_population,
+    )
+    assignments, results = _artifact_models(
+        angle_rows, crossfit_rows, assignment_rows
+    )
+    identities = {(row.scene_id, row.example_id) for row in assignments}
+    if len(identities) != expected_population:
+        raise ValueError("artifact identities must be unique")
+    sorted_identities = tuple(
+        sorted(
+            identities,
+            key=lambda identity: (
+                identity[0].encode("utf-8"),
+                identity[1].encode("utf-8"),
+            ),
+        )
+    )
+    if tuple((row.scene_id, row.example_id) for row in assignments) != (
+        sorted_identities
+    ):
+        raise ValueError("artifact assignments must use stable UTF-8 identity order")
+    if len({row.scene_id for row in assignments}) != expected_scenes:
+        raise ValueError("artifact scene count is inconsistent")
+    complete = _complete_pivot_results(results)
+    if set(complete) != identities:
+        raise ValueError("artifact pivot results must cover all assignments")
+    expected_result_order = tuple(
+        (scene_id, example_id, pivot_mode)
+        for scene_id, example_id in sorted_identities
+        for pivot_mode in _PIVOT_MODES
+    )
+    if tuple(
+        (row.scene_id, row.example_id, row.pivot_mode) for row in results
+    ) != expected_result_order:
+        raise ValueError("artifact results must use stable identity/pivot order")
+    if sum(rows[PivotMode.TRUE_START].schema_valid for rows in complete.values()) != (
+        expected_valid
+    ):
+        raise ValueError("artifact valid status count is inconsistent")
+    if sum(
+        not rows[PivotMode.TRUE_START].schema_valid for rows in complete.values()
+    ) != expected_invalid:
+        raise ValueError("artifact invalid status count is inconsistent")
+    assignment_by_identity = {
+        (row.scene_id, row.example_id): row for row in assignments
+    }
+    for scene_id in {row.scene_id for row in assignments}:
+        scene_assignments = tuple(
+            row for row in assignments if row.scene_id == scene_id
+        )
+        if (
+            Counter(row.donor_example_id for row in scene_assignments)
+            != Counter(row.example_id for row in scene_assignments)
+            or Counter(row.assigned_pivot for row in scene_assignments)
+            != Counter(row.true_pivot for row in scene_assignments)
+        ):
+            raise ValueError(
+                "artifact pivot assignments must preserve scene donor/pivot multisets"
+            )
+    for identity, pivot_rows in complete.items():
+        assignment = assignment_by_identity[identity]
+        true_start_valid = pivot_rows[PivotMode.TRUE_START].schema_valid
+        for pivot_mode, row in pivot_rows.items():
+            if row.split != "val_unseen" or row.schema_valid != true_start_valid:
+                raise ValueError(
+                    "artifact split/status must be consistent across every pivot"
+                )
+            expected_pivot = (
+                assignment.true_pivot
+                if pivot_mode is PivotMode.TRUE_START
+                else (25.0, 25.0)
+                if pivot_mode is PivotMode.MAP_CENTER
+                else assignment.assigned_pivot
+            )
+            expected_donor = (
+                assignment.donor_example_id
+                if pivot_mode is PivotMode.SHUFFLED_START
+                else None
+            )
+            if row.pivot != expected_pivot or row.donor_example_id != expected_donor:
+                raise ValueError("artifact pivot or donor identity is inconsistent")
+
+    summaries = summarize_results(results)
+    ranges = leave_one_scene_out_ranges(results)
+    estimates = bootstrap_results(results)
+    true_start = summaries[PivotMode.TRUE_START]
+    decision = classify_gate(
+        true_start_symmetric=estimates.true_start_symmetric,
+        true_start_object_to_region_mean=true_start.object_to_region_mean,
+        true_start_region_to_object_mean=true_start.region_to_object_mean,
+        start_minus_center=estimates.true_start_minus_map_center,
+        start_minus_shuffled=estimates.true_start_minus_shuffled,
+    )
+    expected_summary = _summary_payload(
+        population=population,
+        summaries=summaries,
+        ranges=ranges,
+        estimates=estimates,
+        gate_conditions=_gate_conditions(estimates),
+        decision=decision,
+    )
+    if _decode_json_object(artifacts.summary_json, "summary.json") != expected_summary:
+        raise ValueError("summary.json scientific invariants are inconsistent")
+    if _decode_json_object(
+        artifacts.bootstrap_json, "bootstrap.json"
+    ) != _bootstrap_payload(estimates, expected_scenes):
+        raise ValueError("bootstrap.json scientific invariants are inconsistent")
+    expected_output_schema: Dict[str, object] = {
+        "angle_scores.csv": {
+            "columns": list(_ANGLE_SCORE_HEADER),
+            "rows": len(angle_rows),
+        },
+        "crossfit_results.csv": {
+            "columns": list(_CROSSFIT_RESULT_HEADER),
+            "rows": len(crossfit_rows),
+        },
+        "pivot_assignments.csv": {
+            "columns": list(_PIVOT_ASSIGNMENT_HEADER),
+            "rows": len(assignment_rows),
+        },
+        "summary.json": {"format": "sorted_keys_indented_json"},
+        "bootstrap.json": {"format": "sorted_keys_indented_json"},
+        "crossfit_control_intervals.png": {
+            "description": "ground-truth cross-fit diagnostic"
+        },
+    }
+    if decoded_manifest.get("output_schema") != expected_output_schema:
+        raise ValueError("manifest output schema is inconsistent")
+    bootstrap_contract = _bootstrap_payload(estimates, expected_scenes)["contract"]
+    if decoded_manifest.get("bootstrap") != bootstrap_contract:
+        raise ValueError("manifest bootstrap contract is inconsistent")
+    if decoded_manifest.get("gate_decision") != decision.value:
+        raise ValueError("manifest gate decision is inconsistent")
+
+
+def validate_artifact_directory(
+    output_dir: Path,
+    *,
+    expected_population: int,
+    expected_scenes: int,
+    expected_valid: int,
+    expected_invalid: int,
+) -> None:
+    """Reconstruct and validate the complete fixed artifact transaction."""
+    if not output_dir.is_dir():
+        raise ValueError(f"artifact directory does not exist: {output_dir}")
+    expected_names = set(
+        _ArtifactBundle(
+            manifest_json=b"",
+            angle_scores_csv=b"",
+            crossfit_results_csv=b"",
+            pivot_assignments_csv=b"",
+            summary_json=b"",
+            bootstrap_json=b"",
+            control_intervals_png=b"",
+        ).files()
+    )
+    if {path.name for path in output_dir.iterdir()} != expected_names:
+        raise ValueError("artifact directory has a mismatched fixed file set")
+    artifacts = _ArtifactBundle(
+        manifest_json=(output_dir / "manifest.json").read_bytes(),
+        angle_scores_csv=(output_dir / "angle_scores.csv").read_bytes(),
+        crossfit_results_csv=(output_dir / "crossfit_results.csv").read_bytes(),
+        pivot_assignments_csv=(output_dir / "pivot_assignments.csv").read_bytes(),
+        summary_json=(output_dir / "summary.json").read_bytes(),
+        bootstrap_json=(output_dir / "bootstrap.json").read_bytes(),
+        control_intervals_png=(
+            output_dir / "crossfit_control_intervals.png"
+        ).read_bytes(),
+    )
+    manifest = _decode_json_object(artifacts.manifest_json, "manifest.json")
+    _validate_artifact_bundle(
+        artifacts,
+        manifest,
+        expected_population=expected_population,
+        expected_scenes=expected_scenes,
+        expected_valid=expected_valid,
+        expected_invalid=expected_invalid,
+    )
+
+
+def _run_cases(
+    args: CrossFitArgs,
+    cases: Sequence[EpisodeCase],
+    *,
+    expected_population: int,
+    expected_scenes: int,
+    expected_valid: int,
+    expected_invalid: int,
+    prediction_manifest_path: Path,
+) -> dict[str, object]:
+    """Run the typed synthetic seam and create its fixed artifact transaction."""
+    _validate_args(args)
+    rows = tuple(cases)
+    if len(rows) != expected_population:
+        raise ValueError("population does not match the injected contract")
+    if len({row.scene_id for row in rows}) != expected_scenes:
+        raise ValueError("scene count does not match the injected contract")
+    if sum(row.schema_valid for row in rows) != expected_valid:
+        raise ValueError("valid count does not match the injected contract")
+    if sum(not row.schema_valid for row in rows) != expected_invalid:
+        raise ValueError("invalid count does not match the injected contract")
+    if not prediction_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"prediction_manifest_path must be a file: {prediction_manifest_path}"
+        )
+
+    ordered_cases = tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row.scene_id.encode("utf-8"),
+                row.example_id.encode("utf-8"),
+            ),
+        )
+    )
+    assignments = build_pivot_assignments(ordered_cases)
+    assignments_by_identity = {
+        (row.scene_id, row.example_id): row for row in assignments
+    }
+    results = tuple(
+        result
+        for case in ordered_cases
+        for result in evaluate_episode(
+            case,
+            assignments_by_identity[(case.scene_id, case.example_id)],
+            tuple(args.angles),
+        )
+    )
+    summaries = summarize_results(results)
+    ranges = leave_one_scene_out_ranges(results)
+    estimates = bootstrap_results(results)
+    true_start_summary = summaries[PivotMode.TRUE_START]
+    decision = classify_gate(
+        true_start_symmetric=estimates.true_start_symmetric,
+        true_start_object_to_region_mean=true_start_summary.object_to_region_mean,
+        true_start_region_to_object_mean=true_start_summary.region_to_object_mean,
+        start_minus_center=estimates.true_start_minus_map_center,
+        start_minus_shuffled=estimates.true_start_minus_shuffled,
+    )
+    gate_conditions = _gate_conditions(estimates)
+    population: Dict[str, object] = {
+        "episodes": expected_population,
+        "scenes": expected_scenes,
+        "schema_valid": expected_valid,
+        "schema_invalid": expected_invalid,
+    }
+    summary_payload = _summary_payload(
+        population=population,
+        summaries=summaries,
+        ranges=ranges,
+        estimates=estimates,
+        gate_conditions=gate_conditions,
+        decision=decision,
+    )
+    bootstrap_payload = _bootstrap_payload(estimates, expected_scenes)
+    angle_rows = _angle_score_rows(results)
+    crossfit_rows = _crossfit_result_rows(results)
+    assignment_rows = _pivot_assignment_rows(assignments)
+    _validate_analysis(
+        cases=ordered_cases,
+        assignments=assignments,
+        results=results,
+        summaries=summaries,
+        ranges=ranges,
+        estimates=estimates,
+        gate_conditions=gate_conditions,
+        decision=decision,
+        angle_rows=angle_rows,
+        crossfit_rows=crossfit_rows,
+        pivot_assignment_rows=assignment_rows,
+        summary_payload=summary_payload,
+        bootstrap_payload=bootstrap_payload,
+        expected_population=expected_population,
+        expected_scenes=expected_scenes,
+        expected_valid=expected_valid,
+        expected_invalid=expected_invalid,
+        angles=tuple(args.angles),
+    )
+
+    angle_scores_csv = _csv_bytes(_ANGLE_SCORE_HEADER, angle_rows)
+    crossfit_results_csv = _csv_bytes(_CROSSFIT_RESULT_HEADER, crossfit_rows)
+    pivot_assignments_csv = _csv_bytes(
+        _PIVOT_ASSIGNMENT_HEADER, assignment_rows
+    )
+    summary_json = _json_bytes(summary_payload)
+    bootstrap_json = _json_bytes(bootstrap_payload)
+    control_intervals_png = _plot_bytes(estimates)
+    artifact_sha256 = {
+        "angle_scores.csv": sha256(angle_scores_csv).hexdigest(),
+        "crossfit_results.csv": sha256(crossfit_results_csv).hexdigest(),
+        "pivot_assignments.csv": sha256(pivot_assignments_csv).hexdigest(),
+        "summary.json": sha256(summary_json).hexdigest(),
+        "bootstrap.json": sha256(bootstrap_json).hexdigest(),
+    }
+    manifest: Dict[str, object] = {
+        "dataset": "R2R",
+        "split": "val_unseen",
+        "cache_dir": str(args.cache_dir),
+        "cache_model_key": args.cache_model_key,
+        "cognitive_map_namespace": args.cognitive_map_namespace,
+        "prediction_manifest_path": str(prediction_manifest_path),
+        "prediction_manifest_sha256": sha256(
+            prediction_manifest_path.read_bytes()
+        ).hexdigest(),
+        "git_commit": _git_commit(),
+        "population": population,
+        "raster_shape": list(_GRID_SHAPE),
+        "grid_scale": GRID_SCALE,
+        "cell_size_m": CELL_SIZE * GRID_SCALE,
+        "angles_degrees": list(_DEFAULT_ANGLES),
+        "angle_tie_breaking": "first declared angle, identity first",
+        "aggregation_unit": "episode",
+        "invalid_prediction_policy": (
+            "retain missing or schema-invalid predictions as explicit empty "
+            "predictions in the full denominator"
+        ),
+        "channel_folds": {
+            "object": {"start_inclusive": 0, "stop_exclusive": 27},
+            "region": {"start_inclusive": 27, "stop_exclusive": 37},
+        },
+        "pivot_definitions": {
+            PivotMode.TRUE_START.value: (
+                "continuous scale-2 episode start coordinates"
+            ),
+            PivotMode.MAP_CENTER.value: [25.0, 25.0],
+            PivotMode.SHUFFLED_START.value: (
+                "within-scene one-to-one assigned true start"
+            ),
+        },
+        "shuffle": {
+            "algorithm": (
+                "SHA-256-seeded receiver-ordered augmenting-path "
+                "bipartite matching"
+            ),
+            "seed": _DEFAULT_SHUFFLE_SEED,
+            "preserves_scene_pivot_multiset": True,
+        },
+        "bootstrap": bootstrap_payload["contract"],
+        "gate_thresholds": {
+            "true_start_symmetric_mean_minimum": 0.01,
+            "true_start_symmetric_ci_lower_strictly_above": 0.0,
+            "both_true_start_directional_means_strictly_above": 0.0,
+            "true_start_minus_map_center_ci_lower_strictly_above": 0.0,
+            "true_start_minus_shuffled_ci_lower_strictly_above": 0.0,
+        },
+        "gate_decision": decision.value,
+        "output_schema": {
+            "angle_scores.csv": {
+                "columns": list(_ANGLE_SCORE_HEADER),
+                "rows": len(angle_rows),
+            },
+            "crossfit_results.csv": {
+                "columns": list(_CROSSFIT_RESULT_HEADER),
+                "rows": len(crossfit_rows),
+            },
+            "pivot_assignments.csv": {
+                "columns": list(_PIVOT_ASSIGNMENT_HEADER),
+                "rows": len(assignment_rows),
+            },
+            "summary.json": {"format": "sorted_keys_indented_json"},
+            "bootstrap.json": {"format": "sorted_keys_indented_json"},
+            "crossfit_control_intervals.png": {
+                "description": "ground-truth cross-fit diagnostic"
+            },
+        },
+        "artifact_sha256": artifact_sha256,
+        "pivot_assignments_sha256": artifact_sha256["pivot_assignments.csv"],
+        "oracle_only_limitation": (
+            "Angle selection uses ground-truth target raster cells and is not "
+            "deployable performance."
+        ),
+    }
+    artifacts = _ArtifactBundle(
+        manifest_json=_json_bytes(manifest),
+        angle_scores_csv=angle_scores_csv,
+        crossfit_results_csv=crossfit_results_csv,
+        pivot_assignments_csv=pivot_assignments_csv,
+        summary_json=summary_json,
+        bootstrap_json=bootstrap_json,
+        control_intervals_png=control_intervals_png,
+    )
+    _validate_artifact_bundle(
+        artifacts,
+        manifest,
+        expected_population=expected_population,
+        expected_scenes=expected_scenes,
+        expected_valid=expected_valid,
+        expected_invalid=expected_invalid,
+    )
+    output_dir = args.output_dir
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError(
+            f"output directory must be empty or absent, got nonempty: {output_dir}"
+        )
+    _write_artifacts(output_dir, artifacts)
+    return {
+        "output_dir": output_dir,
+        "manifest": manifest,
+        "summary": summary_payload,
+        "bootstrap": bootstrap_payload,
+        "decision": decision,
+    }
+
+
+def run_crossfit(args: CrossFitArgs) -> dict[str, object]:
+    """Run only the complete frozen R2R val_unseen analysis."""
+    episodes, prediction_manifest_path = _load_episode_cases(args)
+    return _run_cases(
+        args,
+        episodes,
+        expected_population=1_839,
+        expected_scenes=11,
+        expected_valid=1_830,
+        expected_invalid=9,
+        prediction_manifest_path=prediction_manifest_path,
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> dict[str, object]:
+    args = CrossFitArgs(underscores_to_dashes=True).parse_args(argv)
+    result = run_crossfit(args)
+    if not args.quiet:
+        print(f"Wrote cross-fit artifacts to {result['output_dir']}")
+    return result
+
+
+if __name__ == "__main__":
+    main()

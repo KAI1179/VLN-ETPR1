@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Callable, Dict, Mapping, Optional
@@ -912,6 +914,457 @@ def fixed_args(**overrides: object) -> CrossFitArgs:
     for field, value in overrides.items():
         setattr(args, field, value)
     return args
+
+
+def artifact_cases() -> tuple[EpisodeCase, ...]:
+    """Small complete population spanning three bootstrap scenes."""
+    predicted = np.zeros((37, 50, 50), dtype=np.bool_)
+    target = np.zeros_like(predicted)
+    predicted[0, 5, 6] = True
+    predicted[27, 8, 9] = True
+    target[0, 5, 6] = True
+    target[27, 8, 9] = True
+    return tuple(
+        episode_case(
+            f"episode-{scene_index}-{episode_index}",
+            (float(episode_index + 1), float(scene_index + episode_index + 1)),
+            scene_id=f"scene-{scene_index}",
+            predicted_grid=predicted,
+            target_grid=target,
+        )
+        for scene_index in range(3)
+        for episode_index in range(2)
+    )
+
+
+def test_artifact_runner_writes_exact_output_set(tmp_path: Path) -> None:
+    """Breaks if the validated transaction omits or adds an output artifact."""
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+
+    result = crossfit._run_cases(
+        fixed_args(output_dir=output_dir),
+        cases,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+        prediction_manifest_path=source_manifest,
+    )
+
+    assert result["output_dir"] == output_dir
+    assert {path.name for path in output_dir.iterdir()} == {
+        "manifest.json",
+        "angle_scores.csv",
+        "crossfit_results.csv",
+        "pivot_assignments.csv",
+        "summary.json",
+        "bootstrap.json",
+        "crossfit_control_intervals.png",
+    }
+
+
+def test_artifact_csvs_have_complete_literal_rows(tmp_path: Path) -> None:
+    """Breaks if a score, support, identity, or control column is not exported."""
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+
+    crossfit._run_cases(
+        fixed_args(output_dir=output_dir),
+        cases,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+        prediction_manifest_path=source_manifest,
+    )
+
+    with (output_dir / "angle_scores.csv").open(
+        encoding="utf-8", newline=""
+    ) as stream:
+        angle_rows = tuple(csv.DictReader(stream))
+    assert len(angle_rows) == len(cases) * 3 * 4
+    assert tuple(angle_rows[0]) == (
+        "split",
+        "scene_id",
+        "example_id",
+        "schema_valid",
+        "pivot_mode",
+        "pivot_row",
+        "pivot_column",
+        "donor_example_id",
+        "angle_degrees",
+        "bounds_row_min",
+        "bounds_row_max",
+        "bounds_col_min",
+        "bounds_col_max",
+        "object_input_support",
+        "object_intersection",
+        "object_union",
+        "object_predicted_support",
+        "object_target_support",
+        "object_in_frame_support",
+        "object_out_of_frame_support",
+        "object_iou",
+        "region_input_support",
+        "region_intersection",
+        "region_union",
+        "region_predicted_support",
+        "region_target_support",
+        "region_in_frame_support",
+        "region_out_of_frame_support",
+        "region_iou",
+    )
+
+    with (output_dir / "crossfit_results.csv").open(
+        encoding="utf-8", newline=""
+    ) as stream:
+        result_rows = tuple(csv.DictReader(stream))
+    assert len(result_rows) == len(cases) * 3 * 2
+    assert tuple(result_rows[0]) == (
+        "split",
+        "scene_id",
+        "example_id",
+        "schema_valid",
+        "pivot_mode",
+        "pivot_row",
+        "pivot_column",
+        "donor_example_id",
+        "direction",
+        "selected_angle_degrees",
+        "second_angle_degrees",
+        "selector_identity_iou",
+        "selector_selected_iou",
+        "selector_second_iou",
+        "selector_margin",
+        "heldout_identity_iou",
+        "heldout_selected_iou",
+        "delta_iou",
+        "selector_predicted_support_empty",
+        "selector_target_support_empty",
+        "selector_union_empty",
+        "heldout_predicted_support_empty",
+        "heldout_target_support_empty",
+        "heldout_union_empty",
+    )
+
+    with (output_dir / "pivot_assignments.csv").open(
+        encoding="utf-8", newline=""
+    ) as stream:
+        assignment_rows = tuple(csv.DictReader(stream))
+    assert len(assignment_rows) == len(cases)
+    assert tuple(assignment_rows[0]) == (
+        "scene_id",
+        "example_id",
+        "donor_example_id",
+        "true_pivot_row",
+        "true_pivot_column",
+        "assigned_pivot_row",
+        "assigned_pivot_column",
+    )
+
+
+def test_artifact_json_is_complete_hashed_and_byte_stable(tmp_path: Path) -> None:
+    """Breaks if provenance, inference, or deterministic serialization regresses."""
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    for output_dir in (first_dir, second_dir):
+        crossfit._run_cases(
+            fixed_args(output_dir=output_dir),
+            tuple(reversed(cases)),
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+            prediction_manifest_path=source_manifest,
+        )
+
+    deterministic_names = (
+        "manifest.json",
+        "angle_scores.csv",
+        "crossfit_results.csv",
+        "pivot_assignments.csv",
+        "summary.json",
+        "bootstrap.json",
+    )
+    for filename in deterministic_names:
+        assert (first_dir / filename).read_bytes() == (
+            second_dir / filename
+        ).read_bytes()
+    for filename in ("manifest.json", "summary.json", "bootstrap.json"):
+        text = (first_dir / filename).read_text(encoding="utf-8")
+        assert text.endswith("\n")
+        assert text == json.dumps(
+            json.loads(text), sort_keys=True, indent=2
+        ) + "\n"
+
+    manifest = json.loads((first_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["prediction_manifest_path"] == str(source_manifest)
+    assert manifest["prediction_manifest_sha256"] == sha256(
+        source_manifest.read_bytes()
+    ).hexdigest()
+    assert manifest["pivot_assignments_sha256"] == sha256(
+        (first_dir / "pivot_assignments.csv").read_bytes()
+    ).hexdigest()
+    assert manifest["population"] == {
+        "episodes": 6,
+        "scenes": 3,
+        "schema_invalid": 0,
+        "schema_valid": 6,
+    }
+    assert manifest["channel_folds"] == {
+        "object": {"start_inclusive": 0, "stop_exclusive": 27},
+        "region": {"start_inclusive": 27, "stop_exclusive": 37},
+    }
+    assert manifest["oracle_only_limitation"] == (
+        "Angle selection uses ground-truth target raster cells and is not "
+        "deployable performance."
+    )
+    assert set(manifest["artifact_sha256"]) == {
+        "angle_scores.csv",
+        "crossfit_results.csv",
+        "pivot_assignments.csv",
+        "summary.json",
+        "bootstrap.json",
+    }
+
+    summary = json.loads((first_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["population"] == manifest["population"]
+    assert set(summary["pivots"]) == {mode.value for mode in PivotMode}
+    assert set(summary["leave_one_scene_out_ranges"]) == {
+        "true_start_object_to_region",
+        "true_start_region_to_object",
+        "true_start_symmetric",
+        "map_center_object_to_region",
+        "map_center_region_to_object",
+        "map_center_symmetric",
+        "shuffled_start_object_to_region",
+        "shuffled_start_region_to_object",
+        "shuffled_start_symmetric",
+        "true_start_minus_map_center",
+        "true_start_minus_shuffled",
+    }
+    assert set(summary["start_specific_contrasts"]) == {
+        "true_start_minus_map_center",
+        "true_start_minus_shuffled",
+    }
+    assert set(summary["gate"]["conditions"]) == {
+        "true_start_symmetric_mean_at_least_0_01",
+        "true_start_symmetric_ci_lower_above_zero",
+        "both_true_start_directional_means_above_zero",
+        "true_start_minus_map_center_ci_lower_above_zero",
+        "true_start_minus_shuffled_ci_lower_above_zero",
+    }
+    assert summary["gate"]["decision"] == GateDecision.NO_GO.value
+
+    bootstrap = json.loads(
+        (first_dir / "bootstrap.json").read_text(encoding="utf-8")
+    )
+    assert bootstrap["contract"] == {
+        "clusters": 3,
+        "interval": "percentile",
+        "pairing": "shared_scene_multiplicity_matrix",
+        "percentiles": [2.5, 97.5],
+        "repetitions": 10_000,
+        "sampling_unit": "scene",
+        "seed": 42,
+        "weighting": "episode_macro",
+    }
+    assert set(bootstrap["endpoints"]) == set(
+        summary["leave_one_scene_out_ranges"]
+    )
+
+
+def test_artifact_directory_validation_detects_changed_csv_byte(
+    tmp_path: Path,
+) -> None:
+    """Breaks if post-write validation cannot detect a corrupted score table."""
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+    crossfit._run_cases(
+        fixed_args(output_dir=output_dir),
+        cases,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+        prediction_manifest_path=source_manifest,
+    )
+
+    crossfit.validate_artifact_directory(
+        output_dir,
+        expected_population=len(cases),
+        expected_scenes=3,
+        expected_valid=len(cases),
+        expected_invalid=0,
+    )
+    angle_path = output_dir / "angle_scores.csv"
+    angle_path.write_bytes(angle_path.read_bytes().replace(b"val_unseen", b"val_CHANGED", 1))
+    with pytest.raises(ValueError, match="angle_scores.csv.*SHA-256"):
+        crossfit.validate_artifact_directory(
+            output_dir,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+        )
+
+
+def test_output_transaction_rejects_nonempty_directory_untouched(
+    tmp_path: Path,
+) -> None:
+    """Breaks if a run can overwrite or mix with an existing artifact set."""
+    cases = artifact_cases()
+    source_manifest = tmp_path / "prediction-manifest.json"
+    source_manifest.write_text('{"source": "synthetic"}\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    marker = output_dir / "existing.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nonempty"):
+        crossfit._run_cases(
+            fixed_args(output_dir=output_dir),
+            cases,
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+            prediction_manifest_path=source_manifest,
+        )
+
+    assert tuple(output_dir.iterdir()) == (marker,)
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_analysis_validation_rejects_undeclared_angle() -> None:
+    """Breaks if complete row counts can hide an altered angle membership."""
+    cases = artifact_cases()
+    assignments = build_pivot_assignments(cases)
+    by_identity = {
+        (assignment.scene_id, assignment.example_id): assignment
+        for assignment in assignments
+    }
+    results = tuple(
+        result
+        for case in cases
+        for result in evaluate_episode(
+            case,
+            by_identity[(case.scene_id, case.example_id)],
+            (0.0, 90.0, 180.0, 270.0),
+        )
+    )
+    summaries = summarize_results(results)
+    ranges = leave_one_scene_out_ranges(results)
+    estimates = bootstrap_results(results)
+    true_start = summaries[PivotMode.TRUE_START]
+    decision = classify_gate(
+        true_start_symmetric=estimates.true_start_symmetric,
+        true_start_object_to_region_mean=true_start.object_to_region_mean,
+        true_start_region_to_object_mean=true_start.region_to_object_mean,
+        start_minus_center=estimates.true_start_minus_map_center,
+        start_minus_shuffled=estimates.true_start_minus_shuffled,
+    )
+    first = results[0]
+    changed_scores = (
+        replace(first.angle_scores[0], angle_degrees=45.0),
+    ) + first.angle_scores[1:]
+    malformed = (replace(first, angle_scores=changed_scores),) + results[1:]
+
+    with pytest.raises(ValueError, match="angle membership"):
+        crossfit._validate_analysis(
+            cases=cases,
+            assignments=assignments,
+            results=malformed,
+            summaries=summaries,
+            ranges=ranges,
+            estimates=estimates,
+            gate_conditions=crossfit._gate_conditions(estimates),
+            decision=decision,
+            angle_rows=crossfit._angle_score_rows(malformed),
+            crossfit_rows=crossfit._crossfit_result_rows(malformed),
+            pivot_assignment_rows=crossfit._pivot_assignment_rows(assignments),
+            summary_payload=crossfit._summary_payload(
+                population={
+                    "episodes": len(cases),
+                    "scenes": 3,
+                    "schema_valid": len(cases),
+                    "schema_invalid": 0,
+                },
+                summaries=summaries,
+                ranges=ranges,
+                estimates=estimates,
+                gate_conditions=crossfit._gate_conditions(estimates),
+                decision=decision,
+            ),
+            bootstrap_payload=crossfit._bootstrap_payload(estimates, 3),
+            expected_population=len(cases),
+            expected_scenes=3,
+            expected_valid=len(cases),
+            expected_invalid=0,
+            angles=(0.0, 90.0, 180.0, 270.0),
+        )
+
+
+def test_runner_uses_only_the_fixed_full_population_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if the public runner permits a partial or altered population."""
+    args = fixed_args(output_dir=tmp_path / "output")
+    manifest_path = tmp_path / "prediction-manifest.json"
+    observed: Dict[str, object] = {}
+    loaded_cases = artifact_cases()
+
+    monkeypatch.setattr(
+        crossfit,
+        "_load_episode_cases",
+        lambda received_args: (loaded_cases, manifest_path),
+    )
+
+    def fake_run_cases(
+        received_args: CrossFitArgs,
+        cases: tuple[EpisodeCase, ...],
+        *,
+        expected_population: int,
+        expected_scenes: int,
+        expected_valid: int,
+        expected_invalid: int,
+        prediction_manifest_path: Path,
+    ) -> dict[str, object]:
+        observed.update(
+            {
+                "args": received_args,
+                "cases": cases,
+                "contract": (
+                    expected_population,
+                    expected_scenes,
+                    expected_valid,
+                    expected_invalid,
+                ),
+                "manifest": prediction_manifest_path,
+            }
+        )
+        return {"output_dir": received_args.output_dir}
+
+    monkeypatch.setattr(crossfit, "_run_cases", fake_run_cases)
+
+    assert crossfit.run_crossfit(args) == {"output_dir": args.output_dir}
+    assert observed == {
+        "args": args,
+        "cases": loaded_cases,
+        "contract": (1_839, 11, 1_830, 9),
+        "manifest": manifest_path,
+    }
 
 
 @pytest.mark.parametrize(
