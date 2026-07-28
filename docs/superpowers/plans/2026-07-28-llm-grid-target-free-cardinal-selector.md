@@ -513,7 +513,7 @@ git commit -m "feat: score target-free selector controls"
   - `TargetFreeArgs(Tap)`;
   - `build_artifacts(selector_lock: SelectorLock, assignments: Sequence[SelectorAssignment], angle_rows: Sequence[AngleScoreRow], episode_rows: Sequence[EpisodeScoreRow], summary: SummaryArtifact, bootstrap: BootstrapArtifact, manifest_inputs: ManifestInputs) -> ArtifactBundle`;
   - `publish_artifacts(output_dir: Path, artifacts: ArtifactBundle, validation_inputs: ValidationInputs) -> None`;
-  - `validate_artifact_directory(output_dir: Path, *, expected_development_episodes: int, expected_development_scenes: int, expected_development_valid: int, expected_development_invalid: int, expected_test_episodes: int, expected_test_scenes: int, expected_test_valid: int, expected_test_invalid: int) -> None`;
+  - `validate_artifact_directory(output_dir: Path, *, expected_git_commit: str, expected_development_episodes: int, expected_development_scenes: int, expected_development_valid: int, expected_development_invalid: int, expected_test_episodes: int, expected_test_scenes: int, expected_test_valid: int, expected_test_invalid: int) -> None`;
   - `main(argv: Optional[Sequence[str]] = None) -> None`.
 
 **Exact nested JSON dataclasses:**
