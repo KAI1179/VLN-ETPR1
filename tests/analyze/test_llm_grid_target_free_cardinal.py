@@ -724,6 +724,23 @@ def test_oracle_gain_summary_uses_aggregate_ratio_and_nonpositive_availability()
     ) == (0.0, 0.0, 0.0, 0.0)
 
 
+def test_oracle_gain_summary_uses_ratio_of_unequal_row_sums() -> None:
+    """Breaks if aggregate recovery is replaced by an average of row ratios."""
+    small_oracle_gain = _episode_score_row(
+        "scene-a", "small", identity_iou=0.2, primary_iou=0.5, global_iou=0.3,
+        direct_iou=0.1, soft_aggregate_iou=0.4,
+    )
+    large_oracle_gain = _episode_score_row(
+        "scene-b", "large", identity_iou=0.1, primary_iou=0.2, global_iou=0.1,
+        direct_iou=0.9, soft_aggregate_iou=0.1,
+    )
+
+    summary = target_free.oracle_gain_summary((small_oracle_gain, large_oracle_gain))
+
+    assert summary.available is True
+    assert summary.primary_fraction == pytest.approx(4.0 / 11.0)
+
+
 def _contrast(
     *, mean: float = 0.02, ci_lower: float = 0.001, loso_min: float = 0.001
 ) -> target_free.ContrastInterval:
