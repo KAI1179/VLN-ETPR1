@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 import re
+import shutil
+import stat
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+from tap import Tap
 
 from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import (
     StartEpisode,
@@ -47,6 +55,9 @@ EXPECTED_EXAMPLE_COUNT = 1839
 EXPECTED_OBSERVATION_COUNT = 393
 EXPECTED_SCENE_COUNT = 11
 TARGET_COUNT = 50
+OFFICIAL_OUTPUT_DIR = Path(
+    "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1"
+)
 
 OFFICIAL_SCENE_COUNTS: Mapping[str, int] = MappingProxyType({
     "2azQ1b91cZZ": 63,
@@ -673,3 +684,208 @@ def build_cohort_from_sources(*, git_commit: str) -> CohortArtifacts:
         cohort=cohort,
         manifest_json=_manifest_bytes(population, cohort, git_commit),
     )
+
+
+def _read_regular_member(directory_fd: int, name: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        file_fd = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError(f"cohort member must be a regular file: {name}") from error
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ValueError(f"cohort member must be a regular file: {name}")
+        with os.fdopen(file_fd, "rb", closefd=False) as stream:
+            return stream.read()
+    finally:
+        os.close(file_fd)
+
+
+def _read_cohort_files(output_dir: Path) -> Mapping[str, bytes]:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
+        os, "O_NOFOLLOW", 0
+    )
+    try:
+        directory_fd = os.open(output_dir, flags)
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError(
+                f"cohort output must be a real directory: {output_dir}"
+            ) from error
+        raise
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            raise ValueError(f"cohort output must be a directory: {output_dir}")
+        names = set(os.listdir(directory_fd))
+        expected_names = {"cohort.jsonl", "manifest.json"}
+        if names != expected_names:
+            raise ValueError(
+                "cohort directory must contain exactly cohort.jsonl and manifest.json"
+            )
+        return MappingProxyType({
+            name: _read_regular_member(directory_fd, name)
+            for name in sorted(expected_names)
+        })
+    finally:
+        os.close(directory_fd)
+
+
+def validate_cohort_directory(
+    output_dir: Path,
+    *,
+    expected_git_commit: str,
+) -> None:
+    """Independently rebuild and byte-validate one sealed cohort directory."""
+
+    if (
+        not isinstance(expected_git_commit, str)
+        or _LOWER_HEX_40.fullmatch(expected_git_commit) is None
+    ):
+        raise ValueError("expected_git_commit must be 40 lowercase hex characters")
+    actual = _read_cohort_files(output_dir)
+    expected = build_cohort_from_sources(git_commit=expected_git_commit)
+    expected_files = {
+        "cohort.jsonl": expected.cohort_jsonl,
+        "manifest.json": expected.manifest_json,
+    }
+    for name in sorted(expected_files):
+        if actual[name] != expected_files[name]:
+            raise ValueError(f"{name} does not match independent reconstruction")
+
+
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically move a path without replacing a concurrent destination."""
+
+    library = ctypes.CDLL(None, use_errno=True)
+    renameat2 = library.renameat2
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    if renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(destination),
+        1,
+    ) == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(
+            error_number, os.strerror(error_number), str(destination)
+        )
+    raise OSError(error_number, os.strerror(error_number), str(destination))
+
+
+def _fsync_directory(directory: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_fsynced(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _artifact_git_commit(artifacts: CohortArtifacts) -> str:
+    try:
+        manifest = json.loads(artifacts.manifest_json)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("artifact manifest must be valid UTF-8 JSON") from error
+    if not isinstance(manifest, dict):
+        raise ValueError("artifact manifest must be a JSON object")
+    commit = manifest.get("git_commit")
+    if not isinstance(commit, str) or _LOWER_HEX_40.fullmatch(commit) is None:
+        raise ValueError("artifact manifest git_commit is invalid")
+    return commit
+
+
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(str(path))
+
+
+def publish_cohort(output_dir: Path, artifacts: CohortArtifacts) -> None:
+    """Validate a temporary sibling and publish it without replacement."""
+
+    if _path_lexists(output_dir):
+        raise FileExistsError(f"official output already exists: {output_dir}")
+    expected_git_commit = _artifact_git_commit(artifacts)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent)
+    )
+    try:
+        _write_fsynced(temporary / "cohort.jsonl", artifacts.cohort_jsonl)
+        _write_fsynced(temporary / "manifest.json", artifacts.manifest_json)
+        _fsync_directory(temporary)
+        validate_cohort_directory(
+            temporary,
+            expected_git_commit=expected_git_commit,
+        )
+        current_commit = _preflight_git_commit()
+        if current_commit != expected_git_commit:
+            raise RuntimeError("reviewed git HEAD changed before publication")
+        _rename_noreplace(temporary, output_dir)
+        _fsync_directory(output_dir.parent)
+    except BaseException:
+        if _path_lexists(temporary):
+            shutil.rmtree(temporary)
+        raise
+
+
+class CohortArgs(Tap):
+    """The RGB-D cohort sealer has no configurable scientific inputs."""
+
+
+def _preflight_git_commit() -> str:
+    status = subprocess.run(
+        ("git", "status", "--porcelain", "--untracked-files=normal"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout:
+        raise RuntimeError("fixed experiment requires a clean committed worktree")
+    completed = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = completed.stdout.strip()
+    if _LOWER_HEX_40.fullmatch(commit) is None:
+        raise ValueError("git rev-parse HEAD must return 40 lowercase hex characters")
+    return commit
+
+
+def _run() -> None:
+    if _path_lexists(OFFICIAL_OUTPUT_DIR):
+        raise FileExistsError(
+            f"official output already exists: {OFFICIAL_OUTPUT_DIR}"
+        )
+    git_commit = _preflight_git_commit()
+    artifacts = build_cohort_from_sources(git_commit=git_commit)
+    publish_cohort(OFFICIAL_OUTPUT_DIR, artifacts)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    CohortArgs(underscores_to_dashes=True).parse_args(argv)
+    _run()
+    print(f"Wrote sealed RGB-D cohort to {OFFICIAL_OUTPUT_DIR}")
+
+
+if __name__ == "__main__":
+    main()

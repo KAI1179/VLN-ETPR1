@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import gzip
 import json
 import math
+import os
+import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,8 +22,10 @@ from prior.analyze.d2026_07_28.rgbd_segmenter_cohort import (
     build_cohort,
     build_cohort_from_sources,
     hamilton_apportion,
+    publish_cohort,
     reconstruct_source_observations,
     select_observations,
+    validate_cohort_directory,
 )
 
 
@@ -554,3 +560,466 @@ def test_real_sources_reconstruct_frozen_population_and_episode_34() -> None:
     assert manifest["population"]["scene_observation_counts"] == dict(
         OFFICIAL_SCENE_COUNTS
     )
+
+
+def _cohort_artifacts(git_commit: str = "1" * 40) -> cohort_module.CohortArtifacts:
+    observation = _observation()
+    cohort = build_cohort((observation,), target_count=1)
+    manifest = {
+        "cohort_id": cohort_module.COHORT_ID,
+        "files": {
+            "cohort.jsonl": {
+                "byte_length": len(cohort.cohort_jsonl),
+                "row_count": 1,
+                "sha256": cohort.cohort_sha256,
+            }
+        },
+        "git_commit": git_commit,
+        "population": {
+            "example_count": 1,
+            "observation_count": 1,
+            "scene_count": 1,
+            "scene_observation_counts": {"2azQ1b91cZZ": 1},
+        },
+        "schema_version": 1,
+        "selection": {
+            "algorithm": cohort_module.ALGORITHM,
+            "domain_hex": cohort_module.SELECTION_DOMAIN.hex(),
+            "scene_quotas": {"2azQ1b91cZZ": 1},
+            "scene_selected_counts": {"2azQ1b91cZZ": 1},
+            "selected_example_count": 1,
+            "selected_observation_count": 1,
+            "selected_scene_count": 1,
+            "selection_sha256": cohort.selection_sha256,
+            "target_observation_count": 1,
+        },
+        "source": {
+            "dataset": cohort_module.DATASET,
+            "evidence_index": cohort_module.EVIDENCE_INDEX_PATH.as_posix(),
+            "evidence_index_sha256": cohort_module.EVIDENCE_INDEX_SHA256,
+            "evidence_key": cohort_module.EVIDENCE_KEY,
+            "evidence_manifest": cohort_module.EVIDENCE_MANIFEST_PATH.as_posix(),
+            "evidence_manifest_sha256": cohort_module.EVIDENCE_MANIFEST_SHA256,
+            "evidence_root": cohort_module.EVIDENCE_ROOT.as_posix(),
+            "raw_split": cohort_module.RAW_SPLIT_PATH.as_posix(),
+            "raw_split_sha256": cohort_module.RAW_SPLIT_SHA256,
+            "split": cohort_module.SPLIT,
+        },
+    }
+    manifest_json = (
+        json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    return cohort_module.CohortArtifacts((observation,), cohort, manifest_json)
+
+
+def _write_cohort_directory(
+    output_dir: Path, artifacts: cohort_module.CohortArtifacts
+) -> None:
+    output_dir.mkdir()
+    (output_dir / "cohort.jsonl").write_bytes(artifacts.cohort_jsonl)
+    (output_dir / "manifest.json").write_bytes(artifacts.manifest_json)
+
+
+def test_validate_cohort_directory_rebuilds_exact_expected_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    _write_cohort_directory(output_dir, artifacts)
+    calls: list[str] = []
+
+    def rebuild(*, git_commit: str) -> cohort_module.CohortArtifacts:
+        calls.append(git_commit)
+        return artifacts
+
+    monkeypatch.setattr(cohort_module, "build_cohort_from_sources", rebuild)
+
+    validate_cohort_directory(output_dir, expected_git_commit="1" * 40)
+
+    assert calls == ["1" * 40]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "cohort_bytes",
+        "row_order",
+        "manifest_unknown",
+        "manifest_missing",
+        "manifest_count",
+        "manifest_source_hash",
+        "manifest_commit",
+        "extra_file",
+        "missing_file",
+        "symlink_member",
+    ],
+)
+def test_validate_cohort_directory_rejects_every_package_drift(
+    mutation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    _write_cohort_directory(output_dir, artifacts)
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda *, git_commit: artifacts,
+    )
+    if mutation == "cohort_bytes":
+        (output_dir / "cohort.jsonl").write_bytes(artifacts.cohort_jsonl + b" ")
+    elif mutation == "row_order":
+        row = artifacts.cohort_jsonl[:-1]
+        (output_dir / "cohort.jsonl").write_bytes(row + b"\n" + row + b"\n")
+    elif mutation.startswith("manifest_"):
+        manifest = json.loads(artifacts.manifest_json)
+        if mutation == "manifest_unknown":
+            manifest["unknown"] = True
+        elif mutation == "manifest_missing":
+            del manifest["selection"]
+        elif mutation == "manifest_count":
+            manifest["files"]["cohort.jsonl"]["row_count"] = 2
+        elif mutation == "manifest_source_hash":
+            manifest["source"]["raw_split_sha256"] = "0" * 64
+        elif mutation == "manifest_commit":
+            manifest["git_commit"] = "2" * 40
+        (output_dir / "manifest.json").write_bytes(
+            (
+                json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True)
+                + "\n"
+            ).encode()
+        )
+    elif mutation == "extra_file":
+        (output_dir / "extra").write_bytes(b"")
+    elif mutation == "missing_file":
+        (output_dir / "manifest.json").unlink()
+    elif mutation == "symlink_member":
+        (output_dir / "manifest.json").unlink()
+        (output_dir / "manifest.json").symlink_to(tmp_path / "elsewhere")
+
+    with pytest.raises((ValueError, FileNotFoundError)):
+        validate_cohort_directory(output_dir, expected_git_commit="1" * 40)
+
+
+def test_validator_requires_external_expected_commit_before_source_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    _write_cohort_directory(output_dir, artifacts)
+
+    def fail_build(*, git_commit: str) -> cohort_module.CohortArtifacts:
+        raise AssertionError(
+            f"invalid expected commit reached source rebuild: {git_commit}"
+        )
+
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        fail_build,
+    )
+
+    with pytest.raises(ValueError, match="expected_git_commit"):
+        validate_cohort_directory(output_dir, expected_git_commit="bad")
+
+
+def test_validator_rejects_wrong_valid_external_commit_and_output_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    actual = tmp_path / "actual"
+    _write_cohort_directory(actual, artifacts)
+    linked = tmp_path / "linked"
+    linked.symlink_to(actual, target_is_directory=True)
+    broken = tmp_path / "broken"
+    broken.symlink_to(tmp_path / "missing", target_is_directory=True)
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda *, git_commit: _cohort_artifacts(git_commit),
+    )
+
+    with pytest.raises(ValueError, match="manifest.json"):
+        validate_cohort_directory(actual, expected_git_commit="2" * 40)
+    with pytest.raises(ValueError, match="real directory"):
+        validate_cohort_directory(linked, expected_git_commit="1" * 40)
+    with pytest.raises(ValueError, match="real directory"):
+        validate_cohort_directory(broken, expected_git_commit="1" * 40)
+
+
+def test_publish_cohort_validates_temp_rechecks_git_and_atomically_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    events: list[str] = []
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda *, git_commit: artifacts,
+    )
+    monkeypatch.setattr(
+        cohort_module,
+        "_preflight_git_commit",
+        lambda: (events.append("preflight"), "1" * 40)[1],
+    )
+    original_validate = cohort_module.validate_cohort_directory
+
+    def validate(path: Path, *, expected_git_commit: str) -> None:
+        events.append("validate")
+        original_validate(path, expected_git_commit=expected_git_commit)
+
+    monkeypatch.setattr(cohort_module, "validate_cohort_directory", validate)
+    original_rename = cohort_module._rename_noreplace
+
+    def rename(source: Path, destination: Path) -> None:
+        events.append("rename")
+        original_rename(source, destination)
+
+    monkeypatch.setattr(cohort_module, "_rename_noreplace", rename)
+
+    publish_cohort(output_dir, artifacts)
+
+    assert events == ["validate", "preflight", "rename"]
+    assert (output_dir / "cohort.jsonl").read_bytes() == artifacts.cohort_jsonl
+    assert (output_dir / "manifest.json").read_bytes() == artifacts.manifest_json
+    assert tuple(tmp_path.glob(".cohort.tmp-*")) == ()
+
+
+def test_publish_cohort_race_preserves_existing_destination_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda *, git_commit: artifacts,
+    )
+    monkeypatch.setattr(
+        cohort_module, "_preflight_git_commit", lambda: "1" * 40
+    )
+    original_rename = cohort_module._rename_noreplace
+
+    def race(source: Path, destination: Path) -> None:
+        destination.mkdir()
+        (destination / "winner").write_bytes(b"preserve")
+        original_rename(source, destination)
+
+    monkeypatch.setattr(cohort_module, "_rename_noreplace", race)
+
+    with pytest.raises(FileExistsError):
+        publish_cohort(output_dir, artifacts)
+
+    assert (output_dir / "winner").read_bytes() == b"preserve"
+    assert tuple(tmp_path.glob(".cohort.tmp-*")) == ()
+
+
+@pytest.mark.parametrize("failure", ["validate", "dirty", "head"])
+def test_publish_cohort_failure_removes_only_temporary_directory(
+    failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    if failure == "validate":
+        monkeypatch.setattr(
+            cohort_module,
+            "validate_cohort_directory",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid")),
+        )
+    else:
+        monkeypatch.setattr(
+            cohort_module,
+            "build_cohort_from_sources",
+            lambda *, git_commit: artifacts,
+        )
+        if failure == "dirty":
+            monkeypatch.setattr(
+                cohort_module,
+                "_preflight_git_commit",
+                lambda: (_ for _ in ()).throw(RuntimeError("dirty")),
+            )
+        else:
+            monkeypatch.setattr(
+                cohort_module, "_preflight_git_commit", lambda: "2" * 40
+            )
+
+    with pytest.raises((RuntimeError, ValueError)):
+        publish_cohort(output_dir, artifacts)
+
+    assert not output_dir.exists()
+    assert tuple(tmp_path.glob(".cohort.tmp-*")) == ()
+
+
+def test_post_rename_fsync_failure_preserves_published_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _cohort_artifacts()
+    output_dir = tmp_path / "cohort"
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda *, git_commit: artifacts,
+    )
+    monkeypatch.setattr(
+        cohort_module, "_preflight_git_commit", lambda: "1" * 40
+    )
+    calls = 0
+    original_fsync = cohort_module._fsync_directory
+
+    def fsync(directory: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("parent fsync failed")
+        original_fsync(directory)
+
+    monkeypatch.setattr(cohort_module, "_fsync_directory", fsync)
+
+    with pytest.raises(OSError, match="parent fsync"):
+        publish_cohort(output_dir, artifacts)
+
+    assert output_dir.is_dir()
+    assert (output_dir / "cohort.jsonl").read_bytes() == artifacts.cohort_jsonl
+    assert tuple(tmp_path.glob(".cohort.tmp-*")) == ()
+
+
+def test_rename_noreplace_uses_linux_abi_and_preserves_both_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeRenameAt2:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *args: object) -> int:
+            calls.append(args)
+            cohort_module.ctypes.set_errno(errno.EEXIST)
+            return -1
+
+    renameat2 = FakeRenameAt2()
+    monkeypatch.setattr(
+        cohort_module.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(renameat2=renameat2),
+    )
+
+    with pytest.raises(FileExistsError):
+        cohort_module._rename_noreplace(source, destination)
+
+    assert calls == [
+        (-100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    ]
+    assert source.is_dir()
+    assert destination.is_dir()
+
+
+def test_fixed_cli_rejects_scientific_and_path_overrides() -> None:
+    for override in (
+        ["--output-dir", "elsewhere"],
+        ["--target-count", "1"],
+        ["--source", "elsewhere"],
+        ["--overwrite"],
+        ["--resume"],
+        ["--limit", "1"],
+    ):
+        with pytest.raises(SystemExit):
+            cohort_module.CohortArgs(underscores_to_dashes=True).parse_args(override)
+
+
+def test_run_requires_absent_output_then_clean_git_before_source_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "official"
+    monkeypatch.setattr(cohort_module, "OFFICIAL_OUTPUT_DIR", output_dir)
+    events: list[str] = []
+    monkeypatch.setattr(
+        cohort_module,
+        "_preflight_git_commit",
+        lambda: (events.append("preflight"), "1" * 40)[1],
+    )
+    monkeypatch.setattr(
+        cohort_module,
+        "build_cohort_from_sources",
+        lambda **_kwargs: (events.append("source"), _cohort_artifacts())[1],
+    )
+    monkeypatch.setattr(
+        cohort_module,
+        "publish_cohort",
+        lambda *_args: events.append("publish"),
+    )
+
+    output_dir.mkdir()
+    with pytest.raises(FileExistsError):
+        cohort_module._run()
+    assert events == []
+
+    output_dir.rmdir()
+    output_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(FileExistsError):
+        cohort_module._run()
+    assert events == []
+
+    output_dir.unlink()
+    monkeypatch.setattr(
+        cohort_module,
+        "_preflight_git_commit",
+        lambda: (_ for _ in ()).throw(RuntimeError("dirty")),
+    )
+    with pytest.raises(RuntimeError, match="dirty"):
+        cohort_module._run()
+    assert events == []
+
+
+def test_run_records_exact_clean_head_and_publishes_matching_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "official"
+    monkeypatch.setattr(cohort_module, "OFFICIAL_OUTPUT_DIR", output_dir)
+    commits: list[str] = []
+    artifacts = _cohort_artifacts("a" * 40)
+    monkeypatch.setattr(
+        cohort_module, "_preflight_git_commit", lambda: "a" * 40
+    )
+
+    def build(*, git_commit: str) -> cohort_module.CohortArtifacts:
+        commits.append(git_commit)
+        return artifacts
+
+    monkeypatch.setattr(cohort_module, "build_cohort_from_sources", build)
+    monkeypatch.setattr(
+        cohort_module,
+        "publish_cohort",
+        lambda _path, actual: commits.append(
+            json.loads(actual.manifest_json)["git_commit"]
+        ),
+    )
+
+    cohort_module._run()
+
+    assert commits == ["a" * 40, "a" * 40]
+
+
+def test_clean_git_preflight_runs_status_before_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(
+        command: tuple[str, ...], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        stdout = "" if command[1] == "status" else "c" * 40 + "\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cohort_module.subprocess, "run", completed)
+
+    assert cohort_module._preflight_git_commit() == "c" * 40
+    assert calls == [
+        ("git", "status", "--porcelain", "--untracked-files=normal"),
+        ("git", "rev-parse", "HEAD"),
+    ]
