@@ -3,7 +3,9 @@
 ## Status
 
 Accepted on 2026-07-28 under the user's delegated spec-approval authority.
-This document freezes P2 before the P3 test result is calculated.
+Amended before the P3 run to schema v2 so soft aggregation reports exact
+object/region endpoints instead of an unrelated proxy. This document freezes
+P2 before the P3 test result is calculated.
 
 ## Purpose
 
@@ -425,7 +427,7 @@ test_angle_scores.csv
 scene_id,example_id,angle_degrees,all_iou,object_iou,region_iou,direction_cosine,predicted_support,target_support,in_frame_support,out_of_frame_support,union
 
 test_episode_scores.csv
-scene_id,example_id,schema_valid,heading_bin_degrees,primary_angle_degrees,global_angle_degrees,direct_angle_degrees,identity_iou,primary_iou,global_iou,direct_iou,random_expected_iou,soft_identity_iou,soft_aggregate_iou,oracle_iou,identity_object_iou,primary_object_iou,identity_region_iou,primary_region_iou,primary_predicted_support,primary_target_support,primary_in_frame_support,primary_out_of_frame_support,primary_union,soft_prediction_mass,soft_target_mass,soft_intersection_mass,soft_union_mass,primary_direction_cosine,direct_direction_cosine
+scene_id,example_id,schema_valid,heading_bin_degrees,primary_angle_degrees,global_angle_degrees,direct_angle_degrees,identity_iou,primary_iou,global_iou,direct_iou,random_expected_iou,soft_identity_iou,soft_aggregate_iou,oracle_iou,identity_object_iou,primary_object_iou,identity_region_iou,primary_region_iou,soft_identity_object_iou,soft_aggregate_object_iou,soft_identity_region_iou,soft_aggregate_region_iou,primary_predicted_support,primary_target_support,primary_in_frame_support,primary_out_of_frame_support,primary_union,soft_prediction_mass,soft_target_mass,soft_intersection_mass,soft_union_mass,primary_direction_cosine,direct_direction_cosine
 ```
 
 Development rows contain the eight heading mappings followed by the four global
@@ -451,7 +453,7 @@ schema_version,sources,git_commit,protocol,population,schemas,artifacts
 ```
 
 `schema_version` is the exact string
-`llm-grid-target-free-cardinal-v1`. JSON array order follows the declared
+`llm-grid-target-free-cardinal-v2`. JSON array order follows the declared
 candidate, angle, or sorted scene order. Nested key sets and value types are
 represented by typed frozen dataclasses and are asserted exactly by tests and
 the validator; unknown or missing keys fail validation. The implementation

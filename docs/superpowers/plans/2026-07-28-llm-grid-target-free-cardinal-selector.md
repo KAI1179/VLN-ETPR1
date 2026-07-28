@@ -30,6 +30,9 @@ Matplotlib, standard-library CSV/JSON/hash/path utilities, Pytest, Ruff, ty.
   ignored type errors, lint suppressions, silent fallbacks, or target repairs.
 - Use the exact populations, hashes, angles, mappings, schemas, statistics,
   decision predicates, output path, and run command in the accepted design.
+- Use schema version `llm-grid-target-free-cardinal-v2`; episode rows and CSV
+  contain exact soft identity/aggregate object and region IoUs, never proxy
+  values copied from boolean per-angle scores.
 - A corrupt runtime start direction aborts the run. A malformed prediction is
   an explicit empty prediction in the denominator.
 - Generate and hash all `val_unseen` assignments before loading any
@@ -397,7 +400,8 @@ git commit -m "feat: seal target-free selector assignments"
 
 Use hand-computable two-channel grids to test identity, primary, global,
 direct, random expectation, oracle, object/region, support, soft aggregation,
-direction cosine, invalid denominator rows, and oracle-gain availability.
+soft identity/aggregate object and region IoUs, direction cosine, invalid
+denominator rows, and oracle-gain availability.
 Assert four angle rows and one episode row per episode in canonical order.
 
 - [ ] **Step 2: Run score tests and confirm RED**
@@ -646,7 +650,11 @@ objects; no loose input mappings enter the artifact builder.
 
 Assert the exact nine filenames, exact headers, canonical JSON keys, schema
 version, row counts, hashes, PNG decoding, finite values, and summary/gate
-agreement. Load the PNG with Matplotlib, not a signature-only check.
+agreement. Add hand-derived tests that distinguish exact soft
+identity/aggregate object and region IoUs from the boolean per-angle family
+means. Extend `EpisodeScoreRow`, `test_episode_scores.csv`, and aggregate
+candidate means with those four v2 fields. Load the PNG with Matplotlib, not a
+signature-only check.
 
 - [ ] **Step 2: Write failing tamper and transaction tests**
 
