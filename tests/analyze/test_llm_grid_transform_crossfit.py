@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 from numpy.typing import NDArray
 import pytest
@@ -9,12 +11,22 @@ from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     CrossFitResult,
     Direction,
     EpisodeCase,
+    EpisodePivotResult,
     FamilyAngleScore,
+    PivotAssignment,
     PivotMode,
+    build_pivot_assignments,
     crossfit_scores,
+    evaluate_episode,
+    pivot_for_mode,
     score_angle_families,
 )
-from prior.analyze.llm_grid_registration import RasterScore, SpatialBounds, WarpedGrid
+from prior.analyze.llm_grid_registration import (
+    RasterScore,
+    SpatialBounds,
+    WarpedGrid,
+    warp_grid_about_pivot,
+)
 
 
 def family_score(
@@ -46,6 +58,209 @@ def family_score(
 def canonical_grids() -> tuple[NDArray[np.bool_], NDArray[np.bool_]]:
     predicted = np.zeros((37, 50, 50), dtype=np.bool_)
     return predicted, np.zeros_like(predicted)
+
+
+def episode_case(
+    example_id: str,
+    pivot: tuple[float, float],
+    *,
+    scene_id: str = "scene-1",
+    schema_valid: bool = True,
+    predicted_grid: Optional[NDArray[np.bool_]] = None,
+    target_grid: Optional[NDArray[np.bool_]] = None,
+) -> EpisodeCase:
+    predicted = (
+        np.zeros((37, 50, 50), dtype=np.bool_)
+        if predicted_grid is None
+        else predicted_grid
+    )
+    target = np.zeros_like(predicted) if target_grid is None else target_grid
+    return EpisodeCase(
+        split="val_unseen",
+        scene_id=scene_id,
+        example_id=example_id,
+        schema_valid=schema_valid,
+        predicted_grid=predicted,
+        target_grid=target,
+        true_start_pivot=pivot,
+    )
+
+
+def four_episode_cases() -> tuple[EpisodeCase, ...]:
+    return tuple(
+        episode_case(f"episode-{name}", (float(index), float(index)))
+        for index, name in enumerate(("a", "b", "c", "d"), start=1)
+    )
+
+
+def test_pivot_assignment_matches_frozen_sha256_fixture() -> None:
+    """Breaks if the frozen digest ordering or DFS matching changes."""
+    assignments = build_pivot_assignments(four_episode_cases())
+
+    assert [(row.example_id, row.donor_example_id) for row in assignments] == [
+        ("episode-a", "episode-b"),
+        ("episode-b", "episode-c"),
+        ("episode-c", "episode-d"),
+        ("episode-d", "episode-a"),
+    ]
+
+
+def test_pivot_matching_is_input_order_independent_and_scene_local() -> None:
+    """Breaks if matching consumes input order or crosses a scene boundary."""
+    episodes = four_episode_cases() + (
+        episode_case("episode-e", (5.0, 5.0), scene_id="scene-2"),
+        episode_case("episode-f", (6.0, 6.0), scene_id="scene-2"),
+    )
+
+    assignments = build_pivot_assignments(episodes)
+
+    assert assignments == build_pivot_assignments(tuple(reversed(episodes)))
+    assert {row.example_id for row in assignments} == {row.example_id for row in episodes}
+    assert len({(row.scene_id, row.donor_example_id) for row in assignments}) == len(
+        assignments
+    )
+    assert all(
+        row.example_id != row.donor_example_id
+        and row.true_pivot != row.assigned_pivot
+        for row in assignments
+    )
+
+
+def test_pivot_matching_rejects_duplicate_pivots_without_eligible_edges() -> None:
+    """Breaks if equal-pivot donors remain eligible after matching setup."""
+    episodes = (
+        episode_case("episode-a", (1.0, 1.0)),
+        episode_case("episode-b", (1.0, 1.0)),
+        episode_case("episode-c", (2.0, 2.0)),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="scene scene-1 has no valid shuffled-start perfect matching",
+    ):
+        build_pivot_assignments(episodes)
+
+
+@pytest.mark.parametrize(
+    ("episodes", "scene_id"),
+    (
+        ((episode_case("only", (1.0, 1.0)),), "scene-1"),
+        (
+            (
+                episode_case("episode-a", (1.0, 1.0)),
+                episode_case("episode-b", (1.0, 1.0)),
+            ),
+            "scene-1",
+        ),
+    ),
+)
+def test_pivot_matching_rejects_impossible_scene(
+    episodes: tuple[EpisodeCase, ...], scene_id: str
+) -> None:
+    """Breaks if an impossible within-scene derangement is silently accepted."""
+    with pytest.raises(
+        ValueError,
+        match=rf"scene {scene_id} has no valid shuffled-start perfect matching",
+    ):
+        build_pivot_assignments(episodes)
+
+
+def test_pivot_for_mode_returns_declared_control_pivots() -> None:
+    """Breaks if a pivot mode substitutes a derived or wrong start coordinate."""
+    episode = episode_case("episode-a", (4.0, 8.0))
+    assignment = PivotAssignment(
+        scene_id="scene-1",
+        example_id="episode-a",
+        donor_example_id="episode-b",
+        true_pivot=(4.0, 8.0),
+        assigned_pivot=(12.0, 16.0),
+    )
+
+    assert pivot_for_mode(episode, assignment, PivotMode.TRUE_START) == (4.0, 8.0)
+    assert pivot_for_mode(episode, assignment, PivotMode.MAP_CENTER) == (25.0, 25.0)
+    assert pivot_for_mode(episode, assignment, PivotMode.SHUFFLED_START) == (12.0, 16.0)
+
+
+def test_evaluate_episode_true_start_beats_center_and_shuffled_pivots() -> None:
+    """Breaks if all three controls do not score their own pivot geometry."""
+    predicted = np.zeros((37, 50, 50), dtype=np.bool_)
+    predicted[0, 10, 11] = True
+    predicted[27, 11, 10] = True
+    true_pivot = (10.5, 10.5)
+    warped = warp_grid_about_pivot(predicted, true_pivot, 90.0)
+    target = np.zeros_like(predicted)
+    row_start = max(warped.bounds.row_min, 0)
+    row_end = min(warped.bounds.row_max, 50)
+    col_start = max(warped.bounds.col_min, 0)
+    col_end = min(warped.bounds.col_max, 50)
+    target[:, row_start:row_end, col_start:col_end] = warped.grid[
+        :,
+        row_start - warped.bounds.row_min : row_end - warped.bounds.row_min,
+        col_start - warped.bounds.col_min : col_end - warped.bounds.col_min,
+    ]
+    episode = episode_case(
+        "episode-a",
+        true_pivot,
+        predicted_grid=predicted,
+        target_grid=target,
+    )
+    assignment = PivotAssignment(
+        scene_id="scene-1",
+        example_id="episode-a",
+        donor_example_id="episode-b",
+        true_pivot=true_pivot,
+        assigned_pivot=(2.5, 2.5),
+    )
+
+    results = evaluate_episode(episode, assignment, (0.0, 90.0))
+
+    assert all(isinstance(result, EpisodePivotResult) for result in results)
+    assert tuple(result.pivot_mode for result in results) == tuple(PivotMode)
+    deltas = {result.pivot_mode: result.symmetric_delta for result in results}
+    assert deltas[PivotMode.TRUE_START] > deltas[PivotMode.MAP_CENTER]
+    assert deltas[PivotMode.TRUE_START] > deltas[PivotMode.SHUFFLED_START]
+
+
+def test_invalid_episode_is_retained_at_every_pivot_with_zero_deltas() -> None:
+    """Breaks if empty invalid predictions are dropped or acquire a false delta."""
+    target = np.zeros((37, 50, 50), dtype=np.bool_)
+    target[0, 10, 10] = True
+    target[27, 12, 12] = True
+    episode = episode_case(
+        "episode-a",
+        (4.0, 4.0),
+        schema_valid=False,
+        target_grid=target,
+    )
+    assignment = PivotAssignment(
+        scene_id="scene-1",
+        example_id="episode-a",
+        donor_example_id="episode-b",
+        true_pivot=(4.0, 4.0),
+        assigned_pivot=(12.0, 12.0),
+    )
+
+    results = evaluate_episode(episode, assignment, (0.0, 90.0))
+
+    assert len(results) == len(PivotMode)
+    assert all(not result.schema_valid for result in results)
+    assert all(result.object_to_region.delta_iou == 0.0 for result in results)
+    assert all(result.region_to_object.delta_iou == 0.0 for result in results)
+
+
+def test_evaluate_episode_rejects_assignment_for_another_identity() -> None:
+    """Breaks if results can label one episode with another assignment's pivot."""
+    episode = episode_case("episode-a", (4.0, 4.0))
+    assignment = PivotAssignment(
+        scene_id="scene-1",
+        example_id="episode-b",
+        donor_example_id="episode-a",
+        true_pivot=(5.0, 5.0),
+        assigned_pivot=(4.0, 4.0),
+    )
+
+    with pytest.raises(ValueError, match="assignment identity"):
+        evaluate_episode(episode, assignment, (0.0, 90.0))
 
 
 def test_crossfit_selection_uses_only_declared_family() -> None:
