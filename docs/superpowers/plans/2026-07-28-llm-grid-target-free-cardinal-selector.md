@@ -30,9 +30,12 @@ Matplotlib, standard-library CSV/JSON/hash/path utilities, Pytest, Ruff, ty.
   ignored type errors, lint suppressions, silent fallbacks, or target repairs.
 - Use the exact populations, hashes, angles, mappings, schemas, statistics,
   decision predicates, output path, and run command in the accepted design.
-- Use schema version `llm-grid-target-free-cardinal-v2`; episode rows and CSV
+- Use schema version `llm-grid-target-free-cardinal-v3`; episode rows and CSV
   contain exact soft identity/aggregate object and region IoUs, never proxy
   values copied from boolean per-angle scores.
+- Bind the exact three phase-specific source inventories and combined digest
+  frozen in the design. Test target members are not fingerprinted or loaded
+  until assignment CSV bytes have been serialized and hashed.
 - A corrupt runtime start direction aborts the run. A malformed prediction is
   an explicit empty prediction in the denominator.
 - Generate and hash all `val_unseen` assignments before loading any
@@ -571,6 +574,13 @@ OracleGainSummary:
 DecisionSummary:
   label, selector_conditions, global_conditions
 
+AuditSummary:
+  development_sources_verified, test_assignment_sources_verified,
+  assignments_serialized_before_test_targets, assignment_sha256,
+  test_target_sources_verified, combined_sources_verified,
+  post_score_sources_verified,
+  development_contract_exact, test_contract_exact, passed
+
 ChosenMappingArtifact:
   sign, offset_degrees, development_mean_iou, tied_candidate_count
 
@@ -588,7 +598,8 @@ SelectorLockArtifact:
 
 SummaryArtifact:
   schema_version, population, means, contrasts, semantic_families,
-  cell_metrics, support, directions, angles, cost, oracle_gain, decision
+  cell_metrics, support, directions, angles, cost, oracle_gain, audit,
+  decision
 
 BootstrapArtifact:
   schema_version, seed, repetitions, scene_ids, intervals,
@@ -601,17 +612,20 @@ BootstrapIntervals:
 LeaveOneSceneOutSummary:
   primary_identity, primary_global, global_identity
 
-SourceArtifact:
-  path, sha256, dataset, split
+SourcePhaseArtifact:
+  name, sha256, entry_count
 
 SourcesArtifact:
-  development, test
+  development_all_sources, test_assignment_sources, test_target_sources,
+  combined_sha256
 
 ProtocolArtifact:
   cache_model_key, cognitive_map_namespace, scale, raster_shape,
   object_channels, region_channels, angle_order, mapping_order,
   heading_tie_order, invalid_angle, bootstrap_seed, bootstrap_repetitions,
-  gate_threshold, schema_version, target_free_limitations
+  bootstrap_cluster, bootstrap_weighting, bootstrap_interval,
+  gate_threshold, selector_input_schema, coordinate_contract, phase_order,
+  decision_gate_contract, schema_version, target_free_limitations
 
 SchemaArtifact:
   csv_headers, json_top_level_keys, float_format, row_order,
@@ -635,12 +649,49 @@ ManifestInputs:
 
 ValidationInputs:
   development_contract, test_contract, cache_dir, cache_model_key,
-  cognitive_map_namespace, quiet
+  cognitive_map_namespace, expected_git_commit, quiet
 
 ArtifactBundle:
   manifest_json, development_mapping_scores_csv, selector_lock_json,
   test_assignments_csv, test_angle_scores_csv, test_episode_scores_csv,
   summary_json, bootstrap_json, target_free_control_intervals_png
+```
+
+The schema-v3 `ProtocolArtifact` values and types are exact:
+
+```text
+bootstrap_cluster: str = "scene_id"
+bootstrap_weighting: str = "episode-macro scene multiplicity ratio-of-sums"
+bootstrap_interval: str = "np.percentile[2.5,97.5]; numpy-1.24 linear"
+selector_input_schema: tuple[str, ...] =
+  ("schema_valid:bool", "start_direction:float32[2]",
+   "predicted_grid:bool[37,50,50]",
+   "predicted_directions:float32[5,2]")
+coordinate_contract: tuple[str, ...] =
+  ("pivot=start_position/(CELL_SIZE*GRID_SCALE)",
+   "grid_angle=physical-positive",
+   "stored_direction_angle=-grid_angle",
+   "warp=padded-nearest-no-crop")
+phase_order: tuple[str, ...] =
+  ("clean-head", "development-coupled-load-and-fingerprint",
+   "development-lock", "test-assignment-coupled-load-and-fingerprint",
+   "assignment-serialize-and-hash",
+   "test-target-coupled-load-and-fingerprint", "score",
+   "post-score-source-recheck", "audit-and-decision", "artifact-build",
+   "atomic-no-replace-publish-and-validate")
+decision_gate_contract: tuple[str, ...] =
+  ("selector_mean>=0.01", "selector_ci_lower>0",
+   "selector_object_delta>0", "selector_region_delta>0",
+   "selector_loso_min>0", "selector_global_ci_lower>0",
+   "global_mean>=0.01", "global_ci_lower>0",
+   "global_object_delta>0", "global_region_delta>0",
+   "global_loso_min>0", "audit_passed",
+   "partial=(selector_mean>=0.01 and selector_ci_lower>0) or (global_mean>=0.01 and global_ci_lower>0)",
+   "precedence=SELECTOR GO,FIXED-CORRECTION GO,PARTIAL,NO GO")
+target_free_limitations: tuple[str, ...] =
+  ("offline raster overlap is not navigation performance",
+   "oracle and target-vector diagnostics are nondeployable",
+   "val_unseen is a reused evaluation population, not a pristine held-out generalisation test")
 ```
 
 Mappings inside JSON use only `dataclasses.asdict` from these frozen typed
@@ -649,12 +700,16 @@ objects; no loose input mappings enter the artifact builder.
 - [ ] **Step 1: Write failing serializer and plot tests**
 
 Assert the exact nine filenames, exact headers, canonical JSON keys, schema
-version, row counts, hashes, PNG decoding, finite values, and summary/gate
-agreement. Add hand-derived tests that distinguish exact soft
+version, row counts, hashes, PNG decoding, finite values, source phase
+fingerprints, explicit audit, and summary/gate agreement. Add hand-derived
+tests that distinguish exact soft
 identity/aggregate object and region IoUs from the boolean per-angle family
 means. Extend `EpisodeScoreRow`, `test_episode_scores.csv`, and aggregate
-candidate means with those four v2 fields. Load the PNG with Matplotlib, not a
-signature-only check.
+candidate means with those four fields. Load the PNG with Matplotlib, not a
+signature-only check. Add an unequal-support boolean cell-metric regression
+whose literal expected intersection is
+`predicted_support + target_support - union`; temporarily mutating the
+implementation to `iou * union` must make the test RED.
 
 - [ ] **Step 2: Write failing tamper and transaction tests**
 
@@ -662,7 +717,11 @@ For each artifact, modify bytes or a semantic value and require validator
 failure. Cover assignment re-generation, lock re-development, hash mismatch,
 unknown/missing JSON key, row reorder, wrong bootstrap, wrong decision,
 malformed PNG, official output already present, temp-build failure, and atomic
-publish leaving no partial official directory.
+publish leaving no partial official directory. Also cover changed
+prediction/dataset/NPZ-member bytes, duplicate NPZ members, symlinks, a source
+mutation between phases, a different externally expected Git commit, a false
+audit boolean, and a destination created immediately before publication's
+final no-replace rename.
 
 - [ ] **Step 3: Run artifact tests and confirm RED**
 
@@ -691,29 +750,50 @@ values and close its figure.
 recomputes hashes, development selection, test assignments, per-angle and
 per-episode scores, bootstrap, LOSO, summary, and decision; and rejects any
 mismatch. It accepts exact expected development/test contracts as keyword-only
-arguments and independently compares source paths and hashes, cache key,
-namespace, schema v2, angle and mapping orders, bootstrap seed and repetitions,
-and gate threshold against frozen module constants. It must not derive those
-expected values from `manifest.json`.
+arguments plus the exact independently reviewed Git commit. It independently
+recomputes all three frozen source inventories and compares their counts,
+digests, and combined digest; it also compares cache key, namespace, schema v3,
+angle and mapping orders, bootstrap method/constants, gate predicates, and
+limitations against frozen module constants. It must not derive expected
+values from `manifest.json`.
 
 `publish_artifacts` fails if the official directory exists, creates one
 temporary sibling directory, writes all nine files there, validates the
-temporary directory, and atomically renames it to the official path. On
-failure it removes only its exact temporary sibling.
+temporary directory, and atomically renames it to the official path with a
+Linux no-replace primitive. If the destination appears concurrently,
+publication fails and preserves it. On failure it removes only its exact
+temporary sibling. Implement the final move with libc `renameat2`,
+`AT_FDCWD=-100`, and `RENAME_NOREPLACE=1` through standard-library `ctypes`;
+translate `EEXIST` to `FileExistsError` and every other errno to `OSError`.
+Do not fall back to overwrite-capable `Path.replace` or `os.rename`.
 
 - [ ] **Step 6: Implement the fixed Tap CLI and orchestration**
 
 `TargetFreeArgs` exposes typed defaults but `_validate_args` requires every
 scientific value and path to equal the frozen protocol. `_run` performs:
 
-1. preflight;
-2. development load and lock;
-3. runtime-only test load;
+1. clean-HEAD and path-safety preflight;
+2. coupled development load/fingerprint verification and lock;
+3. coupled runtime-only test load/assignment-fingerprint verification;
 4. in-memory assignment CSV serialization and SHA-256 sealing;
-5. test target load;
-6. scoring/statistics/decision;
-7. artifact build;
-8. atomic publish and second independent validation.
+5. coupled test-target load/fingerprint verification;
+6. target/runtime exact-key join;
+7. scoring/statistics;
+8. post-score recomputation of all source fingerprints;
+9. explicit audit construction and decision classification;
+10. artifact build;
+11. atomic no-replace publish and second independent validation.
+
+Each coupled loader parses the exact bytes it hashes and never reopens a
+verified path for scientific input. Test target NPZ members are untouched
+until after assignment serialization. The exact assignment digest and phase
+booleans enter `AuditSummary`; `classify_decision` receives only
+`audit.passed`. The validator requires an external `expected_git_commit`.
+Because a commit cannot contain its own Git hash, the fixed CLI captures its
+clean HEAD while Task 5 independently asserts that HEAD is the reviewed
+commit. Temporary publication validation uses the captured clean HEAD as
+`expected_git_commit`; the later fresh-process validator supplies the
+independently recorded reviewed HEAD and requires equality with the manifest.
 
 The CLI must not accept `--limit` and must not provide overwrite/resume flags.
 
@@ -753,10 +833,10 @@ git commit -m "feat: publish target-free selector audit"
 
 Give a fresh reviewer the frozen spec, plan, and final Task 4 code/test diff.
 Require Critical/Important/Minor findings covering temporal target separation,
-frozen-constant enforcement, schema-v2 soft semantic endpoints, transaction
-safety, validator independence, and CLI immutability. Resolve every
-Critical/Important finding with TDD and obtain clean re-review before
-unsealing. Record the accepted committed Task 4 HEAD.
+frozen-constant enforcement, schema-v3 source fingerprints and soft semantic
+endpoints, transaction safety, validator independence, and CLI immutability.
+Resolve every Critical/Important finding with TDD and obtain clean re-review
+before unsealing. Record the accepted committed Task 4 HEAD.
 
 - [ ] **Step 2: Run a clean pre-experiment verification**
 
@@ -769,6 +849,7 @@ ruff check prior/analyze/d2026_07_28 tests/analyze
 ty check prior/analyze/d2026_07_28/llm_grid_target_free_cardinal.py tests/analyze/test_llm_grid_target_free_cardinal.py
 git diff --check
 test -z "$(git status --porcelain)"
+test "$(git rev-parse HEAD)" = "<reviewed-task4-head>"
 test ! -e outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2
 ```
 
@@ -795,9 +876,10 @@ Run the public validator in a fresh Python process with exact
 `778/53/770/8` and `1839/11/1830/9` contracts. Confirm exactly nine output
 files. Immediately compute and retain the SHA-256 of `manifest.json`; this
 externally anchors the manifest that hashes the other eight artifacts. Confirm
-that the validator independently enforces the frozen source paths and hashes,
-cache key, namespace, schema v2, angle and mapping orders, bootstrap constants,
-and gate threshold. Inspect `selector_lock.json`, `summary.json`,
+that the validator independently enforces all three source fingerprints, cache
+key, namespace, schema v3, angle and mapping orders, bootstrap method/constants,
+gate predicates, limitations, and the supplied reviewed commit. Inspect
+`selector_lock.json`, `summary.json`,
 `bootstrap.json`, and the decoded interval plot. Recompute the selected
 mapping, global angle, primary contrasts, all decision conditions, and label
 without trusting console text.
@@ -829,6 +911,8 @@ Append to `docs/daily/2026-07-28.md`:
 - all gate booleans and the literal decision;
 - leakage audit, assignment hash, reviewed run commit, and external
   `manifest.json` SHA-256;
+- all three source fingerprint digests/counts, the combined digest, every
+  explicit phase-audit boolean, and the post-score source recheck;
 - limitations and the one authorised next action.
 
 Mark P3 complete. Mark P4 active only for `SELECTOR GO` or
@@ -846,7 +930,7 @@ pytest tests/analyze/test_llm_grid_target_free_cardinal.py -q
 pytest tests/analyze -q
 ruff check prior/analyze/d2026_07_28 tests/analyze
 ty check prior/analyze/d2026_07_28/llm_grid_target_free_cardinal.py tests/analyze/test_llm_grid_target_free_cardinal.py
-python -c "from pathlib import Path; from prior.analyze.d2026_07_28.llm_grid_target_free_cardinal import validate_artifact_directory; validate_artifact_directory(Path('outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2'), expected_development_episodes=778, expected_development_scenes=53, expected_development_valid=770, expected_development_invalid=8, expected_test_episodes=1839, expected_test_scenes=11, expected_test_valid=1830, expected_test_invalid=9)"
+python -c "from pathlib import Path; from prior.analyze.d2026_07_28.llm_grid_target_free_cardinal import validate_artifact_directory; validate_artifact_directory(Path('outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2'), expected_git_commit='<reviewed-task4-head>', expected_development_episodes=778, expected_development_scenes=53, expected_development_valid=770, expected_development_invalid=8, expected_test_episodes=1839, expected_test_scenes=11, expected_test_valid=1830, expected_test_invalid=9)"
 sha256sum outputs/llm_grid_analysis/target_free_cardinal_selector_r2r_epoch2/manifest.json
 git diff --check
 ```

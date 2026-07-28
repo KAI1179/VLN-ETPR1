@@ -3,11 +3,13 @@
 ## Status
 
 Accepted on 2026-07-28 under the user's delegated spec-approval authority.
-Amended before the P3 run to schema v2 so soft aggregation reports exact
-object/region endpoints instead of an unrelated proxy, and to state explicitly
-that `val_unseen` is a reused evaluation population rather than a pristine
-generalisation test. This document freezes P2 before the P3 result is
-calculated.
+Amended before the P3 run to schema v3. Schema v2 added exact soft
+object/region endpoints and the reused-evaluation limitation; the pre-run
+review then showed that source manifests alone did not bind the ignored
+prediction, dataset, and cognitive-map bytes. Schema v3 adds phase-specific
+source fingerprints, an explicit leakage audit, reviewed-commit validation,
+and atomic no-replace publication. This document freezes P2 before the P3
+result is calculated.
 
 ## Purpose
 
@@ -94,6 +96,73 @@ The sealed-within-run evaluation split is exactly:
 - 1,830 schema-valid and 9 schema-invalid-or-missing predictions;
 - prediction manifest SHA-256
   `31e7c5f8d186e75222b12f1aa8862b16fa9904c75221a0fd55cfba61f93fa8ce`.
+
+The manifest digests above identify generation metadata but do not enumerate
+the ignored experimental inputs. Schema v3 therefore freezes the exact bytes
+actually consumed by the loaders with
+`llm-grid-target-free-source-fingerprint-v3`. Each canonical entry is exactly:
+
+```json
+{"member":"...","path":"...","role":"...","sha256":"...","size_bytes":123}
+```
+
+Entries are sorted by `(role,path,member)`. A phase is exactly compact,
+sorted-key, `ensure_ascii=False` UTF-8 JSON plus one LF:
+
+```json
+{"entries":[...],"phase":"PHASE","schema_version":"llm-grid-target-free-source-fingerprint-v3"}
+```
+
+The combined commitment is exactly the same serialization of:
+
+```json
+{"phase_digests":{"development_all_sources":"...","test_assignment_sources":"...","test_target_sources":"..."},"schema_version":"llm-grid-target-free-source-fingerprint-v3"}
+```
+
+Logical paths start with `val_seen/` or `val_unseen/`. The exact role/path
+forms are:
+
+```text
+r2r_episode_source              {split}/{split}.json.gz
+r2r_ground_truth_source         {split}/{split}_gt.json.gz
+prediction_manifest             {split}/manifest.json
+prediction_text                 {split}/{scene_id}/{unique_id}.txt
+cognitive_map_assignment_member {split}/{scene_id}/{unique_id}.npz
+cognitive_map_target_member     {split}/{scene_id}/{unique_id}.npz
+```
+
+The NPZ member name occupies `member`; ordinary files use `member=""`.
+Regular files and every path component must not be symlinks. NPZ inputs bind
+the decompressed `.npy` member bytes and require exactly one occurrence of each
+named member.
+
+The three frozen phase commitments are:
+
+```text
+development_all_sources  entries=3893
+7b0f8ce883a4929679ea51627726e97fc318f9785cb2794afb5908f002a860cc
+
+test_assignment_sources  entries=5520
+e6065ad984f05bd42950fa52855310bc7364421d424d4e29704e508bda447d10
+
+test_target_sources      entries=3678
+62307358663497a3bfb98220b4d2a875fe50fb0922ba020186cc6be6cbcf89ef
+
+combined
+5e8702088364ee294ad0876486d403fe1b68283897bff2468369167c262bf942
+```
+
+`development_all_sources` contains the two `val_seen` R2R gzip files, the
+prediction manifest, 778 prediction texts, and the four consumed NPY members
+from 778 cognitive-map NPZs. `test_assignment_sources` contains the two
+`val_unseen` R2R gzip files, prediction manifest, 1,839 prediction texts, and
+only `start_position.npy` plus `start_direction_vector.npy`.
+`test_target_sources` contains only `grid.npy` and `direction_vectors.npy` from
+the same 1,839 NPZs. Whole directories, unused NPZ members, connectivity data,
+status files, and metrics are excluded because the experiment never reads
+them. Exact episode-derived paths and counts are required; missing, duplicate,
+absolute, parent-traversing, backslash, NUL, non-regular, or symlinked inputs
+fail preflight. Unreferenced files outside that inventory are irrelevant.
 
 Both splits use:
 
@@ -260,7 +329,9 @@ fraction-of-oracle-gain diagnostics.
 
 The full command performs these phases in order:
 
-1. Validate both cache manifests and exact population contracts.
+1. Require a clean worktree, capture the exact committed HEAD, and validate
+   the frozen development and test-assignment source fingerprints. Do not
+   inspect test target members in this phase.
 2. Load `val_seen`, score the eight mapping functions and four global angles,
    and freeze exactly one primary mapping and one global angle.
 3. Serialize `selector_lock.json`, including the chosen definitions,
@@ -269,13 +340,23 @@ The full command performs these phases in order:
 4. Generate every `val_unseen` candidate assignment from selector inputs
    without reading a target raster or target direction vector.
 5. Serialize `test_assignments.csv` and calculate its SHA-256.
-6. Only then load `val_unseen` targets and score the sealed assignments and
-   frozen baselines.
+6. Only then validate the frozen test-target fingerprint, load `val_unseen`
+   targets, and score the sealed assignments and frozen baselines.
+7. Recompute all three source fingerprints after scoring to detect source
+   mutation during the run.
 
-The implementation must enforce phase separation with typed inputs. Tests must
-show that changing target rasters or vectors cannot change assignment bytes.
+The implementation must enforce phase separation with typed inputs. Every
+loader parses the same bytes it hashes: gzip JSON is decompressed from its
+fingerprinted compressed bytes, prediction text is decoded from its
+fingerprinted bytes, and each NPY array is decoded from the exact decompressed
+member bytes entered in the fingerprint. A separate pre-hash followed by an
+ordinary path reopen is forbidden because it creates a source-mutation race.
+Tests must show that changing target rasters or vectors cannot change
+assignment bytes.
 Artifact validation independently regenerates the lock and assignments from
-allowed inputs and requires byte equality before validating scores.
+allowed inputs and requires byte equality before validating scores. It accepts
+the independently reviewed run commit as a required argument and rejects a
+different manifest commit.
 
 An `EpisodeKey(scene_id, example_id)` envelope associates selector inputs,
 assignments, and scores and establishes stable row order. The key is never
@@ -310,7 +391,10 @@ Also report:
 - uniform soft aggregation minus soft identity;
 - object-only and region-only contrasts;
 - cell-level precision, recall, and F1, using soft intersection mass for the
-  soft aggregator and ordinary counts for boolean candidates;
+  soft aggregator and ordinary counts for boolean candidates; boolean
+  intersection is the exact integer
+  `predicted_support + target_support - union`, never reconstructed as
+  floating-point `iou * union`;
 - oracle regret and fraction of the four-way oracle gain recovered;
 - selected-angle counts and heading-bin-by-angle tables;
 - direction-vector cosine as a target-scored secondary diagnostic only;
@@ -373,7 +457,10 @@ The conclusion is **SELECTOR GO** only if every condition passes:
 4. its leave-one-scene-out minimum gain over identity is above zero;
 5. the paired 95% bootstrap lower bound for heading selector minus calibrated
    global correction is above zero;
-6. the leakage audit and exact `1,839/11/1,830/9` denominator validation pass.
+6. the explicit audit passes: all three frozen source fingerprints and the
+   combined commitment match, the exact development and test population
+   contracts match, assignments were serialized and hashed before test-target
+   fingerprint validation/loading, and the post-score source recheck matches.
 
 This outcome authorises a separate P4 navigation-ablation design. It does not
 authorise an unreviewed navigation run or a core-code change.
@@ -455,7 +542,7 @@ schema_version,chosen_mapping,chosen_global_angle,development,protocol
 
 summary.json:
 schema_version,population,means,contrasts,semantic_families,cell_metrics,
-support,directions,angles,cost,oracle_gain,decision
+support,directions,angles,cost,oracle_gain,audit,decision
 
 bootstrap.json:
 schema_version,seed,repetitions,scene_ids,intervals,leave_one_scene_out
@@ -465,7 +552,7 @@ schema_version,sources,git_commit,protocol,population,schemas,artifacts
 ```
 
 `schema_version` is the exact string
-`llm-grid-target-free-cardinal-v2`. JSON array order follows the declared
+`llm-grid-target-free-cardinal-v3`. JSON array order follows the declared
 candidate, angle, or sorted scene order. Nested key sets and value types are
 represented by typed frozen dataclasses and are asserted exactly by tests and
 the validator; unknown or missing keys fail validation. The implementation
@@ -473,21 +560,25 @@ plan must enumerate every nested dataclass field before code is written.
 Changing that field list after the plan is accepted requires a design
 amendment and a new schema version, not an implementation-only choice.
 
-`manifest.json` records protocol constants, source-manifest paths and hashes,
-git commit, exact populations, mappings, candidates, angle order, coordinate
-contract, selector-input schema, phase-separation audit, bootstrap contract,
-decision gate, row counts, and SHA-256 hashes for the other eight files.
+`manifest.json` records all three source fingerprint digests/counts and their
+combined digest, git commit, exact populations, mappings, candidates, angle
+order, coordinate and pivot contract, selector-input schema, phase order,
+bootstrap method, literal decision predicates, reused-evaluation limitation,
+row counts, and SHA-256 hashes for the other eight files. `summary.json`
+records the assignment digest and each literal audit boolean; gate condition 6
+is their conjunction, never an inferred population-count tautology.
 
 The validator requires the exact file set, exact stable CSV headers and row
 orders, finite numeric values, exact counts, canonical JSON, decodable PNG
 bytes, matching hashes, recomputed selector assignments, recomputed endpoints,
 recomputed bootstrap values, and a decision label derived from the frozen
-gate. It compares source paths and hashes, cache key, namespace, schema v2,
-angle and mapping orders, bootstrap seed and repetitions, and gate threshold
-against frozen module constants rather than trusting values read from the
-manifest. Any mismatch is an explicit failure. Publication uses a temporary
-sibling directory and an atomic directory rename so a failed run leaves no
-partial official output.
+gate. It compares source fingerprints, cache key, namespace, schema v3, angle
+and mapping orders, bootstrap method/constants, gate predicates, limitation,
+and the externally supplied reviewed commit against frozen constants rather
+than trusting values read from the manifest. Any mismatch is an explicit
+failure. Publication uses a temporary sibling and an atomic no-replace rename;
+a concurrently created destination is preserved and fails publication. A
+failed run leaves no partial official output.
 
 The fixed output directory is:
 
