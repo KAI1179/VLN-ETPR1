@@ -6,7 +6,9 @@ import gzip
 import json
 import math
 import os
+import signal
 import subprocess
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -744,6 +746,30 @@ def test_validator_rejects_wrong_valid_external_commit_and_output_symlinks(
         validate_cohort_directory(linked, expected_git_commit="1" * 40)
     with pytest.raises(ValueError, match="real directory"):
         validate_cohort_directory(broken, expected_git_commit="1" * 40)
+
+
+def test_validator_rejects_fifo_member_without_blocking(tmp_path: Path) -> None:
+    output_dir = tmp_path / "cohort"
+    output_dir.mkdir()
+    os.mkfifo(output_dir / "cohort.jsonl")
+    (output_dir / "manifest.json").write_bytes(b"{}")
+
+    def timeout(_signum: int, _frame: object) -> None:
+        raise TimeoutError("validator blocked while opening FIFO")
+
+    previous_handler = signal.signal(signal.SIGALRM, timeout)
+    started = time.monotonic()
+    signal.alarm(2)
+    try:
+        with pytest.raises(ValueError, match="regular file"):
+            validate_cohort_directory(
+                output_dir,
+                expected_git_commit="1" * 40,
+            )
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+    assert time.monotonic() - started < 1.0
 
 
 def test_publish_cohort_validates_temp_rechecks_git_and_atomically_publishes(

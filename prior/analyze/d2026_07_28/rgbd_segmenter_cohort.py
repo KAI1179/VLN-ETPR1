@@ -687,7 +687,7 @@ def build_cohort_from_sources(*, git_commit: str) -> CohortArtifacts:
 
 
 def _read_regular_member(directory_fd: int, name: str) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     try:
         file_fd = os.open(name, flags, dir_fd=directory_fd)
     except OSError as error:
