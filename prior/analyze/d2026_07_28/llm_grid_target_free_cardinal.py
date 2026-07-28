@@ -1032,6 +1032,50 @@ class EpisodeScoreRow:
             object.__setattr__(self, name, value)
 
 
+@dataclass(frozen=True)
+class OracleGainSummary:
+    available: bool
+    primary_fraction: float
+    global_fraction: float
+    direct_fraction: float
+    soft_fraction: float
+
+    def __post_init__(self) -> None:
+        _require_boolean(self.available, "available")
+        for name in (
+            "primary_fraction",
+            "global_fraction",
+            "direct_fraction",
+            "soft_fraction",
+        ):
+            object.__setattr__(self, name, _require_finite_float(getattr(self, name), name))
+        if not self.available and any(
+            getattr(self, name) != 0.0
+            for name in (
+                "primary_fraction",
+                "global_fraction",
+                "direct_fraction",
+                "soft_fraction",
+            )
+        ):
+            raise ValueError("unavailable oracle gain fractions must be zero")
+
+
+def oracle_gain_summary(rows: Sequence[EpisodeScoreRow]) -> OracleGainSummary:
+    """Return frozen aggregate oracle-gain recovery fractions for every candidate."""
+    ordered = _validated_score_rows(rows)
+    denominator = sum(row.oracle_iou - row.identity_iou for row in ordered)
+    if denominator <= 0.0:
+        return OracleGainSummary(False, 0.0, 0.0, 0.0, 0.0)
+    return OracleGainSummary(
+        True,
+        sum(row.primary_iou - row.identity_iou for row in ordered) / denominator,
+        sum(row.global_iou - row.identity_iou for row in ordered) / denominator,
+        sum(row.direct_iou - row.identity_iou for row in ordered) / denominator,
+        sum(row.soft_aggregate_iou - row.soft_identity_iou for row in ordered) / denominator,
+    )
+
+
 def _family_score(warped: WarpedGrid, target: NDArray[np.bool_], start: int, end: int) -> float:
     family = warped.grid[start:end]
     return score_warped_grid(
@@ -1269,11 +1313,11 @@ def classify_decision(
     selector_identity: ContrastInterval,
     selector_global: ContrastInterval,
     global_identity: ContrastInterval,
-    selector_object_mean: float = 1.0,
-    selector_region_mean: float = 1.0,
-    global_object_mean: float = 1.0,
-    global_region_mean: float = 1.0,
-    audit_passed: bool = False,
+    selector_object_mean: float,
+    selector_region_mean: float,
+    global_object_mean: float,
+    global_region_mean: float,
+    audit_passed: bool,
 ) -> DecisionResult:
     """Classify the preregistered selector result in its frozen precedence order."""
     if not all(

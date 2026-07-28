@@ -551,22 +551,24 @@ def _two_family_target_episode(
     target_grid = empty_target()
     target_grid[0, 25, 24] = True
     target_grid[27, 25, 26] = True
+    target_grid[27, 26, 24] = True
     target = target_free.TargetEpisode(
         runtime,
         target_grid,
         np.asarray(
-            [[-1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            [[0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             dtype=np.float32,
         ),
     )
+    direct_angle, direct_margin = target_free.direct_heading_assignment(runtime.selector_input)
     assignment = target_free.SelectorAssignment(
         runtime.key,
         schema_valid,
         0.0,
         180.0 if schema_valid else 0.0,
         0.0,
-        90.0 if schema_valid else 0.0,
-        1.0 if schema_valid else 0.0,
+        direct_angle,
+        direct_margin,
     )
     return target, assignment
 
@@ -577,40 +579,41 @@ def test_score_population_emits_canonical_cardinal_and_episode_endpoints() -> No
 
     angle_rows, episode_rows = target_free.score_population((target,), (assignment,))
 
+    assert assignment.direct_angle_degrees == 270.0
     assert [row.angle_degrees for row in angle_rows] == list(target_free.ANGLE_ORDER)
     assert [row.key for row in angle_rows] == [target.runtime.key] * 4
     assert [(row.all_iou, row.object_iou, row.region_iou) for row in angle_rows] == [
-        pytest.approx((1.0 / 3.0, 0.0, 1.0)),
+        pytest.approx((1.0 / 4.0, 0.0, 1.0 / 2.0)),
         pytest.approx((0.0, 0.0, 0.0)),
-        pytest.approx((1.0 / 3.0, 1.0, 0.0)),
-        pytest.approx((0.0, 0.0, 0.0)),
+        pytest.approx((1.0 / 4.0, 1.0, 0.0)),
+        pytest.approx((1.0 / 4.0, 0.0, 1.0 / 2.0)),
     ]
     assert [(row.predicted_support, row.target_support, row.in_frame_support, row.out_of_frame_support, row.union) for row in angle_rows] == [
-        (2, 2, 2, 0, 3),
-        (2, 2, 2, 0, 4),
-        (2, 2, 2, 0, 3),
-        (2, 2, 2, 0, 4),
+        (2, 3, 2, 0, 4),
+        (2, 3, 2, 0, 5),
+        (2, 3, 2, 0, 4),
+        (2, 3, 2, 0, 4),
     ]
-    assert [row.direction_cosine for row in angle_rows] == pytest.approx((-1.0, 0.0, 1.0, 0.0))
+    assert [row.direction_cosine for row in angle_rows] == pytest.approx((0.0, -1.0, 0.0, 1.0))
 
     assert len(episode_rows) == 1
     row = episode_rows[0]
     assert row.key == target.runtime.key
     assert (row.identity_iou, row.primary_iou, row.global_iou, row.direct_iou) == pytest.approx(
-        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0)
+        (1.0 / 4.0, 1.0 / 4.0, 1.0 / 4.0, 1.0 / 4.0)
     )
-    assert row.random_expected_iou == pytest.approx(1.0 / 6.0)
+    assert row.random_expected_iou == pytest.approx(3.0 / 16.0)
     assert (row.soft_identity_iou, row.soft_aggregate_iou, row.oracle_iou) == pytest.approx(
-        (1.0 / 3.0, 1.0 / 7.0, 1.0 / 3.0)
+        (1.0 / 4.0, 3.0 / 17.0, 1.0 / 4.0)
     )
     assert (row.identity_object_iou, row.primary_object_iou) == pytest.approx((0.0, 1.0))
-    assert (row.identity_region_iou, row.primary_region_iou) == pytest.approx((1.0, 0.0))
-    assert (row.primary_predicted_support, row.primary_target_support) == (2, 2)
-    assert (row.primary_in_frame_support, row.primary_out_of_frame_support, row.primary_union) == (2, 0, 3)
+    assert (row.identity_region_iou, row.primary_region_iou) == pytest.approx((1.0 / 2.0, 0.0))
+    assert (row.primary_predicted_support, row.primary_target_support) == (2, 3)
+    assert (row.primary_in_frame_support, row.primary_out_of_frame_support, row.primary_union) == (2, 0, 4)
     assert (row.soft_prediction_mass, row.soft_target_mass, row.soft_intersection_mass, row.soft_union_mass) == pytest.approx(
-        (2.0, 2.0, 0.5, 3.5)
+        (2.0, 3.0, 0.75, 4.25)
     )
-    assert (row.primary_direction_cosine, row.direct_direction_cosine) == pytest.approx((1.0, 0.0))
+    assert (row.primary_direction_cosine, row.direct_direction_cosine) == pytest.approx((0.0, 1.0))
 
 
 def test_score_population_keeps_invalid_empty_denominator_rows_and_rejects_key_mismatch() -> None:
@@ -691,6 +694,36 @@ def test_leave_one_scene_out_uses_episode_macro_paired_difference() -> None:
         target_free.leave_one_scene_out(rows[:2], "primary_identity")
 
 
+def test_oracle_gain_summary_uses_aggregate_ratio_and_nonpositive_availability() -> None:
+    """Breaks if oracle recovery averages unstable ratios or accepts zero gain."""
+    positive = _episode_score_row(
+        "scene-a", "positive", identity_iou=0.2, primary_iou=0.5, global_iou=0.3,
+        direct_iou=0.1, soft_aggregate_iou=0.4,
+    )
+    nonpositive = _episode_score_row(
+        "scene-b", "nonpositive", identity_iou=0.4, primary_iou=0.2, global_iou=0.3,
+        direct_iou=0.1, soft_aggregate_iou=0.2,
+    )
+
+    positive_summary = target_free.oracle_gain_summary((positive,))
+    nonpositive_summary = target_free.oracle_gain_summary((nonpositive,))
+
+    assert positive_summary.available is True
+    assert (
+        positive_summary.primary_fraction,
+        positive_summary.global_fraction,
+        positive_summary.direct_fraction,
+        positive_summary.soft_fraction,
+    ) == pytest.approx((1.0, 1.0 / 3.0, -1.0 / 3.0, 2.0 / 3.0))
+    assert nonpositive_summary.available is False
+    assert (
+        nonpositive_summary.primary_fraction,
+        nonpositive_summary.global_fraction,
+        nonpositive_summary.direct_fraction,
+        nonpositive_summary.soft_fraction,
+    ) == (0.0, 0.0, 0.0, 0.0)
+
+
 def _contrast(
     *, mean: float = 0.02, ci_lower: float = 0.001, loso_min: float = 0.001
 ) -> target_free.ContrastInterval:
@@ -705,3 +738,10 @@ def test_decision_gate_is_mutually_exclusive_with_frozen_precedence() -> None:
     assert target_free.classify_decision(selector, _contrast(ci_lower=0.0), global_interval, 0.01, 0.01, 0.01, 0.01, True).label is target_free.DecisionLabel.FIXED_CORRECTION_GO
     assert target_free.classify_decision(_contrast(loso_min=0.0), selector, global_interval, 0.01, 0.01, 0.0, 0.0, True).label is target_free.DecisionLabel.PARTIAL
     assert target_free.classify_decision(_contrast(mean=0.009, ci_lower=0.005), _contrast(mean=0.0, ci_lower=0.0), _contrast(mean=0.0, ci_lower=0.0), 0.0, 0.0, 0.0, 0.0, True).label is target_free.DecisionLabel.NO_GO
+
+
+def test_decision_gate_requires_explicit_semantic_evidence() -> None:
+    """Breaks if omitted family gains can fabricate a selector or fixed GO."""
+    gate = getattr(target_free, "classify_decision")
+    with pytest.raises(TypeError):
+        gate(_contrast(), _contrast(), _contrast(), audit_passed=True)
