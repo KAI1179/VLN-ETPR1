@@ -65,6 +65,20 @@ def test_candidate_paths_replace_target_overlay_with_intrinsic_venv_site(
     assert value.checkpoint == default.checkpoint
 
 
+def test_p53_launch_uses_distinct_frozen_base_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path.cwd()
+    base = Path(sys.base_prefix).resolve(strict=True)
+    monkeypatch.setattr(sys, "base_prefix", str(base))
+    monkeypatch.setattr(sys, "executable", "/candidate/venv/bin/python")
+    launch = benchmark._p53_launch(root)
+    assert launch.python_executable == base / "bin/python3.8"
+    assert launch.python_executable != Path(sys.executable)
+    assert launch.expected_environment_sha256 == benchmark._P53_ENVIRONMENT_SHA256
+    assert launch.expected_environment_sha256 != benchmark._COMPLETE_ENVIRONMENT_SHA256
+
+
 def test_dedicated_interpreter_requires_copy_not_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -363,7 +377,7 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
     monkeypatch.setattr(benchmark, "_git_commit", lambda _root: "4" * 40)
     monkeypatch.setattr(benchmark, "_benchmark_attestation", lambda _hash: environment)
     launch = SimpleNamespace(raw_root=tmp_path / "raw")
-    monkeypatch.setattr(benchmark, "_p53_launch", lambda *_args: launch)
+    monkeypatch.setattr(benchmark, "_p53_launch", lambda _root: launch)
     monkeypatch.setattr(benchmark, "run_p53_validation_subprocess", lambda _launch: p53)
     monkeypatch.setattr(
         benchmark, "iter_validated_raw_observations", lambda *_a, **_k: ()

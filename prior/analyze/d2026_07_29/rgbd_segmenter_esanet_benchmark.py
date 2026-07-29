@@ -129,6 +129,9 @@ _VENV_RELATIVE = Path(
 _COMPLETE_ENVIRONMENT_SHA256 = (
     "a0342fd075394f31c9ee3d77f64278c6189b2137f88a9c47d12f09f8f6fd925c"
 )
+_P53_ENVIRONMENT_SHA256 = (
+    "35be66f579798cbdee8c4717da06ed7c4449fe0094580e8829b0acc330e483b7"
+)
 _LOCKED_RUNTIME_DISTRIBUTIONS = {
     "pandas": "2.0.3",
     "pytz": "2025.2",
@@ -217,10 +220,19 @@ def _require_publication_paths_absent(destination: Path) -> None:
         os.close(descriptor)
 
 
-def _p53_launch(root: Path, environment_sha256: str) -> P53ValidatorLaunch:
+def _p53_launch(root: Path) -> P53ValidatorLaunch:
+    python_executable = Path(sys.base_prefix).absolute() / "bin/python3.8"
+    executable_info = python_executable.lstat()
+    if (
+        python_executable.resolve(strict=True) != python_executable
+        or not stat.S_ISREG(executable_info.st_mode)
+        or stat.S_ISLNK(executable_info.st_mode)
+        or stat.S_IMODE(executable_info.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise ValueError("P5.3 requires the canonical base Python 3.8 interpreter")
     return P53ValidatorLaunch(
-        python_executable=Path(sys.executable).resolve(strict=True),
-        expected_environment_sha256=environment_sha256,
+        python_executable=python_executable,
+        expected_environment_sha256=_P53_ENVIRONMENT_SHA256,
         raw_root=(root / RAW_FRAME_ROOT).resolve(strict=True),
         timeout_seconds=300.0,
     )
@@ -943,7 +955,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         raise ValueError("complete benchmark environment differs from pinned digest")
     commit = _git_commit(root)
     benchmark = _benchmark_attestation(environment_sha256)
-    launch = _p53_launch(root, environment_sha256)
+    launch = _p53_launch(root)
     p53 = run_p53_validation_subprocess(launch)
     observations = iter_validated_raw_observations(
         launch.raw_root,
