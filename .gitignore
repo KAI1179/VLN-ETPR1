@@ -5,6 +5,9 @@
 
 # Byte-compiled / optimized / DLL files
 .ipynb_checkpoints/
+.ast-bro/
+.pytest_cache/
+.ruff_cache/
 __pycache__/
 *.py[cod]
 *$py.class
