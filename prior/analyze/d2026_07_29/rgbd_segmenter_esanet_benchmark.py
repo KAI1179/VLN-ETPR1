@@ -61,13 +61,10 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     project_mapped_labels,
     project_oracle_target_labels,
     run_p53_validation_subprocess,
+    run_timed_benchmark,
     score_observation,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
-    AbortedOomPackage,
-    AbortedOomPublicationAuthority,
-    ArchivalCudaDeviceEvidence,
-    ArchivalCudaEvidence,
     CandidateMappingAuthority,
     CandidateValidationAuthority,
     FileRecord,
@@ -84,7 +81,6 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
     encode_prediction_npz,
     file_tree_aggregate,
     publish_successful_candidate_package,
-    run_timed_benchmark_for_publication,
     validate_candidate_package_fresh_process,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_esanet import (
@@ -572,30 +568,6 @@ def _cuda_snapshot(expected_uuid: str) -> CudaDeviceEvidence:
         raise ValueError("CUDA device evidence contains invalid values") from error
 
 
-def _archival_cuda_evidence(
-    before: CudaDeviceEvidence,
-    after: CudaDeviceEvidence,
-) -> ArchivalCudaEvidence:
-    def convert(value: CudaDeviceEvidence) -> ArchivalCudaDeviceEvidence:
-        return ArchivalCudaDeviceEvidence(
-            gpu_name=value.gpu_name,
-            gpu_uuid=value.gpu_uuid,
-            driver_version=value.driver_version,
-            clock_policy=value.clock_policy,
-            persistence_mode=value.persistence_mode,
-            power_limit_watts=value.power_limit_watts,
-            temperature_celsius=value.temperature_celsius,
-            compute_pids=value.compute_pids,
-        )
-
-    return ArchivalCudaEvidence(
-        before=convert(before),
-        after=convert(after),
-        historical_pid=os.getpid(),
-        pytorch_cuda_alloc_conf=None,
-    )
-
-
 def _attestation_envelope(data: bytes) -> Mapping[str, object]:
     value = json.loads(data)
     if not isinstance(value, dict):
@@ -856,14 +828,13 @@ def _build_artifacts(
     commit: str,
     raw_observations: Sequence[ValidatedRawObservation],
     snapshot_inspector: Callable[[], CudaDeviceEvidence],
-    oom_authority: AbortedOomPublicationAuthority,
     prediction_projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray] = (
         project_mapped_labels
     ),
     target_projector: Callable[[RawFrameArrays], np.ndarray] = (
         project_oracle_target_labels
     ),
-) -> Tuple[SuccessfulPackageArtifacts | AbortedOomPackage, TrustedCohort]:
+) -> Tuple[SuccessfulPackageArtifacts, TrustedCohort]:
     validated = tuple(raw_observations)
     timed_inputs = tuple(
         TimedBenchmarkInput(
@@ -889,15 +860,15 @@ def _build_artifacts(
         expected_gpu_uuid=benchmark.gpu_uuid,
         snapshot_inspector=snapshot_inspector,
     )
-    run = run_timed_benchmark_for_publication(
+    run = run_timed_benchmark(
         timed_inputs,
         trusted_cohort=cohort,
+        commitment=commitment,
         adapter=adapter,
+        mapping=_mapping_authority(root).mapping,
         backend=backend,
-        authority=oom_authority,
+        projector=prediction_projector,
     )
-    if isinstance(run, AbortedOomPackage):
-        return run, cohort
     resource = ResourceMeasurement(
         baseline_allocated_bytes=baseline_allocated,
         peak_allocated_bytes=torch.cuda.max_memory_allocated(),
@@ -990,17 +961,6 @@ def _fresh_validation(
     return data
 
 
-def _require_publishable_success(
-    artifacts: SuccessfulPackageArtifacts | AbortedOomPackage,
-) -> SuccessfulPackageArtifacts:
-    if isinstance(artifacts, AbortedOomPackage):
-        raise RuntimeError(
-            "CUDA OOM aborted the benchmark; no package was published because "
-            "truthful post-run CUDA evidence is unavailable"
-        )
-    return artifacts
-
-
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parse_args(argv)
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -1038,23 +998,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     verify_upstream_preprocessing()
     _require_loaded_source_origins(paths)
     commitment = _commitment(root)
-    preflight_snapshot = _cuda_snapshot(benchmark.gpu_uuid)
-    oom_candidate_authority = _authority(
-        root=root,
-        paths=paths,
-        manifest_sha256="0" * 64,
-        p53_launch=launch,
-        benchmark=benchmark,
-        commitment=commitment,
-        commit=commit,
-    )
-    oom_authority = AbortedOomPublicationAuthority(
-        candidate=oom_candidate_authority,
-        cuda_evidence=_archival_cuda_evidence(
-            preflight_snapshot,
-            preflight_snapshot,
-        ),
-    )
     artifacts, _ = _build_artifacts(
         root=root,
         paths=paths,
@@ -1064,13 +1007,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         commit=commit,
         raw_observations=observations,
         snapshot_inspector=lambda: _cuda_snapshot(benchmark.gpu_uuid),
-        oom_authority=oom_authority,
     )
     _require_loaded_source_origins(paths)
     audit_candidate_assets(paths)
     if capture_environment_sha256() != environment_sha256:
         raise ValueError("benchmark environment changed during upstream execution")
-    artifacts = _require_publishable_success(artifacts)
     authority = _authority(
         root=root,
         paths=paths,

@@ -19,8 +19,6 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     OfficialCudaEvidence,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
-    ArchivalCudaDeviceEvidence,
-    ArchivalCudaEvidence,
     CandidateValidationAuthority,
 )
 
@@ -323,6 +321,52 @@ def test_checkpoint_loader_consumes_the_measured_digest_bound_buffer(
     assert cold.checkpoint_load_seconds >= 0
 
 
+def test_direct_timed_cuda_oom_propagates_without_packaging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fatal = torch.cuda.OutOfMemoryError("fatal timing OOM")
+    monkeypatch.setattr(benchmark, "TrustedCohort", lambda _values: object())
+    monkeypatch.setattr(
+        benchmark,
+        "_load_model",
+        lambda _paths: (object(), object()),
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "OfficialCudaTimingBackend",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "_mapping_authority",
+        lambda _root: SimpleNamespace(mapping=()),
+    )
+    monkeypatch.setattr(benchmark.torch.cuda, "memory_allocated", lambda: 0)
+    monkeypatch.setattr(benchmark.torch.cuda, "memory_reserved", lambda: 0)
+    monkeypatch.setattr(benchmark.torch.cuda, "reset_peak_memory_stats", lambda: None)
+
+    def raise_oom(*_args: object, **_kwargs: object) -> object:
+        raise fatal
+
+    monkeypatch.setattr(benchmark, "run_timed_benchmark", raise_oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError) as raised:
+        benchmark._build_artifacts(
+            root=tmp_path,
+            paths=cast(benchmark.ESANetPaths, object()),
+            p53=cast(benchmark.P53ValidationAttestation, object()),
+            benchmark=cast(
+                benchmark.BenchmarkEnvironmentAttestation,
+                SimpleNamespace(gpu_uuid="GPU-test"),
+            ),
+            commitment=cast(benchmark.CandidateCommitment, object()),
+            commit="0" * 40,
+            raw_observations=(),
+            snapshot_inspector=lambda: cast(benchmark.CudaDeviceEvidence, object()),
+        )
+    assert raised.value is fatal
+
+
 def test_fresh_validation_requires_byte_identical_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -336,19 +380,6 @@ def test_fresh_validation_requires_byte_identical_record(
     assert benchmark._fresh_validation(tmp_path, authority, b"record\n") == b"record\n"
     with pytest.raises(RuntimeError, match="fresh post-publication"):
         benchmark._fresh_validation(tmp_path, authority, b"different\n")
-
-
-def test_contract_minted_oom_fails_closed_without_publication(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Aborted:
-        pass
-
-    monkeypatch.setattr(benchmark, "AbortedOomPackage", Aborted)
-    with pytest.raises(RuntimeError, match="no package was published"):
-        benchmark._require_publishable_success(
-            cast(benchmark.AbortedOomPackage, Aborted())
-        )
 
 
 def _publisher_environment(
@@ -437,50 +468,6 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
         lambda _paths: events.append("origins"),
     )
     monkeypatch.setattr(benchmark, "_commitment", lambda _root: object())
-    snapshot = benchmark.CudaDeviceEvidence(
-        "NVIDIA GeForce RTX 3090",
-        "GPU-test",
-        "550.1",
-        "graphics=1;memory=2",
-        "Disabled",
-        350.0,
-        45.0,
-        (os.getpid(),),
-    )
-    monkeypatch.setattr(benchmark, "_cuda_snapshot", lambda _uuid: snapshot)
-    monkeypatch.setattr(
-        benchmark,
-        "_archival_cuda_evidence",
-        lambda *_args: ArchivalCudaEvidence(
-            ArchivalCudaDeviceEvidence(
-                "NVIDIA GeForce RTX 3090",
-                "GPU-test",
-                "550.1",
-                "graphics=1;memory=2",
-                "Disabled",
-                350.0,
-                45.0,
-                (os.getpid(),),
-            ),
-            ArchivalCudaDeviceEvidence(
-                "NVIDIA GeForce RTX 3090",
-                "GPU-test",
-                "550.1",
-                "graphics=1;memory=2",
-                "Disabled",
-                350.0,
-                45.0,
-                (os.getpid(),),
-            ),
-            os.getpid(),
-            None,
-        ),
-    )
-    monkeypatch.setattr(
-        benchmark,
-        "AbortedOomPublicationAuthority",
-        lambda **_kwargs: object(),
-    )
     monkeypatch.setattr(
         benchmark,
         "_build_artifacts",
@@ -512,7 +499,6 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
         "src",
         "preprocess",
         "origins",
-        "authority",
         "run",
         "origins",
         "audit",
