@@ -160,6 +160,38 @@ def test_llm_grid_navigation_cache_writes_direction5_raster_without_boxes(
     assert status["prediction_path"] == str(prediction_path)
     assert "cognitive_map_boxes_path" not in status
     assert status["cognitive_map_raster_path"] == str(raster_path)
+    manifest = json.loads((split_dir / "manifest.json").read_text())
+    assert manifest["scope"] == "all"
+
+
+def test_grid_cache_manifest_rejects_scope_mismatch(tmp_path):
+    split_dir = tmp_path / "grid-model" / "r2r" / "train"
+    split_dir.mkdir(parents=True)
+    base_args = {
+        "model_name_or_path": "tiny",
+        "cache_model_key": "grid-model",
+        "scale": 2,
+        "max_input_length": 256,
+        "max_new_tokens": 256,
+    }
+    llm_grid_navigation_cache._write_grid_navigation_cache_manifest(
+        split_dir,
+        argparse.Namespace(**base_args, scope="navigation-full"),
+        "system",
+        "R2R",
+        "train",
+        None,
+    )
+
+    with pytest.raises(ValueError, match="manifest mismatch.*scope"):
+        llm_grid_navigation_cache._write_grid_navigation_cache_manifest(
+            split_dir,
+            argparse.Namespace(**base_args, scope="all"),
+            "system",
+            "R2R",
+            "train",
+            None,
+        )
 
 
 def test_grid_cache_excludes_unsupported_evidence_examples(
@@ -202,9 +234,7 @@ def test_grid_cache_excludes_unsupported_evidence_examples(
         kind="within-scene",
         seed=42,
         supports=lambda example_id: example_id == "eligible",
-        entry_for=lambda _example_id: SimpleNamespace(
-            donor_observation_id="donor"
-        ),
+        entry_for=lambda _example_id: SimpleNamespace(donor_observation_id="donor"),
     )
     condition = llm_grid_navigation_cache.EvidenceCondition(
         index=index,
@@ -232,8 +262,7 @@ def test_grid_cache_excludes_unsupported_evidence_examples(
     assert metrics["excluded_examples"] == 1.0
     assert metrics["generated"] == 1.0
     assert not (
-        tmp_path
-        / "grid-model/r2r/val_seen/predictions/singleton-scene/excluded.txt"
+        tmp_path / "grid-model/r2r/val_seen/predictions/singleton-scene/excluded.txt"
     ).exists()
 
 
@@ -436,6 +465,65 @@ def test_generate_predictor_eval_grid_navigation_caches_loads_only_eval_splits(
     assert generated_splits == loaded_splits
 
 
+def test_generate_navigation_full_grid_caches_loads_only_navigation_splits(
+    monkeypatch,
+):
+    loaded_splits = []
+    generated_splits = []
+    evidence_splits = []
+
+    def fail_on_pretrain_load(**_kwargs):
+        raise AssertionError("navigation-full must not load pretrain items")
+
+    def load_vlnce(dataset, split, **kwargs):
+        assert kwargs["require_navigation_cache"]
+        loaded_splits.append((dataset, split))
+        return []
+
+    def build_evidence(_args, dataset, split):
+        evidence_splits.append((dataset, split))
+        return object()
+
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_pretrain_cache_items",
+        fail_on_pretrain_load,
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "load_vlnce_cache_items",
+        load_vlnce,
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "_build_evidence_condition",
+        build_evidence,
+    )
+    monkeypatch.setattr(
+        llm_grid_navigation_cache,
+        "llm_grid_navigation_cache",
+        lambda _model, _tokenizer, _items, _args, *, dataset_key, split, evidence_condition=None: (
+            generated_splits.append((dataset_key, split, evidence_condition)) or {}
+        ),
+    )
+
+    llm_grid_navigation_cache.generate_all_grid_navigation_caches(
+        object(),
+        object(),
+        argparse.Namespace(limit=None, quiet=True, scope="navigation-full"),
+    )
+
+    expected = [
+        ("R2R", "train"),
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+    ]
+    assert loaded_splits == expected
+    assert evidence_splits == expected
+    assert [(dataset, split) for dataset, split, _ in generated_splits] == expected
+    assert all(condition is not None for _, _, condition in generated_splits)
+
+
 def test_grid_cache_scope_parser_rejects_unknown_scope():
     args = llm_grid_navigation_cache.parse_args(["--scope", "predictor-eval"])
 
@@ -444,8 +532,38 @@ def test_grid_cache_scope_parser_rejects_unknown_scope():
         llm_grid_navigation_cache.parse_args(["--scope", "unknown"])
 
 
+def test_navigation_full_scope_accepts_evidence_and_all_rejects_it(tmp_path):
+    args = llm_grid_navigation_cache.parse_args([
+        "--scope",
+        "navigation-full",
+        "--evidence-root",
+        str(tmp_path),
+        "--evidence-key",
+        "oracle-t0-v1",
+    ])
+
+    assert args.scope == "navigation-full"
+    with pytest.raises(ValueError, match="requires --scope navigation-full"):
+        llm_grid_navigation_cache.parse_args([
+            "--scope",
+            "all",
+            "--evidence-root",
+            str(tmp_path),
+            "--evidence-key",
+            "oracle-t0-v1",
+        ])
+
+
 def test_predictor_eval_scope_aggregates_only_eval_splits():
     assert llm_grid_navigation_cache._grid_cache_split_keys("predictor-eval") == [
+        ("R2R", "val_seen"),
+        ("R2R", "val_unseen"),
+    ]
+
+
+def test_navigation_full_scope_aggregates_only_navigation_splits():
+    assert llm_grid_navigation_cache._grid_cache_split_keys("navigation-full") == [
+        ("R2R", "train"),
         ("R2R", "val_seen"),
         ("R2R", "val_unseen"),
     ]

@@ -67,7 +67,7 @@ from .llm_grid_evidence import (
 )
 
 GRID_VLNCE_DATASETS: Tuple[Literal["R2R"], ...] = ("R2R",)
-GridCacheScope = Literal["all", "predictor-eval"]
+GridCacheScope = Literal["all", "navigation-full", "predictor-eval"]
 PREDICTOR_EVAL_SPLITS = ("val_seen", "val_unseen")
 
 
@@ -114,9 +114,10 @@ class LLMGridNavigationCacheArgs(Tap):
             raise ValueError(
                 "--evidence-root and --evidence-key must be provided together"
             )
-        if self.evidence_root and self.scope != "predictor-eval":
+        if self.evidence_root and self.scope == "all":
             raise ValueError(
-                "evidence-conditioned cache generation requires --scope predictor-eval"
+                "evidence-conditioned cache generation requires "
+                "--scope navigation-full or --scope predictor-eval"
             )
         if self.evidence_assignment_seed < 0:
             raise ValueError("--evidence-assignment-seed must be non-negative")
@@ -480,6 +481,7 @@ def _write_grid_navigation_cache_manifest(
             "scale": args.scale,
             "model_name_or_path": args.model_name_or_path,
             "cache_model_key": args.cache_model_key,
+            "scope": args.scope,
             "max_input_length": args.max_input_length,
             "max_new_tokens": args.max_new_tokens,
             "system_prompt_sha256": hashlib.sha256(
@@ -575,7 +577,7 @@ def _run_parallel_workers(
 
 
 def _vlnce_splits_for_scope(scope: GridCacheScope) -> Tuple[str, ...]:
-    if scope == "all":
+    if scope in ("all", "navigation-full"):
         return VLNCE_SPLITS
     if scope == "predictor-eval":
         return PREDICTOR_EVAL_SPLITS

@@ -296,6 +296,72 @@ def test_available_llm_navigation_episode_ids_skips_missing(
     )
 
 
+def test_available_llm_navigation_episode_ids_requires_reference_population(
+    monkeypatch,
+):
+    from vlnce_baselines.models.etp_llm import navigation
+
+    reports = {
+        "oracle": navigation.LLMNavigationCacheReport(
+            available_episode_ids=["1", "2", "3"],
+            missing_episode_ids=[],
+        ),
+        "ordinary": navigation.LLMNavigationCacheReport(
+            available_episode_ids=["1", "3"],
+            missing_episode_ids=["2"],
+        ),
+    }
+    monkeypatch.setattr(
+        navigation,
+        "llm_navigation_cache_report",
+        lambda *_args, model_key, **_kwargs: reports[model_key],
+    )
+
+    allowed = navigation.available_llm_navigation_episode_ids(
+        "R2R",
+        "train",
+        require_boxes=False,
+        model_key="oracle",
+        reference_model_key="ordinary",
+    )
+
+    assert allowed == ["1", "3"]
+
+
+def test_available_llm_navigation_episode_ids_rejects_incomplete_reference_match(
+    monkeypatch,
+):
+    from vlnce_baselines.models.etp_llm import navigation
+
+    reports = {
+        "oracle": navigation.LLMNavigationCacheReport(
+            available_episode_ids=["1"],
+            missing_episode_ids=["2"],
+        ),
+        "ordinary": navigation.LLMNavigationCacheReport(
+            available_episode_ids=["1", "2"],
+            missing_episode_ids=[],
+        ),
+    }
+    monkeypatch.setattr(
+        navigation,
+        "llm_navigation_cache_report",
+        lambda *_args, model_key, **_kwargs: reports[model_key],
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="missing 1 episodes required by reference cache ordinary",
+    ):
+        navigation.available_llm_navigation_episode_ids(
+            "R2R",
+            "train",
+            require_boxes=False,
+            model_key="oracle",
+            reference_model_key="ordinary",
+        )
+
+
 def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
     _stub_clip_load(monkeypatch)
 

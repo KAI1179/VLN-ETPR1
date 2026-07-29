@@ -53,12 +53,19 @@ class RLTrainer(PriorGTRLTrainer):
             require_boxes=candidate.requires_box_targets,
             cache_dir=getattr(map_cfg, "llm_cache_dir", None),
             model_key=model_key,
+            reference_model_key=getattr(
+                map_cfg,
+                "llm_train_reference_model_key",
+                "",
+            ),
         )
 
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         dataset = self.config.MODEL.task_type
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        if map_cfg is None:
+            raise ValueError("MODEL.MAP_ENCODER is required")
         candidate = CognitiveMapCandidate.parse(
             map_cfg.architecture,
             map_cfg.source,
@@ -83,6 +90,8 @@ class RLTrainer(PriorGTRLTrainer):
 
     def _prepare_eval_episodes_allowed(self, episodes_allowed):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        if map_cfg is None:
+            raise ValueError("MODEL.MAP_ENCODER is required")
         candidate = CognitiveMapCandidate.parse(
             map_cfg.architecture,
             map_cfg.source,

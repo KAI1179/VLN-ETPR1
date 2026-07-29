@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 
 class NavigationArchitecture(str, Enum):
@@ -41,7 +42,9 @@ class CognitiveMapCandidate:
         try:
             architecture_value = NavigationArchitecture(architecture)
         except ValueError as exc:
-            raise ValueError(f"Unknown navigation architecture: {architecture}") from exc
+            raise ValueError(
+                f"Unknown navigation architecture: {architecture}"
+            ) from exc
         try:
             source_value = CognitiveMapSource(source)
         except ValueError as exc:
@@ -49,8 +52,12 @@ class CognitiveMapCandidate:
         return cls(architecture_value, source_value)
 
     @property
-    def metadata_schema(self) -> str:
-        return "direction5" if self.architecture is NavigationArchitecture.TRY5 else "path5"
+    def metadata_schema(self) -> Literal["path5", "direction5"]:
+        return (
+            "direction5"
+            if self.architecture is NavigationArchitecture.TRY5
+            else "path5"
+        )
 
     @property
     def requires_box_targets(self) -> bool:
@@ -62,4 +69,3 @@ class CognitiveMapCandidate:
             CognitiveMapSource.LLM_BOXES,
             CognitiveMapSource.LLM_GRID,
         }
-

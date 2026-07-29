@@ -36,9 +36,7 @@ def ensure_llm_navigation_manifest(
         "created_at": datetime.now(timezone.utc).isoformat(),
         **expected,
     }
-    temporary_path = manifest_path.with_name(
-        f".{manifest_path.name}.{os.getpid()}.tmp"
-    )
+    temporary_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
     temporary_path.write_text(
         json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -226,6 +224,7 @@ def available_llm_navigation_episode_ids(
     require_boxes: bool,
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+    reference_model_key: str = "",
 ) -> list[str]:
     report = llm_navigation_cache_report(
         dataset,
@@ -244,6 +243,39 @@ def available_llm_navigation_episode_ids(
         )
     if not report.available_episode_ids:
         raise FileNotFoundError(f"No LLM-Navigation caches found for {dataset}/{split}")
+    if reference_model_key:
+        reference = llm_navigation_cache_report(
+            dataset,
+            split,
+            episode_ids=None,
+            require_boxes=require_boxes,
+            cache_dir=cache_dir,
+            model_key=reference_model_key,
+        )
+        if not reference.available_episode_ids:
+            raise FileNotFoundError(
+                "No reference LLM-Navigation caches found for "
+                f"{dataset}/{split}: {reference_model_key}"
+            )
+        available = set(report.available_episode_ids)
+        missing_reference = [
+            episode_id
+            for episode_id in reference.available_episode_ids
+            if episode_id not in available
+        ]
+        if missing_reference:
+            raise FileNotFoundError(
+                f"LLM-Navigation cache {model_key} is missing "
+                f"{len(missing_reference)} episodes required by reference cache "
+                f"{reference_model_key}; first missing episode: "
+                f"{missing_reference[0]}"
+            )
+        print(
+            "finetuning_llm_navigation_reference: "
+            f"model_key={reference_model_key} "
+            f"episodes={len(reference.available_episode_ids)}"
+        )
+        return reference.available_episode_ids
     return report.available_episode_ids
 
 
@@ -276,14 +308,17 @@ def llm_navigation_cache_report(
             model_key=model_key,
         )
         if require_boxes:
-            complete = complete and llm_navigation_cognitive_map_boxes_path(
-                entry.scene_id,
-                entry.unique_id,
-                dataset,
-                split,
-                cache_dir=cache_dir,
-                model_key=model_key,
-            ).is_file()
+            complete = (
+                complete
+                and llm_navigation_cognitive_map_boxes_path(
+                    entry.scene_id,
+                    entry.unique_id,
+                    dataset,
+                    split,
+                    cache_dir=cache_dir,
+                    model_key=model_key,
+                ).is_file()
+            )
         if complete:
             available.append(episode_id)
         else:
