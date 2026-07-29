@@ -214,11 +214,15 @@ Sort levels by that floor; select the lowest when start Y is below all floors,
 otherwise the highest floor not above start Y. Store the selected level's
 float64 AABB-min X/Z as `target_origin_xz`.
 
-Compute float64 target-local start X/Z as start X/Z minus target origin.
-Cast the replayed target-local start and replayed start direction to float32,
-then require `np.array_equal` with the pinned float32 evidence metadata. This
-matches the existing save/load boundary exactly without admitting a tunable
-tolerance. Cohort and stored float64 start pose require exact equality.
+Replay target-local start metadata by casting stored start X/Z and stored
+target origin X/Z to float32 before subtraction. Require `np.array_equal`
+between that float32 result and the pinned float32 evidence metadata. Continue
+to cast the replayed start direction to float32 before its exact comparison.
+This matches the existing oracle's float32 arithmetic boundary exactly without
+admitting a tunable tolerance. A live all-50 arithmetic scan found 50/50 exact
+matches for float32 operand subtraction; float64 subtraction followed by a
+float32 cast matched only 49/50 and missed one component by one ULP. Cohort and
+stored float64 start pose still require exact equality.
 
 Build 12 public `OracleSensorFrame`s and call public `project_oracle_frames`.
 Require `np.array_equal` for:
