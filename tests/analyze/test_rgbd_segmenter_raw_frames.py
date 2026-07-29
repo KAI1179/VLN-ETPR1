@@ -670,11 +670,33 @@ def test_build_scene_simulator_uses_snapshot_and_canonical_36_sensor_config(
                     name=sensor_types[getattr(config, name).TYPE]
                 ),
                 sensor_subtype=SimpleNamespace(name="PINHOLE"),
+                resolution=np.asarray(
+                    [getattr(config, name).HEIGHT, getattr(config, name).WIDTH],
+                    dtype=np.int32,
+                ),
+                position=np.asarray(getattr(config, name).POSITION, dtype=np.float32),
+                orientation=np.asarray(
+                    getattr(config, name).ORIENTATION, dtype=np.float32
+                ),
+                parameters={"hfov": str(getattr(config, name).HFOV)},
             )
             for name in agent.SENSORS
         ]
         sentinel.sim_config = SimpleNamespace(
             agents=[SimpleNamespace(sensor_specifications=specifications)]
+        )
+        sentinel.sensor_suite = SimpleNamespace(
+            sensors={
+                getattr(config, name).UUID: SimpleNamespace(
+                    config=SimpleNamespace(
+                        MIN_DEPTH=getattr(config, name).MIN_DEPTH,
+                        MAX_DEPTH=getattr(config, name).MAX_DEPTH,
+                        NORMALIZE_DEPTH=getattr(config, name).NORMALIZE_DEPTH,
+                    )
+                )
+                for name in agent.SENSORS
+                if getattr(config, name).TYPE == "HabitatSimDepthSensor"
+            }
         )
         return sentinel
 
@@ -737,26 +759,98 @@ def test_build_scene_simulator_rejects_resolved_sensor_type_drift(
         build_scene_simulator(_bundle(tmp_path))
 
 
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "resolution",
+        "hfov",
+        "position",
+        "orientation",
+        "min_depth_m",
+        "max_depth_m",
+        "normalize_depth",
+    ],
+)
 def test_build_scene_simulator_rejects_post_construction_sensor_spec_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    drift: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from habitat import sims
 
     closed = []
-    specification = SimpleNamespace(
-        uuid="rgb_000",
-        sensor_type=SimpleNamespace(name="DEPTH"),
-        sensor_subtype=SimpleNamespace(name="PINHOLE"),
-    )
-    simulator = SimpleNamespace(
-        close=lambda: closed.append(True),
-        sim_config=SimpleNamespace(
-            agents=[SimpleNamespace(sensor_specifications=[specification])]
-        ),
-    )
-    monkeypatch.setattr(sims, "make_sim", lambda **_kwargs: simulator)
 
-    with pytest.raises(ValueError, match="simulator sensor type"):
+    def fake_make_sim(*, id_sim: str, config: object) -> object:
+        del id_sim
+        agent = getattr(config, "AGENT_0")
+        sensor_types = {
+            "HabitatSimRGBSensor": "COLOR",
+            "HabitatSimDepthSensor": "DEPTH",
+            "HabitatSimSemanticSensor": "SEMANTIC",
+        }
+        specifications = [
+            SimpleNamespace(
+                uuid=getattr(config, name).UUID,
+                sensor_type=SimpleNamespace(
+                    name=sensor_types[getattr(config, name).TYPE]
+                ),
+                sensor_subtype=SimpleNamespace(name="PINHOLE"),
+                resolution=np.asarray(
+                    [getattr(config, name).HEIGHT, getattr(config, name).WIDTH],
+                    dtype=np.int32,
+                ),
+                position=np.asarray(getattr(config, name).POSITION, dtype=np.float32),
+                orientation=np.asarray(
+                    getattr(config, name).ORIENTATION, dtype=np.float32
+                ),
+                parameters={"hfov": str(getattr(config, name).HFOV)},
+            )
+            for name in agent.SENSORS
+        ]
+        sensors = {
+            getattr(config, name).UUID: SimpleNamespace(
+                config=SimpleNamespace(
+                    MIN_DEPTH=getattr(config, name).MIN_DEPTH,
+                    MAX_DEPTH=getattr(config, name).MAX_DEPTH,
+                    NORMALIZE_DEPTH=getattr(config, name).NORMALIZE_DEPTH,
+                )
+            )
+            for name in agent.SENSORS
+            if getattr(config, name).TYPE == "HabitatSimDepthSensor"
+        }
+        specification = specifications[0]
+        if drift == "resolution":
+            specification.resolution[0] = 257
+        elif drift == "hfov":
+            specification.parameters["hfov"] = "91.0"
+        elif drift == "position":
+            specification.position[1] = 1.5
+        elif drift == "orientation":
+            specification.orientation[1] = 0.1
+        else:
+            depth = sensors["depth_000"].config
+            setattr(
+                depth,
+                {
+                    "min_depth_m": "MIN_DEPTH",
+                    "max_depth_m": "MAX_DEPTH",
+                    "normalize_depth": "NORMALIZE_DEPTH",
+                }[drift],
+                {
+                    "min_depth_m": 0.1,
+                    "max_depth_m": 9.0,
+                    "normalize_depth": True,
+                }[drift],
+            )
+        return SimpleNamespace(
+            close=lambda: closed.append(True),
+            sensor_suite=SimpleNamespace(sensors=sensors),
+            sim_config=SimpleNamespace(
+                agents=[SimpleNamespace(sensor_specifications=specifications)]
+            ),
+        )
+
+    monkeypatch.setattr(sims, "make_sim", fake_make_sim)
+
+    with pytest.raises(ValueError, match="simulator (sensor|depth)"):
         build_scene_simulator(_bundle(tmp_path))
 
     assert closed == [True]

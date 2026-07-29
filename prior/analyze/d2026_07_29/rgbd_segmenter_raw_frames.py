@@ -1049,29 +1049,66 @@ def _require_live_simulator_sensor_specs(simulator: object) -> None:
         sim_config = getattr(simulator, "sim_config")
         agent = getattr(sim_config, "agents")[0]
         specifications = getattr(agent, "sensor_specifications")
+        sensors = getattr(getattr(simulator, "sensor_suite"), "sensors")
     except (AttributeError, IndexError, TypeError) as error:
         raise ValueError("live Habitat simulator sensor specs are unavailable") from error
-    resolved = sorted(
-        (
-            getattr(specification, "uuid"),
-            getattr(getattr(specification, "sensor_type"), "name"),
-            getattr(getattr(specification, "sensor_subtype"), "name"),
-        )
-        for specification in specifications
-    )
-    expected = sorted(
-        (
-            cast(str, specification["uuid"]),
-            cast(str, specification["habitat_sensor_type"]),
-            cast(str, specification["habitat_sensor_subtype"]),
-        )
-        for specification in cast(
+    expected = {
+        cast(str, record["uuid"]): record
+        for record in cast(
             Sequence[Mapping[str, object]],
             _sensor_config()["resolved_specs"],
         )
-    )
-    if resolved != expected:
-        raise ValueError("live Habitat simulator sensor type or subtype differs")
+    }
+    if len(specifications) != len(expected):
+        raise ValueError("live Habitat simulator sensor specs differ")
+    seen = set()
+    for specification in specifications:
+        try:
+            uuid = getattr(specification, "uuid")
+            record = expected[uuid]
+            resolution = np.asarray(getattr(specification, "resolution"))
+            position = np.asarray(getattr(specification, "position"))
+            orientation = np.asarray(getattr(specification, "orientation"))
+            hfov = float(getattr(specification, "parameters")["hfov"])
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise ValueError("live Habitat simulator sensor specs differ") from error
+        if (
+            uuid in seen
+            or getattr(getattr(specification, "sensor_type"), "name")
+            != record["habitat_sensor_type"]
+            or getattr(getattr(specification, "sensor_subtype"), "name")
+            != record["habitat_sensor_subtype"]
+            or resolution.dtype != np.int32
+            or not np.array_equal(
+                resolution, np.asarray(record["resolution"], dtype=np.int32)
+            )
+            or position.dtype != np.float32
+            or not np.array_equal(
+                position, np.asarray(record["position"], dtype=np.float32)
+            )
+            or orientation.dtype != np.float32
+            or not np.array_equal(
+                orientation, np.asarray(record["orientation"], dtype=np.float32)
+            )
+            or hfov != record["hfov_degrees"]
+        ):
+            raise ValueError("live Habitat simulator sensor specs differ")
+        if record["modality"] == "depth":
+            try:
+                depth = sensors[uuid].config
+            except (AttributeError, KeyError, TypeError) as error:
+                raise ValueError(
+                    "live Habitat simulator depth settings differ"
+                ) from error
+            if (
+                depth.MIN_DEPTH != record["min_depth_m"]
+                or depth.MAX_DEPTH != record["max_depth_m"]
+                or depth.NORMALIZE_DEPTH is not record["normalize_depth"]
+            ):
+                raise ValueError("live Habitat simulator depth settings differ")
+        seen.add(uuid)
+    if seen != set(expected):
+        raise ValueError("live Habitat simulator sensor specs differ")
 
 
 def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
