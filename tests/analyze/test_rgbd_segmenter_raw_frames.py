@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import io
 import json
@@ -7,13 +9,15 @@ import math
 import os
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import replace
 from multiprocessing.connection import Connection
-from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
-from typing import Callable, Mapping, Optional, Sequence, Union
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType, ModuleType, SimpleNamespace
+from typing import Callable, Mapping, Optional, Sequence, Union, cast
 import zipfile
 
 import numpy as np
@@ -22,17 +26,20 @@ import pytest
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     FileRecord,
     IndexRow,
+    MEMBER_NAMES,
     MemberMetadata,
     RawFrameArrays,
     SourceRecord,
+    _DescriptorCleanupError,
+    _validate_raw_frame_directory_structural,
     canonical_index_bytes,
     encode_raw_frame_npz,
     strict_read_bytes,
-    validate_raw_frame_directory,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames import (
     ORACLE_ARTIFACT_ROOT,
     SCENE_DATASET_ROOT,
+    CollectionInputs,
     CollectionObservation,
     EnvironmentCapture,
     InstalledDistribution,
@@ -42,6 +49,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames import (
     SceneAssetFile,
     SceneBundle,
     SnapshotFile,
+    _OwnedDirectory,
     build_manifest,
     build_scene_simulator,
     collect_attempt,
@@ -1327,6 +1335,32 @@ def test_replay_uses_12_public_frames_once_and_requires_all_six_exact(
             )
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "ego_observed_mask",
+        "ego_free_mask",
+        "target_observed_mask",
+        "target_free_mask",
+    ],
+)
+def test_replay_binds_stored_masks_to_recomputed_evidence(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arrays, _, _ = _rendered_arrays(monkeypatch)
+    oracle = _pinned_from_arrays(arrays)
+    changed = np.array(getattr(arrays, field), copy=True)
+    changed.flat[0] = ~changed.flat[0]
+
+    with pytest.raises(ValueError, match=field):
+        replay_and_require_exact(
+            replace(arrays, **{field: changed}),
+            _observation(artifact_sha256="0" * 64),
+            oracle,
+        )
+
+
 def test_replay_requires_exact_stored_pose_and_float32_oracle_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1346,6 +1380,13 @@ def test_replay_requires_exact_stored_pose_and_float32_oracle_metadata(
     )
     changed = replace(arrays, target_origin_xz=changed_origin)
     oracle = _pinned_from_arrays(changed)
+    changed = replace(
+        changed,
+        ego_observed_mask=oracle.ego_observed_mask,
+        ego_free_mask=oracle.ego_free_mask,
+        target_observed_mask=oracle.target_observed_mask,
+        target_free_mask=oracle.target_free_mask,
+    )
 
     replay_and_require_exact(
         changed,
@@ -1533,7 +1574,11 @@ def test_first_row_smoke_closes_once_on_each_failure(
         (root / "snapshot-marker").write_bytes(b"snapshot")
         return _bundle(source)
 
-    monkeypatch.setattr(raw_frames, "snapshot_scene_bundle", fake_snapshot)
+    monkeypatch.setattr(
+        raw_frames,
+        "snapshot_scene_bundle",
+        fake_snapshot,
+    )
     monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: simulator)
     monkeypatch.setattr(
         raw_frames,
@@ -1786,6 +1831,1061 @@ def _scene_assets() -> Mapping[str, SceneAssetCommitment]:
     return MappingProxyType(result)
 
 
+def _external_package_fixture(root: Path) -> tuple[bytes, tuple[IndexRow, ...]]:
+    rows = _manifest_rows()
+    artifact = b"external-fixture"
+    record = FileRecord(len(artifact), hashlib.sha256(artifact).hexdigest())
+    rows = tuple(replace(row, npz=record) for row in rows)
+    index = canonical_index_bytes(rows)
+    manifest = build_manifest(
+        git_commit="a" * 40,
+        sources=_manifest_sources(),
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=index,
+        rows=rows,
+    )
+    root.mkdir()
+    (root / "manifest.json").write_bytes(manifest)
+    (root / "index.jsonl").write_bytes(index)
+    for row in rows:
+        path = root / row.artifact
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(artifact)
+    return manifest, rows
+
+
+def _patch_external_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    package: object,
+    raw_frames: object,
+    observations: tuple[CollectionObservation, ...],
+    events: list[tuple[str, int]],
+) -> None:
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_source_state",
+        lambda: SimpleNamespace(
+            sources=_manifest_sources(),
+            fingerprints=MappingProxyType({"fixture": (1,)}),
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames, "_require_external_sources", lambda *_args: None
+    )
+    monkeypatch.setattr(raw_frames, "capture_environment", _environment)
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: CollectionInputs(
+            observations=observations,
+            scenes=tuple(_scene_assets()),
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames, "_require_original_asset_commitments", lambda _assets: None
+    )
+    monkeypatch.setattr(
+        package,
+        "parse_raw_frame_npz_bytes",
+        lambda *_args, **_kwargs: (
+            events.append(("parse", len(events) // 3)),
+            SimpleNamespace(arrays=object()),
+        )[1],
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "load_pinned_oracle_after_render",
+        lambda observation: (
+            events.append(("oracle", int(observation.observation_id, 16))),
+            object(),
+        )[1],
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "replay_and_require_exact",
+        lambda _arrays, observation, _oracle: events.append(
+            ("replay", int(observation.observation_id, 16))
+        ),
+    )
+
+
+def test_external_validator_runs_fifty_parse_oracle_replay_sequences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    def fingerprints() -> list[tuple[str, int, int, int, int]]:
+        return [
+            (
+                path.relative_to(root).as_posix(),
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            )
+            for path in sorted((root, *root.rglob("*")))
+            for metadata in (path.lstat(),)
+        ]
+
+    before = fingerprints()
+    descriptor_count = len(tuple(Path("/proc/self/fd").iterdir()))
+    package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == [
+        (kind, ordinal)
+        for ordinal in range(50)
+        for kind in ("parse", "oracle", "replay")
+    ]
+    assert fingerprints() == before
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == descriptor_count
+
+
+def test_external_validator_rejects_self_consistent_producer_commit_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["collection"]["git_commit"] = "b" * 40
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    with pytest.raises(ValueError, match="producer commit"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == []
+
+
+def test_external_validator_accepts_self_consistent_historical_producer_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["collection"]["git_commit"] = "b" * 40
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    package.validate_raw_frame_directory(root, expected_git_commit="b" * 40)
+
+    assert events == [
+        (kind, ordinal)
+        for ordinal in range(50)
+        for kind in ("parse", "oracle", "replay")
+    ]
+
+
+@pytest.mark.parametrize(
+    "root,commit",
+    [
+        ("not-a-path", "a" * 40),
+        (Path("."), "A" * 40),
+        (Path("."), "a" * 39),
+        (Path("."), 7),
+    ],
+)
+def test_external_validator_rejects_public_boundary(
+    root: object,
+    commit: object,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    with pytest.raises(ValueError):
+        package.validate_raw_frame_directory(
+            cast(Path, root),
+            expected_git_commit=cast(str, commit),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "observation_id",
+        "scene_id",
+        "artifact_sha256",
+        "cohort_row_sha256",
+    ],
+)
+def test_external_validator_checks_row_identity_before_oracle(
+    field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = [
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    ]
+    replacement = {
+        "observation_id": "f" * 20,
+        "scene_id": "wrong-scene",
+        "artifact_sha256": "f" * 64,
+        "cohort_row_sha256": "e" * 64,
+    }[field]
+    observations[0] = replace(observations[0], **{field: replacement})
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(
+        monkeypatch, package, raw_frames, tuple(observations), events
+    )
+
+    with pytest.raises(ValueError, match="independently sealed"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == [("parse", 0)]
+
+
+@pytest.mark.parametrize("mutation", ["ordinal", "derived-artifact"])
+def test_external_validator_rejects_noncanonical_row_identity_before_oracle(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    index_rows = [
+        json.loads(line) for line in (root / "index.jsonl").read_bytes().splitlines()
+    ]
+    if mutation == "ordinal":
+        index_rows[0]["ordinal"] = 1
+    else:
+        index_rows[0]["artifact"] = (
+            "observations/scene-00/00-ffffffffffffffffffff.npz"
+        )
+    index_bytes = b"".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        for row in index_rows
+    )
+    (root / "index.jsonl").write_bytes(index_bytes)
+    index_record = FileRecord(
+        byte_length=len(index_bytes),
+        sha256=hashlib.sha256(index_bytes).hexdigest(),
+    )
+    payload = package.tree_aggregate(
+        (
+            *((row.artifact, row.npz) for row in rows),
+            ("index.jsonl", index_record),
+        )
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["files"]["index"].update(
+        byte_length=index_record.byte_length,
+        sha256=index_record.sha256,
+    )
+    manifest["files"]["payload"] = {
+        "file_count": payload.file_count,
+        "total_byte_length": payload.total_byte_length,
+        "tree_sha256": payload.tree_sha256,
+    }
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    with pytest.raises(ValueError, match="ordinal|artifact"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == []
+
+
+@pytest.mark.parametrize("mutation", ["empty-directory", "root-replacement"])
+def test_external_validator_rejects_late_tree_identity_mutation(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    real_replay = cast(
+        Callable[[object, object, object], None],
+        raw_frames.replay_and_require_exact,
+    )
+    changed = False
+
+    def mutate(*args: object) -> None:
+        nonlocal changed
+        real_replay(*args)
+        if changed:
+            return
+        changed = True
+        if mutation == "empty-directory":
+            (root / "unexpected").mkdir()
+        else:
+            moved = tmp_path / "accepted-root"
+            root.rename(moved)
+            shutil.copytree(moved, root)
+
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", mutate)
+
+    with pytest.raises(ValueError, match="changed"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == [
+        (kind, ordinal)
+        for ordinal in range(50)
+        for kind in ("parse", "oracle", "replay")
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "collector_source",
+        "package_source",
+        "asset_roles",
+        "cohort_manifest",
+        "cohort_jsonl",
+        "evidence_manifest",
+        "evidence_index",
+        "raw_split",
+        "projector_source",
+        "mapping_source",
+    ],
+)
+def test_external_source_commitment_matrix(source_name: str) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    sources = _manifest_sources()
+    manifest = json.loads(
+        build_manifest(
+            git_commit="a" * 40,
+            sources=sources,
+            scene_assets=_scene_assets(),
+            environment=_environment(),
+            index_bytes=canonical_index_bytes(_manifest_rows()),
+            rows=_manifest_rows(),
+        )
+    )
+    raw_frames._require_external_sources(manifest, sources)
+    source = getattr(sources, source_name)
+    changed = replace(source, data=source.data + b"changed")
+
+    with pytest.raises(ValueError, match="source|cohort|evidence"):
+        raw_frames._require_external_sources(
+            manifest,
+            replace(sources, **{source_name: changed}),
+        )
+
+
+@pytest.mark.parametrize("record_name", ["manifest", "cohort_jsonl"])
+@pytest.mark.parametrize("field", ["path", "byte_length", "sha256"])
+def test_cohort_source_records_bind_path_length_and_hash(
+    record_name: str,
+    field: str,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    sources = _manifest_sources()
+    manifest_bytes = build_manifest(
+        git_commit="a" * 40,
+        sources=sources,
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=canonical_index_bytes(_manifest_rows()),
+        rows=_manifest_rows(),
+    )
+    manifest = json.loads(manifest_bytes)
+    record = manifest["cohort"][record_name]
+    record[field] = {
+        "path": f"wrong/{record_name}.json",
+        "byte_length": record["byte_length"] + 1,
+        "sha256": "f" * 64,
+    }[field]
+    mutated = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+
+    if field == "path":
+        with pytest.raises(ValueError, match="cohort"):
+            package._parse_manifest_bytes(mutated)
+    else:
+        package._parse_manifest_bytes(mutated)
+        with pytest.raises(ValueError, match="cohort"):
+            raw_frames._require_external_sources(manifest, sources)
+
+
+def test_manifest_rejects_old_hash_only_cohort_shape() -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    manifest = json.loads(
+        build_manifest(
+            git_commit="a" * 40,
+            sources=_manifest_sources(),
+            scene_assets=_scene_assets(),
+            environment=_environment(),
+            index_bytes=canonical_index_bytes(_manifest_rows()),
+            rows=_manifest_rows(),
+        )
+    )
+    cohort = manifest["cohort"]
+    cohort["manifest_sha256"] = cohort.pop("manifest")["sha256"]
+    cohort["cohort_jsonl_sha256"] = cohort.pop("cohort_jsonl")["sha256"]
+    mutated = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+
+    with pytest.raises(ValueError, match="cohort"):
+        package._parse_manifest_bytes(mutated)
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    [
+        "collector_source",
+        "package_source",
+        "asset_roles",
+        "cohort_manifest",
+        "cohort_jsonl",
+        "evidence_manifest",
+        "evidence_index",
+        "raw_split",
+        "projector_source",
+        "mapping_source",
+    ],
+)
+@pytest.mark.parametrize("field", ["path", "byte_length", "sha256"])
+def test_public_validator_binds_every_source_record_field(
+    source_name: str,
+    field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    manifest = json.loads(manifest_bytes)
+    location = {
+        "collector_source": ("collection", "collector_source"),
+        "package_source": ("collection", "package_source"),
+        "asset_roles": ("collection", "asset_roles"),
+        "cohort_manifest": ("cohort", "manifest"),
+        "cohort_jsonl": ("cohort", "cohort_jsonl"),
+        "evidence_manifest": ("evidence", "manifest"),
+        "evidence_index": ("evidence", "index"),
+        "raw_split": ("evidence", "raw_split"),
+        "projector_source": ("evidence", "projector_source"),
+        "mapping_source": ("evidence", "mapping_source"),
+    }[source_name]
+    record = manifest[location[0]][location[1]]
+    record[field] = {
+        "path": f"wrong/{source_name}",
+        "byte_length": record["byte_length"] + 1,
+        "sha256": "f" * 64,
+    }[field]
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    real_require_sources = raw_frames._require_external_sources
+    _patch_external_fixture(
+        monkeypatch,
+        package,
+        raw_frames,
+        observations,
+        events,
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_external_sources",
+        real_require_sources,
+    )
+
+    with pytest.raises(ValueError, match="source|cohort|evidence|commitments"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == []
+
+
+def test_source_capture_detects_identical_byte_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.chdir(tmp_path)
+    source = Path("source.py")
+    source.write_bytes(b"same")
+    first = raw_frames._read_source_capture("source.py")
+    replacement = Path("replacement.py")
+    replacement.write_bytes(b"same")
+    replacement.replace(source)
+    second = raw_frames._read_source_capture("source.py")
+
+    assert first[0] == second[0]
+    assert first[1] != second[1]
+
+
+@pytest.mark.parametrize("mutation", ["environment", "asset"])
+def test_external_validator_rejects_second_capture_mutation(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    if mutation == "environment":
+        captures = iter(
+            (_environment(), replace(_environment(), gpu_uuid="GPU-" + "f" * 36))
+        )
+        monkeypatch.setattr(raw_frames, "capture_environment", lambda: next(captures))
+    else:
+        calls = 0
+
+        def assets(_commitments: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("asset changed")
+
+        monkeypatch.setattr(raw_frames, "_require_original_asset_commitments", assets)
+
+    with pytest.raises(ValueError, match="changed"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == [
+        (kind, ordinal)
+        for ordinal in range(50)
+        for kind in ("parse", "oracle", "replay")
+    ]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "python_version",
+        "python_implementation",
+        "platform",
+        "numpy_version",
+        "zlib_version",
+        "habitat_version",
+        "habitat_sim_version",
+        "cuda_runtime_version",
+        "nvidia_driver_version",
+        "gpu_name",
+        "gpu_uuid",
+        "gpu_device_id",
+        "installed_distributions",
+    ],
+)
+@pytest.mark.parametrize("phase", ["initial", "second"])
+def test_public_validator_binds_every_environment_field_before_and_after_replay(
+    field: str,
+    phase: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    base = _environment()
+    changed_value: object
+    if field == "gpu_device_id":
+        changed_value = 1
+    elif field == "installed_distributions":
+        changed_value = (
+            *base.installed_distributions,
+            InstalledDistribution(name="zzz-test", version="1"),
+        )
+    else:
+        changed_value = f"{getattr(base, field)}-changed"
+    changed = replace(base, **{field: changed_value})
+    if phase == "initial":
+        manifest = json.loads(manifest_bytes)
+        if field == "gpu_device_id":
+            manifest["environment"]["gpu_device_id"] = 1
+        else:
+            manifest["environment"] = raw_frames._environment_json(changed)
+        (root / "manifest.json").write_bytes(
+            json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+        )
+    else:
+        captures = iter((base, changed))
+        monkeypatch.setattr(
+            raw_frames,
+            "capture_environment",
+            lambda: next(captures),
+        )
+
+    with pytest.raises(ValueError, match="environment|GPU"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    if phase == "initial":
+        assert events == []
+    else:
+        assert events == [
+            (kind, ordinal)
+            for ordinal in range(50)
+            for kind in ("parse", "oracle", "replay")
+        ]
+
+
+@pytest.mark.parametrize("scene_id", [f"scene-{index:02d}" for index in range(11)])
+def test_public_validator_binds_every_scene_bundle(
+    scene_id: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["scene_assets"]["scenes"][scene_id]["bundle_sha256"] = "f" * 64
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    with pytest.raises(ValueError, match="scene"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == []
+
+
+@pytest.mark.parametrize("role", ["glb", "house", "navmesh", "semantic_ply"])
+@pytest.mark.parametrize("field", ["path", "required", "byte_length", "sha256"])
+def test_public_validator_binds_every_scene_role_field(
+    role: str,
+    field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest_bytes, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    manifest = json.loads(manifest_bytes)
+    record = manifest["scene_assets"]["scenes"]["scene-00"]["files"][role]
+    record[field] = {
+        "path": f"scene-00/wrong-{role}",
+        "required": not record["required"],
+        "byte_length": record["byte_length"] + 1,
+        "sha256": "f" * 64,
+    }[field]
+    (root / "manifest.json").write_bytes(
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    with pytest.raises(ValueError, match="scene|asset|required"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == []
+
+
+@pytest.mark.parametrize("member", MEMBER_NAMES)
+def test_public_validator_rejects_each_malformed_npz_member_before_oracle(
+    member: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _external_package_fixture(root)
+    canonical = encode_raw_frame_npz(
+        render_raw_frame_artifact(
+            _fake_simulator(),
+            _observation(artifact_sha256="0" * 64),
+        )
+    ).data
+    source = zipfile.ZipFile(io.BytesIO(canonical))
+    output = io.BytesIO()
+    with source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            if info.filename != f"{member}.npy":
+                target.writestr(info, source.read(info))
+    malformed = output.getvalue()
+    rows = list(_manifest_rows())
+    rows[0] = replace(
+        rows[0],
+        npz=FileRecord(
+            byte_length=len(malformed),
+            sha256=hashlib.sha256(malformed).hexdigest(),
+        ),
+    )
+    fixture_record = FileRecord(
+        byte_length=len(b"external-fixture"),
+        sha256=hashlib.sha256(b"external-fixture").hexdigest(),
+    )
+    rows[1:] = [replace(row, npz=fixture_record) for row in rows[1:]]
+    accepted_rows = tuple(rows)
+    index = canonical_index_bytes(accepted_rows)
+    manifest = build_manifest(
+        git_commit="a" * 40,
+        sources=_manifest_sources(),
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=index,
+        rows=accepted_rows,
+    )
+    (root / "manifest.json").write_bytes(manifest)
+    (root / "index.jsonl").write_bytes(index)
+    (root / accepted_rows[0].artifact).write_bytes(malformed)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in accepted_rows
+    )
+    events: list[tuple[str, int]] = []
+    real_parser = package.parse_raw_frame_npz_bytes
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+
+    def parse_malformed(
+        accepted: bytes,
+        *,
+        expected_members: Mapping[str, MemberMetadata] | None = None,
+        expected_npz: FileRecord | None = None,
+    ) -> object:
+        assert accepted == malformed
+        events.append(("parse", 0))
+        return real_parser(
+            accepted,
+            expected_members=expected_members,
+            expected_npz=expected_npz,
+        )
+
+    monkeypatch.setattr(package, "parse_raw_frame_npz_bytes", parse_malformed)
+
+    with pytest.raises(ValueError, match="NPZ|member|ZIP|size"):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == [("parse", 0)]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "ego_semantic_grid",
+        "ego_observed_mask",
+        "ego_free_mask",
+        "target_semantic_grid",
+        "target_observed_mask",
+        "target_free_mask",
+    ],
+)
+def test_public_validator_rejects_each_replay_field(
+    field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    arrays, _, _ = _rendered_arrays(monkeypatch)
+    oracle = _pinned_from_arrays(arrays)
+    changed = np.array(getattr(oracle, field), copy=True)
+    changed.flat[0] = ~changed.flat[0]
+    changed_oracle = replace(oracle, **{field: changed})
+    observations_list = [
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    ]
+    observations_list[0] = replace(
+        observations_list[0],
+        start_position=tuple(float(value) for value in arrays.start_position),
+        start_rotation=tuple(
+            float(value) for value in arrays.start_rotation_xyzw
+        ),
+    )
+    observations = tuple(observations_list)
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    monkeypatch.setattr(
+        package,
+        "parse_raw_frame_npz_bytes",
+        lambda *_args, **_kwargs: (
+            events.append(("parse", 0)),
+            SimpleNamespace(arrays=arrays),
+        )[1],
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "load_pinned_oracle_after_render",
+        lambda _observation: (
+            events.append(("oracle", 0)),
+            changed_oracle,
+        )[1],
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "replay_and_require_exact",
+        replay_and_require_exact,
+    )
+
+    with pytest.raises(ValueError, match=field):
+        package.validate_raw_frame_directory(
+            root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert events == [("parse", 0), ("oracle", 0)]
+
+
+@pytest.mark.parametrize("target", ["manifest", "artifact"])
+def test_external_validator_rejects_identical_byte_restore(
+    target: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    manifest, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    real_replay = cast(
+        Callable[[object, object, object], None],
+        raw_frames.replay_and_require_exact,
+    )
+    changed = False
+
+    def restore(*args: object) -> None:
+        nonlocal changed
+        real_replay(*args)
+        if changed:
+            return
+        changed = True
+        path = root / ("manifest.json" if target == "manifest" else rows[0].artifact)
+        data = manifest if target == "manifest" else path.read_bytes()
+        descriptor = os.open(path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            assert os.write(descriptor, data) == len(data)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", restore)
+
+    with pytest.raises(ValueError, match="changed"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == [
+        (kind, ordinal)
+        for ordinal in range(50)
+        for kind in ("parse", "oracle", "replay")
+    ]
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    [
+        "extra-directory",
+        "extra-file",
+        "symlink",
+        "fifo",
+        "missing",
+        "root-symlink",
+        "ancestor-symlink",
+    ],
+)
+def test_external_validator_rejects_unsafe_package_tree_before_oracle(
+    hazard: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    target = root / rows[0].artifact
+    validation_root = root
+    if hazard == "extra-directory":
+        (root / "extra").mkdir()
+    elif hazard == "extra-file":
+        (root / "extra").write_bytes(b"unexpected")
+    elif hazard == "symlink":
+        target.unlink()
+        target.symlink_to(root / rows[1].artifact)
+    elif hazard == "fifo":
+        target.unlink()
+        os.mkfifo(target)
+    elif hazard == "root-symlink":
+        accepted = tmp_path / "accepted"
+        root.rename(accepted)
+        root.symlink_to(accepted, target_is_directory=True)
+    elif hazard == "ancestor-symlink":
+        real_parent = tmp_path / "real-parent"
+        real_parent.mkdir()
+        root.rename(real_parent / "package")
+        linked_parent = tmp_path / "linked-parent"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        validation_root = linked_parent / "package"
+    else:
+        target.unlink()
+
+    with pytest.raises((OSError, ValueError)):
+        package.validate_raw_frame_directory(
+            validation_root,
+            expected_git_commit="a" * 40,
+        )
+
+    assert not any(kind == "oracle" for kind, _ in events)
+
+
 def test_manifest_is_canonical_and_binds_every_exact_commitment() -> None:
     rows = _manifest_rows()
     index = canonical_index_bytes(rows)
@@ -1837,12 +2937,26 @@ def test_manifest_is_canonical_and_binds_every_exact_commitment() -> None:
     assert manifest["cohort"] == {
         "cohort_id": "r2r-val-unseen-50-v1",
         "directory": "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1",
-        "manifest_sha256": (
-            "d71f04f102d80df3799e5fea76162147ad76c060c82ccbca88813d8b14a0b191"
-        ),
-        "cohort_jsonl_sha256": (
-            "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
-        ),
+        "manifest": {
+            "path": (
+                "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/"
+                "manifest.json"
+            ),
+            "byte_length": 15,
+            "sha256": (
+                "6580975e391a633c9def208dd72ea9e5c3967ce8542f9bf987860dc60754319d"
+            ),
+        },
+        "cohort_jsonl": {
+            "path": (
+                "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/"
+                "cohort.jsonl"
+            ),
+            "byte_length": 11,
+            "sha256": (
+                "9d02d38dbac728c1bd7928c78f5388f6ceb8040d500578268b175e64098fa4cf"
+            ),
+        },
         "selection_sha256": (
             "32a7adddf32291f059eb1045e63e077a693ca64d6fdf6e7418b54dd5d3644cb2"
         ),
@@ -2196,7 +3310,7 @@ def test_manifest_rejects_nested_schema_and_asset_role_mutations(
     (root / "manifest.json").write_bytes(mutated)
 
     with pytest.raises(ValueError, match="manifest"):
-        validate_raw_frame_directory(root, expected_manifest=mutated)
+        _validate_raw_frame_directory_structural(root, expected_manifest=mutated)
 
 
 def test_manifest_accepts_sorted_unique_distribution_name_version_pairs() -> None:
@@ -2264,7 +3378,7 @@ def test_validator_accepts_one_complete_structurally_valid_directory(
         lambda *_args, **_kwargs: None,
     )
 
-    validate_raw_frame_directory(root, expected_manifest=manifest)
+    _validate_raw_frame_directory_structural(root, expected_manifest=manifest)
 
 
 def _attempt_observations() -> tuple[CollectionObservation, ...]:
@@ -2309,6 +3423,38 @@ def _bundle_for_scene(root: Path, scene: str) -> SceneBundle:
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
     return SceneBundle(scene_id=scene, files=MappingProxyType(files))
+
+
+def _collect_for_test(attempt: Path, snapshots: Path) -> bytes:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    raw_frames._require_private_collection_roots(attempt, snapshots)
+    if attempt.parent != snapshots.parent:
+        raise ValueError("test collection roots must be siblings")
+    parent = os.open(
+        attempt.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    staging = None
+    snapshot_root = None
+    try:
+        staging = raw_frames._create_owned_directory(parent, attempt)
+        snapshot_root = raw_frames._create_owned_directory(parent, snapshots)
+        try:
+            result = collect_attempt(staging, snapshot_root)
+        except BaseException:
+            for owned in (staging, snapshot_root):
+                try:
+                    raw_frames._remove_owned_root(owned)
+                except FileNotFoundError:
+                    pass
+            raise
+        descriptor = staging.descriptor
+        staging.descriptor = -1
+        raw_frames._require_closed(None, descriptor)
+        return result.manifest
+    finally:
+        raw_frames._require_closed(None, parent)
 
 
 def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resume(
@@ -2385,7 +3531,11 @@ def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resum
         lambda: SimpleNamespace(observations=observations, scenes=scenes),
     )
     monkeypatch.setattr(raw_frames, "_capture_attempt_state", lambda: next(captures))
-    monkeypatch.setattr(raw_frames, "snapshot_scene_bundle", fake_snapshot)
+    monkeypatch.setattr(
+        raw_frames,
+        "_snapshot_owned_scene_bundle",
+        lambda scene, owned: fake_snapshot(scene, owned.path),
+    )
     monkeypatch.setattr(
         raw_frames,
         "build_scene_simulator",
@@ -2396,7 +3546,9 @@ def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resum
     monkeypatch.setattr(raw_frames, "parse_raw_frame_npz_bytes", fake_parse)
     monkeypatch.setattr(raw_frames, "load_pinned_oracle_after_render", fake_oracle)
     monkeypatch.setattr(raw_frames, "replay_and_require_exact", fake_replay)
-    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+    monkeypatch.setattr(
+        raw_frames, "_require_owned_bundle_unchanged", lambda *_args: None
+    )
     monkeypatch.setattr(
         raw_frames,
         "_require_original_asset_commitments",
@@ -2404,11 +3556,11 @@ def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resum
     )
     monkeypatch.setattr(
         raw_frames,
-        "validate_raw_frame_directory",
-        lambda root, *, expected_manifest: events.append(("validate", root)),
+        "_validate_raw_frame_descriptor_structural",
+        lambda descriptor, **_kwargs: events.append(("validate", descriptor)),
     )
 
-    manifest = collect_attempt(attempt, snapshots)
+    manifest = _collect_for_test(attempt, snapshots)
 
     assert [value for name, value in events if name == "render"] == [
         observation.observation_id for observation in observations
@@ -2445,11 +3597,11 @@ def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resum
         )
     )
     assert (attempt / "manifest.json").read_bytes() == manifest
-    assert events[-1] == ("validate", attempt)
+    assert events[-1][0] == "validate"
     assert not snapshots.exists()
 
     with pytest.raises(FileExistsError):
-        collect_attempt(attempt, snapshots)
+        _collect_for_test(attempt, snapshots)
 
 
 def test_collect_attempt_closes_and_removes_partial_index_on_replay_failure(
@@ -2483,8 +3635,8 @@ def test_collect_attempt_closes_and_removes_partial_index_on_replay_failure(
     )
     monkeypatch.setattr(
         raw_frames,
-        "snapshot_scene_bundle",
-        lambda scene, root: _bundle_for_scene(root, scene),
+        "_snapshot_owned_scene_bundle",
+        lambda scene, owned: _bundle_for_scene(owned.path, scene),
     )
     monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: simulator)
     monkeypatch.setattr(
@@ -2512,10 +3664,12 @@ def test_collect_attempt_closes_and_removes_partial_index_on_replay_failure(
         raise RuntimeError("replay failed")
 
     monkeypatch.setattr(raw_frames, "replay_and_require_exact", fail_replay)
-    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+    monkeypatch.setattr(
+        raw_frames, "_require_owned_bundle_unchanged", lambda *_args: None
+    )
 
     with pytest.raises(RuntimeError, match="replay failed"):
-        collect_attempt(attempt, snapshots)
+        _collect_for_test(attempt, snapshots)
 
     assert closed == [True]
     assert not attempt.exists()
@@ -2534,7 +3688,7 @@ def test_full_attempt_requires_tracked_asset_roles_before_creating_paths(
     monkeypatch.setattr(raw_frames, "_SOURCE_PATHS", paths)
 
     with pytest.raises(FileNotFoundError, match="asset_roles"):
-        collect_attempt(attempt, snapshots)
+        _collect_for_test(attempt, snapshots)
 
     assert not attempt.exists()
     assert not snapshots.exists()
@@ -2562,7 +3716,7 @@ def test_collect_attempt_rejects_final_and_smoke_roots_before_preflight(
 
     for root in (final, final / "child", smoke, smoke / "child"):
         with pytest.raises(ValueError, match="forbidden"):
-            collect_attempt(root, snapshots)
+            _collect_for_test(root, snapshots)
         assert not root.exists()
         assert not snapshots.exists()
 
@@ -2570,21 +3724,21 @@ def test_collect_attempt_rejects_final_and_smoke_roots_before_preflight(
     alias.symlink_to(tmp_path, target_is_directory=True)
     for root in (alias / "final", alias / "smoke"):
         with pytest.raises(ValueError, match="resolves inside"):
-            collect_attempt(root, snapshots)
+            _collect_for_test(root, snapshots)
         assert not final.exists()
         assert not smoke.exists()
 
     with pytest.raises(ValueError, match="forbidden"):
-        collect_attempt(tmp_path / "attempt", final / "snapshot")
+        _collect_for_test(tmp_path / "attempt", final / "snapshot")
     with pytest.raises(ValueError, match="overlap"):
-        collect_attempt(tmp_path / "attempt", tmp_path / "attempt" / "snapshot")
+        _collect_for_test(tmp_path / "attempt", tmp_path / "attempt" / "snapshot")
     with pytest.raises(ValueError, match="lexical"):
-        collect_attempt(tmp_path / "safe" / ".." / "attempt", snapshots)
+        _collect_for_test(tmp_path / "safe" / ".." / "attempt", snapshots)
 
     existing = tmp_path / "existing"
     existing.mkdir()
     with pytest.raises(FileExistsError, match="absent"):
-        collect_attempt(existing, snapshots)
+        _collect_for_test(existing, snapshots)
 
 
 def test_dynamic_source_reader_uses_one_nofollow_regular_file_buffer(
@@ -2796,8 +3950,8 @@ def test_attempt_drift_matrix_cleans_all_private_state(
     monkeypatch.setattr(raw_frames, "_capture_attempt_state", lambda: next(captures))
     monkeypatch.setattr(
         raw_frames,
-        "snapshot_scene_bundle",
-        lambda scene, root: _bundle_for_scene(root, scene),
+        "_snapshot_owned_scene_bundle",
+        lambda scene, owned: _bundle_for_scene(owned.path, scene),
     )
     monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: Simulator())
     monkeypatch.setattr(
@@ -2817,7 +3971,9 @@ def test_attempt_drift_matrix_cleans_all_private_state(
         raw_frames, "load_pinned_oracle_after_render", lambda _observation: object()
     )
     monkeypatch.setattr(raw_frames, "replay_and_require_exact", lambda *_args: None)
-    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+    monkeypatch.setattr(
+        raw_frames, "_require_owned_bundle_unchanged", lambda *_args: None
+    )
     if drift == "asset":
         monkeypatch.setattr(
             raw_frames,
@@ -2829,11 +3985,13 @@ def test_attempt_drift_matrix_cleans_all_private_state(
             raw_frames, "_require_original_asset_commitments", lambda _assets: None
         )
     monkeypatch.setattr(
-        raw_frames, "validate_raw_frame_directory", lambda *_args, **_kwargs: None
+        raw_frames,
+        "_validate_raw_frame_descriptor_structural",
+        lambda *_args, **_kwargs: None,
     )
 
     with pytest.raises(ValueError, match="changed"):
-        collect_attempt(attempt, snapshots)
+        _collect_for_test(attempt, snapshots)
 
     assert len(closed) == 11
     assert not attempt.exists()
@@ -2860,8 +4018,8 @@ def test_simulator_constructor_failure_rehashes_bundle_and_cleans(
     )
     monkeypatch.setattr(
         raw_frames,
-        "snapshot_scene_bundle",
-        lambda scene, root: _bundle_for_scene(root, scene),
+        "_snapshot_owned_scene_bundle",
+        lambda scene, owned: _bundle_for_scene(owned.path, scene),
     )
     monkeypatch.setattr(
         raw_frames,
@@ -2870,16 +4028,16 @@ def test_simulator_constructor_failure_rehashes_bundle_and_cleans(
     )
     monkeypatch.setattr(
         raw_frames,
-        "_require_bundle_unchanged",
-        lambda bundle: rehashed.append(bundle.scene_id),
+        "_require_owned_bundle_unchanged",
+        lambda _snapshots, bundle, *_args: rehashed.append(bundle.scene_id),
     )
     attempt = tmp_path / "attempt"
     snapshots = tmp_path / "snapshots"
 
     with pytest.raises(RuntimeError, match="constructor"):
-        collect_attempt(attempt, snapshots)
+        _collect_for_test(attempt, snapshots)
 
-    assert rehashed == ["scene-00"]
+    assert rehashed == ["scene-00", "scene-00"]
     assert not attempt.exists()
     assert not snapshots.exists()
 
@@ -3070,3 +4228,1061 @@ def test_first_per_scene_smoke_classifies_55_disposable_variants(
     assert capsys.readouterr().out.encode() == report
     assert not smoke_root.exists()
     assert not final_root.exists()
+
+
+def test_cli_without_smoke_dispatches_fixed_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.setattr(raw_frames, "publish_raw_frame_directory", lambda: b"done\n")
+
+    assert raw_frames.main([]) == b"done\n"
+
+
+def test_publisher_validates_fresh_then_recaptures_and_renames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = tmp_path / "benchmark"
+    parent.mkdir()
+    final = parent / "final"
+    staging = parent / ".staging"
+    snapshots = parent / ".snapshots"
+    smoke = parent / ".smoke"
+    events = []
+    source_state = SimpleNamespace(sources=object(), fingerprints={"source": (1,)})
+    environment = object()
+    environment_json = object()
+
+    monkeypatch.setattr(raw_frames, "FINAL_PACKAGE_ROOT", final)
+    monkeypatch.setattr(raw_frames, "STAGING_PACKAGE_ROOT", staging)
+    monkeypatch.setattr(raw_frames, "SNAPSHOT_PACKAGE_ROOT", snapshots)
+    monkeypatch.setattr(raw_frames, "SMOKE_PACKAGE_ROOT", smoke)
+    monkeypatch.setattr(raw_frames, "_require_clean_git", lambda: "a" * 40)
+    monkeypatch.setattr(raw_frames, "_capture_source_state", lambda: source_state)
+    monkeypatch.setattr(raw_frames, "capture_environment", lambda: environment)
+
+    def collect(
+        attempt: object,
+        _snapshot: object,
+    ) -> SimpleNamespace:
+        events.append("collect")
+        return SimpleNamespace(
+            manifest=b"manifest\n",
+            structural_snapshot=SimpleNamespace(root=object()),
+        )
+
+    monkeypatch.setattr(raw_frames, "collect_attempt", collect)
+    monkeypatch.setattr(
+        raw_frames,
+        "_fresh_validate_subprocess",
+        lambda *_args: events.append("fresh"),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_parse_manifest_bytes",
+        lambda _data: {"environment": environment_json},
+    )
+    monkeypatch.setattr(raw_frames, "_require_external_sources", lambda *_args: None)
+    monkeypatch.setattr(
+        raw_frames, "_environment_json", lambda _env: environment_json
+    )
+    monkeypatch.setattr(
+        raw_frames, "_manifest_scene_commitments", lambda _manifest: {}
+    )
+    monkeypatch.setattr(
+        raw_frames, "_require_original_asset_commitments", lambda _assets: None
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_recapture_package_descriptor",
+        lambda *_args: events.append("recapture"),
+    )
+    monkeypatch.setattr(raw_frames, "_require_root_path_binding", lambda *_args: None)
+
+    assert raw_frames.publish_raw_frame_directory() == b"manifest\n"
+    assert events == ["collect", "fresh", "recapture"]
+    assert final.is_dir()
+    assert not staging.exists()
+
+
+def test_write_call_site_preserves_primary_and_both_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_close = raw_frames.os.close
+    owned_descriptors = set()
+    real_dup = raw_frames.os.dup
+    real_open = raw_frames.os.open
+
+    def tracked_dup(descriptor: int) -> int:
+        duplicate = real_dup(descriptor)
+        owned_descriptors.add(duplicate)
+        return duplicate
+
+    def tracked_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "leaf":
+            owned_descriptors.add(descriptor)
+        return descriptor
+
+    def fail_write(_descriptor: int, _data: object) -> int:
+        raise OSError("write primary")
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor in owned_descriptors:
+            raise OSError(f"close {descriptor}")
+
+    monkeypatch.setattr(raw_frames.os, "dup", tracked_dup)
+    monkeypatch.setattr(raw_frames.os, "open", tracked_open)
+    monkeypatch.setattr(raw_frames.os, "write", fail_write)
+    monkeypatch.setattr(raw_frames.os, "close", close_then_fail)
+    try:
+        with pytest.raises(_DescriptorCleanupError) as caught:
+            raw_frames._write_exclusive_at(
+                root,
+                PurePosixPath("leaf"),
+                b"data",
+            )
+    finally:
+        real_close(root)
+
+    assert str(caught.value.primary) == "write primary"
+    assert len(caught.value.failures) == 2
+
+
+def test_source_capture_attempts_leaf_and_directory_close_after_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    (tmp_path / "source").write_bytes(b"data")
+    monkeypatch.chdir(tmp_path)
+    real_open = raw_frames.os.open
+    real_close = raw_frames.os.close
+    owned_descriptors = set()
+
+    def tracked_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path in {".", "source"}:
+            owned_descriptors.add(descriptor)
+        return descriptor
+
+    def fail_read(_descriptor: int, _size: int) -> bytes:
+        raise OSError("read primary")
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor in owned_descriptors:
+            raise OSError(f"close {descriptor}")
+
+    monkeypatch.setattr(raw_frames.os, "open", tracked_open)
+    monkeypatch.setattr(raw_frames.os, "read", fail_read)
+    monkeypatch.setattr(raw_frames.os, "close", close_then_fail)
+
+    with pytest.raises(_DescriptorCleanupError) as caught:
+        raw_frames._read_source_capture("source")
+
+    assert isinstance(caught.value.primary, _DescriptorCleanupError)
+    assert str(caught.value.primary.primary) == "read primary"
+    assert len(caught.value.primary.failures) == 1
+    assert len(caught.value.failures) == 1
+
+
+def test_snapshot_attempts_all_descriptor_closes_after_copy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    source_root = tmp_path / "source"
+    (source_root / "scene").mkdir(parents=True)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    private_fd = os.open(private, os.O_RDONLY | os.O_DIRECTORY)
+    real_close = raw_frames.os.close
+    closed = []
+
+    monkeypatch.setattr(raw_frames, "SCENE_DATASET_ROOT", source_root)
+    monkeypatch.setattr(
+        raw_frames,
+        "_open_real_directory",
+        lambda _path, _label: os.open(source_root, os.O_RDONLY | os.O_DIRECTORY),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_copy_asset",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("copy primary")),
+    )
+
+    def close_then_fail(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+        raise OSError(f"close {descriptor}")
+
+    monkeypatch.setattr(raw_frames.os, "close", close_then_fail)
+
+    with pytest.raises(_DescriptorCleanupError) as caught:
+        raw_frames._snapshot_scene_bundle_at("scene", private, private_fd)
+
+    assert str(caught.value.primary) == "copy primary"
+    assert len(caught.value.failures) == 4
+    assert len(closed) == 4
+
+
+@pytest.mark.parametrize("existing_name", ["final", ".staging", ".snapshots", ".smoke"])
+def test_publisher_rejects_fixed_roots_before_git_or_source_load(
+    existing_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = tmp_path / "benchmark"
+    parent.mkdir()
+    roots = {
+        "FINAL_PACKAGE_ROOT": parent / "final",
+        "STAGING_PACKAGE_ROOT": parent / ".staging",
+        "SNAPSHOT_PACKAGE_ROOT": parent / ".snapshots",
+        "SMOKE_PACKAGE_ROOT": parent / ".smoke",
+    }
+    (parent / existing_name).mkdir()
+    for attribute, path in roots.items():
+        monkeypatch.setattr(raw_frames, attribute, path)
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_clean_git",
+        lambda: (_ for _ in ()).throw(AssertionError("Git loaded")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_source_state",
+        lambda: (_ for _ in ()).throw(AssertionError("sources loaded")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "capture_environment",
+        lambda: (_ for _ in ()).throw(AssertionError("environment loaded")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "collect_attempt",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("collection loaded")),
+    )
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert (parent / existing_name).is_dir()
+
+
+def test_publisher_dirty_git_creates_no_owned_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = tmp_path / "benchmark"
+    parent.mkdir()
+    roots = {
+        "FINAL_PACKAGE_ROOT": parent / "final",
+        "STAGING_PACKAGE_ROOT": parent / ".staging",
+        "SNAPSHOT_PACKAGE_ROOT": parent / ".snapshots",
+        "SMOKE_PACKAGE_ROOT": parent / ".smoke",
+    }
+    for attribute, path in roots.items():
+        monkeypatch.setattr(raw_frames, attribute, path)
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_clean_git",
+        lambda: (_ for _ in ()).throw(RuntimeError("dirty Git")),
+    )
+
+    with pytest.raises(RuntimeError, match="dirty Git"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert all(not path.exists() for path in roots.values())
+
+
+def test_owned_cleanup_preserves_replaced_root(
+    tmp_path: Path,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = raw_frames._create_owned_directory(parent_fd, tmp_path / "owned")
+    displaced = tmp_path / "displaced"
+    (tmp_path / "owned").rename(displaced)
+    (tmp_path / "owned").mkdir()
+    try:
+        with pytest.raises(RuntimeError, match="replaced"):
+            raw_frames._remove_owned_root(owned)
+    finally:
+        os.close(parent_fd)
+
+    assert (tmp_path / "owned").is_dir()
+    assert displaced.is_dir()
+
+
+def test_nested_cleanup_preserves_directory_replaced_during_recursion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = raw_frames._create_owned_directory(parent_fd, tmp_path / "owned")
+    (tmp_path / "owned" / "scene").mkdir()
+    scene_inode = (tmp_path / "owned" / "scene").stat().st_ino
+    real_listdir = raw_frames.os.listdir
+    raced = False
+
+    def race_on_child(descriptor: int) -> list[str]:
+        nonlocal raced
+        if not raced and os.fstat(descriptor).st_ino == scene_inode:
+            raced = True
+            (tmp_path / "owned" / "scene").rename(
+                tmp_path / "owned" / "displaced"
+            )
+            (tmp_path / "owned" / "scene").mkdir()
+            return []
+        return real_listdir(descriptor)
+
+    monkeypatch.setattr(raw_frames.os, "listdir", race_on_child)
+    try:
+        with pytest.raises(RuntimeError, match="replaced"):
+            raw_frames._remove_owned_root(owned)
+    finally:
+        os.close(parent_fd)
+
+    assert (tmp_path / "owned" / "scene").is_dir()
+    assert (tmp_path / "owned" / "displaced").is_dir()
+
+
+def test_publisher_attempts_both_owned_cleanups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = tmp_path / "benchmark"
+    parent.mkdir()
+    for attribute, name in (
+        ("FINAL_PACKAGE_ROOT", "final"),
+        ("STAGING_PACKAGE_ROOT", ".staging"),
+        ("SNAPSHOT_PACKAGE_ROOT", ".snapshots"),
+        ("SMOKE_PACKAGE_ROOT", ".smoke"),
+    ):
+        monkeypatch.setattr(raw_frames, attribute, parent / name)
+    monkeypatch.setattr(raw_frames, "_require_clean_git", lambda: "a" * 40)
+    monkeypatch.setattr(raw_frames, "_capture_source_state", lambda: object())
+    monkeypatch.setattr(raw_frames, "capture_environment", lambda: object())
+    owned = iter(
+        (
+            SimpleNamespace(name=".staging", descriptor=11),
+            SimpleNamespace(name=".snapshots", descriptor=12),
+        )
+    )
+    monkeypatch.setattr(raw_frames, "_create_owned_directory", lambda *_args: next(owned))
+    monkeypatch.setattr(
+        raw_frames,
+        "collect_attempt",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("collection primary")),
+    )
+    cleanups = []
+
+    cleanup_errors = {
+        ".staging": RuntimeError("staging cleanup"),
+        ".snapshots": RuntimeError("snapshot cleanup"),
+    }
+
+    def cleanup(root: SimpleNamespace) -> None:
+        cleanups.append(root.name)
+        raise cleanup_errors[root.name]
+
+    monkeypatch.setattr(raw_frames, "_remove_owned_root", cleanup)
+
+    with pytest.raises(raw_frames._OperationCleanupError) as caught:
+        raw_frames.publish_raw_frame_directory()
+
+    assert cleanups == [".staging", ".snapshots"]
+    assert caught.value.failures == (
+        cleanup_errors[".staging"],
+        cleanup_errors[".snapshots"],
+    )
+    assert str(caught.value.primary) == "collection primary"
+    assert caught.value.__cause__ is caught.value.primary
+
+
+def test_directory_durability_walk_is_lexical_postorder_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    for relative in ("a/a0", "a/a1", "b/b0"):
+        (tmp_path / relative).mkdir(parents=True)
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_fsync = raw_frames.os.fsync
+    order = []
+
+    def track_fsync(descriptor: int) -> None:
+        order.append(Path(os.readlink(f"/proc/self/fd/{descriptor}")).name)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(raw_frames.os, "fsync", track_fsync)
+    try:
+        raw_frames._fsync_directories_postorder(root)
+    finally:
+        os.close(root)
+
+    assert order == ["a0", "a1", "a", "b0", "b", tmp_path.name]
+
+
+@pytest.mark.parametrize(
+    "error_number,exception_type",
+    [
+        (errno.EEXIST, FileExistsError),
+        (errno.EPERM, OSError),
+    ],
+)
+def test_rename_noreplace_has_no_fallback(
+    error_number: int,
+    exception_type: type[OSError],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    calls = []
+
+    class Rename:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *args: object) -> int:
+            calls.append(args)
+            ctypes.set_errno(error_number)
+            return -1
+
+    monkeypatch.setattr(
+        raw_frames.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(renameat2=Rename()),
+    )
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("rename fallback used")
+
+    for name in ("rename", "replace", "link", "unlink"):
+        monkeypatch.setattr(raw_frames.os, name, explode)
+
+    with pytest.raises(exception_type):
+        raw_frames._rename_noreplace(11, ".staging", "final")
+
+    assert calls == [(11, b".staging", 11, b"final", 1)]
+
+
+def test_fresh_validator_child_receives_exact_identity_and_propagates_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    calls = []
+
+    def run(command: Sequence[str], **kwargs: object) -> None:
+        calls.append((command, kwargs))
+        raise subprocess.CalledProcessError(-9, command)
+
+    monkeypatch.setattr(raw_frames.subprocess, "run", run)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        raw_frames._fresh_validate_subprocess(
+            tmp_path / ".staging",
+            "a" * 40,
+            (123, 456),
+        )
+
+    command, kwargs = calls[0]
+    assert command[0] == sys.executable
+    assert command[-4:] == [
+        (tmp_path / ".staging").as_posix(),
+        "a" * 40,
+        "123",
+        "456",
+    ]
+    assert kwargs == {"check": True}
+    assert caught.value.returncode == -9
+
+
+def test_fresh_validation_runner_calls_public_facade_once_and_consumes_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    calls = []
+
+    def validate(root: Path, *, expected_git_commit: str) -> None:
+        calls.append((root, expected_git_commit, raw_frames._FRESH_VALIDATION_IDENTITY))
+        raw_frames._FRESH_VALIDATION_IDENTITY = None
+
+    monkeypatch.setattr(package, "validate_raw_frame_directory", validate)
+    raw_frames._FRESH_VALIDATION_IDENTITY = None
+
+    raw_frames._run_fresh_validation(
+        tmp_path.as_posix(),
+        "a" * 40,
+        "123",
+        "456",
+    )
+
+    assert calls == [(tmp_path, "a" * 40, (123, 456))]
+    assert raw_frames._FRESH_VALIDATION_IDENTITY is None
+    raw_frames._FRESH_VALIDATION_IDENTITY = (1, 2)
+    with pytest.raises(RuntimeError, match="already occupied"):
+        raw_frames._run_fresh_validation(
+            tmp_path.as_posix(),
+            "a" * 40,
+            "123",
+            "456",
+        )
+    raw_frames._FRESH_VALIDATION_IDENTITY = None
+
+
+def _patch_happy_publisher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ModuleType, Mapping[str, Path]]:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = tmp_path / "benchmark"
+    parent.mkdir()
+    roots = {
+        "FINAL_PACKAGE_ROOT": parent / "final",
+        "STAGING_PACKAGE_ROOT": parent / ".staging",
+        "SNAPSHOT_PACKAGE_ROOT": parent / ".snapshots",
+        "SMOKE_PACKAGE_ROOT": parent / ".smoke",
+    }
+    for attribute, path in roots.items():
+        monkeypatch.setattr(raw_frames, attribute, path)
+    source_state = SimpleNamespace(sources=object(), fingerprints={"source": (1,)})
+    environment = object()
+    environment_json = object()
+    monkeypatch.setattr(raw_frames, "_require_clean_git", lambda: "a" * 40)
+    monkeypatch.setattr(raw_frames, "_capture_source_state", lambda: source_state)
+    monkeypatch.setattr(raw_frames, "capture_environment", lambda: environment)
+
+    def collect(
+        staging: _OwnedDirectory,
+        snapshots: _OwnedDirectory,
+    ) -> SimpleNamespace:
+        raw_frames._remove_owned_root(snapshots)
+        return SimpleNamespace(
+            manifest=b"manifest\n",
+            structural_snapshot=SimpleNamespace(
+                root=staging.fingerprint
+            ),
+        )
+
+    monkeypatch.setattr(raw_frames, "collect_attempt", collect)
+    monkeypatch.setattr(raw_frames, "_fresh_validate_subprocess", lambda *_args: None)
+    monkeypatch.setattr(
+        raw_frames,
+        "_parse_manifest_bytes",
+        lambda _data: {"environment": environment_json},
+    )
+    monkeypatch.setattr(raw_frames, "_require_external_sources", lambda *_args: None)
+    monkeypatch.setattr(
+        raw_frames, "_environment_json", lambda _env: environment_json
+    )
+    monkeypatch.setattr(
+        raw_frames, "_manifest_scene_commitments", lambda _manifest: {}
+    )
+    monkeypatch.setattr(
+        raw_frames, "_require_original_asset_commitments", lambda _assets: None
+    )
+    monkeypatch.setattr(
+        raw_frames, "_recapture_package_descriptor", lambda *_args: None
+    )
+    return raw_frames, roots
+
+
+def test_publisher_changed_head_cleans_both_owned_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    heads = iter(("a" * 40, "b" * 40))
+    monkeypatch.setattr(raw_frames, "_require_clean_git", lambda: next(heads))
+
+    with pytest.raises(RuntimeError, match="HEAD changed"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert not roots["SNAPSHOT_PACKAGE_ROOT"].exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+@pytest.mark.parametrize("race", ["final", "smoke"])
+def test_publisher_preserves_raced_final_or_smoke_root(
+    race: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    raced = roots[f"{race.upper()}_PACKAGE_ROOT"]
+
+    def race_before_absence_recheck(*_args: object) -> None:
+        raced.mkdir()
+
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_original_asset_commitments",
+        race_before_absence_recheck,
+    )
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert raced.is_dir()
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+
+
+def test_publisher_preserves_replaced_staging_after_fresh_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    staging = roots["STAGING_PACKAGE_ROOT"]
+    displaced = staging.with_name(".accepted-staging")
+
+    def replace_staging(*_args: object) -> None:
+        staging.rename(displaced)
+        staging.mkdir()
+
+    monkeypatch.setattr(raw_frames, "_fresh_validate_subprocess", replace_staging)
+
+    with pytest.raises(raw_frames._OperationCleanupError) as caught:
+        raw_frames.publish_raw_frame_directory()
+
+    assert "replaced" in str(caught.value)
+    assert staging.is_dir()
+    assert displaced.is_dir()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+def test_publisher_preserves_final_when_parent_fsync_fails_after_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    parent_inode = roots["FINAL_PACKAGE_ROOT"].parent.stat().st_ino
+    real_fsync = raw_frames.os.fsync
+
+    def fail_parent_fsync(descriptor: int) -> None:
+        if os.fstat(descriptor).st_ino == parent_inode:
+            raise OSError("parent durability")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(raw_frames.os, "fsync", fail_parent_fsync)
+
+    with pytest.raises(OSError, match="parent durability"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert roots["FINAL_PACKAGE_ROOT"].is_dir()
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+
+
+def test_owned_creation_without_trustworthy_token_preserves_visible_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_open = raw_frames.os.open
+
+    def fail_owned_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        if path == "owned":
+            raise OSError("open race")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(raw_frames.os, "open", fail_owned_open)
+    try:
+        with pytest.raises(RuntimeError, match="root preserved"):
+            raw_frames._create_owned_directory(parent, tmp_path / "owned")
+    finally:
+        os.close(parent)
+
+    assert (tmp_path / "owned").is_dir()
+
+
+@pytest.mark.parametrize("failure", ["file", "directory"])
+def test_publisher_cleans_owned_roots_after_staging_fsync_failure(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    real_fsync = raw_frames.os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        mode = os.fstat(descriptor).st_mode
+        if failure == "file" and stat.S_ISREG(mode):
+            raise OSError("file fsync")
+        if failure == "directory" and stat.S_ISDIR(mode):
+            raise OSError("directory fsync")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(raw_frames.os, "fsync", fail_selected_fsync)
+
+    def collect(staging: object, _snapshots: object) -> None:
+        staging = cast(SimpleNamespace, staging)
+        if failure == "file":
+            raw_frames._write_exclusive_at(
+                staging.descriptor,
+                PurePosixPath("artifact"),
+                b"data",
+            )
+        else:
+            os.mkdir("child", dir_fd=staging.descriptor)
+            raw_frames._fsync_directories_postorder(staging.descriptor)
+
+    monkeypatch.setattr(raw_frames, "collect_attempt", collect)
+    descriptor_count = len(tuple(Path("/proc/self/fd").iterdir()))
+
+    with pytest.raises(OSError, match=f"{failure} fsync"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert not roots["SNAPSHOT_PACKAGE_ROOT"].exists()
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == descriptor_count
+
+
+@pytest.mark.parametrize("returncode", [1, -9])
+def test_publisher_cleans_staging_after_fresh_child_failure(
+    returncode: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    failure = subprocess.CalledProcessError(returncode, ["fresh-child"])
+    monkeypatch.setattr(
+        raw_frames,
+        "_fresh_validate_subprocess",
+        lambda *_args: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        raw_frames.publish_raw_frame_directory()
+
+    assert caught.value is failure
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+@pytest.mark.parametrize("drift", ["source", "environment"])
+def test_publisher_cleans_staging_after_post_child_state_drift(
+    drift: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    if drift == "source":
+        captures = iter(
+            (
+                SimpleNamespace(sources=object(), fingerprints={"source": (1,)}),
+                SimpleNamespace(sources=object(), fingerprints={"source": (2,)}),
+            )
+        )
+        monkeypatch.setattr(raw_frames, "_capture_source_state", lambda: next(captures))
+    else:
+        environments = iter((object(), object()))
+        monkeypatch.setattr(
+            raw_frames, "capture_environment", lambda: next(environments)
+        )
+
+    with pytest.raises(RuntimeError, match="changed"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+def test_publisher_rename_time_eexist_preserves_raced_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    final = roots["FINAL_PACKAGE_ROOT"]
+
+    def race_final(*_args: object) -> None:
+        final.mkdir()
+        raise FileExistsError("final raw-frame package already exists")
+
+    monkeypatch.setattr(raw_frames, "_rename_noreplace", race_final)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert final.is_dir()
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+
+
+def test_publisher_rejects_same_inode_staging_tree_mutation_after_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    staging = roots["STAGING_PACKAGE_ROOT"]
+
+    def collect(staging_root: object, snapshots: object) -> SimpleNamespace:
+        raw_frames._remove_owned_root(snapshots)
+        fingerprint = cast(SimpleNamespace, staging_root).fingerprint
+        return SimpleNamespace(
+            manifest=b"manifest\n",
+            structural_snapshot=raw_frames._PackageSnapshot(
+                root=fingerprint,
+                directories=MappingProxyType({}),
+                files=MappingProxyType({}),
+            ),
+        )
+
+    def mutate_staging(*_args: object) -> None:
+        (staging / "unexpected").write_bytes(b"mutation")
+
+    monkeypatch.setattr(raw_frames, "collect_attempt", collect)
+    monkeypatch.setattr(raw_frames, "_fresh_validate_subprocess", mutate_staging)
+    monkeypatch.setattr(
+        raw_frames,
+        "_recapture_package_descriptor",
+        package._recapture_package_descriptor,
+    )
+
+    with pytest.raises(ValueError, match="changed"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not staging.exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+def test_publisher_rejects_identical_byte_staging_restore_after_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    staging_path = roots["STAGING_PACKAGE_ROOT"]
+    payload = b"identical"
+    accepted_fingerprints = []
+
+    def collect(staging: object, snapshots: object) -> SimpleNamespace:
+        staging = cast(SimpleNamespace, staging)
+        raw_frames._remove_owned_root(snapshots)
+        raw_frames._write_exclusive_at(
+            staging.descriptor,
+            PurePosixPath("artifact"),
+            payload,
+        )
+        _, fingerprint = package._strict_read_at(
+            staging.descriptor,
+            "artifact",
+            expected=FileRecord(
+                byte_length=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),
+            ),
+            label="artifact",
+        )
+        accepted_fingerprints.append(fingerprint)
+        return SimpleNamespace(
+            manifest=b"manifest\n",
+            structural_snapshot=raw_frames._PackageSnapshot(
+                root=raw_frames._fingerprint(os.fstat(staging.descriptor)),
+                directories=MappingProxyType({}),
+                files=MappingProxyType(
+                    {
+                        "artifact": (
+                            fingerprint,
+                            FileRecord(
+                                byte_length=len(payload),
+                                sha256=hashlib.sha256(payload).hexdigest(),
+                            ),
+                        )
+                    }
+                ),
+            ),
+        )
+
+    def restore_identical(*_args: object) -> None:
+        time.sleep(0.01)
+        descriptor = os.open(
+            staging_path / "artifact",
+            os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            assert os.write(descriptor, payload) == len(payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        assert raw_frames._fingerprint(
+            (staging_path / "artifact").stat()
+        ) != accepted_fingerprints[0]
+
+    monkeypatch.setattr(raw_frames, "collect_attempt", collect)
+    monkeypatch.setattr(raw_frames, "_fresh_validate_subprocess", restore_identical)
+    monkeypatch.setattr(
+        raw_frames,
+        "_recapture_package_descriptor",
+        package._recapture_package_descriptor,
+    )
+
+    with pytest.raises(ValueError, match="changed"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not staging_path.exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()
+
+
+def test_external_validator_rejects_fresh_child_identity_before_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    raw_frames._FRESH_VALIDATION_IDENTITY = (0, 0)
+    try:
+        with pytest.raises(ValueError, match="identity differs"):
+            package.validate_raw_frame_directory(
+                root,
+                expected_git_commit="a" * 40,
+            )
+    finally:
+        raw_frames._FRESH_VALIDATION_IDENTITY = None
+
+    assert events == []
+
+
+@pytest.mark.parametrize("order", ["package-first", "collector-first"])
+def test_public_validator_late_import_works_in_both_import_orders(order: str) -> None:
+    package_name = (
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package"
+    )
+    collector_name = "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames"
+    if order == "package-first":
+        command = (
+            f"import {package_name} as package,sys,types;"
+            f"assert {collector_name!r} not in sys.modules;"
+            "calls=[];"
+            f"fake=types.ModuleType({collector_name!r});"
+            "fake._validate_external_raw_frame_directory="
+            "lambda root,expected_git_commit:calls.append((root,expected_git_commit));"
+            f"sys.modules[{collector_name!r}]=fake;"
+            "from pathlib import Path;"
+            "package.validate_raw_frame_directory(Path('.'),"
+            "expected_git_commit='a'*40);"
+            "assert calls==[(Path('.'),'a'*40)]"
+        )
+    else:
+        command = (
+            f"import {collector_name} as collector;"
+            f"import {package_name} as package;"
+            "calls=[];"
+            "collector._validate_external_raw_frame_directory="
+            "lambda root,expected_git_commit:calls.append((root,expected_git_commit));"
+            "from pathlib import Path;"
+            "package.validate_raw_frame_directory(Path('.'),"
+            "expected_git_commit='a'*40);"
+            "assert calls==[(Path('.'),'a'*40)]"
+        )
+
+    subprocess.run([sys.executable, "-c", command], check=True)
+
+
+def test_snapshot_creation_without_token_cleans_staging_and_preserves_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    snapshot_name = roots["SNAPSHOT_PACKAGE_ROOT"].name
+    real_open = raw_frames.os.open
+
+    def fail_snapshot_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        if path == snapshot_name:
+            raise OSError("snapshot open race")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(raw_frames.os, "open", fail_snapshot_open)
+
+    with pytest.raises(RuntimeError, match="root preserved"):
+        raw_frames.publish_raw_frame_directory()
+
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert roots["SNAPSHOT_PACKAGE_ROOT"].is_dir()
+
+
+def test_publisher_cleans_staging_after_original_asset_rehash_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    failure = ValueError("original asset changed")
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_original_asset_commitments",
+        lambda _assets: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(ValueError) as caught:
+        raw_frames.publish_raw_frame_directory()
+
+    assert caught.value is failure
+    assert not roots["STAGING_PACKAGE_ROOT"].exists()
+    assert not roots["FINAL_PACKAGE_ROOT"].exists()

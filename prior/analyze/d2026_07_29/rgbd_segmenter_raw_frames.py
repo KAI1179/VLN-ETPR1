@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import csv
+import ctypes
+import errno
 import importlib.metadata
 import io
 import json
@@ -46,12 +48,23 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     IndexRow,
     RawFrameArrays,
     SourceRecord,
+    _fingerprint,
+    _close_many,
+    _require_closed,
+    _open_package_root,
+    _parse_manifest_bytes,
+    _PackageSnapshot,
+    _EntryFingerprint,
+    _read_manifest_at,
+    _strict_read_at,
+    _recapture_package_descriptor,
+    _require_root_path_binding,
+    _validate_raw_frame_descriptor_structural,
     canonical_index_bytes,
     encode_raw_frame_npz,
     parse_raw_frame_npz_bytes,
     strict_read_bytes,
     tree_aggregate,
-    validate_raw_frame_directory,
 )
 from prior.constants import (
     MAPPED_OBJECT_NAMES,
@@ -71,6 +84,12 @@ RAW_SPLIT_PATH = Path(
 )
 SCENE_DATASET_ROOT = Path("data/scene_datasets/mp3d")
 FINAL_PACKAGE_ROOT = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-raw-v1")
+STAGING_PACKAGE_ROOT = Path(
+    "data/rgbd_segmenter_benchmark/.r2r-val-unseen-50-raw-v1.staging"
+)
+SNAPSHOT_PACKAGE_ROOT = Path(
+    "data/rgbd_segmenter_benchmark/.r2r-val-unseen-50-raw-v1.scene-assets"
+)
 SMOKE_PACKAGE_ROOT = Path(
     "data/rgbd_segmenter_benchmark/.r2r-val-unseen-50-raw-v1-smoke"
 )
@@ -195,6 +214,58 @@ class ManifestSources:
     raw_split: SourceRecord
     projector_source: SourceRecord
     mapping_source: SourceRecord
+
+
+@dataclass(frozen=True)
+class _SourceCaptureState:
+    sources: ManifestSources
+    fingerprints: Mapping[str, Tuple[int, ...]]
+
+
+@dataclass
+class _OwnedDirectory:
+    path: Path
+    name: str
+    parent_descriptor: int
+    descriptor: int
+    fingerprint: _EntryFingerprint
+
+
+@dataclass(frozen=True)
+class _CollectedAttempt:
+    manifest: bytes
+    structural_snapshot: _PackageSnapshot
+
+
+@dataclass(frozen=True)
+class _SceneSnapshotState:
+    directory: _EntryFingerprint
+    files: Mapping[str, _EntryFingerprint]
+
+
+class _OperationCleanupError(RuntimeError):
+    def __init__(
+        self,
+        label: str,
+        primary: BaseException,
+        failures: Sequence[BaseException],
+    ) -> None:
+        self.primary = primary
+        self.failures = tuple(failures)
+        super().__init__(
+            f"{label}: " + "; ".join(str(error) for error in self.failures)
+        )
+
+
+def _same_directory_identity(
+    fingerprint: _EntryFingerprint,
+    metadata: os.stat_result,
+) -> bool:
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_dev == fingerprint.st_dev
+        and metadata.st_ino == fingerprint.st_ino
+    )
 
 
 @dataclass(frozen=True)
@@ -641,21 +712,23 @@ def _open_real_directory(path: Path, label: str) -> int:
     descriptor = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for part in absolute.parts[1:]:
-            next_descriptor = os.open(
+            child = os.open(
                 part,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                 dir_fd=descriptor,
             )
-            os.close(descriptor)
-            descriptor = next_descriptor
+            previous = descriptor
+            descriptor = child
+            _require_closed(None, previous)
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise ValueError(f"{label} must be a directory")
         return descriptor
     except OSError as error:
-        os.close(descriptor)
-        raise ValueError(f"{label} must be a real directory") from error
-    except BaseException:
-        os.close(descriptor)
+        converted = ValueError(f"{label} must be a real directory")
+        _require_closed(converted, descriptor)
+        raise converted from error
+    except BaseException as error:
+        _require_closed(error, descriptor)
         raise
 
 
@@ -695,6 +768,7 @@ def _copy_asset(
         raise ValueError(f"scene asset must be a regular file: {name}") from error
     destination = -1
     created = False
+    primary = None
     try:
         before = os.fstat(source)
         if not stat.S_ISREG(before.st_mode):
@@ -741,23 +815,31 @@ def _copy_asset(
         return SnapshotFile(
             path=Path(name), byte_length=byte_length, sha256=source_hash.hexdigest()
         )
-    except BaseException:
+    except BaseException as caught:
+        primary = caught
         if created:
             try:
                 os.unlink(name, dir_fd=destination_directory)
                 os.fsync(destination_directory)
-            except OSError as error:
-                raise RuntimeError(f"asset cleanup failed: {name}") from error
+            except OSError as cleanup_error:
+                combined = _OperationCleanupError(
+                    f"asset cleanup failed: {name}",
+                    caught,
+                    (cleanup_error,),
+                )
+                primary = combined
+                raise combined from caught
         raise
     finally:
-        if destination >= 0:
-            os.close(destination)
-        os.close(source)
+        descriptors = (source,) if destination < 0 else (destination, source)
+        _require_closed(primary, *descriptors)
 
 
-def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
-    """Copy exactly the four immutable simulator assets to a new private sibling."""
-
+def _snapshot_scene_bundle_at(
+    scene_id: str,
+    private_sibling: Path,
+    private_root: int,
+) -> SceneBundle:
     scene_id = _require_scene_id(scene_id, "scene_id")
     if not isinstance(private_sibling, Path):
         raise ValueError("private snapshot root is invalid")
@@ -767,11 +849,11 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
     ):
         raise ValueError("private snapshot root cannot be package staging")
     source_root = _open_real_directory(SCENE_DATASET_ROOT, "scene dataset root")
-    private_root = _open_real_directory(private_sibling, "private snapshot root")
     scene_source = -1
     scene_destination = -1
     scene_created = False
     copied_names: list[str] = []
+    primary = None
     try:
         _require_private_snapshot_root(private_sibling, private_root)
         try:
@@ -812,27 +894,77 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
         os.fsync(scene_destination)
         os.fsync(private_root)
         return SceneBundle(scene_id=scene_id, files=MappingProxyType(files))
-    except BaseException:
+    except BaseException as caught:
+        primary = caught
         if scene_created:
-            try:
-                for name in reversed(copied_names):
+            cleanup_errors = []
+            for name in reversed(copied_names):
+                try:
                     os.unlink(name, dir_fd=scene_destination)
+                except OSError as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            try:
                 if scene_destination >= 0:
                     os.fsync(scene_destination)
-                    os.close(scene_destination)
-                    scene_destination = -1
+            except OSError as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            try:
                 os.rmdir(scene_id, dir_fd=private_root)
+            except OSError as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            try:
                 os.fsync(private_root)
-            except OSError as error:
-                raise RuntimeError(f"snapshot cleanup failed: {scene_id}") from error
+            except OSError as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                combined = _OperationCleanupError(
+                    f"snapshot cleanup failed: {scene_id}",
+                    caught,
+                    cleanup_errors,
+                )
+                primary = combined
+                raise combined from caught
         raise
     finally:
-        if scene_destination >= 0:
-            os.close(scene_destination)
-        if scene_source >= 0:
-            os.close(scene_source)
-        os.close(private_root)
-        os.close(source_root)
+        descriptors = tuple(
+            descriptor
+            for descriptor in (
+                scene_destination,
+                scene_source,
+                private_root,
+                source_root,
+            )
+            if descriptor >= 0
+        )
+        _require_closed(primary, *descriptors)
+
+
+def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
+    """Copy exactly the four immutable simulator assets to a private snapshot."""
+
+    if not isinstance(private_sibling, Path):
+        raise ValueError("private snapshot root is invalid")
+    if any(
+        _is_equal_or_descendant(private_sibling, forbidden)
+        for forbidden in (FINAL_PACKAGE_ROOT, SMOKE_PACKAGE_ROOT)
+    ):
+        raise ValueError("private snapshot root cannot be package staging")
+    private_root = _open_real_directory(private_sibling, "private snapshot root")
+    return _snapshot_scene_bundle_at(scene_id, private_sibling, private_root)
+
+
+def _snapshot_owned_scene_bundle(
+    scene_id: str,
+    snapshots: _OwnedDirectory,
+) -> SceneBundle:
+    _require_owned_directory_binding(snapshots)
+    bundle = _snapshot_scene_bundle_at(
+        scene_id,
+        snapshots.path,
+        os.dup(snapshots.descriptor),
+    )
+    _require_owned_directory_binding(snapshots)
+    return bundle
 
 
 class _QuaternionComponents(Protocol):
@@ -1455,6 +1587,16 @@ def replay_and_require_exact(
         target_origin_xz=tuple(float(value) for value in arrays.target_origin_xz),
     )
     for field in (
+        "ego_observed_mask",
+        "ego_free_mask",
+        "target_observed_mask",
+        "target_free_mask",
+    ):
+        if not np.array_equal(
+            getattr(arrays, field), getattr(evidence, field)
+        ) or not np.array_equal(getattr(arrays, field), getattr(oracle, field)):
+            raise ValueError(f"{field} differs from stored replay commitment")
+    for field in (
         "ego_semantic_grid",
         "ego_observed_mask",
         "ego_free_mask",
@@ -1713,9 +1855,9 @@ def build_manifest(
         "collection_id": "r2r-val-unseen-50-raw-v1",
         "cohort": {
             "cohort_id": "r2r-val-unseen-50-v1",
-            "cohort_jsonl_sha256": _COHORT_SHA256,
+            "cohort_jsonl": _source_json(sources.cohort_jsonl),
             "directory": COHORT_ROOT.as_posix(),
-            "manifest_sha256": _COHORT_MANIFEST_SHA256,
+            "manifest": _source_json(sources.cohort_manifest),
             "observation_count": 50,
             "scene_count": 11,
             "sealing_git_commit": _SEALING_COMMIT,
@@ -1778,7 +1920,7 @@ def build_manifest(
     return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
 
 
-def _read_source(path: str) -> SourceRecord:
+def _read_source_capture(path: str) -> tuple[SourceRecord, tuple[int, ...]]:
     source_path = PurePosixPath(path)
     if source_path.is_absolute() or not source_path.parts or any(
         part in ("", ".", "..") for part in source_path.parts
@@ -1788,6 +1930,7 @@ def _read_source(path: str) -> SourceRecord:
         ".",
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY,
     )
+    outer_error = None
     try:
         for part in source_path.parts[:-1]:
             child = os.open(
@@ -1795,8 +1938,9 @@ def _read_source(path: str) -> SourceRecord:
                 os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=directory,
             )
-            os.close(directory)
+            previous = directory
             directory = child
+            _require_closed(None, previous)
         leaf = source_path.parts[-1]
         before = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
         descriptor = os.open(
@@ -1804,6 +1948,7 @@ def _read_source(path: str) -> SourceRecord:
             os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
             dir_fd=directory,
         )
+        read_error = None
         try:
             opened = os.fstat(descriptor)
             if (
@@ -1818,13 +1963,21 @@ def _read_source(path: str) -> SourceRecord:
                     break
                 chunks.append(chunk)
             opened_after = os.fstat(descriptor)
+        except BaseException as caught:
+            read_error = caught
+            raise
         finally:
-            os.close(descriptor)
+            _require_closed(read_error, descriptor)
         after = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
     except OSError as error:
-        raise ValueError(f"source must be a stable regular file: {path}") from error
+        converted = ValueError(f"source must be a stable regular file: {path}")
+        outer_error = converted
+        raise converted from error
+    except BaseException as error:
+        outer_error = error
+        raise
     finally:
-        os.close(directory)
+        _require_closed(outer_error, directory)
     data = b"".join(chunks)
 
     def fingerprint(value: os.stat_result) -> tuple[int, ...]:
@@ -1847,58 +2000,55 @@ def _read_source(path: str) -> SourceRecord:
         or fingerprint(opened_after) != fingerprint(after)
     ):
         raise ValueError(f"source changed while read: {path}")
-    return SourceRecord(path=path, data=data)
+    return SourceRecord(path=path, data=data), fingerprint(opened_after)
 
 
-def _capture_sources() -> ManifestSources:
+def _read_source(path: str) -> SourceRecord:
+    return _read_source_capture(path)[0]
+
+
+def _capture_source_state() -> _SourceCaptureState:
     asset_role_path = Path(_SOURCE_PATHS["asset_roles"])
     if not asset_role_path.exists():
         raise FileNotFoundError(
             "tracked rgbd_segmenter_asset_roles.json is required for full collection"
         )
+    captures = {
+        name: _read_source_capture(path) for name, path in _SOURCE_PATHS.items()
+    }
+    expected_hashes = {
+        "cohort_manifest": _COHORT_MANIFEST_SHA256,
+        "cohort_jsonl": _COHORT_SHA256,
+        "evidence_manifest": _EVIDENCE_MANIFEST_SHA256,
+        "evidence_index": _EVIDENCE_INDEX_SHA256,
+        "raw_split": _RAW_SPLIT_SHA256,
+    }
+    for name, expected_hash in expected_hashes.items():
+        if captures[name][0].sha256 != expected_hash:
+            raise ValueError(f"{name} differs from its frozen source commitment")
     sources = ManifestSources(
-        collector_source=_read_source(_SOURCE_PATHS["collector_source"]),
-        package_source=_read_source(_SOURCE_PATHS["package_source"]),
-        asset_roles=_read_source(_SOURCE_PATHS["asset_roles"]),
-        cohort_manifest=SourceRecord(
-            path=_SOURCE_PATHS["cohort_manifest"],
-            data=strict_read_bytes(
-                COHORT_ROOT / "manifest.json",
-                _COHORT_MANIFEST_SHA256,
-                "cohort manifest",
-            ),
-        ),
-        cohort_jsonl=SourceRecord(
-            path=_SOURCE_PATHS["cohort_jsonl"],
-            data=strict_read_bytes(
-                COHORT_ROOT / "cohort.jsonl", _COHORT_SHA256, "cohort JSONL"
-            ),
-        ),
-        evidence_manifest=SourceRecord(
-            path=_SOURCE_PATHS["evidence_manifest"],
-            data=strict_read_bytes(
-                ORACLE_ARTIFACT_ROOT / "manifest.json",
-                _EVIDENCE_MANIFEST_SHA256,
-                "evidence manifest",
-            ),
-        ),
-        evidence_index=SourceRecord(
-            path=_SOURCE_PATHS["evidence_index"],
-            data=strict_read_bytes(
-                ORACLE_ARTIFACT_ROOT / "index.jsonl",
-                _EVIDENCE_INDEX_SHA256,
-                "evidence index",
-            ),
-        ),
-        raw_split=SourceRecord(
-            path=_SOURCE_PATHS["raw_split"],
-            data=strict_read_bytes(RAW_SPLIT_PATH, _RAW_SPLIT_SHA256, "raw split"),
-        ),
-        projector_source=_read_source(_SOURCE_PATHS["projector_source"]),
-        mapping_source=_read_source(_SOURCE_PATHS["mapping_source"]),
+        collector_source=captures["collector_source"][0],
+        package_source=captures["package_source"][0],
+        asset_roles=captures["asset_roles"][0],
+        cohort_manifest=captures["cohort_manifest"][0],
+        cohort_jsonl=captures["cohort_jsonl"][0],
+        evidence_manifest=captures["evidence_manifest"][0],
+        evidence_index=captures["evidence_index"][0],
+        raw_split=captures["raw_split"][0],
+        projector_source=captures["projector_source"][0],
+        mapping_source=captures["mapping_source"][0],
     )
     _require_manifest_sources(sources)
-    return sources
+    return _SourceCaptureState(
+        sources=sources,
+        fingerprints=MappingProxyType(
+            {name: capture[1] for name, capture in captures.items()}
+        ),
+    )
+
+
+def _capture_sources() -> ManifestSources:
+    return _capture_source_state().sources
 
 
 def _git_head() -> str:
@@ -1911,6 +2061,17 @@ def _git_head() -> str:
     if re.fullmatch(r"[0-9a-f]{40}", result) is None:
         raise RuntimeError("Git HEAD is not a full lowercase commit")
     return result
+
+
+def _require_clean_git() -> str:
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    if status:
+        raise RuntimeError("Git worktree and index must be clean")
+    return _git_head()
 
 
 def _capture_attempt_state() -> tuple[str, ManifestSources, EnvironmentCapture]:
@@ -1931,6 +2092,83 @@ def _require_bundle_unchanged(bundle: SceneBundle) -> None:
             record.sha256,
             f"{role} original",
         )
+
+
+def _require_owned_directory_binding(owned: _OwnedDirectory) -> _EntryFingerprint:
+    accepted = _fingerprint(os.fstat(owned.descriptor))
+    current = os.stat(
+        owned.name,
+        dir_fd=owned.parent_descriptor,
+        follow_symlinks=False,
+    )
+    if (
+        not stat.S_ISDIR(accepted.st_mode)
+        or accepted.st_dev != owned.fingerprint.st_dev
+        or accepted.st_ino != owned.fingerprint.st_ino
+        or not _same_directory_identity(owned.fingerprint, current)
+    ):
+        raise RuntimeError(f"owned directory binding changed: {owned.name}")
+    return accepted
+
+
+def _require_owned_bundle_unchanged(
+    snapshots: _OwnedDirectory,
+    bundle: SceneBundle,
+    expected_state: _SceneSnapshotState | None = None,
+) -> _SceneSnapshotState:
+    names = {
+        "glb": f"{bundle.scene_id}.glb",
+        "house": f"{bundle.scene_id}.house",
+        "navmesh": f"{bundle.scene_id}.navmesh",
+        "semantic_ply": f"{bundle.scene_id}_semantic.ply",
+    }
+    scene_descriptor = os.open(
+        bundle.scene_id,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=snapshots.descriptor,
+    )
+    error = None
+    try:
+        directory = _fingerprint(os.fstat(scene_descriptor))
+        parent_entry = _fingerprint(
+            os.stat(
+                bundle.scene_id,
+                dir_fd=snapshots.descriptor,
+                follow_symlinks=False,
+            )
+        )
+        if directory != parent_entry or not stat.S_ISDIR(directory.st_mode):
+            raise RuntimeError("snapshot scene directory binding changed")
+        if set(os.listdir(scene_descriptor)) != set(names.values()):
+            raise RuntimeError("snapshot scene entries changed")
+        fingerprints = {}
+        for role, record in bundle.files.items():
+            accepted, fingerprint = _strict_read_at(
+                snapshots.descriptor,
+                f"{bundle.scene_id}/{names[role]}",
+                expected=FileRecord(record.byte_length, record.sha256),
+                label=f"{role} snapshot",
+            )
+            if len(accepted) != record.byte_length:
+                raise ValueError(f"{role} snapshot byte length changed")
+            fingerprints[role] = fingerprint
+            strict_read_bytes(
+                SCENE_DATASET_ROOT / bundle.scene_id / names[role],
+                record.sha256,
+                f"{role} original",
+            )
+        state = _SceneSnapshotState(
+            directory=directory,
+            files=MappingProxyType(fingerprints),
+        )
+        if expected_state is not None and state != expected_state:
+            raise RuntimeError("snapshot scene metadata changed during Habitat lifetime")
+        return state
+    except BaseException as caught:
+        error = caught
+        raise
+    finally:
+        _require_closed(error, scene_descriptor)
 
 
 def _close_and_require_bundle_unchanged(
@@ -1972,6 +2210,162 @@ def _require_original_asset_commitments(
             )
             if len(accepted) != record.byte_length:
                 raise ValueError(f"{role} committed original byte length differs")
+
+
+def _manifest_scene_commitments(
+    manifest: Mapping[str, object],
+) -> Mapping[str, SceneAssetCommitment]:
+    scene_assets = cast(Mapping[str, object], manifest["scene_assets"])
+    raw_scenes = cast(Mapping[str, object], scene_assets["scenes"])
+    commitments = {}
+    for scene_id, raw_commitment in raw_scenes.items():
+        commitment = cast(Mapping[str, object], raw_commitment)
+        raw_files = cast(Mapping[str, object], commitment["files"])
+        files = {
+            role: SceneAssetFile(
+                path=cast(str, cast(Mapping[str, object], value)["path"]),
+                required=cast(bool, cast(Mapping[str, object], value)["required"]),
+                byte_length=cast(
+                    int, cast(Mapping[str, object], value)["byte_length"]
+                ),
+                sha256=cast(str, cast(Mapping[str, object], value)["sha256"]),
+            )
+            for role, value in raw_files.items()
+        }
+        accepted = SceneAssetCommitment.from_files(files)
+        if accepted.bundle_sha256 != commitment["bundle_sha256"]:
+            raise ValueError("scene bundle commitment differs from its files")
+        commitments[scene_id] = accepted
+    return commitments
+
+
+def _require_external_sources(
+    manifest: Mapping[str, object],
+    sources: ManifestSources,
+) -> None:
+    collection = cast(Mapping[str, object], manifest["collection"])
+    evidence = cast(Mapping[str, object], manifest["evidence"])
+    expected = {
+        "collector_source": _source_json(sources.collector_source),
+        "package_source": _source_json(sources.package_source),
+        "asset_roles": _source_json(sources.asset_roles),
+    }
+    for name, record in expected.items():
+        if collection[name] != record:
+            raise ValueError(f"manifest {name} differs from current source")
+    evidence_expected = {
+        "manifest": _source_json(sources.evidence_manifest),
+        "index": _source_json(sources.evidence_index),
+        "raw_split": _source_json(sources.raw_split),
+        "projector_source": _source_json(sources.projector_source),
+        "mapping_source": _source_json(sources.mapping_source),
+    }
+    for name, record in evidence_expected.items():
+        if evidence[name] != record:
+            raise ValueError(f"manifest evidence {name} differs from current source")
+    if evidence["mapping_sha256"] != _mapping_sha256():
+        raise ValueError("manifest mapping commitment differs from current mapping")
+    cohort = cast(Mapping[str, object], manifest["cohort"])
+    if (
+        cohort["manifest"] != _source_json(sources.cohort_manifest)
+        or cohort["cohort_jsonl"] != _source_json(sources.cohort_jsonl)
+    ):
+        raise ValueError("manifest cohort commitment differs from current cohort")
+
+
+def _validate_external_raw_frame_directory(
+    root: Path,
+    *,
+    expected_git_commit: str,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> None:
+    """Reconstruct and replay every external commitment without mutation."""
+
+    global _FRESH_VALIDATION_IDENTITY
+    if expected_root_identity is None and _FRESH_VALIDATION_IDENTITY is not None:
+        expected_root_identity = _FRESH_VALIDATION_IDENTITY
+        _FRESH_VALIDATION_IDENTITY = None
+    parent_descriptor, root_descriptor, root_name = _open_package_root(root)
+    try:
+        opened_root = _fingerprint(os.fstat(root_descriptor))
+        if expected_root_identity is not None and (
+            opened_root.st_dev,
+            opened_root.st_ino,
+        ) != expected_root_identity:
+            raise ValueError("raw-frame root identity differs from publisher")
+        manifest_bytes, manifest_fingerprint = _read_manifest_at(root_descriptor)
+        manifest = _parse_manifest_bytes(manifest_bytes)
+        collection = cast(Mapping[str, object], manifest["collection"])
+        if collection["git_commit"] != expected_git_commit:
+            raise ValueError("manifest producer commit differs from expected commit")
+        inputs = load_collection_inputs()
+        initial_source_state = _capture_source_state()
+        initial_sources = initial_source_state.sources
+        _require_external_sources(manifest, initial_sources)
+        initial_environment = capture_environment()
+        if _environment_json(initial_environment) != manifest["environment"]:
+            raise ValueError("manifest environment differs from current environment")
+        scene_assets = _manifest_scene_commitments(manifest)
+        if tuple(scene_assets) != inputs.scenes:
+            raise ValueError("manifest scene set differs from sealed cohort")
+        _require_original_asset_commitments(scene_assets)
+        ordinal = 0
+
+        def replay_row(row: IndexRow, arrays: RawFrameArrays) -> None:
+            nonlocal ordinal
+            observation = inputs.observations[ordinal]
+            expected_artifact = (
+                f"observations/{observation.scene_id}/"
+                f"{ordinal:02d}-{observation.observation_id}.npz"
+            )
+            if (
+                row.ordinal != ordinal
+                or row.observation_id != observation.observation_id
+                or row.scene_id != observation.scene_id
+                or row.oracle_artifact_sha256 != observation.artifact_sha256
+                or row.cohort_row_sha256 != observation.cohort_row_sha256
+                or row.artifact != expected_artifact
+            ):
+                raise ValueError(
+                    "index row differs from independently sealed observation"
+                )
+            oracle = load_pinned_oracle_after_render(observation)
+            replay_and_require_exact(arrays, observation, oracle)
+            ordinal += 1
+
+        snapshot = _validate_raw_frame_descriptor_structural(
+            root_descriptor,
+            expected_manifest=manifest_bytes,
+            on_row=replay_row,
+            expected_root_identity=expected_root_identity,
+            accepted_manifest=(manifest_bytes, manifest_fingerprint),
+        )
+        if snapshot.root != opened_root:
+            raise ValueError("raw-frame root changed during external validation")
+        if ordinal != 50:
+            raise ValueError("external replay did not accept all 50 observations")
+        _require_original_asset_commitments(scene_assets)
+        final_source_state = _capture_source_state()
+        final_sources = final_source_state.sources
+        _require_external_sources(manifest, final_sources)
+        if (
+            final_sources != initial_sources
+            or final_source_state.fingerprints
+            != initial_source_state.fingerprints
+        ):
+            raise ValueError("collection sources changed during external validation")
+        final_environment = capture_environment()
+        if (
+            final_environment != initial_environment
+            or _environment_json(final_environment) != manifest["environment"]
+        ):
+            raise ValueError("environment or GPU changed during external validation")
+        _recapture_package_descriptor(root_descriptor, snapshot)
+        _require_root_path_binding(parent_descriptor, root_name, snapshot.root)
+    except BaseException as error:
+        _require_closed(error, root_descriptor, parent_descriptor)
+        raise
+    _require_closed(None, root_descriptor, parent_descriptor)
 
 
 def _absolute_lexical_path(path: Path) -> Path:
@@ -2032,10 +2426,115 @@ def _require_private_collection_roots(
         raise FileExistsError("collection attempt and snapshot roots must be absent")
 
 
-def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
+def _open_or_create_directory_at(
+    root_descriptor: int,
+    parts: Sequence[str],
+) -> int:
+    descriptor = os.dup(root_descriptor)
+    error = None
+    try:
+        for part in parts:
+            if not part or part in {".", ".."} or "/" in part:
+                raise ValueError("package directory path is not canonical")
+            try:
+                os.mkdir(part, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            child = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            previous = descriptor
+            descriptor = child
+            _require_closed(None, previous)
+        return descriptor
+    except BaseException as caught:
+        error = caught
+        _require_closed(error, descriptor)
+        raise
+
+
+def _write_exclusive_at(
+    root_descriptor: int,
+    relative: PurePosixPath,
+    data: bytes,
+) -> None:
+    directory = _open_or_create_directory_at(
+        root_descriptor, relative.parts[:-1]
+    )
+    descriptor = -1
+    error = None
+    try:
+        descriptor = os.open(
+            relative.parts[-1],
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory,
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("new package entry is not a regular file")
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("package write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    except BaseException as caught:
+        error = caught
+        raise
+    finally:
+        descriptors = (directory,) if descriptor < 0 else (descriptor, directory)
+        _require_closed(error, *descriptors)
+
+
+def _fsync_directories_postorder(descriptor: int) -> None:
+    for name in sorted(os.listdir(descriptor)):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            error = None
+            try:
+                if _fingerprint(metadata) != _fingerprint(os.fstat(child)):
+                    raise RuntimeError(
+                        "package directory changed during durability walk"
+                    )
+                _fsync_directories_postorder(child)
+            except BaseException as caught:
+                error = caught
+                raise
+            finally:
+                _require_closed(error, child)
+        elif not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("package durability walk found a non-regular entry")
+    os.fsync(descriptor)
+
+
+def collect_attempt(
+    attempt: _OwnedDirectory,
+    snapshots: _OwnedDirectory,
+) -> _CollectedAttempt:
     """Collect all sealed rows into one unpublished private attempt."""
 
-    _require_private_collection_roots(attempt_root, snapshot_root)
+    if (
+        not _same_directory_identity(
+            attempt.fingerprint, os.fstat(attempt.descriptor)
+        )
+        or not _same_directory_identity(
+            snapshots.fingerprint, os.fstat(snapshots.descriptor)
+        )
+    ):
+        raise RuntimeError("publisher-owned collection roots changed")
     initial_state = _capture_attempt_state()
     inputs = load_collection_inputs()
     grouped = [
@@ -2049,15 +2548,24 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
     rows = []
     scene_assets = {}
     try:
-        attempt_root.mkdir(mode=0o700, parents=False)
-        snapshot_root.mkdir(mode=0o700, parents=False)
         ordinal = 0
         for scene_id, observations in grouped:
-            bundle = snapshot_scene_bundle(scene_id, snapshot_root)
+            _require_owned_directory_binding(snapshots)
+            bundle = _snapshot_owned_scene_bundle(scene_id, snapshots)
+            quiescent_snapshot = _require_owned_directory_binding(snapshots)
+            quiescent_scene = _require_owned_bundle_unchanged(snapshots, bundle)
             scene_assets[scene_id] = _scene_commitment(bundle)
             simulator = None
+            scene_error = None
             try:
+                if _require_owned_directory_binding(snapshots) != quiescent_snapshot:
+                    raise RuntimeError("snapshot root changed before Habitat build")
                 simulator = build_scene_simulator(bundle)
+                _require_owned_bundle_unchanged(
+                    snapshots, bundle, quiescent_scene
+                )
+                if _require_owned_directory_binding(snapshots) != quiescent_snapshot:
+                    raise RuntimeError("snapshot root changed during Habitat build")
                 for observation in observations:
                     arrays = render_raw_frame_artifact(simulator, observation)
                     encoded = encode_raw_frame_npz(arrays)
@@ -2066,15 +2574,20 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
                         / scene_id
                         / f"{ordinal:02d}-{observation.observation_id}.npz"
                     )
-                    artifact = attempt_root / relative
-                    artifact.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    artifact.write_bytes(encoded.data)
+                    _write_exclusive_at(
+                        attempt.descriptor,
+                        PurePosixPath(relative.as_posix()),
+                        encoded.data,
+                    )
                     npz_record = FileRecord(
                         byte_length=len(encoded.data),
                         sha256=hashlib.sha256(encoded.data).hexdigest(),
                     )
-                    accepted = strict_read_bytes(
-                        artifact, npz_record.sha256, "raw-frame artifact"
+                    accepted, _ = _strict_read_at(
+                        attempt.descriptor,
+                        relative.as_posix(),
+                        expected=npz_record,
+                        label="raw-frame artifact",
                     )
                     parsed = parse_raw_frame_npz_bytes(
                         accepted,
@@ -2096,17 +2609,45 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
                         )
                     )
                     ordinal += 1
-            finally:
-                if simulator is None:
-                    _require_bundle_unchanged(bundle)
-                else:
-                    _close_and_require_bundle_unchanged(simulator, bundle)
+            except BaseException as caught:
+                scene_error = caught
+            secondary_failures = []
+            if simulator is not None:
+                try:
+                    simulator.close()
+                except BaseException as caught:
+                    secondary_failures.append(caught)
+            try:
+                _require_owned_bundle_unchanged(
+                    snapshots, bundle, quiescent_scene
+                )
+            except BaseException as caught:
+                secondary_failures.append(caught)
+            try:
+                current_snapshot = _require_owned_directory_binding(snapshots)
+                if current_snapshot != quiescent_snapshot:
+                    raise RuntimeError(
+                        "snapshot root changed during Habitat lifetime"
+                    )
+            except BaseException as caught:
+                secondary_failures.append(caught)
+            if secondary_failures:
+                detail = "; ".join(str(error) for error in secondary_failures)
+                raise RuntimeError(
+                    f"scene finalization failed: {detail}"
+                ) from scene_error
+            if scene_error is not None:
+                raise scene_error
         if len(rows) != 50 or _capture_attempt_state() != initial_state:
             raise ValueError("collection commit, sources, environment, or GPU changed")
         _require_original_asset_commitments(scene_assets)
-        shutil.rmtree(snapshot_root)
+        _remove_owned_root(snapshots)
         index_bytes = canonical_index_bytes(rows)
-        (attempt_root / "index.jsonl").write_bytes(index_bytes)
+        _write_exclusive_at(
+            attempt.descriptor,
+            PurePosixPath("index.jsonl"),
+            index_bytes,
+        )
         git_commit, sources, environment = initial_state
         manifest = build_manifest(
             git_commit=git_commit,
@@ -2116,19 +2657,24 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
             index_bytes=index_bytes,
             rows=rows,
         )
-        (attempt_root / "manifest.json").write_bytes(manifest)
-        validate_raw_frame_directory(
-            attempt_root,
+        _write_exclusive_at(
+            attempt.descriptor,
+            PurePosixPath("manifest.json"),
+            manifest,
+        )
+        _fsync_directories_postorder(attempt.descriptor)
+        structural_snapshot = _validate_raw_frame_descriptor_structural(
+            attempt.descriptor,
             expected_manifest=manifest,
+            expected_root_identity=(
+                attempt.fingerprint.st_dev,
+                attempt.fingerprint.st_ino,
+            ),
         )
         if _capture_attempt_state() != initial_state:
             raise ValueError("collection commit, sources, environment, or GPU changed")
-        return manifest
+        return _CollectedAttempt(manifest, structural_snapshot)
     except BaseException:
-        if attempt_root.exists():
-            shutil.rmtree(attempt_root)
-        if snapshot_root.exists():
-            shutil.rmtree(snapshot_root)
         raise
 
 
@@ -2462,8 +3008,395 @@ def run_first_per_scene_smoke() -> bytes:
         _cleanup_smoke_paths(staging, snapshots)
 
 
+def _open_publication_parent() -> int:
+    roots = (
+        FINAL_PACKAGE_ROOT,
+        STAGING_PACKAGE_ROOT,
+        SNAPSHOT_PACKAGE_ROOT,
+        SMOKE_PACKAGE_ROOT,
+    )
+    if any(
+        not isinstance(root, Path)
+        or any(part in {"", ".", ".."} for part in root.parts)
+        for root in roots
+    ):
+        raise ValueError("fixed publication roots are not canonical")
+    absolute_parents = {
+        _absolute_lexical_path(root).parent for root in roots
+    }
+    if len(absolute_parents) != 1:
+        raise ValueError("fixed publication roots must be siblings")
+    parent = absolute_parents.pop()
+    grandparent, descriptor, _ = _open_package_root(parent)
+    try:
+        _require_closed(None, grandparent)
+    except BaseException as error:
+        _require_closed(error, descriptor)
+        raise
+    return descriptor
+
+
+def _require_absent_at(parent_descriptor: int, name: str) -> None:
+    try:
+        os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise FileExistsError(f"fixed publication root already exists: {name}")
+
+
+def _remove_tree_contents(descriptor: int) -> None:
+    for name in os.listdir(descriptor):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            error = None
+            try:
+                child_fingerprint = _fingerprint(os.fstat(child))
+                if _fingerprint(metadata) != child_fingerprint:
+                    raise RuntimeError("owned cleanup entry changed while opening")
+                _remove_tree_contents(child)
+                current = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not _same_directory_identity(child_fingerprint, os.fstat(child))
+                    or not _same_directory_identity(child_fingerprint, current)
+                ):
+                    raise RuntimeError("owned cleanup directory was replaced")
+                os.rmdir(name, dir_fd=descriptor)
+            except BaseException as caught:
+                error = caught
+                raise
+            finally:
+                _require_closed(error, child)
+        else:
+            if stat.S_ISLNK(metadata.st_mode):
+                current = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if _fingerprint(current) != _fingerprint(metadata):
+                    raise RuntimeError("owned cleanup symbolic link was replaced")
+                os.unlink(name, dir_fd=descriptor)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError("owned cleanup found an unexpected entry type")
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            error = None
+            try:
+                child_fingerprint = _fingerprint(os.fstat(child))
+                current = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    _fingerprint(metadata) != child_fingerprint
+                    or _fingerprint(current) != child_fingerprint
+                ):
+                    raise RuntimeError("owned cleanup file was replaced")
+                os.unlink(name, dir_fd=descriptor)
+            except BaseException as caught:
+                error = caught
+                raise
+            finally:
+                _require_closed(error, child)
+
+
+def _create_owned_directory(
+    parent_descriptor: int,
+    path: Path,
+) -> _OwnedDirectory:
+    os.mkdir(path.name, 0o700, dir_fd=parent_descriptor)
+    descriptor = -1
+    fingerprint = None
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        fingerprint = _fingerprint(os.fstat(descriptor))
+        metadata = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if _fingerprint(metadata) != fingerprint:
+            raise RuntimeError("owned directory changed while being created")
+    except BaseException as error:
+        if fingerprint is None:
+            failures = _close_many(descriptor) if descriptor >= 0 else ()
+            detail = "; ".join(str(item) for item in failures)
+            raise RuntimeError(
+                "owned directory creation failed before its cleanup token "
+                f"was trustworthy; root preserved{': ' + detail if detail else ''}"
+            ) from error
+        owned = _OwnedDirectory(
+            path=path,
+            name=path.name,
+            parent_descriptor=parent_descriptor,
+            descriptor=descriptor,
+            fingerprint=fingerprint,
+        )
+        try:
+            _remove_owned_root(owned)
+        except BaseException as cleanup_error:
+            raise RuntimeError(
+                f"owned directory creation and cleanup failed: {cleanup_error}"
+            ) from error
+        raise
+    return _OwnedDirectory(
+        path=path,
+        name=path.name,
+        parent_descriptor=parent_descriptor,
+        descriptor=descriptor,
+        fingerprint=fingerprint,
+    )
+
+
+def _remove_owned_root(owned: _OwnedDirectory) -> None:
+    if owned.descriptor < 0:
+        return
+    try:
+        initial = os.stat(
+            owned.name,
+            dir_fd=owned.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        descriptor = owned.descriptor
+        owned.descriptor = -1
+        _require_closed(None, descriptor)
+        return
+    error = None
+    try:
+        if not _same_directory_identity(
+            owned.fingerprint, os.fstat(owned.descriptor)
+        ):
+            raise RuntimeError(f"owned cleanup descriptor changed: {owned.name}")
+        if not _same_directory_identity(owned.fingerprint, initial):
+            raise RuntimeError(f"owned cleanup root was replaced: {owned.name}")
+        _remove_tree_contents(owned.descriptor)
+        metadata = os.stat(
+            owned.name,
+            dir_fd=owned.parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not _same_directory_identity(owned.fingerprint, metadata):
+            raise RuntimeError(f"owned cleanup root was replaced: {owned.name}")
+        os.rmdir(owned.name, dir_fd=owned.parent_descriptor)
+    except BaseException as caught:
+        error = caught
+    descriptor = owned.descriptor
+    owned.descriptor = -1
+    _require_closed(error, descriptor)
+    if error is not None:
+        raise error
+
+
+def _rename_noreplace(
+    parent_descriptor: int,
+    source: str,
+    destination: str,
+) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    renameat2 = library.renameat2
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        parent_descriptor,
+        os.fsencode(source),
+        parent_descriptor,
+        os.fsencode(destination),
+        1,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError("final raw-frame package already exists")
+        raise OSError(error_number, os.strerror(error_number))
+
+
+_FRESH_VALIDATION_IDENTITY: tuple[int, int] | None = None
+
+
+def _run_fresh_validation(
+    root: str,
+    expected_git_commit: str,
+    device: str,
+    inode: str,
+) -> None:
+    global _FRESH_VALIDATION_IDENTITY
+    if _FRESH_VALIDATION_IDENTITY is not None:
+        raise RuntimeError("fresh validation identity channel is already occupied")
+    _FRESH_VALIDATION_IDENTITY = (int(device), int(inode))
+    from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
+        validate_raw_frame_directory,
+    )
+
+    validate_raw_frame_directory(
+        Path(root),
+        expected_git_commit=expected_git_commit,
+    )
+    if _FRESH_VALIDATION_IDENTITY is not None:
+        raise RuntimeError("fresh validation did not consume its identity proof")
+
+
+def _fresh_validate_subprocess(
+    root: Path,
+    expected_git_commit: str,
+    identity: tuple[int, int],
+) -> None:
+    command = (
+        "from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames "
+        "import _run_fresh_validation as run;"
+        "import sys;"
+        "run(*sys.argv[1:])"
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            command,
+            root.as_posix(),
+            expected_git_commit,
+            str(identity[0]),
+            str(identity[1]),
+        ],
+        check=True,
+    )
+
+
 class RawFrameArgs(Tap):
     smoke: Literal["none", "first-row", "first-per-scene"] = "none"
+
+
+def publish_raw_frame_directory() -> bytes:
+    """Build, independently validate, and atomically publish the fixed package."""
+
+    parent_descriptor = _open_publication_parent()
+    staging = None
+    snapshots = None
+    renamed = False
+    publication_error = None
+    staging_name = STAGING_PACKAGE_ROOT.name
+    snapshot_name = SNAPSHOT_PACKAGE_ROOT.name
+    final_name = FINAL_PACKAGE_ROOT.name
+    smoke_name = SMOKE_PACKAGE_ROOT.name
+    try:
+        for name in (final_name, staging_name, snapshot_name, smoke_name):
+            _require_absent_at(parent_descriptor, name)
+        initial_head = _require_clean_git()
+        initial_sources = _capture_source_state()
+        initial_environment = capture_environment()
+        staging = _create_owned_directory(
+            parent_descriptor, STAGING_PACKAGE_ROOT
+        )
+        snapshots = _create_owned_directory(
+            parent_descriptor, SNAPSHOT_PACKAGE_ROOT
+        )
+        collected = collect_attempt(staging, snapshots)
+        manifest_bytes = collected.manifest
+        staging_identity = (
+            staging.fingerprint.st_dev,
+            staging.fingerprint.st_ino,
+        )
+        _fresh_validate_subprocess(
+            STAGING_PACKAGE_ROOT,
+            initial_head,
+            staging_identity,
+        )
+        if _require_clean_git() != initial_head:
+            raise RuntimeError("Git HEAD changed during publication")
+        final_sources = _capture_source_state()
+        if final_sources != initial_sources:
+            raise RuntimeError("sources changed during publication")
+        final_environment = capture_environment()
+        if final_environment != initial_environment:
+            raise RuntimeError("environment or GPU changed during publication")
+        manifest = _parse_manifest_bytes(manifest_bytes)
+        _require_external_sources(manifest, final_sources.sources)
+        if _environment_json(final_environment) != manifest["environment"]:
+            raise RuntimeError("staging environment differs during publication")
+        _require_original_asset_commitments(
+            _manifest_scene_commitments(manifest)
+        )
+        _require_absent_at(parent_descriptor, final_name)
+        _require_absent_at(parent_descriptor, smoke_name)
+        if not _same_directory_identity(
+            staging.fingerprint, os.fstat(staging.descriptor)
+        ):
+            raise RuntimeError("staging root was replaced after validation")
+        _recapture_package_descriptor(
+            staging.descriptor,
+            collected.structural_snapshot,
+        )
+        _require_root_path_binding(
+            parent_descriptor,
+            staging_name,
+            collected.structural_snapshot.root,
+        )
+        _rename_noreplace(parent_descriptor, staging_name, final_name)
+        renamed = True
+        final_metadata = os.stat(
+            final_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not _same_directory_identity(staging.fingerprint, final_metadata):
+            raise RuntimeError("published final root identity differs from staging")
+        os.fsync(parent_descriptor)
+        descriptor = staging.descriptor
+        staging.descriptor = -1
+        _require_closed(None, descriptor)
+        return manifest_bytes
+    except BaseException as error:
+        publication_error = error
+        cleanup_failures = []
+        if renamed and staging is not None and staging.descriptor >= 0:
+            descriptor = staging.descriptor
+            staging.descriptor = -1
+            try:
+                _require_closed(None, descriptor)
+            except BaseException as cleanup_error:
+                cleanup_failures.append(cleanup_error)
+        elif not renamed:
+            for owned in (staging, snapshots):
+                if owned is None:
+                    continue
+                try:
+                    _remove_owned_root(owned)
+                except BaseException as cleanup_error:
+                    cleanup_failures.append(cleanup_error)
+        if cleanup_failures:
+            combined = _OperationCleanupError(
+                "publication failed and owned cleanup also failed",
+                error,
+                cleanup_failures,
+            )
+            publication_error = combined
+            raise combined from error
+        raise
+    finally:
+        _require_closed(publication_error, parent_descriptor)
 
 
 def main(argv: Sequence[str] | None = None) -> bytes:
@@ -2472,7 +3405,7 @@ def main(argv: Sequence[str] | None = None) -> bytes:
         return run_first_row_smoke()
     if args.smoke == "first-per-scene":
         return run_first_per_scene_smoke()
-    raise ValueError("full raw-frame collection is not implemented yet")
+    return publish_raw_frame_directory()
 
 
 if __name__ == "__main__":

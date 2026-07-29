@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import platform
 import stat
 import struct
@@ -11,6 +12,7 @@ import zlib
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional, Union
 
 import numpy as np
 import pytest
@@ -24,12 +26,12 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     IndexRow,
     RawFrameArrays,
     SourceRecord,
+    _validate_raw_frame_directory_structural,
     canonical_index_bytes,
     encode_raw_frame_npz,
     parse_index_bytes,
     parse_raw_frame_npz_bytes,
     tree_aggregate,
-    validate_raw_frame_directory,
 )
 
 
@@ -504,4 +506,107 @@ def test_internal_directory_validator_rejects_manifest_schema_mutation(
     (root / "manifest.json").write_bytes(mutated)
 
     with pytest.raises(ValueError, match="manifest"):
-        validate_raw_frame_directory(root, expected_manifest=mutated)
+        _validate_raw_frame_directory_structural(root, expected_manifest=mutated)
+
+
+def test_descriptor_cleanup_attempts_every_owned_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    calls = []
+
+    def fail(descriptor: int) -> None:
+        calls.append(descriptor)
+        raise OSError(f"close {descriptor}")
+
+    monkeypatch.setattr(package.os, "close", fail)
+
+    with pytest.raises(RuntimeError, match="close 11.*close 12"):
+        package._require_closed(None, 11, 12)
+
+    assert calls == [11, 12]
+
+
+def test_strict_read_preserves_read_and_leaf_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    leaf = tmp_path / "leaf"
+    leaf.write_bytes(b"data")
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_open = package.os.open
+    real_close = package.os.close
+    leaf_descriptors = set()
+
+    def tracked_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "leaf":
+            leaf_descriptors.add(descriptor)
+        return descriptor
+
+    def fail_read(_descriptor: int, _size: int) -> bytes:
+        raise OSError("read primary")
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor in leaf_descriptors:
+            raise OSError("leaf close")
+
+    monkeypatch.setattr(package.os, "open", tracked_open)
+    monkeypatch.setattr(package.os, "read", fail_read)
+    monkeypatch.setattr(package.os, "close", close_then_fail)
+    try:
+        with pytest.raises(package._DescriptorCleanupError) as caught:
+            package._strict_read_at(root, "leaf", expected=None, label="leaf")
+    finally:
+        real_close(root)
+
+    assert isinstance(caught.value.primary, ValueError)
+    assert [str(error) for error in caught.value.failures] == ["leaf close"]
+
+
+def test_tree_walk_preserves_recursive_and_child_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    child = tmp_path / "child"
+    child.mkdir()
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    child_fd = os.open(child, os.O_RDONLY | os.O_DIRECTORY)
+    child_identity = os.fstat(child_fd).st_ino
+    os.close(child_fd)
+    real_listdir = package.os.listdir
+    real_close = package.os.close
+
+    def fail_child_listdir(descriptor: int) -> list[str]:
+        if os.fstat(descriptor).st_ino == child_identity:
+            raise RuntimeError("walk primary")
+        return real_listdir(descriptor)
+
+    def close_then_fail(descriptor: int) -> None:
+        is_child = os.fstat(descriptor).st_ino == child_identity
+        real_close(descriptor)
+        if is_child:
+            raise OSError("child close")
+
+    monkeypatch.setattr(package.os, "listdir", fail_child_listdir)
+    monkeypatch.setattr(package.os, "close", close_then_fail)
+    try:
+        with pytest.raises(package._DescriptorCleanupError) as caught:
+            package._capture_tree_metadata(root)
+    finally:
+        real_close(root)
+
+    assert str(caught.value.primary) == "walk primary"
+    assert [str(error) for error in caught.value.failures] == ["child close"]

@@ -14,7 +14,7 @@ import zipfile
 import zlib
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path, PurePosixPath
-from typing import Dict, Iterable, Mapping, Sequence, Tuple, cast
+from typing import Callable, Dict, Iterable, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -123,6 +123,30 @@ class SourceRecord:
     @property
     def sha256(self) -> str:
         return _sha256(self.data)
+
+
+@dataclass(frozen=True)
+class _EntryFingerprint:
+    """The stable identity fields accepted for one package entry."""
+
+    st_dev: int
+    st_ino: int
+    st_mode: int
+    st_nlink: int
+    st_uid: int
+    st_gid: int
+    st_size: int
+    st_mtime_ns: int
+    st_ctime_ns: int
+
+
+@dataclass(frozen=True)
+class _PackageSnapshot:
+    """Descriptor-anchored identities and file commitments for one package."""
+
+    root: _EntryFingerprint
+    directories: Mapping[str, _EntryFingerprint]
+    files: Mapping[str, Tuple[_EntryFingerprint, FileRecord]]
 
 
 _MEMBER_SCHEMA: Mapping[str, Tuple[str, Tuple[int, ...]]] = {
@@ -746,8 +770,8 @@ _COLLECTION_KEYS = (
 _COHORT_KEYS = (
     "cohort_id",
     "directory",
-    "manifest_sha256",
-    "cohort_jsonl_sha256",
+    "manifest",
+    "cohort_jsonl",
     "selection_sha256",
     "sealing_git_commit",
     "observation_count",
@@ -895,15 +919,11 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
         raise ValueError("manifest.collection commitments have drifted")
 
     cohort = _require_exact_keys(raw["cohort"], _COHORT_KEYS, "manifest.cohort")
+    for name in ("manifest", "cohort_jsonl"):
+        _require_source_record(cohort[name], f"manifest.cohort.{name}")
     expected_cohort = {
         "cohort_id": "r2r-val-unseen-50-v1",
         "directory": "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1",
-        "manifest_sha256": (
-            "d71f04f102d80df3799e5fea76162147ad76c060c82ccbca88813d8b14a0b191"
-        ),
-        "cohort_jsonl_sha256": (
-            "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
-        ),
         "selection_sha256": (
             "32a7adddf32291f059eb1045e63e077a693ca64d6fdf6e7418b54dd5d3644cb2"
         ),
@@ -911,7 +931,21 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
         "observation_count": 50,
         "scene_count": 11,
     }
-    if cohort != expected_cohort:
+    cohort_paths = {
+        "manifest": (
+            "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/manifest.json"
+        ),
+        "cohort_jsonl": (
+            "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/cohort.jsonl"
+        ),
+    }
+    if (
+        any(cohort[name] != value for name, value in expected_cohort.items())
+        or any(
+            cast(Mapping[str, object], cohort[name])["path"] != path
+            for name, path in cohort_paths.items()
+        )
+    ):
         raise ValueError("manifest.cohort commitments have drifted")
 
     evidence = _require_exact_keys(
@@ -1184,74 +1218,388 @@ def _manifest_aggregate(value: object, label: str) -> TreeAggregate:
     )
 
 
-def _regular_tree_paths(root: Path) -> set[str]:
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError("raw-frame attempt root must be a real directory")
-    paths = set()
-    for directory, names, files in os.walk(root, followlinks=False):
-        directory_path = Path(directory)
-        for name in names:
-            child = directory_path / name
-            if child.is_symlink() or not child.is_dir():
-                raise ValueError("raw-frame attempt contains an unsafe directory")
-        for name in files:
-            child = directory_path / name
-            if child.is_symlink() or not child.is_file():
-                raise ValueError("raw-frame attempt contains a non-regular file")
-            relative = child.relative_to(root).as_posix()
-            _validate_relative_path(relative)
-            paths.add(relative)
-    return paths
+def _fingerprint(metadata: os.stat_result) -> _EntryFingerprint:
+    return _EntryFingerprint(
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
-def validate_raw_frame_directory(
+class _DescriptorCleanupError(RuntimeError):
+    def __init__(
+        self,
+        primary: BaseException | None,
+        failures: Sequence[OSError],
+    ) -> None:
+        self.primary = primary
+        self.failures = tuple(failures)
+        super().__init__(
+            "descriptor cleanup failed: "
+            + "; ".join(str(error) for error in failures)
+        )
+
+
+def _close_many(*descriptors: int) -> tuple[OSError, ...]:
+    errors = []
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            errors.append(error)
+    return tuple(errors)
+
+
+def _require_closed(
+    primary: BaseException | None,
+    *descriptors: int,
+) -> None:
+    failures = _close_many(*descriptors)
+    if failures:
+        raise _DescriptorCleanupError(primary, failures) from primary
+
+
+def _strict_read_at(
+    root_descriptor: int,
+    relative: str,
+    *,
+    expected: FileRecord | None,
+    label: str,
+) -> tuple[bytes, _EntryFingerprint]:
+    _validate_relative_path(relative)
+    parts = PurePosixPath(relative).parts
+    directory = os.dup(root_descriptor)
+    try:
+        for component in parts[:-1]:
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            previous = directory
+            directory = child
+            _require_closed(None, previous)
+        try:
+            descriptor = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+        except OSError as error:
+            raise ValueError(f"{label} must be a regular package file") from error
+    except BaseException as error:
+        _require_closed(error, directory)
+        raise
+    try:
+        _require_closed(None, directory)
+    except BaseException as error:
+        _require_closed(error, descriptor)
+        raise
+    read_error = None
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label} must be a regular package file")
+        chunks = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        converted = ValueError(f"{label} must be a regular package file")
+        read_error = converted
+        raise converted from error
+    except BaseException as error:
+        read_error = error
+        raise
+    finally:
+        _require_closed(read_error, descriptor)
+    if _fingerprint(before) != _fingerprint(after):
+        raise ValueError(f"{label} changed while being read")
+    data = b"".join(chunks)
+    record = FileRecord(len(data), _sha256(data))
+    if expected is not None and record != expected:
+        raise ValueError(f"{label} differs from its commitment")
+    return data, _fingerprint(after)
+
+
+def _walk_tree_descriptor(
+    descriptor: int,
+    relative: str,
+    directories: Dict[str, _EntryFingerprint],
+    files: Dict[str, _EntryFingerprint],
+) -> None:
+    directory_fingerprint = _fingerprint(os.fstat(descriptor))
+    if not stat.S_ISDIR(directory_fingerprint.st_mode):
+        raise ValueError("raw-frame package contains a non-directory")
+    directories[relative] = directory_fingerprint
+    for name in sorted(os.listdir(descriptor)):
+        if not name or "/" in name or name in {".", ".."}:
+            raise ValueError("raw-frame package contains an unsafe entry")
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        child_relative = f"{relative}/{name}" if relative else name
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            error = None
+            try:
+                if _fingerprint(metadata) != _fingerprint(os.fstat(child)):
+                    raise ValueError("raw-frame directory entry changed while opening")
+                _walk_tree_descriptor(child, child_relative, directories, files)
+            except BaseException as caught:
+                error = caught
+                raise
+            finally:
+                _require_closed(error, child)
+        elif stat.S_ISREG(metadata.st_mode):
+            files[child_relative] = _fingerprint(metadata)
+        else:
+            raise ValueError("raw-frame package contains a non-regular entry")
+
+
+def _capture_tree_metadata(
+    root_descriptor: int,
+) -> tuple[_EntryFingerprint, Mapping[str, _EntryFingerprint], Mapping[str, _EntryFingerprint]]:
+    directories: Dict[str, _EntryFingerprint] = {}
+    files: Dict[str, _EntryFingerprint] = {}
+    _walk_tree_descriptor(root_descriptor, "", directories, files)
+    root = directories.pop("")
+    return root, directories, files
+
+
+def _open_package_root(path: Path) -> tuple[int, int, str]:
+    if not isinstance(path, Path):
+        raise ValueError("raw-frame root must be a Path")
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    if not absolute.name or any(
+        part in {"", ".", ".."} for part in absolute.parts[1:]
+    ):
+        raise ValueError("raw-frame root contains a lexical escape")
+    parent = os.open(
+        absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    )
+    try:
+        for component in absolute.parts[1:-1]:
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+            previous = parent
+            parent = child
+            _require_closed(None, previous)
+        root = os.open(
+            absolute.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+    except BaseException as error:
+        _require_closed(error, parent)
+        raise
+    return parent, root, absolute.name
+
+
+def _require_root_path_binding(
+    parent_descriptor: int,
+    name: str,
+    expected: _EntryFingerprint,
+) -> None:
+    try:
+        metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("raw-frame root pathname changed during validation") from error
+    if _fingerprint(metadata) != expected:
+        raise ValueError("raw-frame root pathname changed during validation")
+
+
+def _read_manifest_at(
+    root_descriptor: int,
+) -> tuple[bytes, _EntryFingerprint]:
+    data, fingerprint = _strict_read_at(
+        root_descriptor,
+        "manifest.json",
+        expected=None,
+        label="raw-frame manifest",
+    )
+    _parse_manifest_bytes(data)
+    return data, fingerprint
+
+
+def _validate_raw_frame_directory_structural(
     root: Path,
     *,
     expected_manifest: bytes,
-) -> None:
-    """Validate one private attempt against its supplied internal commitments."""
+    on_row: Callable[[IndexRow, RawFrameArrays], None] | None = None,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> _PackageSnapshot:
+    """Validate one private attempt against supplied internal commitments."""
 
     if not isinstance(root, Path) or not isinstance(expected_manifest, bytes):
         raise ValueError("raw-frame validation arguments are invalid")
+    parent_descriptor, root_descriptor, root_name = _open_package_root(root)
+    try:
+        snapshot = _validate_raw_frame_descriptor_structural(
+            root_descriptor,
+            expected_manifest=expected_manifest,
+            on_row=on_row,
+            expected_root_identity=expected_root_identity,
+        )
+        _require_root_path_binding(parent_descriptor, root_name, snapshot.root)
+    except BaseException as error:
+        _require_closed(error, root_descriptor, parent_descriptor)
+        raise
+    _require_closed(None, root_descriptor, parent_descriptor)
+    return snapshot
+
+
+def _validate_raw_frame_descriptor_structural(
+    root_descriptor: int,
+    *,
+    expected_manifest: bytes,
+    on_row: Callable[[IndexRow, RawFrameArrays], None] | None = None,
+    expected_root_identity: tuple[int, int] | None = None,
+    accepted_manifest: tuple[bytes, _EntryFingerprint] | None = None,
+) -> _PackageSnapshot:
     manifest = _parse_manifest_bytes(expected_manifest)
-    accepted_manifest = strict_read_bytes(
-        root / "manifest.json",
-        _sha256(expected_manifest),
-        "raw-frame manifest",
-    )
-    if accepted_manifest != expected_manifest:
+    root_metadata = os.fstat(root_descriptor)
+    if expected_root_identity is not None and (
+        root_metadata.st_dev,
+        root_metadata.st_ino,
+    ) != expected_root_identity:
+        raise ValueError("raw-frame root identity differs from publisher")
+    if accepted_manifest is None:
+        accepted_bytes, manifest_fingerprint = _strict_read_at(
+            root_descriptor,
+            "manifest.json",
+            expected=FileRecord(len(expected_manifest), _sha256(expected_manifest)),
+            label="raw-frame manifest",
+        )
+    else:
+        accepted_bytes, manifest_fingerprint = accepted_manifest
+    if accepted_bytes != expected_manifest:
         raise ValueError("raw-frame manifest differs from supplied commitment")
+    package_files: Dict[str, Tuple[_EntryFingerprint, FileRecord]] = {
+        "manifest.json": (
+            manifest_fingerprint,
+            FileRecord(len(expected_manifest), _sha256(expected_manifest)),
+        )
+    }
     files = cast(Mapping[str, object], manifest["files"])
     index_record = _manifest_file_record(files["index"], "manifest.files.index")
-    index_data = strict_read_bytes(root / "index.jsonl", index_record.sha256, "index")
-    if len(index_data) != index_record.byte_length:
-        raise ValueError("index byte length differs from manifest")
-    rows = parse_index_bytes(index_data)
-    artifact_records = []
-    for row in rows:
-        artifact_data = strict_read_bytes(
-            root / Path(row.artifact), row.npz.sha256, "raw-frame artifact"
-        )
-        if len(artifact_data) != row.npz.byte_length:
-            raise ValueError("artifact byte length differs from index")
-        parse_raw_frame_npz_bytes(
-            artifact_data,
-            expected_members=row.members,
-            expected_npz=row.npz,
-        )
-        artifact_records.append((row.artifact, row.npz))
-    artifacts = tree_aggregate(artifact_records)
-    payload = tree_aggregate(
-        (*artifact_records, ("index.jsonl", index_record))
+    index_data, index_fingerprint = _strict_read_at(
+        root_descriptor,
+        "index.jsonl",
+        expected=index_record,
+        label="index",
     )
-    if artifacts != _manifest_aggregate(
-        files["artifacts"], "manifest.files.artifacts"
-    ) or payload != _manifest_aggregate(files["payload"], "manifest.files.payload"):
-        raise ValueError("payload tree aggregate differs from manifest")
+    package_files["index.jsonl"] = (index_fingerprint, index_record)
+    rows = parse_index_bytes(index_data)
     expected_paths = {
         "manifest.json",
         "index.jsonl",
         *(row.artifact for row in rows),
     }
-    if _regular_tree_paths(root) != expected_paths:
-        raise ValueError("raw-frame attempt has missing or extra files")
+    expected_directories = {
+        "observations",
+        *(str(PurePosixPath(row.artifact).parent) for row in rows),
+    }
+    root_fingerprint, directories, tree_files = _capture_tree_metadata(
+        root_descriptor
+    )
+    if (
+        set(tree_files) != expected_paths
+        or set(directories) != expected_directories
+        or tree_files["manifest.json"] != manifest_fingerprint
+        or tree_files["index.jsonl"] != index_fingerprint
+    ):
+        raise ValueError("raw-frame attempt has missing, extra, or changed entries")
+    artifact_records = [(row.artifact, row.npz) for row in rows]
+    artifacts = tree_aggregate(artifact_records)
+    payload = tree_aggregate((*artifact_records, ("index.jsonl", index_record)))
+    if artifacts != _manifest_aggregate(
+        files["artifacts"], "manifest.files.artifacts"
+    ) or payload != _manifest_aggregate(files["payload"], "manifest.files.payload"):
+        raise ValueError("payload tree aggregate differs from manifest")
+    for row in rows:
+        artifact_data, artifact_fingerprint = _strict_read_at(
+            root_descriptor,
+            row.artifact,
+            expected=row.npz,
+            label="raw-frame artifact",
+        )
+        if artifact_fingerprint != tree_files[row.artifact]:
+            raise ValueError("raw-frame artifact identity changed before replay")
+        parsed = parse_raw_frame_npz_bytes(
+            artifact_data,
+            expected_members=row.members,
+            expected_npz=row.npz,
+        )
+        package_files[row.artifact] = (artifact_fingerprint, row.npz)
+        if on_row is not None:
+            on_row(row, parsed.arrays)
+    return _PackageSnapshot(
+        root=root_fingerprint,
+        directories=directories,
+        files=package_files,
+    )
+
+
+def _recapture_package_descriptor(
+    root_descriptor: int,
+    expected: _PackageSnapshot,
+) -> None:
+    root, directories, tree_files = _capture_tree_metadata(root_descriptor)
+    if root != expected.root or directories != expected.directories:
+        raise ValueError("raw-frame package directories changed during validation")
+    if set(tree_files) != set(expected.files):
+        raise ValueError("raw-frame package files changed during validation")
+    for path, (fingerprint, record) in expected.files.items():
+        _, accepted_fingerprint = _strict_read_at(
+            root_descriptor,
+            path,
+            expected=record,
+            label=path,
+        )
+        if tree_files[path] != fingerprint or accepted_fingerprint != fingerprint:
+            raise ValueError("raw-frame package file changed during validation")
+    final_root, final_directories, final_files = _capture_tree_metadata(
+        root_descriptor
+    )
+    if (
+        final_root != expected.root
+        or final_directories != expected.directories
+        or final_files
+        != {path: value[0] for path, value in expected.files.items()}
+    ):
+        raise ValueError("raw-frame package changed during final recapture")
+
+
+def validate_raw_frame_directory(
+    root: Path,
+    *,
+    expected_git_commit: str,
+) -> None:
+    """Read-only validation and exact replay of one externally supplied package."""
+
+    if not isinstance(root, Path):
+        raise ValueError("raw-frame root must be a Path")
+    if not isinstance(expected_git_commit, str) or re.fullmatch(
+        r"[0-9a-f]{40}", expected_git_commit
+    ) is None:
+        raise ValueError("expected Git commit must be 40 lowercase hexadecimal")
+    from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames import (
+        _validate_external_raw_frame_directory,
+    )
+
+    _validate_external_raw_frame_directory(
+        root,
+        expected_git_commit=expected_git_commit,
+    )
