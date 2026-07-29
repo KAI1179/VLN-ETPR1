@@ -10,6 +10,7 @@ import stat
 import tempfile
 import time
 from dataclasses import replace
+from multiprocessing.connection import Connection
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Callable, Mapping, Optional, Sequence, Union
@@ -57,6 +58,39 @@ from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import (
     OracleSensorFrame,
     project_oracle_frames,
 )
+
+
+def _abrupt_spawn_worker(*_args: object) -> None:
+    os._exit(17)
+
+
+def _large_array_spawn_worker(connection: Connection, *_args: object) -> None:
+    small = np.asarray(0, dtype=np.uint8)
+    connection.send(
+        (
+            "success",
+            RawFrameArrays(
+                schema_version=small,
+                rgb=np.zeros(10 * 1024 * 1024, dtype=np.uint8),
+                depth_m=small,
+                object_categories=small,
+                region_categories=small,
+                sensor_positions=small,
+                sensor_rotations_xyzw=small,
+                sensor_yaw_degrees=small,
+                sensor_hfov_degrees=small,
+                sensor_position_relative=small,
+                start_position=small,
+                start_rotation_xyzw=small,
+                target_origin_xz=small,
+                ego_observed_mask=small,
+                ego_free_mask=small,
+                target_observed_mask=small,
+                target_free_mask=small,
+            ),
+        )
+    )
+    connection.close()
 
 
 def _oracle_bytes() -> bytes:
@@ -2807,6 +2841,76 @@ def test_simulator_constructor_failure_rehashes_bundle_and_cleans(
     assert not snapshots.exists()
 
 
+def test_omission_spawn_contains_native_exit_and_revalidates_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    staging = tmp_path / "staging"
+    snapshots = tmp_path / "snapshots"
+    bundle_root = tmp_path / "bundle"
+    staging.mkdir()
+    snapshots.mkdir()
+    bundle_root.mkdir()
+    bundle = _bundle(bundle_root)
+    validated = []
+    render_spawned = raw_frames._render_in_spawned_process
+    monkeypatch.setattr(
+        raw_frames, "snapshot_scene_bundle", lambda _scene, _root: bundle
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_render_in_spawned_process",
+        lambda live_bundle, observation, omitted_role: (
+            render_spawned(
+                live_bundle,
+                observation,
+                omitted_role,
+                worker=_abrupt_spawn_worker,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_variant_assets",
+        lambda _bundle, omitted: validated.append(omitted),
+    )
+
+    assert (
+        raw_frames._run_smoke_variant(
+            _observation(artifact_sha256="0" * 64),
+            staging,
+            snapshots,
+            "glb",
+        )
+        is False
+    )
+    assert validated == ["glb"]
+    raw_frames._cleanup_smoke_paths(staging, snapshots)
+    assert not staging.exists()
+    assert not snapshots.exists()
+
+    control_root = tmp_path / "control"
+    control_root.mkdir()
+    with pytest.raises(RuntimeError, match="control"):
+        render_spawned(
+            _bundle(control_root),
+            _observation(artifact_sha256="0" * 64),
+            None,
+            worker=_abrupt_spawn_worker,
+        )
+
+    (control_root / "success").mkdir()
+    arrays = render_spawned(
+        _bundle(control_root / "success"),
+        _observation(artifact_sha256="0" * 64),
+        None,
+        worker=_large_array_spawn_worker,
+    )
+    assert arrays is not None
+    assert arrays.rgb.nbytes == 10 * 1024 * 1024
+
+
 @pytest.mark.parametrize("failure", ["encode", "reload", "parse", "oracle"])
 def test_omission_smoke_propagates_nonclassification_failures(
     failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2820,13 +2924,13 @@ def test_omission_smoke_propagates_nonclassification_failures(
     snapshots.mkdir()
     bundle_root.mkdir()
     bundle = _bundle(bundle_root)
-    simulator = _fake_simulator()
     monkeypatch.setattr(
         raw_frames, "snapshot_scene_bundle", lambda _scene, _root: bundle
     )
-    monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: simulator)
     monkeypatch.setattr(
-        raw_frames, "render_raw_frame_artifact", lambda _sim, _observation: object()
+        raw_frames,
+        "_render_in_spawned_process",
+        lambda _bundle, _observation, _omitted: object(),
     )
     monkeypatch.setattr(
         raw_frames,

@@ -8,6 +8,7 @@ import importlib.metadata
 import io
 import json
 import math
+import multiprocessing
 import os
 import platform
 import re
@@ -22,6 +23,7 @@ import zlib
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from itertools import groupby
+from multiprocessing.connection import Connection
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import (
@@ -2239,6 +2241,112 @@ def _require_variant_assets(
         )
 
 
+def _render_worker(
+    connection: Connection,
+    scene_id: str,
+    serialized_files: Tuple[Tuple[str, str, int, str], ...],
+    observation: CollectionObservation,
+) -> None:
+    bundle = SceneBundle(
+        scene_id=scene_id,
+        files=MappingProxyType(
+            {
+                role: SnapshotFile(
+                    path=Path(path),
+                    byte_length=byte_length,
+                    sha256=sha256,
+                )
+                for role, path, byte_length, sha256 in serialized_files
+            }
+        ),
+    )
+    simulator = None
+    classification_failure = False
+    try:
+        try:
+            simulator = build_scene_simulator(bundle)
+            arrays = render_raw_frame_artifact(simulator, observation)
+        except Exception:
+            classification_failure = True
+        finally:
+            if simulator is not None:
+                simulator.close()
+        if classification_failure:
+            connection.send(("classification_failure", None))
+        else:
+            connection.send(("success", arrays))
+    except BaseException as error:
+        connection.send(
+            (
+                "infrastructure_error",
+                f"{type(error).__name__}: {error}",
+            )
+        )
+    finally:
+        connection.close()
+
+
+def _render_in_spawned_process(
+    bundle: SceneBundle,
+    observation: CollectionObservation,
+    omitted_role: str | None,
+    *,
+    worker: Callable[..., None] = _render_worker,
+) -> RawFrameArrays | None:
+    serialized_files = tuple(
+        (
+            role,
+            record.path.as_posix(),
+            record.byte_length,
+            record.sha256,
+        )
+        for role, record in sorted(bundle.files.items())
+    )
+    context = multiprocessing.get_context("spawn")
+    receive, send = context.Pipe(duplex=False)
+    process = context.Process(
+        target=worker,
+        args=(send, bundle.scene_id, serialized_files, observation),
+    )
+    try:
+        process.start()
+    except BaseException:
+        receive.close()
+        send.close()
+        raise
+    send.close()
+    message = None
+    try:
+        try:
+            message = receive.recv()
+        except EOFError:
+            pass
+    finally:
+        receive.close()
+        process.join()
+    if process.exitcode != 0 or message is None:
+        if omitted_role is not None:
+            return None
+        raise RuntimeError("all-assets control render subprocess terminated")
+    if (
+        not isinstance(message, tuple)
+        or len(message) != 2
+        or message[0]
+        not in {"classification_failure", "infrastructure_error", "success"}
+    ):
+        raise RuntimeError("render subprocess returned an invalid result")
+    status, payload = message
+    if status == "classification_failure":
+        if omitted_role is not None:
+            return None
+        raise RuntimeError("all-assets control render failed")
+    if status == "infrastructure_error":
+        raise RuntimeError(f"render subprocess infrastructure failure: {payload}")
+    if not isinstance(payload, RawFrameArrays):
+        raise RuntimeError("render subprocess returned invalid arrays")
+    return payload
+
+
 def _run_smoke_variant(
     observation: CollectionObservation,
     staging: Path,
@@ -2251,14 +2359,9 @@ def _run_smoke_variant(
     bundle = snapshot_scene_bundle(observation.scene_id, private_assets)
     if omitted_role is not None:
         bundle.files[omitted_role].path.unlink()
-    simulator = None
     try:
-        try:
-            simulator = build_scene_simulator(bundle)
-            arrays = render_raw_frame_artifact(simulator, observation)
-        except Exception:
-            if omitted_role is None:
-                raise
+        arrays = _render_in_spawned_process(bundle, observation, omitted_role)
+        if arrays is None:
             return False
         encoded = encode_raw_frame_npz(arrays)
         artifact = staging / f"{observation.scene_id}-{variant_name}.npz"
@@ -2283,13 +2386,7 @@ def _run_smoke_variant(
                 raise
             return False
     finally:
-        if simulator is not None:
-            try:
-                simulator.close()
-            finally:
-                _require_variant_assets(bundle, omitted_role)
-        else:
-            _require_variant_assets(bundle, omitted_role)
+        _require_variant_assets(bundle, omitted_role)
     return True
 
 
