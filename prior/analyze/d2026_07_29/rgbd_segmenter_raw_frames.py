@@ -8,17 +8,39 @@ import json
 import math
 import os
 import re
+import shutil
 import stat
+import struct
+import sys
+import tempfile
 import zipfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import List, Mapping, Sequence, Tuple, cast
+from typing import (
+    List,
+    Literal,
+    Mapping,
+    Protocol,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 import numpy as np
+from tap import Tap
 
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
+    RawFrameArrays,
+    encode_raw_frame_npz,
+    parse_raw_frame_npz_bytes,
     strict_read_bytes,
+)
+from prior.constants import MAPPED_OBJECT_NAMES, OBJECT_MAPPING, REGION_MAPPING
+from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import (
+    OracleSensorFrame,
+    project_oracle_frames,
 )
 
 COHORT_ROOT = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1")
@@ -684,3 +706,548 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
             os.close(scene_source)
         os.close(private_root)
         os.close(source_root)
+
+
+class _QuaternionComponents(Protocol):
+    x: float
+    y: float
+    z: float
+    w: float
+
+
+class _SensorState(Protocol):
+    position: Sequence[float]
+    rotation: object
+
+
+class _AgentState(Protocol):
+    position: Sequence[float]
+    rotation: object
+    sensor_states: Mapping[str, _SensorState]
+
+
+class _SemanticCategory(Protocol):
+    def index(self, mapping: str = ...) -> int: ...
+
+
+class _AABB(Protocol):
+    center: Sequence[float]
+    sizes: Sequence[float]
+
+
+class _SemanticRegion(Protocol):
+    category: _SemanticCategory | None
+    aabb: _AABB
+
+
+class _SemanticObject(Protocol):
+    id: str
+    category: _SemanticCategory | None
+    region: _SemanticRegion | None
+
+
+class _SemanticLevel(Protocol):
+    aabb: _AABB
+    regions: Sequence[_SemanticRegion]
+
+
+class _SemanticScene(Protocol):
+    objects: Sequence[_SemanticObject | None]
+    levels: Sequence[_SemanticLevel]
+
+
+class _Simulator(Protocol):
+    def get_observations_at(
+        self,
+        *,
+        position: list[float],
+        rotation: list[float],
+        keep_agent_at_new_pose: bool,
+    ) -> Mapping[str, object]: ...
+
+    def get_agent_state(self) -> _AgentState: ...
+
+    def semantic_annotations(self) -> _SemanticScene: ...
+
+    def close(self) -> None: ...
+
+
+_SENSOR_YAWS = tuple(range(0, 360, 30))
+_SENSOR_KINDS = ("RGB", "DEPTH", "SEMANTIC")
+_SENSOR_POSITION = np.asarray([0.0, 1.25, 0.0], dtype="<f8")
+
+
+def _sensor_name(kind: str, yaw_degrees: int) -> str:
+    return f"{kind}_{yaw_degrees:03d}"
+
+
+def _require_scene_bundle(bundle: SceneBundle) -> None:
+    if not isinstance(bundle, SceneBundle):
+        raise ValueError("simulator construction requires a scene snapshot bundle")
+    expected = {
+        "glb": f"{bundle.scene_id}.glb",
+        "house": f"{bundle.scene_id}.house",
+        "semantic_ply": f"{bundle.scene_id}_semantic.ply",
+        "navmesh": f"{bundle.scene_id}.navmesh",
+    }
+    if set(bundle.files) != set(expected):
+        raise ValueError("scene snapshot bundle must contain exactly four assets")
+    parents = {record.path.parent for record in bundle.files.values()}
+    if len(parents) != 1 or any(
+        bundle.files[role].path.name != name for role, name in expected.items()
+    ):
+        raise ValueError("scene snapshot bundle paths are not canonical")
+
+
+def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
+    """Build the fixed 36-sensor Habitat simulator from private snapshot paths."""
+
+    from habitat import get_config
+    from habitat.sims import make_sim
+
+    _require_scene_bundle(bundle)
+    config = get_config()
+    config.defrost()
+    config.SIMULATOR.SCENE = str(bundle.files["glb"].path)
+    config.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = 0
+    config.SIMULATOR.AGENT_0.SENSORS = []
+    templates = {
+        kind: deepcopy(getattr(config.SIMULATOR, f"{kind}_SENSOR"))
+        for kind in _SENSOR_KINDS
+    }
+    for kind, template in templates.items():
+        template.WIDTH = 256
+        template.HEIGHT = 256
+        template.HFOV = 90.0
+        template.POSITION = list(_SENSOR_POSITION)
+        if kind == "DEPTH":
+            template.MIN_DEPTH = 0.0
+            template.MAX_DEPTH = 10.0
+            template.NORMALIZE_DEPTH = False
+    for yaw_degrees in _SENSOR_YAWS:
+        for kind in _SENSOR_KINDS:
+            name = _sensor_name(kind, yaw_degrees)
+            sensor = deepcopy(templates[kind])
+            sensor.UUID = name.lower()
+            sensor.ORIENTATION = [0.0, math.radians(yaw_degrees), 0.0]
+            setattr(config.SIMULATOR, name, sensor)
+            config.SIMULATOR.AGENT_0.SENSORS.append(name)
+    config.freeze()
+    return cast(
+        _Simulator,
+        make_sim(id_sim=config.SIMULATOR.TYPE, config=config.SIMULATOR),
+    )
+
+
+def _position(value: object, label: str) -> np.ndarray:
+    result = np.asarray(value, dtype="<f8")
+    if result.shape != (3,) or not np.isfinite(result).all():
+        raise ValueError(f"{label} position must be finite float64[3]")
+    return result
+
+
+def _quaternion_components(value: object, label: str) -> np.ndarray:
+    raw: np.ndarray
+    if isinstance(value, np.ndarray):
+        if value.dtype != np.float64:
+            raise ValueError(f"{label} quaternion must be float64")
+        raw = value
+    elif isinstance(value, (list, tuple)):
+        raw = np.asarray(value, dtype="<f8")
+    else:
+        quaternion = cast(_QuaternionComponents, value)
+        raw = np.asarray(
+            [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
+            dtype="<f8",
+        )
+    if raw.shape != (4,) or not np.isfinite(raw).all():
+        raise ValueError(f"{label} quaternion must be finite float64 XYZW")
+    components = struct.unpack("<4d", raw.tobytes())
+    norm = math.sqrt(sum(component**2 for component in components))
+    if not math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=5e-8):
+        raise ValueError(f"{label} quaternion norm is outside tolerance")
+    return np.asarray([component / norm for component in components], dtype="<f8")
+
+
+def _semantic_object_map(
+    semantic_scene: _SemanticScene,
+) -> Mapping[int, _SemanticObject]:
+    result = {}
+    for semantic_object in semantic_scene.objects:
+        if semantic_object is None:
+            continue
+        try:
+            semantic_id = int(semantic_object.id.rsplit("_", 1)[-1])
+        except (AttributeError, ValueError) as error:
+            raise ValueError("semantic object ID must end in an integer suffix") from error
+        if semantic_id in result:
+            raise ValueError(f"duplicate semantic object ID {semantic_id}")
+        result[semantic_id] = semantic_object
+    return result
+
+
+def _map_semantic_ids(
+    semantic_ids: np.ndarray,
+    objects: Mapping[int, _SemanticObject],
+) -> Tuple[np.ndarray, np.ndarray]:
+    object_categories = np.full(semantic_ids.shape, -1, dtype="<i2")
+    region_categories = np.full(semantic_ids.shape, -1, dtype="<i2")
+    for semantic_id in np.unique(semantic_ids):
+        mask = semantic_ids == semantic_id
+        semantic_object = objects.get(int(semantic_id))
+        if semantic_object is None or semantic_object.category is None:
+            continue
+        raw_object = int(semantic_object.category.index(mapping="mpcat40"))
+        if raw_object == 0:
+            mapped_object = 0
+        elif 0 < raw_object < len(OBJECT_MAPPING):
+            mapped_object = OBJECT_MAPPING[raw_object]
+        else:
+            mapped_object = MAPPED_OBJECT_NAMES.index("other")
+        object_categories[mask] = mapped_object
+        region = semantic_object.region
+        if region is None or region.category is None:
+            continue
+        raw_region = int(region.category.index())
+        if not 0 <= raw_region < len(REGION_MAPPING):
+            raise ValueError(f"invalid MP3D region category {raw_region}")
+        region_categories[mask] = REGION_MAPPING[raw_region]
+    return object_categories, region_categories
+
+
+def _aabb_minimum(aabb: _AABB) -> np.ndarray:
+    center = np.asarray(aabb.center, dtype="<f8")
+    sizes = np.asarray(aabb.sizes, dtype="<f8")
+    minimum = center - sizes / 2.0
+    if (
+        center.shape != (3,)
+        or sizes.shape != (3,)
+        or not np.isfinite(minimum).all()
+    ):
+        raise ValueError("semantic AABB must contain finite float64 vectors")
+    return minimum
+
+
+def _level_floor_y(level: _SemanticLevel) -> float:
+    if level.regions:
+        return min(float(_aabb_minimum(region.aabb)[1]) for region in level.regions)
+    return float(_aabb_minimum(level.aabb)[1])
+
+
+def _target_origin_at_start(
+    semantic_scene: _SemanticScene, start_y: float
+) -> Tuple[float, float]:
+    if not math.isfinite(start_y):
+        raise ValueError("start Y must be finite")
+    if not semantic_scene.levels:
+        raise ValueError("MP3D semantic scene contains no levels")
+    levels = sorted(semantic_scene.levels, key=_level_floor_y)
+    selected = levels[0]
+    for level in levels:
+        if _level_floor_y(level) <= start_y:
+            selected = level
+        else:
+            break
+    minimum = _aabb_minimum(selected.aabb)
+    return float(minimum[0]), float(minimum[2])
+
+
+def _observation_array(
+    observations: Mapping[str, object], name: str
+) -> np.ndarray:
+    if name not in observations or not isinstance(observations[name], np.ndarray):
+        raise ValueError(f"{name} must be an ndarray")
+    return cast(np.ndarray, observations[name])
+
+
+def _frames_from_arrays(arrays: RawFrameArrays) -> Tuple[OracleSensorFrame, ...]:
+    return tuple(
+        OracleSensorFrame(
+            depth_m=arrays.depth_m[index],
+            object_categories=arrays.object_categories[index],
+            region_categories=arrays.region_categories[index],
+            sensor_position=cast(
+                Tuple[float, float, float], tuple(arrays.sensor_positions[index])
+            ),
+            sensor_rotation=cast(
+                Tuple[float, float, float, float],
+                tuple(arrays.sensor_rotations_xyzw[index]),
+            ),
+        )
+        for index in range(12)
+    )
+
+
+def render_raw_frame_artifact(
+    simulator: object,
+    observation: CollectionObservation,
+) -> RawFrameArrays:
+    """Render and validate one sealed observation into the frozen raw arrays."""
+
+    habitat_simulator = cast(_Simulator, simulator)
+    observations = habitat_simulator.get_observations_at(
+        position=list(observation.start_position),
+        rotation=list(observation.start_rotation),
+        keep_agent_at_new_pose=True,
+    )
+    agent_state = habitat_simulator.get_agent_state()
+    semantic_scene = habitat_simulator.semantic_annotations()
+    sealed_position = np.asarray(observation.start_position, dtype="<f8")
+    if not np.array_equal(_position(agent_state.position, "agent"), sealed_position):
+        raise ValueError("returned agent position differs from sealed position")
+    agent_rotation = _quaternion_components(agent_state.rotation, "agent")
+    sealed_rotation = _quaternion_components(
+        np.asarray(observation.start_rotation, dtype="<f8"),
+        "sealed",
+    )
+    if 1.0 - abs(float(np.dot(agent_rotation, sealed_rotation))) > 1e-12:
+        raise ValueError("returned agent rotation differs from sealed rotation")
+
+    semantic_objects = _semantic_object_map(semantic_scene)
+    rgb_frames = []
+    depth_frames = []
+    object_frames = []
+    region_frames = []
+    sensor_positions = []
+    sensor_rotations = []
+    for yaw_degrees in _SENSOR_YAWS:
+        names = {
+            kind: _sensor_name(kind.lower(), yaw_degrees) for kind in _SENSOR_KINDS
+        }
+        rgb = _observation_array(observations, names["RGB"])
+        if rgb.dtype != np.uint8 or rgb.shape != (256, 256, 3):
+            raise ValueError(
+                f"{names['RGB']} must be exact uint8[256,256,3] RGB"
+            )
+        depth = _observation_array(observations, names["DEPTH"])
+        if depth.dtype != np.float32:
+            raise ValueError(f"{names['DEPTH']} must be metric float32")
+        if depth.shape == (256, 256, 1):
+            depth = depth[..., 0]
+        if (
+            depth.shape != (256, 256)
+            or not np.isfinite(depth).all()
+            or np.any(depth < 0.0)
+            or np.any(depth > 10.0)
+        ):
+            raise ValueError(f"{names['DEPTH']} has invalid shape or metric range")
+        semantic = _observation_array(observations, names["SEMANTIC"])
+        if (
+            semantic.shape != (256, 256)
+            or not np.issubdtype(semantic.dtype, np.integer)
+        ):
+            raise ValueError(f"{names['SEMANTIC']} must be integer[256,256]")
+        object_categories, region_categories = _map_semantic_ids(
+            semantic, semantic_objects
+        )
+        positions = []
+        rotations = []
+        for kind in _SENSOR_KINDS:
+            state = agent_state.sensor_states[names[kind]]
+            positions.append(_position(state.position, names[kind]))
+            rotations.append(_quaternion_components(state.rotation, names[kind]))
+        if any(
+            not np.array_equal(positions[0], position) for position in positions[1:]
+        ) or any(
+            not np.array_equal(rotations[0], rotation) for rotation in rotations[1:]
+        ):
+            raise ValueError(f"sensor extrinsics differ at yaw {yaw_degrees}")
+        rgb_frames.append(rgb)
+        depth_frames.append(depth)
+        object_frames.append(object_categories)
+        region_frames.append(region_categories)
+        sensor_positions.append(positions[1])
+        sensor_rotations.append(rotations[1])
+
+    target_origin = np.asarray(
+        _target_origin_at_start(semantic_scene, observation.start_position[1]),
+        dtype="<f8",
+    )
+    arrays_without_masks = {
+        "schema_version": np.asarray(1, dtype="<i8"),
+        "rgb": np.ascontiguousarray(np.stack(rgb_frames)),
+        "depth_m": np.ascontiguousarray(np.stack(depth_frames)),
+        "object_categories": np.ascontiguousarray(np.stack(object_frames)),
+        "region_categories": np.ascontiguousarray(np.stack(region_frames)),
+        "sensor_positions": np.ascontiguousarray(
+            np.stack(sensor_positions).astype("<f8", copy=False)
+        ),
+        "sensor_rotations_xyzw": np.ascontiguousarray(
+            np.stack(sensor_rotations).astype("<f8", copy=False)
+        ),
+        "sensor_yaw_degrees": np.arange(0, 360, 30, dtype="<i2"),
+        "sensor_hfov_degrees": np.asarray(90.0, dtype="<f8"),
+        "sensor_position_relative": _SENSOR_POSITION.copy(),
+        "start_position": sealed_position.copy(),
+        "start_rotation_xyzw": np.asarray(observation.start_rotation, dtype="<f8"),
+        "target_origin_xz": target_origin,
+    }
+    provisional = RawFrameArrays(
+        **arrays_without_masks,
+        ego_observed_mask=np.zeros((50, 50), dtype=np.bool_),
+        ego_free_mask=np.zeros((50, 50), dtype=np.bool_),
+        target_observed_mask=np.zeros((50, 50), dtype=np.bool_),
+        target_free_mask=np.zeros((50, 50), dtype=np.bool_),
+    )
+    evidence = project_oracle_frames(
+        _frames_from_arrays(provisional),
+        start_position=tuple(float(value) for value in provisional.start_position),
+        start_rotation=tuple(
+            float(value) for value in provisional.start_rotation_xyzw
+        ),
+        target_origin_xz=tuple(
+            float(value) for value in provisional.target_origin_xz
+        ),
+    )
+    return RawFrameArrays(
+        **arrays_without_masks,
+        ego_observed_mask=np.ascontiguousarray(evidence.ego_observed_mask),
+        ego_free_mask=np.ascontiguousarray(evidence.ego_free_mask),
+        target_observed_mask=np.ascontiguousarray(evidence.target_observed_mask),
+        target_free_mask=np.ascontiguousarray(evidence.target_free_mask),
+    )
+
+
+def replay_and_require_exact(
+    arrays: RawFrameArrays,
+    observation: CollectionObservation,
+    oracle: PinnedOracle,
+) -> None:
+    """Replay stored public frames and require exact equality with the oracle."""
+
+    if not np.array_equal(
+        arrays.start_position, np.asarray(observation.start_position, dtype="<f8")
+    ) or not np.array_equal(
+        arrays.start_rotation_xyzw,
+        np.asarray(observation.start_rotation, dtype="<f8"),
+    ):
+        raise ValueError("stored start pose differs from sealed metadata")
+    evidence = project_oracle_frames(
+        _frames_from_arrays(arrays),
+        start_position=tuple(float(value) for value in arrays.start_position),
+        start_rotation=tuple(float(value) for value in arrays.start_rotation_xyzw),
+        target_origin_xz=tuple(float(value) for value in arrays.target_origin_xz),
+    )
+    for field in (
+        "ego_semantic_grid",
+        "ego_observed_mask",
+        "ego_free_mask",
+        "target_semantic_grid",
+        "target_observed_mask",
+        "target_free_mask",
+    ):
+        if not np.array_equal(getattr(evidence, field), getattr(oracle, field)):
+            raise ValueError(f"{field} differs from pinned oracle")
+    replayed_position = np.asarray(evidence.start_position, dtype=np.float32)
+    replayed_direction = np.asarray(evidence.start_direction, dtype=np.float32)
+    if not np.array_equal(
+        replayed_position, np.asarray(oracle.start_position, dtype=np.float32)
+    ):
+        raise ValueError("replayed target-local start_position differs")
+    if not np.array_equal(
+        replayed_direction, np.asarray(oracle.start_direction, dtype=np.float32)
+    ):
+        raise ValueError("replayed start_direction differs")
+
+
+def _smoke_report(observation: CollectionObservation) -> bytes:
+    return (
+        json.dumps(
+            {
+                "control": "PASS",
+                "observation_id": observation.observation_id,
+                "replay": "PASS",
+                "scene_id": observation.scene_id,
+                "schema_version": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+
+
+def _cleanup_smoke_paths(
+    staging: Path | None,
+    snapshots: Path | None,
+) -> None:
+    first_error = None
+    for path in (staging, snapshots):
+        if path is None:
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as error:
+            if first_error is None:
+                first_error = error
+    try:
+        SMOKE_PACKAGE_ROOT.rmdir()
+    except OSError:
+        pass
+    if first_error is not None:
+        raise RuntimeError("smoke cleanup failed") from first_error
+
+
+def run_first_row_smoke() -> bytes:
+    """Render, strictly reload, replay, report, and remove one private smoke."""
+
+    inputs = load_collection_inputs()
+    observation = inputs.observations[0]
+    staging = None
+    snapshots = None
+    try:
+        SMOKE_PACKAGE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f"{os.getpid()}-", dir=SMOKE_PACKAGE_ROOT)
+        )
+        staging.chmod(0o700)
+        snapshots = Path(
+            tempfile.mkdtemp(
+                prefix=".r2r-val-unseen-50-raw-v1-snapshots-",
+                dir=SMOKE_PACKAGE_ROOT.parent,
+            )
+        )
+        snapshots.chmod(0o700)
+        bundle = snapshot_scene_bundle(observation.scene_id, snapshots)
+        simulator = build_scene_simulator(bundle)
+        try:
+            arrays = render_raw_frame_artifact(simulator, observation)
+            encoded = encode_raw_frame_npz(arrays)
+            artifact = staging / f"{observation.observation_id}.npz"
+            artifact.write_bytes(encoded.data)
+            accepted = strict_read_bytes(
+                artifact,
+                hashlib.sha256(encoded.data).hexdigest(),
+                "smoke raw artifact",
+            )
+            parsed = parse_raw_frame_npz_bytes(
+                accepted,
+                expected_members=encoded.members,
+            )
+            oracle = load_pinned_oracle_after_render(observation)
+            replay_and_require_exact(parsed.arrays, observation, oracle)
+        finally:
+            simulator.close()
+        report = _smoke_report(observation)
+        sys.stdout.buffer.write(report)
+        sys.stdout.buffer.flush()
+        return report
+    finally:
+        _cleanup_smoke_paths(staging, snapshots)
+
+
+class RawFrameArgs(Tap):
+    smoke: Literal["none", "first-row", "first-per-scene"] = "none"
+
+
+def main(argv: Sequence[str] | None = None) -> bytes:
+    args = RawFrameArgs().parse_args(argv)
+    if args.smoke == "first-row":
+        return run_first_row_smoke()
+    if args.smoke == "first-per-scene":
+        raise ValueError("first-per-scene smoke is not implemented yet")
+    raise ValueError("full raw-frame collection is not implemented yet")
+
+
+if __name__ == "__main__":
+    main()
