@@ -97,9 +97,7 @@ def _rewrite_zip(
 
 def _npy(array: np.ndarray, *, allow_pickle: bool = False) -> bytes:
     output = io.BytesIO()
-    np.lib.format.write_array(
-        output, array, version=(1, 0), allow_pickle=allow_pickle
-    )
+    np.lib.format.write_array(output, array, version=(1, 0), allow_pickle=allow_pickle)
     return output.getvalue()
 
 
@@ -124,9 +122,10 @@ def test_encode_is_deterministic_and_reports_both_hash_domains() -> None:
             member = first.members[name]
             array = getattr(arrays, name)
             assert member.array_byte_length == array.nbytes
-            assert member.array_sha256 == hashlib.sha256(
-                array.tobytes(order="C")
-            ).hexdigest()
+            assert (
+                member.array_sha256
+                == hashlib.sha256(array.tobytes(order="C")).hexdigest()
+            )
             assert member.npy_byte_length == len(npy)
             assert member.npy_sha256 == hashlib.sha256(npy).hexdigest()
     assert sum(x.array_byte_length for x in first.members.values()) == (
@@ -176,16 +175,11 @@ def test_parser_rejects_self_consistent_noncanonical_npy_header() -> None:
     with zipfile.ZipFile(io.BytesIO(canonical.data)) as archive:
         payload = bytearray(archive.read("depth_m.npy"))
     header_length = struct.unpack_from("<H", payload, 8)[0]
-    reordered = (
-        b"{'shape': (12, 256, 256), 'fortran_order': False, "
-        b"'descr': '<f4', }"
-    )
+    reordered = b"{'shape': (12, 256, 256), 'fortran_order': False, 'descr': '<f4', }"
     assert len(reordered) < header_length
     replacement = reordered + b" " * (header_length - len(reordered) - 1) + b"\n"
     payload[10 : 10 + header_length] = replacement
-    mutated = _rewrite_zip(
-        canonical.data, transform=("depth_m.npy", bytes(payload))
-    )
+    mutated = _rewrite_zip(canonical.data, transform=("depth_m.npy", bytes(payload)))
     expected_members = dict(canonical.members)
     expected_members["depth_m"] = replace(
         expected_members["depth_m"],
@@ -236,9 +230,7 @@ def test_parser_rejects_self_consistent_noncanonical_deflate_level() -> None:
         ("start_rotation_xyzw", np.zeros(4, dtype="<f8")),
     ],
 )
-def test_encode_rejects_schema_and_value_drift(
-    field: str, value: np.ndarray
-) -> None:
+def test_encode_rejects_schema_and_value_drift(field: str, value: np.ndarray) -> None:
     with pytest.raises(ValueError):
         encode_raw_frame_npz(replace(_arrays(), **{field: value}))
 
@@ -315,13 +307,9 @@ def test_parser_rejects_zip_and_npy_mutations(mutation: str) -> None:
         struct.pack_into("<H", mutated_bytes, central_offset + 8, 1)
         mutated = bytes(mutated_bytes)
     elif mutation == "symlink":
-        mutated = _rewrite_zip(
-            encoded, external_attr=(stat.S_IFLNK | 0o600) << 16
-        )
+        mutated = _rewrite_zip(encoded, external_attr=(stat.S_IFLNK | 0o600) << 16)
     elif mutation == "wrong-mode-bits":
-        mutated = _rewrite_zip(
-            encoded, external_attr=(stat.S_IFREG | 0o600) << 16 | 1
-        )
+        mutated = _rewrite_zip(encoded, external_attr=(stat.S_IFREG | 0o600) << 16 | 1)
     elif mutation == "compression":
         mutated = _rewrite_zip(encoded, compression=zipfile.ZIP_STORED)
     elif mutation == "order":
@@ -342,9 +330,7 @@ def test_parser_rejects_zip_and_npy_mutations(mutation: str) -> None:
     elif mutation == "npy-trailing":
         with zipfile.ZipFile(io.BytesIO(encoded)) as archive:
             payload = archive.read("depth_m.npy")
-        mutated = _rewrite_zip(
-            encoded, transform=("depth_m.npy", payload + b"x")
-        )
+        mutated = _rewrite_zip(encoded, transform=("depth_m.npy", payload + b"x"))
     elif mutation == "range":
         bad = np.full((12, 256, 256), 11.0, dtype="<f4")
         mutated = _rewrite_zip(encoded, transform=("depth_m.npy", _npy(bad)))
@@ -367,9 +353,7 @@ def test_parser_rejects_wrong_member_metadata() -> None:
     with pytest.raises(ValueError, match="NPZ metadata"):
         parse_raw_frame_npz_bytes(
             encoded.data,
-            expected_npz=FileRecord(
-                byte_length=len(encoded.data), sha256="0" * 64
-            ),
+            expected_npz=FileRecord(byte_length=len(encoded.data), sha256="0" * 64),
         )
 
 
@@ -484,10 +468,7 @@ def test_tree_aggregate_is_lexical_and_hashes_exact_lines() -> None:
         ("a.npz", FileRecord(byte_length=1, sha256="a" * 64)),
     )
     aggregate = tree_aggregate(records)
-    expected = (
-        f"{'a' * 64}  1  a.npz\n"
-        f"{'b' * 64}  2  b.npz\n"
-    ).encode()
+    expected = (f"{'a' * 64}  1  a.npz\n{'b' * 64}  2  b.npz\n").encode()
     assert aggregate.file_count == 2
     assert aggregate.total_byte_length == 3
     assert aggregate.tree_sha256 == hashlib.sha256(expected).hexdigest()

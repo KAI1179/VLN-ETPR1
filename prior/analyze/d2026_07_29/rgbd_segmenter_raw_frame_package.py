@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import stat
 import struct
 import zipfile
 import zlib
 from dataclasses import asdict, dataclass, fields
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, Mapping, Sequence, Tuple, cast
 
 import numpy as np
@@ -168,6 +169,46 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def strict_read_bytes(path: Path, expected_sha256: str, label: str) -> bytes:
+    """Accept one regular file through one no-follow descriptor and pin its bytes."""
+
+    _require_hash(expected_sha256, f"{label} SHA-256")
+    if not isinstance(path, Path) or not isinstance(label, str) or not label:
+        raise ValueError("strict file read has invalid arguments")
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    if not absolute.name or any(part in {"", ".", ".."} for part in absolute.parts[1:]):
+        raise ValueError(f"{label} path escapes its root")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in absolute.parts[1:-1]:
+            child = os.open(component, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        file_descriptor = os.open(
+            absolute.name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=descriptor
+        )
+    except OSError as error:
+        os.close(descriptor)
+        raise ValueError(f"{label} must be a regular file: {path}") from error
+    os.close(descriptor)
+    try:
+        if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+            raise ValueError(f"{label} must be a regular file: {path}")
+        chunks = []
+        while True:
+            chunk = os.read(file_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(file_descriptor)
+    data = b"".join(chunks)
+    if _sha256(data) != expected_sha256:
+        raise ValueError(f"{label} SHA-256 mismatch: {path}")
+    return data
+
+
 def _require_hash(value: object, label: str) -> str:
     if not isinstance(value, str) or _HASH_PATTERN.fullmatch(value) is None:
         raise ValueError(f"{label} must be a lowercase SHA-256")
@@ -205,13 +246,9 @@ def _validate_arrays(arrays: RawFrameArrays) -> None:
         raise ValueError("schema_version must equal 1")
     if np.any(arrays.depth_m < 0.0) or np.any(arrays.depth_m > 10.0):
         raise ValueError("depth_m must be in [0, 10]")
-    if np.any(arrays.object_categories < -1) or np.any(
-        arrays.object_categories > 26
-    ):
+    if np.any(arrays.object_categories < -1) or np.any(arrays.object_categories > 26):
         raise ValueError("object_categories must be in [-1, 26]")
-    if np.any(arrays.region_categories < -1) or np.any(
-        arrays.region_categories > 9
-    ):
+    if np.any(arrays.region_categories < -1) or np.any(arrays.region_categories > 9):
         raise ValueError("region_categories must be in [-1, 9]")
     if not np.array_equal(
         arrays.sensor_yaw_degrees, np.arange(0, 360, 30, dtype="<i2")
@@ -224,9 +261,7 @@ def _validate_arrays(arrays: RawFrameArrays) -> None:
         np.array([0.0, 1.25, 0.0], dtype="<f8"),
     ):
         raise ValueError("sensor_position_relative has drifted")
-    _require_unit_quaternions(
-        arrays.sensor_rotations_xyzw, "sensor_rotations_xyzw"
-    )
+    _require_unit_quaternions(arrays.sensor_rotations_xyzw, "sensor_rotations_xyzw")
     _require_unit_quaternions(
         arrays.start_rotation_xyzw.reshape(1, 4), "start_rotation_xyzw"
     )
@@ -245,9 +280,7 @@ def _require_unit_quaternions(array: np.ndarray, label: str) -> None:
 
 def _npy_bytes(array: np.ndarray) -> bytes:
     output = io.BytesIO()
-    np.lib.format.write_array(
-        output, array, version=(1, 0), allow_pickle=False
-    )
+    np.lib.format.write_array(output, array, version=(1, 0), allow_pickle=False)
     return output.getvalue()
 
 
@@ -272,9 +305,7 @@ def encode_raw_frame_npz(arrays: RawFrameArrays) -> EncodedRawFrameNPZ:
     with zipfile.ZipFile(output, mode="w") as archive:
         for name in MEMBER_NAMES:
             npy = _npy_bytes(getattr(arrays, name))
-            info = zipfile.ZipInfo(
-                f"{name}.npy", date_time=(1980, 1, 1, 0, 0, 0)
-            )
+            info = zipfile.ZipInfo(f"{name}.npy", date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o600) << 16
@@ -384,8 +415,7 @@ def parse_raw_frame_npz_bytes(
         raise ValueError("NPZ must be bytes within the fixed size limit")
     archive_hash = _sha256(data)
     if expected_npz is not None and (
-        expected_npz.byte_length != len(data)
-        or expected_npz.sha256 != archive_hash
+        expected_npz.byte_length != len(data) or expected_npz.sha256 != archive_hash
     ):
         raise ValueError("NPZ metadata does not match accepted bytes")
     _require_exact_zip_end(data)
@@ -397,7 +427,9 @@ def parse_raw_frame_npz_bytes(
             expected_names = [f"{name}.npy" for name in MEMBER_NAMES]
             names = [info.filename for info in infos]
             if names != expected_names or len(set(names)) != len(names):
-                raise ValueError("NPZ members are missing, extra, duplicate, or unordered")
+                raise ValueError(
+                    "NPZ members are missing, extra, duplicate, or unordered"
+                )
             if sum(info.file_size for info in infos) != TOTAL_NPY_BYTE_LENGTH:
                 raise ValueError("NPZ uncompressed size has drifted")
             expected_offset = 0
@@ -477,9 +509,7 @@ def _row_to_json(row: IndexRow) -> Mapping[str, object]:
     return {
         "artifact": row.artifact,
         "cohort_row_sha256": row.cohort_row_sha256,
-        "members": {
-            name: _member_to_json(row.members[name]) for name in MEMBER_NAMES
-        },
+        "members": {name: _member_to_json(row.members[name]) for name in MEMBER_NAMES},
         "npz": asdict(row.npz),
         "observation_id": row.observation_id,
         "oracle_artifact_sha256": row.oracle_artifact_sha256,
@@ -494,9 +524,9 @@ def canonical_index_bytes(rows: Iterable[IndexRow]) -> bytes:
     materialized = tuple(rows)
     _validate_index_sequence(materialized)
     return b"".join(
-        json.dumps(
-            _row_to_json(row), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(_row_to_json(row), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
         + b"\n"
         for row in materialized
     )
@@ -524,16 +554,12 @@ def _parse_member(value: object, name: str) -> MemberMetadata:
         array_byte_length=_require_plain_int(
             raw["array_byte_length"], f"members.{name}.array_byte_length"
         ),
-        array_sha256=_require_hash(
-            raw["array_sha256"], f"members.{name}.array_sha256"
-        ),
+        array_sha256=_require_hash(raw["array_sha256"], f"members.{name}.array_sha256"),
         dtype=raw["dtype"] if isinstance(raw["dtype"], str) else "",
         npy_byte_length=_require_plain_int(
             raw["npy_byte_length"], f"members.{name}.npy_byte_length"
         ),
-        npy_sha256=_require_hash(
-            raw["npy_sha256"], f"members.{name}.npy_sha256"
-        ),
+        npy_sha256=_require_hash(raw["npy_sha256"], f"members.{name}.npy_sha256"),
         shape=shape,
     )
     expected_array_size = int(
@@ -558,8 +584,7 @@ def _validate_index_row(row: IndexRow) -> None:
     if row.ordinal > 49:
         raise ValueError("ordinal must be in [0, 49]")
     expected_artifact = (
-        f"observations/{row.scene_id}/{row.ordinal:02d}-"
-        f"{row.observation_id}.npz"
+        f"observations/{row.scene_id}/{row.ordinal:02d}-{row.observation_id}.npz"
     )
     if row.artifact != expected_artifact:
         raise ValueError("artifact is not derived from scene, ordinal, and ID")
@@ -587,16 +612,10 @@ def _parse_index_row(value: object) -> IndexRow:
     artifact = raw["artifact"] if isinstance(raw["artifact"], str) else ""
     row = IndexRow(
         artifact=artifact,
-        cohort_row_sha256=_require_hash(
-            raw["cohort_row_sha256"], "cohort_row_sha256"
-        ),
-        members={
-            name: _parse_member(members_raw[name], name) for name in MEMBER_NAMES
-        },
+        cohort_row_sha256=_require_hash(raw["cohort_row_sha256"], "cohort_row_sha256"),
+        members={name: _parse_member(members_raw[name], name) for name in MEMBER_NAMES},
         npz=FileRecord(
-            byte_length=_require_plain_int(
-                npz_raw["byte_length"], "npz.byte_length"
-            ),
+            byte_length=_require_plain_int(npz_raw["byte_length"], "npz.byte_length"),
             sha256=_require_hash(npz_raw["sha256"], "npz.sha256"),
         ),
         observation_id=observation_id,
@@ -617,9 +636,8 @@ def _validate_index_sequence(rows: Sequence[IndexRow]) -> None:
         raise ValueError("index ordinals or order are invalid")
     observation_ids = [row.observation_id for row in rows]
     artifacts = [row.artifact for row in rows]
-    if (
-        len(observation_ids) != len(set(observation_ids))
-        or len(artifacts) != len(set(artifacts))
+    if len(observation_ids) != len(set(observation_ids)) or len(artifacts) != len(
+        set(artifacts)
     ):
         raise ValueError("index observation IDs and artifacts must be unique")
 
@@ -632,9 +650,7 @@ def parse_index_bytes(data: bytes) -> Tuple[IndexRow, ...]:
     try:
         lines = data.splitlines()
         rows = tuple(
-            _parse_index_row(
-                json.loads(line, object_pairs_hook=_no_duplicate_pairs)
-            )
+            _parse_index_row(json.loads(line, object_pairs_hook=_no_duplicate_pairs))
             for line in lines
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
