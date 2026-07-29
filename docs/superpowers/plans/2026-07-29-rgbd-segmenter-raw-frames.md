@@ -208,21 +208,23 @@ exists, obtain `raw_region = region.category.index()`, require
 `0 <= raw_region < len(REGION_MAPPING)`, and map through `REGION_MAPPING`;
 missing region/category remains `-1`.
 
-The local level adapter defines each level floor Y as the minimum AABB-min Y
-over its regions, falling back to the level AABB-min Y when it has no regions.
-Sort levels by that floor; select the lowest when start Y is below all floors,
-otherwise the highest floor not above start Y. Store the selected level's
-float64 AABB-min X/Z as `target_origin_xz`.
+The local AABB adapter casts center and size components to float32, computes
+`center - sizes / 2.0` with explicit float32 operations matching Magnum, then
+promotes the float32 minimum to float64. The local level adapter defines each
+level floor Y as the minimum of those AABB-min Y values over its regions,
+falling back to the level AABB-min Y when it has no regions. Sort levels by that
+floor; select the lowest when start Y is below all floors, otherwise the highest
+floor not above start Y. Store the selected level's promoted float32 AABB-min
+X/Z as float64 `target_origin_xz`.
 
-Replay target-local start metadata by casting stored start X/Z and stored
-target origin X/Z to float32 before subtraction. Require `np.array_equal`
-between that float32 result and the pinned float32 evidence metadata. Continue
-to cast the replayed start direction to float32 before its exact comparison.
-This matches the existing oracle's float32 arithmetic boundary exactly without
-admitting a tunable tolerance. A live all-50 arithmetic scan found 50/50 exact
-matches for float32 operand subtraction; float64 subtraction followed by a
-float32 cast matched only 49/50 and missed one component by one ULP. Cohort and
-stored float64 start pose still require exact equality.
+Compute float64 target-local start X/Z as start X/Z minus the stored target
+origin. Cast the replayed target-local start and replayed start direction to
+float32, then require `np.array_equal` with the pinned float32 evidence
+metadata. This matches the existing save/load boundary exactly without
+admitting a tunable tolerance. A live all-50 scan found 50/50 exact matches
+after restoring Magnum's float32 AABB arithmetic; the earlier float64 AABB
+adapter matched only 49/50 and missed one component by one ULP. Cohort and
+stored float64 start pose require exact equality.
 
 Build 12 public `OracleSensorFrame`s and call public `project_oracle_frames`.
 Require `np.array_equal` for:
