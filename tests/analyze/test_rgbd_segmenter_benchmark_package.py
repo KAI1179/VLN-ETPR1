@@ -10,6 +10,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from dataclasses import asdict, dataclass, replace
@@ -4200,11 +4201,15 @@ def test_fresh_publication_child_uses_canonical_request_and_minimal_exec(
         request: bytes,
         environment: Mapping[str, str],
         timeout_seconds: float,
+        working_directory: Path,
+        inherited_descriptors: tuple[int, ...],
     ) -> subprocess.CompletedProcess[bytes]:
         captured["command"] = command
         captured["input"] = request
         captured["env"] = environment
         captured["timeout"] = timeout_seconds
+        captured["working_directory"] = working_directory
+        captured["inherited_descriptors"] = inherited_descriptors
         return subprocess.CompletedProcess(command, 0, b"validated", b"")
 
     monkeypatch.setattr(package, "_run_bounded_publication_process", run)
@@ -4229,18 +4234,316 @@ def test_fresh_publication_child_uses_canonical_request_and_minimal_exec(
     environment = cast(Dict[str, str], captured["env"])
     assert Path(command[0]).is_absolute()
     assert command[1] == "-c"
+    assert command[0].startswith("/proc/self/fd/")
     assert "pickle" not in command[2]
     assert canonical_json_bytes(json.loads(request)) == request
     assert json.loads(request)["root"] == str(staging)
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert environment["PYTHONPATH"] == str(authority.benchmark_repository_root)
+    inherited_descriptors = cast(
+        Tuple[int, ...],
+        captured["inherited_descriptors"],
+    )
+    assert len(inherited_descriptors) == 2
+    assert command[0] == f"/proc/self/fd/{inherited_descriptors[0]}"
+    assert environment["LD_LIBRARY_PATH"] == (
+        f"/proc/self/fd/{inherited_descriptors[1]}"
+    )
+    assert environment["LD_LIBRARY_PATH"] != "/hostile/loader"
     assert not {
-        "LD_LIBRARY_PATH",
         "LD_PRELOAD",
         "PYTHONHOME",
         "PYTHONSTARTUP",
     } & set(environment)
     assert captured["timeout"] == 3600.0
+    assert captured["working_directory"] == authority.benchmark_repository_root
+
+
+def test_runtime_loader_supports_real_fresh_child_from_poisoned_parent_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    runtime_loader = authority.runtime_loader
+    assert runtime_loader is not None
+    (
+        actual_loader,
+        interpreter_descriptor,
+        loader_descriptor,
+    ) = package._open_runtime_loader(  # noqa: SLF001
+        Path(authority.benchmark_attestation.python_executable)
+    )
+    assert actual_loader == runtime_loader
+    request = canonical_json_bytes(
+        package._publication_authority_json(authority)  # noqa: SLF001
+    )
+    script = (
+        "import contextlib,json,os,sys\n"
+        "with open(os.devnull,'w') as import_errors:\n"
+        "    with contextlib.redirect_stderr(import_errors):\n"
+        "        from prior.analyze.d2026_07_29."
+        "rgbd_segmenter_benchmark_package import _publication_authority_from_json\n"
+        "authority=_publication_authority_from_json("
+        "json.loads(sys.stdin.buffer.read()))\n"
+        "sys.stdout.write(authority.runtime_loader.library.sha256)\n"
+    )
+    poison = tmp_path / "poison"
+    (poison / "prior").mkdir(parents=True)
+    (poison / "prior" / "__init__.py").write_text(
+        "raise RuntimeError('hostile cwd prior imported')\n"
+    )
+    monkeypatch.chdir(poison)
+    try:
+        result = package._run_bounded_publication_process(  # noqa: SLF001
+            (
+                f"/proc/self/fd/{interpreter_descriptor}",
+                "-c",
+                script,
+            ),
+            request=request,
+            environment={
+                "HOME": "/nonexistent",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
+                "PATH": "/usr/bin:/bin",
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONPATH": str(authority.benchmark_repository_root),
+                "PYTHONWARNINGS": "ignore",
+            },
+            timeout_seconds=60.0,
+            working_directory=authority.benchmark_repository_root,
+            inherited_descriptors=(
+                interpreter_descriptor,
+                loader_descriptor,
+            ),
+        )
+    finally:
+        package._close_descriptors(  # noqa: SLF001
+            (interpreter_descriptor, loader_descriptor)
+        )
+
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout.endswith(runtime_loader.library.sha256.encode("ascii"))
+
+
+@pytest.mark.parametrize("directory_name", [".published.staging", "published"])
+def test_public_fresh_validator_rebinds_exact_local_record_and_ignores_hostile_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    directory_name: str,
+) -> None:
+    original_run_child = package._run_publication_child  # noqa: SLF001
+    artifacts, authority, expected = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    monkeypatch.setattr(package, "_run_publication_child", original_run_child)
+    root = tmp_path / directory_name
+    root.mkdir(mode=0o700)
+    for relative, data in artifacts.files:
+        path = root / relative
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o600)
+    for directory in root.rglob("*"):
+        if directory.is_dir():
+            directory.chmod(0o700)
+    captured_environment: Mapping[str, str] | None = None
+
+    def run(
+        command: tuple[str, ...],
+        *,
+        request: bytes,
+        environment: Mapping[str, str],
+        timeout_seconds: float,
+        working_directory: Path,
+        inherited_descriptors: tuple[int, ...],
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal captured_environment
+        del request, timeout_seconds, working_directory, inherited_descriptors
+        captured_environment = environment
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            expected.canonical_bytes(),
+            b"",
+        )
+
+    monkeypatch.setattr(package, "_run_bounded_publication_process", run)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/hostile/loader")
+    monkeypatch.setenv("LD_PRELOAD", "/hostile/preload.so")
+
+    actual = package.validate_candidate_package_fresh_process(root, authority)
+
+    assert actual == expected
+    assert captured_environment is not None
+    assert captured_environment["LD_LIBRARY_PATH"].startswith("/proc/self/fd/")
+    assert captured_environment["LD_LIBRARY_PATH"] != "/hostile/loader"
+    assert "LD_PRELOAD" not in captured_environment
+
+
+def test_runtime_loader_rejects_symlinked_interpreter(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "runtime" / "bin").mkdir(parents=True)
+    (tmp_path / "runtime" / "lib").mkdir()
+    interpreter = tmp_path / "runtime" / "bin" / "python"
+    interpreter.symlink_to(Path(sys.executable).resolve(strict=True))
+
+    with pytest.raises(ValueError, match="attestation failed"):
+        package._open_runtime_loader(interpreter)  # noqa: SLF001
+
+
+def test_runtime_loader_rejects_world_writable_path(
+    tmp_path: Path,
+) -> None:
+    prefix = tmp_path / "runtime"
+    (prefix / "bin").mkdir(parents=True)
+    loader = prefix / "lib"
+    loader.mkdir()
+    interpreter = prefix / "bin" / "python"
+    interpreter.write_bytes(Path(sys.executable).resolve(strict=True).read_bytes())
+    interpreter.chmod(0o755)
+    loader.chmod(0o777)
+
+    with pytest.raises(ValueError, match="world-writable"):
+        package._open_runtime_loader(interpreter)  # noqa: SLF001
+
+
+def test_fresh_publication_child_rejects_runtime_loader_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    staging_descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    original_open = package._open_runtime_loader  # noqa: SLF001
+
+    def drifted(
+        interpreter: Path,
+    ) -> tuple[package.RuntimeLoaderAttestation, int, int]:
+        attestation, interpreter_descriptor, loader_descriptor = original_open(
+            interpreter
+        )
+        return (
+            replace(attestation, inode=attestation.inode + 1),
+            interpreter_descriptor,
+            loader_descriptor,
+        )
+
+    monkeypatch.setattr(package, "_open_runtime_loader", drifted)
+    try:
+        with pytest.raises(ValueError, match="differs from authority"):
+            package._run_publication_child(  # noqa: SLF001
+                "successful",
+                staging_descriptor,
+                authority,
+            )
+    finally:
+        os.close(staging_descriptor)
+
+
+def test_fresh_publication_child_executes_held_interpreter_and_rejects_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    runtime_loader = authority.runtime_loader
+    assert runtime_loader is not None
+    benchmark_root = authority.benchmark_repository_root
+    with tempfile.TemporaryDirectory(
+        prefix=".runtime-swap-",
+        dir=benchmark_root,
+    ) as temporary:
+        prefix = Path(temporary)
+        (prefix / "bin").mkdir()
+        (prefix / "lib").mkdir()
+        interpreter = prefix / "bin" / "python"
+        interpreter.write_bytes(
+            Path(authority.benchmark_attestation.python_executable).read_bytes()
+        )
+        interpreter.chmod(0o755)
+        library_target = runtime_loader.library_target
+        (prefix / "lib" / library_target).write_bytes(
+            (runtime_loader.path / library_target).read_bytes()
+        )
+        (prefix / "lib" / library_target).chmod(0o755)
+        (prefix / "lib" / "libstdc++.so.6").symlink_to(library_target)
+        benchmark = replace(
+            authority.benchmark_attestation,
+            python_executable=str(interpreter),
+        )
+        fake_authority = replace(
+            authority,
+            benchmark_attestation=benchmark,
+            expected_benchmark_attestation_sha256=benchmark.sha256,
+            runtime_loader=None,
+        )
+        expected_loader = fake_authority.runtime_loader
+        assert expected_loader is not None
+        staging = tmp_path / "staging-swap"
+        staging.mkdir()
+        staging_descriptor = os.open(
+            staging,
+            os.O_RDONLY | os.O_DIRECTORY,
+        )
+
+        def swap_at_popen(
+            command: tuple[str, ...],
+            *,
+            request: bytes,
+            environment: Mapping[str, str],
+            timeout_seconds: float,
+            working_directory: Path,
+            inherited_descriptors: tuple[int, ...],
+        ) -> subprocess.CompletedProcess[bytes]:
+            del request, environment, timeout_seconds
+            assert working_directory == benchmark_root
+            assert len(inherited_descriptors) == 2
+            held_interpreter = inherited_descriptors[0]
+            assert command[0] == f"/proc/self/fd/{held_interpreter}"
+            assert os.fstat(held_interpreter).st_ino == (
+                expected_loader.interpreter_inode
+            )
+            interpreter.rename(interpreter.with_name("python.attested"))
+            interpreter.write_bytes(b"#!/bin/sh\nexit 99\n")
+            interpreter.chmod(0o755)
+            return subprocess.CompletedProcess(command, 0, b"validated", b"")
+
+        monkeypatch.setattr(
+            package,
+            "_run_bounded_publication_process",
+            swap_at_popen,
+        )
+        try:
+            with pytest.raises(
+                ValueError,
+                match="publication runtime authority drifted",
+            ):
+                package._run_publication_child(  # noqa: SLF001
+                    "successful",
+                    staging_descriptor,
+                    fake_authority,
+                )
+        finally:
+            os.close(staging_descriptor)
 
 
 @pytest.mark.parametrize(
@@ -4311,6 +4614,7 @@ def test_bounded_publication_child_terminates_on_output_cap(
                 "PYTHONNOUSERSITE": "1",
             },
             timeout_seconds=10.0,
+            working_directory=Path(package.__file__).resolve(strict=True).parents[3],
         )
 
 

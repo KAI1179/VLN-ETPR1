@@ -315,6 +315,93 @@ class TrustedArtifactAuthority:
 
 
 @dataclass(frozen=True)
+class RuntimeLoaderAttestation:
+    path: Path
+    interpreter_device: int
+    interpreter_inode: int
+    interpreter_mode: int
+    interpreter_link_count: int
+    interpreter_user: int
+    interpreter_group: int
+    interpreter_modified_ns: int
+    interpreter_changed_ns: int
+    interpreter: FileRecord
+    device: int
+    inode: int
+    directory_mode: int
+    directory_user: int
+    directory_group: int
+    directory_modified_ns: int
+    directory_changed_ns: int
+    library_target: str
+    library_device: int
+    library_inode: int
+    library_mode: int
+    library_user: int
+    library_group: int
+    library_modified_ns: int
+    library_changed_ns: int
+    library: FileRecord
+
+    def __post_init__(self) -> None:
+        _absolute_authority_root(self.path, "runtime loader path")
+        if (
+            any(
+                type(value) is not int or value < 0
+                for value in (
+                    self.device,
+                    self.inode,
+                    self.interpreter_device,
+                    self.interpreter_inode,
+                    self.interpreter_mode,
+                    self.interpreter_link_count,
+                    self.interpreter_user,
+                    self.interpreter_group,
+                    self.interpreter_modified_ns,
+                    self.interpreter_changed_ns,
+                    self.directory_mode,
+                    self.directory_user,
+                    self.directory_group,
+                    self.directory_modified_ns,
+                    self.directory_changed_ns,
+                    self.library_device,
+                    self.library_inode,
+                    self.library_mode,
+                    self.library_user,
+                    self.library_group,
+                    self.library_modified_ns,
+                    self.library_changed_ns,
+                )
+            )
+            or not stat.S_ISDIR(self.directory_mode)
+            or self.directory_mode & stat.S_IWOTH
+            or not stat.S_ISREG(self.interpreter_mode)
+            or self.interpreter_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not isinstance(self.interpreter, FileRecord)
+            or not isinstance(self.library_target, str)
+            or PurePosixPath(self.library_target).name != self.library_target
+            or self.library_target in {"", ".", ".."}
+            or not stat.S_ISREG(self.library_mode)
+            or self.library_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not isinstance(self.library, FileRecord)
+        ):
+            raise ValueError("runtime loader attestation is invalid")
+
+    def interpreter_fingerprint(self) -> "_Fingerprint":
+        return _Fingerprint(
+            device=self.interpreter_device,
+            inode=self.interpreter_inode,
+            mode=self.interpreter_mode,
+            link_count=self.interpreter_link_count,
+            user=self.interpreter_user,
+            group=self.interpreter_group,
+            size=self.interpreter.byte_length,
+            modified_ns=self.interpreter_modified_ns,
+            changed_ns=self.interpreter_changed_ns,
+        )
+
+
+@dataclass(frozen=True)
 class RealProvenanceAuthority:
     candidate_repository_root: Path
     checkpoint_root: Path
@@ -352,6 +439,7 @@ class CandidateValidationAuthority:
     adapter_path: str
     environment_lock: TrustedArtifactAuthority
     real: Optional[RealProvenanceAuthority] = None
+    runtime_loader: Optional[RuntimeLoaderAttestation] = None
 
     def __post_init__(self) -> None:
         _hash(self.expected_manifest_sha256, "expected candidate manifest SHA-256")
@@ -382,6 +470,10 @@ class CandidateValidationAuthority:
                 self.real is not None
                 and not isinstance(self.real, RealProvenanceAuthority)
             )
+            or (
+                self.runtime_loader is not None
+                and not isinstance(self.runtime_loader, RuntimeLoaderAttestation)
+            )
             or (self.real is not None) is not (not self.candidate.synthetic)
         ):
             raise ValueError("candidate validation authority is invalid")
@@ -407,6 +499,25 @@ class CandidateValidationAuthority:
             )
         ):
             raise ValueError("candidate authorities differ from commitment")
+        runtime_loader, interpreter_descriptor, loader_descriptor = (
+            _open_runtime_loader(Path(self.benchmark_attestation.python_executable))
+        )
+        primary: Optional[BaseException] = None
+        try:
+            if self.runtime_loader is None:
+                object.__setattr__(self, "runtime_loader", runtime_loader)
+            elif self.runtime_loader != runtime_loader:
+                raise ValueError("runtime loader differs from interpreter authority")
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                _close_descriptors((interpreter_descriptor, loader_descriptor))
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                raise PublicationCleanupError(primary, cleanup) from primary
 
 
 @dataclass(frozen=True)
@@ -2753,6 +2864,202 @@ def _close_descriptors(descriptors: Sequence[int]) -> None:
         raise _DescriptorCloseError(failures) from failures[0]
 
 
+def _attest_runtime_file(
+    descriptor: int,
+    label: str,
+    *,
+    executable: bool,
+) -> Tuple[_Fingerprint, FileRecord]:
+    before = _fingerprint(os.fstat(descriptor))
+    if (
+        not stat.S_ISREG(before.mode)
+        or not 0 < before.size <= _MAX_TRUSTED_ARTIFACT_BYTES
+        or before.mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or (
+            executable
+            and not before.mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+    ):
+        raise ValueError(f"{label} is unsafe")
+    digest = hashlib.sha256()
+    remaining = before.size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, _READ_CHUNK_BYTES))
+        if not chunk:
+            raise ValueError(f"{label} was truncated")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if os.read(descriptor, 1) or _fingerprint(os.fstat(descriptor)) != before:
+        raise ValueError(f"{label} changed during attestation")
+    return before, FileRecord(before.size, digest.hexdigest())
+
+
+def _open_runtime_loader(
+    interpreter: Path,
+) -> Tuple[RuntimeLoaderAttestation, int, int]:
+    configured = interpreter
+    _absolute_authority_root(configured, "publication interpreter")
+    prefix = configured.parent.parent
+    if configured.parent != prefix / "bin" or configured.name in {"", ".", ".."}:
+        raise ValueError("publication interpreter path is invalid")
+    loader_path = prefix / "lib"
+    try:
+        prefix_descriptor, descriptors, bindings = _open_anchored_root(prefix)
+    except OSError as error:
+        raise ValueError("runtime prefix path is unsafe") from error
+    bin_descriptor: Optional[int] = None
+    interpreter_descriptor: Optional[int] = None
+    loader_descriptor: Optional[int] = None
+    library_descriptor: Optional[int] = None
+    retained = False
+    primary: Optional[BaseException] = None
+    try:
+        bin_descriptor = os.open(
+            "bin",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=prefix_descriptor,
+        )
+        loader_descriptor = os.open(
+            "lib",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=prefix_descriptor,
+        )
+        interpreter_descriptor = os.open(
+            configured.name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=bin_descriptor,
+        )
+        if any(
+            os.fstat(descriptor).st_mode & stat.S_IWOTH
+            for descriptor in (*descriptors, bin_descriptor, loader_descriptor)
+        ):
+            raise ValueError("runtime prefix path is world-writable")
+        bin_before = _fingerprint(os.fstat(bin_descriptor))
+        directory_before = _fingerprint(os.fstat(loader_descriptor))
+        interpreter_before, interpreter_record = _attest_runtime_file(
+            interpreter_descriptor,
+            "publication interpreter",
+            executable=True,
+        )
+        try:
+            alias_metadata = os.stat(
+                "libstdc++.so.6",
+                dir_fd=loader_descriptor,
+                follow_symlinks=False,
+            )
+            library_target = os.readlink(
+                "libstdc++.so.6",
+                dir_fd=loader_descriptor,
+            )
+        except OSError as error:
+            raise ValueError("runtime C++ library alias is unsafe") from error
+        if (
+            not stat.S_ISLNK(alias_metadata.st_mode)
+            or PurePosixPath(library_target).name != library_target
+            or library_target in {"", ".", ".."}
+        ):
+            raise ValueError("runtime C++ library alias is unsafe")
+        library_descriptor = os.open(
+            library_target,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=loader_descriptor,
+        )
+        library_before, library_record = _attest_runtime_file(
+            library_descriptor,
+            "runtime C++ library",
+            executable=False,
+        )
+        if (
+            _fingerprint(os.fstat(bin_descriptor)) != bin_before
+            or _fingerprint(os.fstat(loader_descriptor)) != directory_before
+            or _fingerprint(
+                os.stat(
+                    configured.name,
+                    dir_fd=bin_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != interpreter_before
+            or _fingerprint(
+                os.stat(
+                    "lib",
+                    dir_fd=prefix_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != directory_before
+            or os.readlink("libstdc++.so.6", dir_fd=loader_descriptor) != library_target
+            or _fingerprint(
+                os.stat(
+                    library_target,
+                    dir_fd=loader_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != library_before
+        ):
+            raise ValueError("runtime authority changed during attestation")
+        _recapture_ancestor_bindings(bindings)
+        attestation = RuntimeLoaderAttestation(
+            path=loader_path,
+            interpreter_device=interpreter_before.device,
+            interpreter_inode=interpreter_before.inode,
+            interpreter_mode=interpreter_before.mode,
+            interpreter_link_count=interpreter_before.link_count,
+            interpreter_user=interpreter_before.user,
+            interpreter_group=interpreter_before.group,
+            interpreter_modified_ns=interpreter_before.modified_ns,
+            interpreter_changed_ns=interpreter_before.changed_ns,
+            interpreter=interpreter_record,
+            device=directory_before.device,
+            inode=directory_before.inode,
+            directory_mode=directory_before.mode,
+            directory_user=directory_before.user,
+            directory_group=directory_before.group,
+            directory_modified_ns=directory_before.modified_ns,
+            directory_changed_ns=directory_before.changed_ns,
+            library_target=library_target,
+            library_device=library_before.device,
+            library_inode=library_before.inode,
+            library_mode=library_before.mode,
+            library_user=library_before.user,
+            library_group=library_before.group,
+            library_modified_ns=library_before.modified_ns,
+            library_changed_ns=library_before.changed_ns,
+            library=library_record,
+        )
+        retained = True
+        return attestation, interpreter_descriptor, loader_descriptor
+    except OSError as error:
+        primary = ValueError("runtime authority attestation failed")
+        raise primary from error
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        opened = tuple(
+            descriptor
+            for descriptor in (
+                library_descriptor,
+                interpreter_descriptor,
+                loader_descriptor,
+                bin_descriptor,
+            )
+            if descriptor is not None
+            and (
+                not retained
+                or descriptor not in {interpreter_descriptor, loader_descriptor}
+            )
+        )
+        closed = opened + tuple(reversed(descriptors))
+        try:
+            _close_descriptors(closed)
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            raise PublicationCleanupError(primary, cleanup) from primary
+
+
 def _recapture_ancestor_bindings(
     bindings: Sequence[Tuple[int, str, _DirectoryIdentity]],
 ) -> None:
@@ -4866,6 +5173,9 @@ def _publication_authority_json(
                 authority.real.weight_permission
             ),
         }
+    runtime_loader = authority.runtime_loader
+    if runtime_loader is None:
+        raise ValueError("publication runtime loader authority is unavailable")
     return {
         "adapter_path": authority.adapter_path,
         "benchmark_attestation": {
@@ -4910,6 +5220,34 @@ def _publication_authority_json(
             "timeout_seconds": authority.p53_launch.timeout_seconds,
         },
         "real": real,
+        "runtime_loader": {
+            "device": runtime_loader.device,
+            "directory_changed_ns": runtime_loader.directory_changed_ns,
+            "directory_group": runtime_loader.directory_group,
+            "directory_mode": runtime_loader.directory_mode,
+            "directory_modified_ns": runtime_loader.directory_modified_ns,
+            "directory_user": runtime_loader.directory_user,
+            "inode": runtime_loader.inode,
+            "interpreter": _publication_file_record_json(runtime_loader.interpreter),
+            "interpreter_changed_ns": runtime_loader.interpreter_changed_ns,
+            "interpreter_device": runtime_loader.interpreter_device,
+            "interpreter_group": runtime_loader.interpreter_group,
+            "interpreter_inode": runtime_loader.interpreter_inode,
+            "interpreter_link_count": runtime_loader.interpreter_link_count,
+            "interpreter_mode": runtime_loader.interpreter_mode,
+            "interpreter_modified_ns": runtime_loader.interpreter_modified_ns,
+            "interpreter_user": runtime_loader.interpreter_user,
+            "library": _publication_file_record_json(runtime_loader.library),
+            "library_changed_ns": runtime_loader.library_changed_ns,
+            "library_device": runtime_loader.library_device,
+            "library_group": runtime_loader.library_group,
+            "library_inode": runtime_loader.library_inode,
+            "library_mode": runtime_loader.library_mode,
+            "library_modified_ns": runtime_loader.library_modified_ns,
+            "library_target": runtime_loader.library_target,
+            "library_user": runtime_loader.library_user,
+            "path": str(runtime_loader.path),
+        },
     }
 
 
@@ -4927,6 +5265,7 @@ def _publication_authority_from_json(value: object) -> CandidateValidationAuthor
         "mapping",
         "p53_launch",
         "real",
+        "runtime_loader",
     )
     raw = _exact_object(value, keys, "publication authority")
     launch = _exact_object(
@@ -5076,6 +5415,38 @@ def _publication_authority_from_json(value: object) -> CandidateValidationAuthor
                 "publication weight permission",
             ),
         )
+    runtime_loader_raw = _exact_object(
+        raw["runtime_loader"],
+        (
+            "device",
+            "directory_changed_ns",
+            "directory_group",
+            "directory_mode",
+            "directory_modified_ns",
+            "directory_user",
+            "inode",
+            "interpreter",
+            "interpreter_changed_ns",
+            "interpreter_device",
+            "interpreter_group",
+            "interpreter_inode",
+            "interpreter_link_count",
+            "interpreter_mode",
+            "interpreter_modified_ns",
+            "interpreter_user",
+            "library",
+            "library_changed_ns",
+            "library_device",
+            "library_group",
+            "library_inode",
+            "library_mode",
+            "library_modified_ns",
+            "library_target",
+            "library_user",
+            "path",
+        ),
+        "publication runtime loader",
+    )
     return CandidateValidationAuthority(
         expected_manifest_sha256=cast(str, raw["expected_manifest_sha256"]),
         p53_launch=P53ValidatorLaunch(
@@ -5114,6 +5485,76 @@ def _publication_authority_from_json(value: object) -> CandidateValidationAuthor
             "publication environment lock",
         ),
         real=real,
+        runtime_loader=RuntimeLoaderAttestation(
+            path=Path(cast(str, runtime_loader_raw["path"])),
+            interpreter_device=cast(
+                int,
+                runtime_loader_raw["interpreter_device"],
+            ),
+            interpreter_inode=cast(
+                int,
+                runtime_loader_raw["interpreter_inode"],
+            ),
+            interpreter_mode=cast(
+                int,
+                runtime_loader_raw["interpreter_mode"],
+            ),
+            interpreter_link_count=cast(
+                int,
+                runtime_loader_raw["interpreter_link_count"],
+            ),
+            interpreter_user=cast(
+                int,
+                runtime_loader_raw["interpreter_user"],
+            ),
+            interpreter_group=cast(
+                int,
+                runtime_loader_raw["interpreter_group"],
+            ),
+            interpreter_modified_ns=cast(
+                int,
+                runtime_loader_raw["interpreter_modified_ns"],
+            ),
+            interpreter_changed_ns=cast(
+                int,
+                runtime_loader_raw["interpreter_changed_ns"],
+            ),
+            interpreter=_publication_file_record_from_json(
+                runtime_loader_raw["interpreter"],
+                "publication runtime interpreter",
+            ),
+            device=cast(int, runtime_loader_raw["device"]),
+            inode=cast(int, runtime_loader_raw["inode"]),
+            directory_mode=cast(int, runtime_loader_raw["directory_mode"]),
+            directory_user=cast(int, runtime_loader_raw["directory_user"]),
+            directory_group=cast(int, runtime_loader_raw["directory_group"]),
+            directory_modified_ns=cast(
+                int,
+                runtime_loader_raw["directory_modified_ns"],
+            ),
+            directory_changed_ns=cast(
+                int,
+                runtime_loader_raw["directory_changed_ns"],
+            ),
+            library_target=cast(str, runtime_loader_raw["library_target"]),
+            library_device=cast(int, runtime_loader_raw["library_device"]),
+            library_inode=cast(int, runtime_loader_raw["library_inode"]),
+            library_mode=cast(int, runtime_loader_raw["library_mode"]),
+            library_user=cast(int, runtime_loader_raw["library_user"]),
+            library_group=cast(int, runtime_loader_raw["library_group"]),
+            library_modified_ns=cast(
+                int,
+                runtime_loader_raw["library_modified_ns"],
+            ),
+            library_changed_ns=cast(
+                int,
+                runtime_loader_raw["library_changed_ns"],
+            ),
+            library=_publication_file_record_from_json(
+                runtime_loader_raw["library"],
+                "publication runtime loader library",
+            ),
+        ),
     )
 
 
@@ -5153,13 +5594,26 @@ def _run_bounded_publication_process(
     request: bytes,
     environment: Mapping[str, str],
     timeout_seconds: float,
+    working_directory: Path,
+    inherited_descriptors: Tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
+    _absolute_authority_root(working_directory, "publication child working directory")
+    try:
+        resolved_working_directory = working_directory.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(
+            "publication child working directory is unavailable"
+        ) from error
+    if resolved_working_directory != working_directory:
+        raise ValueError("publication child working directory must be canonical")
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=dict(environment),
+        pass_fds=inherited_descriptors,
+        cwd=str(working_directory),
     )
     if process.stdin is None or process.stdout is None or process.stderr is None:
         _terminate_publication_child(process)
@@ -5247,11 +5701,13 @@ def _run_publication_child(
     authority: CandidateValidationAuthority,
 ) -> bytes:
     script = (
-        "import sys;"
-        "from prior.analyze.d2026_07_29."
-        "rgbd_segmenter_benchmark_package import _publication_child_request;"
+        "import contextlib,os,sys\n"
+        "with open(os.devnull,'w') as import_errors:\n"
+        "    with contextlib.redirect_stderr(import_errors):\n"
+        "        from prior.analyze.d2026_07_29."
+        "rgbd_segmenter_benchmark_package import _publication_child_request\n"
         "sys.stdout.buffer.write("
-        "_publication_child_request(sys.stdin.buffer.read()))"
+        "_publication_child_request(sys.stdin.buffer.read()))\n"
     )
     root = Path(os.readlink(f"/proc/self/fd/{root_descriptor}"))
     _absolute_authority_root(root, "publication staging root")
@@ -5260,19 +5716,27 @@ def _run_publication_child(
         "mode": mode,
         "root": str(root),
     })
-    configured_interpreter = Path(authority.benchmark_attestation.python_executable)
-    interpreter = configured_interpreter.resolve(strict=True)
-    if (
-        interpreter != configured_interpreter
-        or not interpreter.is_file()
-        or stat.S_ISLNK(os.lstat(interpreter).st_mode)
-        or not os.access(interpreter, os.X_OK)
-    ):
-        raise ValueError("publication interpreter must be canonical and executable")
+    interpreter = Path(authority.benchmark_attestation.python_executable)
+    expected_loader = authority.runtime_loader
+    if expected_loader is None:
+        raise ValueError("publication runtime loader authority is unavailable")
+    actual_loader, interpreter_descriptor, loader_descriptor = _open_runtime_loader(
+        interpreter
+    )
+    if actual_loader != expected_loader:
+        mismatch = ValueError("publication runtime loader differs from authority")
+        try:
+            raise mismatch
+        finally:
+            try:
+                _close_descriptors((interpreter_descriptor, loader_descriptor))
+            except BaseException as cleanup:
+                raise PublicationCleanupError(mismatch, cleanup) from mismatch
     environment = {
         "HOME": "/nonexistent",
         "LANG": "C",
         "LC_ALL": "C",
+        "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
         "PATH": "/usr/bin:/bin",
         "PYTHONNOUSERSITE": "1",
         "PYTHONPATH": str(authority.benchmark_repository_root),
@@ -5281,15 +5745,74 @@ def _run_publication_child(
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible_devices is not None:
         environment["CUDA_VISIBLE_DEVICES"] = visible_devices
-    result = _run_bounded_publication_process(
-        (str(interpreter), "-c", script),
-        request=serialized,
-        environment=environment,
-        timeout_seconds=3600.0,
-    )
-    if result.returncode != 0 or result.stderr or not result.stdout:
-        raise ValueError("fresh-process publication validation failed")
-    return result.stdout
+    primary: Optional[BaseException] = None
+    try:
+        result = _run_bounded_publication_process(
+            (f"/proc/self/fd/{interpreter_descriptor}", "-c", script),
+            request=serialized,
+            environment=environment,
+            timeout_seconds=3600.0,
+            working_directory=authority.benchmark_repository_root,
+            inherited_descriptors=(
+                interpreter_descriptor,
+                loader_descriptor,
+            ),
+        )
+        held_loader = _fingerprint(os.fstat(loader_descriptor))
+        held_runtime_drifted = _fingerprint(
+            os.fstat(interpreter_descriptor)
+        ) != expected_loader.interpreter_fingerprint() or (
+            held_loader.device,
+            held_loader.inode,
+            held_loader.mode,
+            held_loader.user,
+            held_loader.group,
+            held_loader.modified_ns,
+            held_loader.changed_ns,
+        ) != (
+            expected_loader.device,
+            expected_loader.inode,
+            expected_loader.directory_mode,
+            expected_loader.directory_user,
+            expected_loader.directory_group,
+            expected_loader.directory_modified_ns,
+            expected_loader.directory_changed_ns,
+        )
+        (
+            final_loader,
+            final_interpreter_descriptor,
+            final_loader_descriptor,
+        ) = _open_runtime_loader(interpreter)
+        final_primary: Optional[BaseException] = None
+        try:
+            if held_runtime_drifted or final_loader != expected_loader:
+                raise ValueError("publication runtime authority drifted")
+        except BaseException as error:
+            final_primary = error
+            raise
+        finally:
+            try:
+                _close_descriptors((
+                    final_interpreter_descriptor,
+                    final_loader_descriptor,
+                ))
+            except BaseException as cleanup:
+                if final_primary is None:
+                    raise
+                raise PublicationCleanupError(final_primary, cleanup) from final_primary
+        if result.returncode != 0 or result.stderr or not result.stdout:
+            raise ValueError("fresh-process publication validation failed")
+        return result.stdout
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            _close_descriptors((interpreter_descriptor, loader_descriptor))
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            raise PublicationCleanupError(primary, cleanup) from primary
 
 
 def _successful_artifact_bytes(
@@ -5707,11 +6230,7 @@ def _publish_package(
             raise PublicationCleanupError(primary, combined_cleanup) from primary
 
 
-def _rebind_child_validation(
-    data: bytes,
-    artifacts: SuccessfulPackageArtifacts,
-    authority: CandidateValidationAuthority,
-) -> CandidateValidationRecord:
+def _parse_child_validation(data: bytes) -> CandidateValidationRecord:
     raw = _exact_object(
         _strict_json_object(data, "child validation record"),
         (
@@ -5768,6 +6287,17 @@ def _rebind_child_validation(
         package=package_record,
         _validation_token=_VALIDATION_TOKEN,
     )
+    if record.canonical_bytes() != data:
+        raise ValueError("child validation record is noncanonical")
+    return record
+
+
+def _rebind_child_validation(
+    data: bytes,
+    artifacts: SuccessfulPackageArtifacts,
+    authority: CandidateValidationAuthority,
+) -> CandidateValidationRecord:
+    record = _parse_child_validation(data)
     expected_status = (
         "NOT_APPLICABLE"
         if artifacts.manifest.summary.real is None
@@ -5783,10 +6313,98 @@ def _rebind_child_validation(
         != artifacts.manifest.summary.p53_attestation.sha256
         or record.run_kind is not artifacts.manifest.summary.run_kind
         or record.candidate_status != expected_status
-        or record.canonical_bytes() != data
     ):
         raise ValueError("child validation record differs from publication authority")
     return record
+
+
+def _capture_successful_package_binding(
+    root_descriptor: int,
+    snapshot: _TreeSnapshot,
+) -> Tuple[SuccessfulManifest, PackageValidationRecord]:
+    if "manifest.json" not in snapshot.files:
+        raise ValueError("successful package has no manifest")
+    records: list[Tuple[str, FileRecord]] = []
+    manifest_data: Optional[bytes] = None
+    manifest_record: Optional[FileRecord] = None
+    for path, fingerprint in snapshot.files.items():
+        data, record = _read_file_at(
+            root_descriptor,
+            path,
+            expected_fingerprint=fingerprint,
+            expected_directories=snapshot.directories,
+        )
+        records.append((path, record))
+        if path == "manifest.json":
+            manifest_data = data
+            manifest_record = record
+    if manifest_data is None or manifest_record is None:
+        raise RuntimeError("successful manifest binding was lost")
+    return (
+        parse_successful_manifest_bytes(manifest_data),
+        _package_validation_record(records, manifest_record),
+    )
+
+
+def validate_candidate_package_fresh_process(
+    root: Path,
+    authority: CandidateValidationAuthority,
+) -> CandidateValidationRecord:
+    """Validate an immutable candidate package through the hardened child boundary."""
+
+    _absolute_authority_root(root, "candidate package root")
+    if not isinstance(authority, CandidateValidationAuthority):
+        raise ValueError("candidate validation authority is required")
+    root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    primary: Optional[BaseException] = None
+    try:
+        before = _capture_tree(root_descriptor)
+        _require_publication_permissions(before)
+        manifest, expected_package = _capture_successful_package_binding(
+            root_descriptor,
+            before,
+        )
+        if (
+            expected_package.manifest.sha256 != authority.expected_manifest_sha256
+            or manifest.summary.candidate != authority.candidate
+        ):
+            raise ValueError("candidate package differs from validation authority")
+        output = _run_publication_child(
+            "successful",
+            root_descriptor,
+            authority,
+        )
+        if _capture_tree(root_descriptor) != before:
+            raise ValueError("candidate package changed during fresh validation")
+        _recapture_ancestor_bindings(bindings)
+        record = _parse_child_validation(output)
+        expected_status = (
+            "NOT_APPLICABLE"
+            if manifest.summary.real is None
+            else manifest.summary.real.gates.overall.value
+        )
+        if (
+            record.package != expected_package
+            or record.candidate_id != authority.candidate.candidate_id
+            or record.producer_git_commit != authority.expected_producer_commit
+            or record.benchmark_attestation_sha256
+            != authority.expected_benchmark_attestation_sha256
+            or record.p53_attestation_sha256 != manifest.summary.p53_attestation.sha256
+            or record.run_kind is not manifest.summary.run_kind
+            or record.candidate_status != expected_status
+        ):
+            raise ValueError("fresh child validation record differs from local package")
+        return record
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            _close_descriptors(tuple(reversed(descriptors)))
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            raise PublicationCleanupError(primary, cleanup) from primary
 
 
 def publish_successful_candidate_package(
