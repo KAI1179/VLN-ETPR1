@@ -12,10 +12,11 @@ import stat
 import struct
 import zipfile
 from collections.abc import Iterator
-from dataclasses import InitVar, asdict, dataclass, fields
+from dataclasses import InitVar, asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import (
+    Callable,
     Generic,
     Iterable,
     Mapping,
@@ -33,10 +34,12 @@ import torch
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     BOOTSTRAP_MATRIX_SHA256,
     BenchmarkEnvironmentAttestation,
+    BenchmarkMetricSummary,
     CandidateCommitment,
     CandidateGateResult,
     ComponentTimings,
     ConfusionCounts,
+    EndpointRow,
     GateStatus,
     LatencySummary,
     LicenseStatus,
@@ -48,15 +51,30 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ObservationStatus,
     P53ValidationAttestation,
     Prediction,
+    ProvenanceChecks,
     ResourceMeasurement,
     RobustnessEstimate,
     StaticCoverage,
     TimingSample,
     TimingStage,
+    TimingProtocol,
     TrustedCohort,
+    ValidatedRawObservation,
+    aggregate_observation_metrics,
     canonical_json_bytes,
+    compute_static_coverage,
+    estimate_scene_robustness,
+    evaluate_candidate_gates,
     logical_label_sha256,
     map_source_labels,
+    project_mapped_labels,
+    project_oracle_target_labels,
+    score_observation,
+    summarize_latency,
+)
+from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
+    IndexRow,
+    RawFrameArrays,
 )
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -911,6 +929,111 @@ class RunKind(str, Enum):
     SYNTHETIC = "synthetic-contract"
 
 
+@dataclass(frozen=True)
+class StatisticsProtocolSummary:
+    numpy_version: str
+    bootstrap_matrix_sha256: str
+    quantile_rule: str
+    replicate_count: int
+    scene_count: int
+    seed: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.numpy_version != np.__version__
+            or self.bootstrap_matrix_sha256 != BOOTSTRAP_MATRIX_SHA256
+            or self.quantile_rule != "linear-h=(n-1)*p"
+            or self.replicate_count != 10_000
+            or self.scene_count != 11
+            or self.seed != 20260728
+        ):
+            raise ValueError("statistics protocol differs from the frozen runtime")
+
+
+@dataclass(frozen=True)
+class RobustnessSummary:
+    iou: RobustnessEstimate
+    f1: RobustnessEstimate
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.iou, RobustnessEstimate) or not isinstance(
+            self.f1, RobustnessEstimate
+        ):
+            raise ValueError("robustness summary must contain typed estimates")
+
+
+@dataclass(frozen=True)
+class ColdStartSummary:
+    model_construction_seconds: float
+    checkpoint_byte_read_seconds: float
+    checkpoint_load_seconds: float
+
+    def __post_init__(self) -> None:
+        if any(
+            not _nonnegative_finite(value)
+            for value in (
+                self.model_construction_seconds,
+                self.checkpoint_byte_read_seconds,
+                self.checkpoint_load_seconds,
+            )
+        ):
+            raise ValueError("cold-start measurements must be finite and nonnegative")
+
+
+@dataclass(frozen=True)
+class RealManifestSummary:
+    cold_start: ColdStartSummary
+    latency: LatencySummary
+    resource: ResourceMeasurement
+    gates: CandidateGateResult
+    cuda_evidence: ArchivalCudaEvidence
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.cold_start, ColdStartSummary)
+            or not isinstance(self.latency, LatencySummary)
+            or not isinstance(self.resource, ResourceMeasurement)
+            or not isinstance(self.gates, CandidateGateResult)
+            or not isinstance(self.cuda_evidence, ArchivalCudaEvidence)
+        ):
+            raise ValueError("real manifest summary is invalid")
+
+
+@dataclass(frozen=True)
+class ManifestTypedSummary:
+    run_kind: RunKind
+    candidate: CandidateCommitment
+    p53_attestation: P53ValidationAttestation
+    benchmark_attestation: BenchmarkEnvironmentAttestation
+    coverage: StaticCoverage
+    timing_protocol: TimingProtocol
+    statistics_protocol: StatisticsProtocolSummary
+    metrics: BenchmarkMetricSummary
+    robustness: RobustnessSummary
+    real: Optional[RealManifestSummary]
+
+    def __post_init__(self) -> None:
+        expected_real = self.run_kind is RunKind.REAL
+        if (
+            not isinstance(self.run_kind, RunKind)
+            or not isinstance(self.candidate, CandidateCommitment)
+            or not isinstance(self.p53_attestation, P53ValidationAttestation)
+            or not isinstance(
+                self.benchmark_attestation, BenchmarkEnvironmentAttestation
+            )
+            or not isinstance(self.coverage, StaticCoverage)
+            or not isinstance(self.timing_protocol, TimingProtocol)
+            or not isinstance(self.statistics_protocol, StatisticsProtocolSummary)
+            or not isinstance(self.metrics, BenchmarkMetricSummary)
+            or not isinstance(self.robustness, RobustnessSummary)
+            or (self.real is not None) is not expected_real
+            or (
+                self.real is not None and not isinstance(self.real, RealManifestSummary)
+            )
+        ):
+            raise ValueError("typed manifest summary is invalid")
+
+
 _Value = TypeVar("_Value")
 
 
@@ -1253,12 +1376,14 @@ _ABORTED_MANIFEST_KEYS = (
 @dataclass(frozen=True)
 class RealSuccessfulManifest:
     fields: Mapping[str, object]
+    summary: ManifestTypedSummary = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        _validate_manifest(self.fields, RunKind.REAL)
+        summary = _validate_manifest(self.fields, RunKind.REAL)
         object.__setattr__(
             self, "fields", cast(Mapping[str, object], _freeze_json(dict(self.fields)))
         )
+        object.__setattr__(self, "summary", summary)
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(_thaw_json(self.fields))
@@ -1267,12 +1392,14 @@ class RealSuccessfulManifest:
 @dataclass(frozen=True)
 class SyntheticSuccessfulManifest:
     fields: Mapping[str, object]
+    summary: ManifestTypedSummary = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        _validate_manifest(self.fields, RunKind.SYNTHETIC)
+        summary = _validate_manifest(self.fields, RunKind.SYNTHETIC)
         object.__setattr__(
             self, "fields", cast(Mapping[str, object], _freeze_json(dict(self.fields)))
         )
+        object.__setattr__(self, "summary", summary)
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(_thaw_json(self.fields))
@@ -1383,7 +1510,9 @@ def parse_aborted_oom_manifest_bytes(data: bytes) -> AbortedOomManifest:
     return manifest
 
 
-def _validate_manifest(value: Mapping[str, object], kind: RunKind) -> None:
+def _validate_manifest(
+    value: Mapping[str, object], kind: RunKind
+) -> ManifestTypedSummary:
     expected = _REAL_MANIFEST_KEYS if kind is RunKind.REAL else _SYNTHETIC_MANIFEST_KEYS
     raw = _exact_object(value, expected, "successful manifest")
     _validate_json_tree(raw, "successful manifest")
@@ -1439,23 +1568,41 @@ def _validate_manifest(value: Mapping[str, object], kind: RunKind) -> None:
     else:
         if timing["comparable"] is not True:
             raise ValueError("real successful manifest timing must be comparable")
-    _validate_manifest_sections(raw, kind)
+    summary = _validate_manifest_sections(raw, kind)
     _validate_json_tree(raw, "successful manifest")
+    return summary
 
 
-def _validate_manifest_sections(raw: Mapping[str, object], kind: RunKind) -> None:
-    _candidate_from_json(raw["candidate_commitment"])
+def _validate_manifest_sections(
+    raw: Mapping[str, object], kind: RunKind
+) -> ManifestTypedSummary:
+    candidate = _candidate_from_json(raw["candidate_commitment"])
     _validate_raw_inputs(raw["raw_inputs"])
-    _validate_attestations(raw["attestations"], comparable=kind is RunKind.REAL)
-    _validate_coverage(raw["coverage"])
-    _validate_timing_protocol(raw["timing_protocol"], kind)
-    _validate_statistics_protocol(raw["statistics_protocol"])
+    p53, benchmark = _validate_attestations(
+        raw["attestations"], comparable=kind is RunKind.REAL
+    )
+    coverage = _validate_coverage(raw["coverage"])
+    timing = _validate_timing_protocol(raw["timing_protocol"], kind)
+    statistics = _validate_statistics_protocol(raw["statistics_protocol"])
     _validate_files(raw["files"])
-    _validate_metric_summary(raw["metric_summary"])
-    _validate_robustness(raw["robustness"])
+    metrics = _validate_metric_summary(raw["metric_summary"])
+    robustness = _validate_robustness(raw["robustness"])
+    real = None
     if kind is RunKind.REAL:
         _validate_permission_evidence(raw["permission_evidence"])
-        _validate_real_sections(raw)
+        real = _validate_real_sections(raw)
+    return ManifestTypedSummary(
+        run_kind=kind,
+        candidate=candidate,
+        p53_attestation=p53,
+        benchmark_attestation=benchmark,
+        coverage=coverage,
+        timing_protocol=timing,
+        statistics_protocol=statistics,
+        metrics=metrics,
+        robustness=robustness,
+        real=real,
+    )
 
 
 def _candidate_from_json(value: object) -> CandidateCommitment:
@@ -1556,10 +1703,12 @@ def _validate_permission_evidence(value: object) -> None:
         _hash(record["sha256"], f"permission_evidence.{role}.sha256")
 
 
-def _validate_attestations(value: object, *, comparable: bool) -> None:
+def _validate_attestations(
+    value: object, *, comparable: bool
+) -> Tuple[P53ValidationAttestation, BenchmarkEnvironmentAttestation]:
     raw = _exact_object(value, _SECTION_KEYS["attestations"], "manifest.attestations")
     p53 = _embedded_attestation(raw["p53_validator"], "P5.3 attestation")
-    P53ValidationAttestation.parse(canonical_json_bytes(p53))
+    p53_attestation = P53ValidationAttestation.parse(canonical_json_bytes(p53))
     benchmark = _embedded_attestation(
         raw["benchmark"], "benchmark environment attestation"
     )
@@ -1588,6 +1737,7 @@ def _validate_attestations(value: object, *, comparable: bool) -> None:
         raise ValueError("benchmark environment attestation is invalid") from error
     if attestation.timing_comparable is not comparable:
         raise ValueError("benchmark attestation timing claim differs from run kind")
+    return p53_attestation, attestation
 
 
 def _embedded_attestation(value: object, label: str) -> Mapping[str, object]:
@@ -1601,7 +1751,7 @@ def _embedded_attestation(value: object, label: str) -> Mapping[str, object]:
     return accepted
 
 
-def _validate_coverage(value: object) -> None:
+def _validate_coverage(value: object) -> StaticCoverage:
     raw = _exact_object(value, _SECTION_KEYS["coverage"], "manifest.coverage")
     coverage = StaticCoverage(
         covered_category_count=cast(int, raw["covered_category_count"]),
@@ -1610,9 +1760,10 @@ def _validate_coverage(value: object) -> None:
     )
     if raw["support_ratio"] != coverage.support_ratio:
         raise ValueError("coverage support ratio is inconsistent")
+    return coverage
 
 
-def _validate_timing_protocol(value: object, kind: RunKind) -> None:
+def _validate_timing_protocol(value: object, kind: RunKind) -> TimingProtocol:
     raw = _exact_object(
         value, _SECTION_KEYS["timing_protocol"], "manifest.timing_protocol"
     )
@@ -1628,9 +1779,14 @@ def _validate_timing_protocol(value: object, kind: RunKind) -> None:
         raw["backend"] != "official-cuda" or raw["unit"] != "seconds"
     ):
         raise ValueError("real timing protocol must be official CUDA seconds")
+    return TimingProtocol(
+        backend=cast(str, raw["backend"]),
+        unit=cast(str, raw["unit"]),
+        comparable=raw["comparable"],
+    )
 
 
-def _validate_statistics_protocol(value: object) -> None:
+def _validate_statistics_protocol(value: object) -> StatisticsProtocolSummary:
     raw = _exact_object(
         value,
         _SECTION_KEYS["statistics_protocol"],
@@ -1638,15 +1794,17 @@ def _validate_statistics_protocol(value: object) -> None:
     )
     if raw["bootstrap_matrix_sha256"] != BOOTSTRAP_MATRIX_SHA256:
         raise ValueError("bootstrap matrix SHA-256 differs from the frozen contract")
-    if (
-        not isinstance(raw["numpy_version"], str)
-        or not raw["numpy_version"]
-        or raw["quantile_rule"] != "linear-h=(n-1)*p"
-        or raw["replicate_count"] != 10_000
-        or raw["scene_count"] != 11
-        or raw["seed"] != 20260728
-    ):
-        raise ValueError("statistics protocol has drifted")
+    try:
+        return StatisticsProtocolSummary(
+            numpy_version=cast(str, raw["numpy_version"]),
+            bootstrap_matrix_sha256=cast(str, raw["bootstrap_matrix_sha256"]),
+            quantile_rule=cast(str, raw["quantile_rule"]),
+            replicate_count=cast(int, raw["replicate_count"]),
+            scene_count=cast(int, raw["scene_count"]),
+            seed=cast(int, raw["seed"]),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("statistics protocol has drifted") from error
 
 
 def _validate_files(value: object) -> None:
@@ -1686,23 +1844,30 @@ _AGGREGATE_KEYS = (
 )
 
 
-def _validate_metric_summary(value: object) -> None:
+def _validate_metric_summary(value: object) -> BenchmarkMetricSummary:
     raw = _exact_object(
         value, _SECTION_KEYS["metric_summary"], "manifest.metric_summary"
     )
-    _metric_aggregate(raw["primary"], "metric_summary.primary")
-    _metric_aggregate(raw["all_27"], "metric_summary.all_27")
+    primary = _metric_aggregate(raw["primary"], "metric_summary.primary")
+    all_27 = _metric_aggregate(raw["all_27"], "metric_summary.all_27")
     categories = raw["per_category"]
     if not isinstance(categories, list) or len(categories) != 27:
         raise ValueError("metric summary must contain 27 category aggregates")
-    for index, item in enumerate(categories):
+    per_category = tuple(
         _metric_aggregate(item, f"metric_summary.per_category[{index}]")
+        for index, item in enumerate(categories)
+    )
+    return BenchmarkMetricSummary(
+        primary=primary,
+        all_27=all_27,
+        per_category=per_category,
+    )
 
 
-def _metric_aggregate(value: object, label: str) -> None:
+def _metric_aggregate(value: object, label: str) -> MetricAggregate:
     raw = _exact_object(value, _AGGREGATE_KEYS, label)
     endpoint = _parse_endpoint(raw["pooled"], f"{label}.pooled")
-    MetricAggregate(
+    return MetricAggregate(
         observation_count=cast(int, raw["observation_count"]),
         eligible_observation_count=cast(int, raw["eligible_observation_count"]),
         empty_both_count=cast(int, raw["empty_both_count"]),
@@ -1730,13 +1895,14 @@ _ESTIMATE_KEYS = (
 )
 
 
-def _validate_robustness(value: object) -> None:
+def _validate_robustness(value: object) -> RobustnessSummary:
     raw = _exact_object(value, _SECTION_KEYS["robustness"], "manifest.robustness")
+    estimates: dict[str, RobustnessEstimate] = {}
     for name in ("iou", "f1"):
         estimate = _exact_object(
             raw[name], _ESTIMATE_KEYS, f"manifest.robustness.{name}"
         )
-        RobustnessEstimate(
+        estimates[name] = RobustnessEstimate(
             point_estimate=cast(float, estimate["point_estimate"]),
             interval_low=cast(float, estimate["interval_low"]),
             interval_high=cast(float, estimate["interval_high"]),
@@ -1744,14 +1910,18 @@ def _validate_robustness(value: object) -> None:
             leave_one_scene_out_max=cast(float, estimate["leave_one_scene_out_max"]),
             replicate_count=cast(int, estimate["replicate_count"]),
         )
+    return RobustnessSummary(iou=estimates["iou"], f1=estimates["f1"])
 
 
-def _validate_real_sections(raw: Mapping[str, object]) -> None:
+def _validate_real_sections(raw: Mapping[str, object]) -> RealManifestSummary:
     cold = cast(Mapping[str, object], raw["cold_start"])
-    if any(not _nonnegative_finite(value) for value in cold.values()):
-        raise ValueError("cold-start measurements must be finite and nonnegative")
+    cold_start = ColdStartSummary(
+        model_construction_seconds=cast(float, cold["model_construction_seconds"]),
+        checkpoint_byte_read_seconds=cast(float, cold["checkpoint_byte_read_seconds"]),
+        checkpoint_load_seconds=cast(float, cold["checkpoint_load_seconds"]),
+    )
     latency = cast(Mapping[str, object], raw["latency"])
-    LatencySummary(
+    latency_summary = LatencySummary(
         timing_comparable=True,
         unit="seconds",
         sample_count=cast(int, latency["sample_count"]),
@@ -1761,7 +1931,7 @@ def _validate_real_sections(raw: Mapping[str, object]) -> None:
         views_per_second=cast(float, latency["views_per_second"]),
     )
     resource = cast(Mapping[str, object], raw["resource"])
-    ResourceMeasurement(
+    resource_measurement = ResourceMeasurement(
         baseline_allocated_bytes=cast(int, resource["baseline_allocated_bytes"]),
         peak_allocated_bytes=cast(int, resource["peak_allocated_bytes"]),
         baseline_reserved_bytes=cast(int, resource["baseline_reserved_bytes"]),
@@ -1783,7 +1953,13 @@ def _validate_real_sections(raw: Mapping[str, object]) -> None:
         raise ValueError("candidate gates are invalid") from error
     if raw["candidate_status"] != gate_result.overall.value:
         raise ValueError("candidate status differs from overall gate")
-    ArchivalCudaEvidence.from_json(raw["cuda_evidence"])
+    return RealManifestSummary(
+        cold_start=cold_start,
+        latency=latency_summary,
+        resource=resource_measurement,
+        gates=gate_result,
+        cuda_evidence=ArchivalCudaEvidence.from_json(raw["cuda_evidence"]),
+    )
 
 
 def parse_successful_manifest_bytes(data: bytes) -> SuccessfulManifest:
@@ -2471,3 +2647,192 @@ def accept_candidate_package(
             if primary is None:
                 raise
             raise _DescriptorCleanupError(primary, cleanup) from primary
+
+
+@dataclass(frozen=True)
+class _ScientificRecomputation:
+    candidate: CandidateCommitment
+    run_kind: RunKind
+    metrics: BenchmarkMetricSummary
+    coverage: StaticCoverage
+    robustness: RobustnessSummary
+    latency: Optional[LatencySummary]
+    provenance: Optional[ProvenanceChecks]
+    gates: Optional[CandidateGateResult]
+
+    def __post_init__(self) -> None:
+        real = self.run_kind is RunKind.REAL
+        if (
+            not isinstance(self.candidate, CandidateCommitment)
+            or not isinstance(self.run_kind, RunKind)
+            or not isinstance(self.metrics, BenchmarkMetricSummary)
+            or not isinstance(self.coverage, StaticCoverage)
+            or not isinstance(self.robustness, RobustnessSummary)
+            or (self.latency is not None) is not real
+            or (self.provenance is not None) is not real
+            or (self.gates is not None) is not real
+        ):
+            raise ValueError("scientific recomputation is incomplete")
+
+
+def _endpoint_rows(
+    observations: Sequence[ObservationPackageRow],
+    metrics: Sequence[ObservationMetrics],
+    *,
+    endpoint: Callable[[ObservationMetrics], Optional[float]],
+) -> Tuple[EndpointRow, ...]:
+    return tuple(
+        EndpointRow(
+            ordinal=row.ordinal,
+            observation_id=row.observation_id,
+            scene_id=row.scene_id,
+            endpoint=endpoint(metric),
+            status=row.status,
+            failure_code=row.failure_code,
+        )
+        for row, metric in zip(observations, metrics)
+    )
+
+
+def _recompute_accepted_candidate_science(
+    accepted: AcceptedCandidatePackage,
+    *,
+    raw_observations: Sequence[ValidatedRawObservation],
+    trusted_cohort: TrustedCohort,
+    mapping_authority: CandidateMappingAuthority,
+    provenance: Optional[ProvenanceChecks] = None,
+    oracle_projector: Callable[[RawFrameArrays], np.ndarray] = (
+        project_oracle_target_labels
+    ),
+    prediction_projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray] = (
+        project_mapped_labels
+    ),
+) -> _ScientificRecomputation:
+    """Recompute claims without minting an authority-bearing PASS record."""
+
+    if not isinstance(accepted, AcceptedCandidatePackage):
+        raise ValueError("scientific validation requires an accepted package")
+    if not isinstance(trusted_cohort, TrustedCohort):
+        raise ValueError("scientific validation requires a trusted cohort")
+    if not isinstance(mapping_authority, CandidateMappingAuthority):
+        raise ValueError("scientific validation requires mapping authority")
+    raw = tuple(raw_observations)
+    if len(raw) != 50 or any(
+        not isinstance(value, ValidatedRawObservation)
+        or not isinstance(value.row, IndexRow)
+        or not isinstance(value.audit_arrays, RawFrameArrays)
+        for value in raw
+    ):
+        raise ValueError("scientific validation requires 50 typed raw observations")
+    raw_identities = tuple(
+        (value.row.ordinal, value.row.observation_id, value.row.scene_id)
+        for value in raw
+    )
+    accepted_identities = tuple(
+        (value.ordinal, value.observation_id, value.scene_id)
+        for value in accepted.observations
+    )
+    if raw_identities != trusted_cohort.identities:
+        raise ValueError("raw observations differ from trusted cohort authority")
+    if accepted_identities != trusted_cohort.identities:
+        raise ValueError("accepted observations differ from trusted cohort authority")
+
+    manifest_summary = accepted.manifest.summary
+    candidate = manifest_summary.candidate
+    if (
+        candidate.source_vocabulary != mapping_authority.source_vocabulary
+        or candidate.mapping_sha256 != mapping_authority.mapping_sha256
+    ):
+        raise ValueError("candidate differs from scientific mapping authority")
+
+    recomputed_rows: list[ObservationMetrics] = []
+    targets: list[np.ndarray] = []
+    for raw_value, row, accepted_prediction in zip(
+        raw, accepted.observations, accepted.predictions
+    ):
+        target = oracle_projector(raw_value.audit_arrays)
+        projected = prediction_projector(
+            accepted_prediction.prediction.mapped_labels,
+            raw_value.audit_arrays,
+        )
+        metrics = score_observation(
+            ordinal=row.ordinal,
+            scene_id=row.scene_id,
+            prediction=projected,
+            target=target,
+        )
+        if metrics != row.metrics:
+            raise ValueError(
+                f"observation {row.ordinal} metrics differ from recomputation"
+            )
+        targets.append(target)
+        recomputed_rows.append(metrics)
+
+    metric_rows = tuple(recomputed_rows)
+    metric_summary = aggregate_observation_metrics(
+        metric_rows,
+        expected_scenes=trusted_cohort.scenes,
+    )
+    if metric_summary != manifest_summary.metrics:
+        raise ValueError("manifest metric summary differs from recomputation")
+    coverage = compute_static_coverage(mapping_authority.mapping, targets)
+    if coverage != manifest_summary.coverage:
+        raise ValueError("manifest static coverage differs from recomputation")
+
+    iou_rows = _endpoint_rows(
+        accepted.observations,
+        metric_rows,
+        endpoint=lambda value: value.primary.iou,
+    )
+    f1_rows = _endpoint_rows(
+        accepted.observations,
+        metric_rows,
+        endpoint=lambda value: value.primary.f1,
+    )
+    robustness = RobustnessSummary(
+        iou=estimate_scene_robustness(iou_rows, trusted_cohort=trusted_cohort),
+        f1=estimate_scene_robustness(f1_rows, trusted_cohort=trusted_cohort),
+    )
+    if robustness != manifest_summary.robustness:
+        raise ValueError("manifest robustness differs from recomputation")
+
+    latency: Optional[LatencySummary] = None
+    gates: Optional[CandidateGateResult] = None
+    if manifest_summary.run_kind is RunKind.REAL:
+        if provenance is None or manifest_summary.real is None:
+            raise ValueError("real scientific validation requires provenance")
+        latency = summarize_latency(tuple(row.sample for row in accepted.timings))
+        if latency != manifest_summary.real.latency:
+            raise ValueError("manifest latency differs from recomputation")
+        mean_iou = metric_summary.primary.mean_iou
+        mean_f1 = metric_summary.primary.mean_f1
+        if mean_iou is None or mean_f1 is None:
+            raise ValueError("real candidate has no eligible quality endpoints")
+        gates = evaluate_candidate_gates(
+            synthetic=False,
+            coverage=coverage,
+            trusted_cohort=trusted_cohort,
+            rows=iou_rows,
+            mean_iou=mean_iou,
+            mean_f1=mean_f1,
+            latency=latency,
+            resource=manifest_summary.real.resource,
+            code_license_status=candidate.code_license_status,
+            weight_license_status=candidate.weight_license_status,
+            provenance=provenance,
+        )
+        if gates != manifest_summary.real.gates:
+            raise ValueError("manifest gates differ from recomputation")
+    elif provenance is not None:
+        raise ValueError("synthetic scientific validation forbids provenance claims")
+
+    return _ScientificRecomputation(
+        candidate=candidate,
+        run_kind=manifest_summary.run_kind,
+        metrics=metric_summary,
+        coverage=coverage,
+        robustness=robustness,
+        latency=latency,
+        provenance=provenance,
+        gates=gates,
+    )

@@ -6,7 +6,7 @@ import json
 import os
 import socket
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, Mapping, cast
 
@@ -21,6 +21,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     RAW_VALIDATOR_SOURCE_SHA256,
     ComponentTimings,
     ConfusionCounts,
+    EndpointRow,
     MappingEntry,
     MappingKind,
     MetricEndpoint,
@@ -28,10 +29,23 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ObservationMetrics,
     ObservationStatus,
     Prediction,
+    ProvenanceChecks,
+    SegmenterInput,
     TimingSample,
     TrustedCohort,
+    ValidatedRawObservation,
+    aggregate_observation_metrics,
     canonical_json_bytes,
+    compute_static_coverage,
+    estimate_scene_robustness,
     logical_label_sha256,
+    score_observation,
+    summarize_latency,
+)
+from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
+    FileRecord as RawFileRecord,
+    IndexRow,
+    RawFrameArrays,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
     AbortedOomManifest,
@@ -740,7 +754,11 @@ def test_manifest_strict_reader_rejects_duplicate_invalid_utf8_and_whitespace() 
 
 def test_manifest_and_row_own_immutable_copies() -> None:
     raw = _manifest(synthetic=True)
-    manifest = SyntheticSuccessfulManifest(raw)
+    manifest: package.SuccessfulManifest
+    if raw["run_kind"] == "candidate":
+        manifest = RealSuccessfulManifest(raw)
+    else:
+        manifest = SyntheticSuccessfulManifest(raw)
     coverage = _dict_section(raw, "coverage")
     coverage["covered_category_count"] = 0
     source_hashes = _dict_section(raw, "source_hashes")
@@ -840,13 +858,19 @@ def _package_authority() -> CandidateMappingAuthority:
     )
 
 
+def _science_grid() -> np.ndarray:
+    grid = np.zeros((27, 50, 50), dtype=np.bool_)
+    grid[1, 0, 0] = True
+    return grid
+
+
 def _package_rows(
     artifact: package.PredictionArtifact,
     *,
     status: ObservationStatus = ObservationStatus.PASS,
     failure_code: ObservationFailureCode | None = None,
 ) -> tuple[ObservationPackageRow, ...]:
-    endpoint = _empty_endpoint()
+    grid = _science_grid()
     return tuple(
         ObservationPackageRow(
             ordinal=ordinal,
@@ -857,12 +881,11 @@ def _package_rows(
             prediction_path=(f"predictions/{scene}/{ordinal:02d}-{observation_id}.npz"),
             prediction=artifact.file,
             prediction_members=artifact.members,
-            metrics=ObservationMetrics(
+            metrics=score_observation(
                 ordinal=ordinal,
                 scene_id=scene,
-                primary=endpoint,
-                all_27=endpoint,
-                per_category=(endpoint,) * 27,
+                prediction=grid,
+                target=grid,
             ),
         )
         for ordinal, observation_id, scene in _package_identities()
@@ -932,6 +955,45 @@ def _write_package_metadata(
         "total_byte_length": aggregate.total_byte_length,
         "tree_sha256": aggregate.tree_sha256,
     }
+    cohort = TrustedCohort(_package_identities())
+    metric_summary = aggregate_observation_metrics(
+        tuple(row.metrics for row in rows),
+        expected_scenes=cohort.scenes,
+    )
+    manifest["metric_summary"] = {
+        "all_27": asdict(metric_summary.all_27),
+        "per_category": [asdict(value) for value in metric_summary.per_category],
+        "primary": asdict(metric_summary.primary),
+    }
+    grid = _science_grid()
+    manifest["coverage"] = {
+        **asdict(
+            compute_static_coverage(
+                _package_authority().mapping,
+                (grid,) * 50,
+            )
+        ),
+        "support_ratio": 0.0,
+    }
+    iou_rows = tuple(
+        EndpointRow(
+            ordinal=row.ordinal,
+            observation_id=row.observation_id,
+            scene_id=row.scene_id,
+            endpoint=row.metrics.primary.iou,
+            status=row.status,
+            failure_code=row.failure_code,
+        )
+        for row in rows
+    )
+    f1_rows = tuple(
+        replace(value, endpoint=row.metrics.primary.f1)
+        for value, row in zip(iou_rows, rows)
+    )
+    manifest["robustness"] = {
+        "iou": asdict(estimate_scene_robustness(iou_rows, trusted_cohort=cohort)),
+        "f1": asdict(estimate_scene_robustness(f1_rows, trusted_cohort=cohort)),
+    }
     data = SyntheticSuccessfulManifest(manifest).canonical_bytes()
     (root / "manifest.json").write_bytes(data)
     return hashlib.sha256(data).hexdigest()
@@ -969,6 +1031,118 @@ def _accept(value: _BenchmarkPackageFixture) -> package.AcceptedCandidatePackage
         trusted_cohort=value.cohort,
         mapping_authority=value.authority,
     )
+
+
+@pytest.fixture(scope="module")
+def accepted_science_package(
+    candidate_package: _BenchmarkPackageFixture,
+) -> package.AcceptedCandidatePackage:
+    return _accept(candidate_package)
+
+
+def _science_raw_observations() -> tuple[ValidatedRawObservation, ...]:
+    placeholder = np.empty(0)
+    segmenter_input = cast(SegmenterInput, object())
+    return tuple(
+        ValidatedRawObservation(
+            row=IndexRow(
+                artifact=f"observations/{ordinal}.npz",
+                cohort_row_sha256=_HASH,
+                members={},
+                npz=RawFileRecord(1, _HASH),
+                observation_id=observation_id,
+                oracle_artifact_sha256=_HASH,
+                ordinal=ordinal,
+                scene_id=scene_id,
+            ),
+            segmenter_input=segmenter_input,
+            audit_arrays=RawFrameArrays(
+                np.asarray(ordinal),
+                *(placeholder for _ in range(16)),
+            ),
+        )
+        for ordinal, observation_id, scene_id in _package_identities()
+    )
+
+
+def _accepted_with_manifest(
+    accepted: package.AcceptedCandidatePackage,
+    raw: dict[str, object],
+    *,
+    observations: tuple[ObservationPackageRow, ...] | None = None,
+) -> package.AcceptedCandidatePackage:
+    rows = accepted.observations if observations is None else observations
+    observations_data = canonical_observations_bytes(rows)
+    files = _dict_section(raw, "files")
+    files["observations"] = {
+        "byte_length": len(observations_data),
+        "row_count": 50,
+        "sha256": hashlib.sha256(observations_data).hexdigest(),
+    }
+    manifest: package.SuccessfulManifest
+    if raw["run_kind"] == "candidate":
+        manifest = RealSuccessfulManifest(raw)
+    else:
+        manifest = SyntheticSuccessfulManifest(raw)
+    manifest_record = _record(manifest.canonical_bytes())
+    complete_records = (
+        ("manifest.json", manifest_record),
+        ("observations.jsonl", _record(observations_data)),
+        (
+            "timings.jsonl",
+            _record(canonical_timings_bytes(accepted.timings)),
+        ),
+    ) + tuple((prediction.path, prediction.file) for prediction in accepted.predictions)
+    return package.AcceptedCandidatePackage(
+        manifest=manifest,
+        observations=rows,
+        timings=accepted.timings,
+        predictions=accepted.predictions,
+        validation=package._package_validation_record(  # noqa: SLF001
+            complete_records,
+            manifest_record,
+        ),
+        _acceptance_token=package._ACCEPTANCE_TOKEN,  # noqa: SLF001
+    )
+
+
+def _passed_provenance() -> ProvenanceChecks:
+    return ProvenanceChecks(*(True for _ in range(12)))
+
+
+def _real_science_accepted(
+    accepted: package.AcceptedCandidatePackage,
+) -> package.AcceptedCandidatePackage:
+    synthetic = cast(
+        Dict[str, object],
+        json.loads(accepted.manifest.canonical_bytes()),
+    )
+    raw = _manifest(synthetic=False)
+    for section in ("coverage", "files", "metric_summary", "robustness"):
+        raw[section] = synthetic[section]
+    candidate = _dict_section(raw, "candidate_commitment")
+    candidate["source_vocabulary"] = ["wall"]
+    candidate["mapping_sha256"] = _HASH
+    latency = summarize_latency(tuple(row.sample for row in accepted.timings))
+    raw["latency"] = {
+        "p50_seconds": latency.p50_seconds,
+        "p95_seconds": latency.p95_seconds,
+        "sample_count": latency.sample_count,
+        "total_seconds": latency.total_seconds,
+        "views_per_second": latency.views_per_second,
+    }
+    raw["gates"] = {
+        "complete_rows": "PASS",
+        "coverage": "FAIL",
+        "latency": "FAIL",
+        "license": "PASS",
+        "overall": "FAIL",
+        "provenance": "PASS",
+        "quality": "FAIL",
+        "resource": "PASS",
+    }
+    raw["candidate_status"] = "FAIL"
+    return _accepted_with_manifest(accepted, raw)
 
 
 def _preserve_files(root: Path, paths: tuple[str, ...]) -> dict[str, bytes]:
@@ -1043,6 +1217,299 @@ def test_candidate_reader_accepts_target_free_package_and_owns_arrays(
             accepted,
             validation=replace(accepted.validation, tree_sha256="2" * 64),
         )
+
+
+def test_scientific_recomputation_cannot_mint_authoritative_pass(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted = accepted_science_package
+    grid = _science_grid()
+    recomputed = package._recompute_accepted_candidate_science(  # noqa: SLF001
+        accepted,
+        raw_observations=_science_raw_observations(),
+        trusted_cohort=candidate_package.cohort,
+        mapping_authority=candidate_package.authority,
+        oracle_projector=lambda _arrays: grid,
+        prediction_projector=lambda _labels, _arrays: grid,
+    )
+
+    assert recomputed.metrics == accepted.manifest.summary.metrics
+    assert recomputed.robustness == accepted.manifest.summary.robustness
+    assert not hasattr(recomputed, "record")
+    assert not hasattr(package, "validate_accepted_candidate_science")
+    assert not hasattr(package, "ScientificValidationRecord")
+    assert not hasattr(package, "ValidatedCandidateScience")
+
+
+def test_scientific_validator_binds_all_identities_before_projection(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted = accepted_science_package
+    projector_calls = 0
+
+    def projector(*_args: object) -> np.ndarray:
+        nonlocal projector_calls
+        projector_calls += 1
+        return _science_grid()
+
+    with pytest.raises(ValueError, match="raw observations"):
+        package._recompute_accepted_candidate_science(  # noqa: SLF001
+            accepted,
+            raw_observations=_science_raw_observations()[::-1],
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=candidate_package.authority,
+            oracle_projector=projector,
+            prediction_projector=projector,
+        )
+    assert projector_calls == 0
+
+
+def test_scientific_validator_keeps_target_empty_false_positive_eligible(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted = accepted_science_package
+    prediction = _science_grid()
+    empty = np.zeros((27, 50, 50), dtype=np.bool_)
+    targets = (empty,) + (_science_grid(),) * 49
+    observations = tuple(
+        replace(
+            row,
+            metrics=score_observation(
+                ordinal=row.ordinal,
+                scene_id=row.scene_id,
+                prediction=prediction,
+                target=targets[row.ordinal],
+            ),
+        )
+        for row in accepted.observations
+    )
+    summary = aggregate_observation_metrics(
+        tuple(row.metrics for row in observations),
+        expected_scenes=candidate_package.cohort.scenes,
+    )
+    assert summary.primary.eligible_observation_count == 50
+    assert summary.primary.target_empty_prediction_nonempty_count == 1
+    raw = cast(Dict[str, object], json.loads(accepted.manifest.canonical_bytes()))
+    raw["metric_summary"] = {
+        "all_27": asdict(summary.all_27),
+        "per_category": [asdict(value) for value in summary.per_category],
+        "primary": asdict(summary.primary),
+    }
+    coverage = compute_static_coverage(candidate_package.authority.mapping, targets)
+    raw["coverage"] = {
+        **asdict(coverage),
+        "support_ratio": coverage.support_ratio,
+    }
+    iou_rows = tuple(
+        EndpointRow(
+            ordinal=row.ordinal,
+            observation_id=row.observation_id,
+            scene_id=row.scene_id,
+            endpoint=row.metrics.primary.iou,
+            status=row.status,
+            failure_code=row.failure_code,
+        )
+        for row in observations
+    )
+    f1_rows = tuple(
+        replace(value, endpoint=row.metrics.primary.f1)
+        for value, row in zip(iou_rows, observations)
+    )
+    raw["robustness"] = {
+        "iou": asdict(
+            estimate_scene_robustness(
+                iou_rows,
+                trusted_cohort=candidate_package.cohort,
+            )
+        ),
+        "f1": asdict(
+            estimate_scene_robustness(
+                f1_rows,
+                trusted_cohort=candidate_package.cohort,
+            )
+        ),
+    }
+    eligible = _accepted_with_manifest(
+        accepted,
+        raw,
+        observations=observations,
+    )
+
+    recomputed = package._recompute_accepted_candidate_science(  # noqa: SLF001
+        eligible,
+        raw_observations=_science_raw_observations(),
+        trusted_cohort=candidate_package.cohort,
+        mapping_authority=candidate_package.authority,
+        oracle_projector=lambda arrays: (
+            empty if int(arrays.schema_version) == 0 else _science_grid()
+        ),
+        prediction_projector=lambda _labels, _arrays: prediction,
+    )
+    assert recomputed.metrics.primary.eligible_observation_count == 50
+    assert recomputed.metrics.primary.target_empty_prediction_nonempty_count == 1
+
+
+def test_scientific_endpoint_rows_preserve_failed_outcome_for_iou_and_f1(
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    original = accepted_science_package.observations[0]
+    failed = replace(
+        original,
+        status=ObservationStatus.FAILED,
+        failure_code=ObservationFailureCode.INFERENCE_FAILURE,
+    )
+    for endpoint in (
+        lambda value: value.primary.iou,
+        lambda value: value.primary.f1,
+    ):
+        row = package._endpoint_rows(  # noqa: SLF001
+            (failed,),
+            (failed.metrics,),
+            endpoint=endpoint,
+        )[0]
+        assert row.status is ObservationStatus.FAILED
+        assert row.failure_code is ObservationFailureCode.INFERENCE_FAILURE
+
+
+@pytest.mark.parametrize(
+    "section",
+    ["row", "aggregate", "per_category", "coverage", "robustness", "f1"],
+)
+def test_scientific_validator_rejects_recomputed_claim_tamper(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    section: str,
+) -> None:
+    accepted = accepted_science_package
+    raw = cast(
+        Dict[str, object],
+        json.loads(accepted.manifest.canonical_bytes()),
+    )
+    observations: tuple[ObservationPackageRow, ...] | None = None
+    if section == "row":
+        first = accepted.observations[0]
+        wrong = score_observation(
+            ordinal=first.ordinal,
+            scene_id=first.scene_id,
+            prediction=np.zeros((27, 50, 50), dtype=np.bool_),
+            target=_science_grid(),
+        )
+        observations = (replace(first, metrics=wrong),) + accepted.observations[1:]
+    elif section == "aggregate":
+        metric_summary = _dict_section(raw, "metric_summary")
+        primary = _dict_section(metric_summary, "primary")
+        primary["mean_iou"] = 0.5
+    elif section == "per_category":
+        metric_summary = _dict_section(raw, "metric_summary")
+        per_category = metric_summary["per_category"]
+        assert isinstance(per_category, list)
+        category = per_category[1]
+        assert isinstance(category, dict)
+        cast(Dict[str, object], category)["mean_iou"] = 0.5
+    elif section == "coverage":
+        raw["coverage"] = {
+            "covered_category_count": 1,
+            "covered_support_count": 1,
+            "support_ratio": 0.02,
+            "total_support_count": 50,
+        }
+    else:
+        robustness = _dict_section(raw, "robustness")
+        estimate = _dict_section(
+            robustness,
+            "f1" if section == "f1" else "iou",
+        )
+        for key in (
+            "interval_high",
+            "interval_low",
+            "leave_one_scene_out_max",
+            "leave_one_scene_out_min",
+            "point_estimate",
+        ):
+            estimate[key] = 0.5
+    tampered = _accepted_with_manifest(
+        accepted,
+        raw,
+        observations=observations,
+    )
+
+    expected_error = {
+        "row": "observation",
+        "aggregate": "metric summary",
+        "per_category": "metric summary",
+        "coverage": "coverage",
+        "robustness": "robustness",
+        "f1": "robustness",
+    }[section]
+    with pytest.raises(ValueError, match=expected_error):
+        package._recompute_accepted_candidate_science(  # noqa: SLF001
+            tampered,
+            raw_observations=_science_raw_observations(),
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=candidate_package.authority,
+            oracle_projector=lambda _arrays: _science_grid(),
+            prediction_projector=lambda _labels, _arrays: _science_grid(),
+        )
+
+
+def test_manifest_rejects_stale_numpy_statistics_runtime() -> None:
+    raw = _manifest(synthetic=True)
+    statistics = _dict_section(raw, "statistics_protocol")
+    statistics["numpy_version"] = "0.0.0"
+    with pytest.raises(ValueError, match="statistics protocol"):
+        SyntheticSuccessfulManifest(raw)
+
+
+@pytest.mark.parametrize("section", ["latency", "resource", "gates"])
+def test_real_scientific_validator_recomputes_latency_and_gates(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    section: str,
+) -> None:
+    accepted = _real_science_accepted(accepted_science_package)
+    raw = cast(Dict[str, object], json.loads(accepted.manifest.canonical_bytes()))
+    if section == "latency":
+        latency = _dict_section(raw, "latency")
+        latency["p95_seconds"] = 7.0
+    elif section == "resource":
+        resource = _dict_section(raw, "resource")
+        resource["peak_reserved_bytes"] = 32 * 1024**3
+    else:
+        gates = _dict_section(raw, "gates")
+        gates["latency"] = "PASS"
+    tampered = _accepted_with_manifest(accepted, raw)
+
+    with pytest.raises(ValueError, match="latency|gates"):
+        package._recompute_accepted_candidate_science(  # noqa: SLF001
+            tampered,
+            raw_observations=_science_raw_observations(),
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=candidate_package.authority,
+            provenance=_passed_provenance(),
+            oracle_projector=lambda _arrays: _science_grid(),
+            prediction_projector=lambda _labels, _arrays: _science_grid(),
+        )
+
+
+def test_real_scientific_validator_accepts_exact_recomputation(
+    candidate_package: _BenchmarkPackageFixture,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    recomputed = package._recompute_accepted_candidate_science(  # noqa: SLF001
+        _real_science_accepted(accepted_science_package),
+        raw_observations=_science_raw_observations(),
+        trusted_cohort=candidate_package.cohort,
+        mapping_authority=candidate_package.authority,
+        provenance=_passed_provenance(),
+        oracle_projector=lambda _arrays: _science_grid(),
+        prediction_projector=lambda _labels, _arrays: _science_grid(),
+    )
+    assert recomputed.latency is not None
+    assert recomputed.gates is not None
+    assert not hasattr(recomputed, "record")
 
 
 def test_file_tree_aggregate_uses_canonical_sorted_records() -> None:
