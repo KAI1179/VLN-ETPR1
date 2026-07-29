@@ -1,39 +1,52 @@
 from __future__ import annotations
 
 import io
-import json
 import hashlib
+import json
+import os
+import socket
 import zipfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Callable, Dict, Mapping, cast
 
 import numpy as np
 import pytest
 
+from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_contract
+from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_package as package
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     BOOTSTRAP_MATRIX_SHA256,
     RAW_GPU_UUID,
     RAW_VALIDATOR_SOURCE_SHA256,
     ComponentTimings,
     ConfusionCounts,
+    MappingEntry,
+    MappingKind,
     MetricEndpoint,
+    ObservationFailureCode,
     ObservationMetrics,
     ObservationStatus,
     Prediction,
     TimingSample,
+    TrustedCohort,
     canonical_json_bytes,
+    logical_label_sha256,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
     AbortedOomManifest,
     ArchivalCudaEvidence,
+    CandidateMappingAuthority,
     FileRecord,
     ObservationPackageRow,
     RealSuccessfulManifest,
     SyntheticSuccessfulManifest,
     TimingPackageRow,
+    accept_candidate_package,
     canonical_observations_bytes,
     canonical_timings_bytes,
     encode_prediction_npz,
+    file_tree_aggregate,
     parse_observations_bytes,
     parse_aborted_oom_manifest_bytes,
     parse_prediction_npz_bytes,
@@ -266,11 +279,11 @@ def _manifest(*, synthetic: bool) -> dict[str, object]:
         "producer_commit_prefix": _COMMIT[:12],
         "producer_git_commit": _COMMIT,
         "raw_inputs": {
-            "cohort_sha256": _HASH,
-            "index_sha256": _HASH,
-            "manifest_sha256": _HASH,
-            "package_sha256": _HASH,
-            "producer_git_commit": _COMMIT,
+            "cohort_jsonl_sha256": _HASH,
+            "raw_index_sha256": _HASH,
+            "raw_manifest_sha256": _HASH,
+            "raw_payload_tree_sha256": _HASH,
+            "raw_producer_git_commit": _COMMIT,
             "selection_sha256": _HASH,
         },
         "robustness": {"f1": _estimate(), "iou": _estimate()},
@@ -278,11 +291,28 @@ def _manifest(*, synthetic: bool) -> dict[str, object]:
         "run_status": "success",
         "schema_version": 1,
         "source_hashes": {
-            "constants": _HASH,
-            "contract": _HASH,
-            "mapping": _HASH,
-            "package": _HASH,
-            "projector": _HASH,
+            "adapter": {"path": "candidate/adapter.py", "sha256": _HASH},
+            "constants": {"path": "prior/constants.py", "sha256": _HASH},
+            "contract": {
+                "path": (
+                    "prior/analyze/d2026_07_29/rgbd_segmenter_benchmark_contract.py"
+                ),
+                "sha256": _HASH,
+            },
+            "mapping": {
+                "path": ("prior/analyze/d2026_07_29/rgbd_segmenter_nyu40_mapping.json"),
+                "sha256": _HASH,
+            },
+            "package": {
+                "path": (
+                    "prior/analyze/d2026_07_29/rgbd_segmenter_benchmark_package.py"
+                ),
+                "sha256": _HASH,
+            },
+            "projector": {
+                "path": ("vlnce_baselines/models/etp_llm/llm_grid_oracle_cache.py"),
+                "sha256": _HASH,
+            },
         },
         "statistics_protocol": {
             "bootstrap_matrix_sha256": BOOTSTRAP_MATRIX_SHA256,
@@ -302,8 +332,6 @@ def _manifest(*, synthetic: bool) -> dict[str, object]:
         },
     }
     if synthetic:
-        cast_sources = _dict_section(result, "source_hashes")
-        cast_sources["synthetic_adapter"] = _HASH
         result["decision"] = "NOT_APPLICABLE"
         result["latency_claim"] = False
     else:
@@ -332,6 +360,20 @@ def _manifest(*, synthetic: bool) -> dict[str, object]:
                 "total_seconds": 20.0,
                 "views_per_second": 60.0,
             },
+            "permission_evidence": {
+                "code": {
+                    "byte_length": 1,
+                    "path": "LICENSE",
+                    "root_role": "candidate_repository",
+                    "sha256": _HASH,
+                },
+                "weights": {
+                    "byte_length": 1,
+                    "path": "WEIGHTS_LICENSE",
+                    "root_role": "candidate_repository",
+                    "sha256": _HASH,
+                },
+            },
             "resource": {
                 "baseline_allocated_bytes": 1,
                 "baseline_reserved_bytes": 2,
@@ -353,6 +395,7 @@ def _aborted_manifest() -> dict[str, object]:
         "cuda_evidence": real["cuda_evidence"],
         "failure_code": "CUDA_OUT_OF_MEMORY",
         "failure_stage": "inference",
+        "permission_evidence": real["permission_evidence"],
         "producer_commit_prefix": _COMMIT[:12],
         "producer_git_commit": _COMMIT,
         "raw_inputs": real["raw_inputs"],
@@ -574,7 +617,7 @@ def test_synthetic_manifest_rejects_real_claims_and_wrong_decision() -> None:
         SyntheticSuccessfulManifest(raw)
 
 
-def test_real_manifest_rejects_selection_decision_and_synthetic_adapter() -> None:
+def test_real_manifest_rejects_selection_decision_and_extra_source_role() -> None:
     raw = _manifest(synthetic=False)
     raw["decision"] = "NOT_APPLICABLE"
     with pytest.raises(ValueError, match="schema"):
@@ -587,9 +630,68 @@ def test_real_manifest_rejects_selection_decision_and_synthetic_adapter() -> Non
 
     raw = _manifest(synthetic=False)
     sources = _dict_section(raw, "source_hashes")
-    sources["synthetic_adapter"] = _HASH
+    sources["synthetic_adapter"] = {"path": "old.py", "sha256": _HASH}
     with pytest.raises(ValueError, match="source_hashes"):
         RealSuccessfulManifest(raw)
+
+
+def test_manifest_rejects_source_role_and_raw_hash_key_swaps() -> None:
+    raw = _manifest(synthetic=True)
+    sources = _dict_section(raw, "source_hashes")
+    sources["constants"], sources["projector"] = (
+        sources["projector"],
+        sources["constants"],
+    )
+    with pytest.raises(ValueError, match="frozen role"):
+        SyntheticSuccessfulManifest(raw)
+
+    raw = _manifest(synthetic=True)
+    raw_inputs = _dict_section(raw, "raw_inputs")
+    raw_inputs["raw_package_sha256"] = raw_inputs.pop("raw_payload_tree_sha256")
+    with pytest.raises(ValueError, match="raw_inputs"):
+        SyntheticSuccessfulManifest(raw)
+
+
+def test_manifest_rejects_backslash_source_and_evidence_paths() -> None:
+    raw = _manifest(synthetic=True)
+    sources = _dict_section(raw, "source_hashes")
+    adapter = _dict_section(sources, "adapter")
+    adapter["path"] = "candidate\\adapter.py"
+    with pytest.raises(ValueError, match="relative POSIX"):
+        SyntheticSuccessfulManifest(raw)
+
+    raw = _manifest(synthetic=False)
+    evidence = _dict_section(raw, "permission_evidence")
+    weights = _dict_section(evidence, "weights")
+    weights["path"] = "weights\\model.bin"
+    with pytest.raises(ValueError, match="relative POSIX"):
+        RealSuccessfulManifest(raw)
+
+
+def test_permission_evidence_is_real_only_and_strict() -> None:
+    raw = _manifest(synthetic=True)
+    raw["permission_evidence"] = _manifest(synthetic=False)["permission_evidence"]
+    with pytest.raises(ValueError, match="schema"):
+        SyntheticSuccessfulManifest(raw)
+
+    raw = _manifest(synthetic=False)
+    evidence = _dict_section(raw, "permission_evidence")
+    code = _dict_section(evidence, "code")
+    code["root_role"] = "ambient_filesystem"
+    with pytest.raises(ValueError, match="root_role"):
+        RealSuccessfulManifest(raw)
+
+    raw = _manifest(synthetic=False)
+    evidence = _dict_section(raw, "permission_evidence")
+    weights = _dict_section(evidence, "weights")
+    weights["path"] = "../LICENSE"
+    with pytest.raises(ValueError, match="relative POSIX"):
+        RealSuccessfulManifest(raw)
+
+    raw = _aborted_manifest()
+    del raw["permission_evidence"]
+    with pytest.raises(ValueError, match="schema"):
+        AbortedOomManifest(raw)
 
 
 def test_manifest_rejects_wrong_prefix_extra_fields_and_nonfinite() -> None:
@@ -699,3 +801,686 @@ def test_aborted_oom_manifest_is_distinct_canonical_manifest_only_schema() -> No
         snapshot[peak_name] = 0
         with pytest.raises(ValueError, match="below its baseline"):
             AbortedOomManifest(raw)
+
+
+@dataclass(frozen=True)
+class _BenchmarkPackageFixture:
+    root: Path
+    manifest_sha256: str
+    cohort: TrustedCohort
+    authority: CandidateMappingAuthority
+
+
+def _record(data: bytes) -> FileRecord:
+    return FileRecord(
+        byte_length=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
+
+
+def _package_identities() -> tuple[tuple[int, str, str], ...]:
+    return tuple(
+        (ordinal, f"{ordinal:020x}", f"scene{ordinal % 11}") for ordinal in range(50)
+    )
+
+
+def _package_authority() -> CandidateMappingAuthority:
+    return CandidateMappingAuthority(
+        source_vocabulary=("wall",),
+        mapping=(
+            MappingEntry(
+                source_index=0,
+                source_name="wall",
+                kind=MappingKind.DIAGNOSTIC,
+                canonical_index=15,
+                canonical_name="structure",
+            ),
+        ),
+        mapping_sha256=_HASH,
+    )
+
+
+def _package_rows(
+    artifact: package.PredictionArtifact,
+    *,
+    status: ObservationStatus = ObservationStatus.PASS,
+    failure_code: ObservationFailureCode | None = None,
+) -> tuple[ObservationPackageRow, ...]:
+    endpoint = _empty_endpoint()
+    return tuple(
+        ObservationPackageRow(
+            ordinal=ordinal,
+            observation_id=observation_id,
+            scene_id=scene,
+            status=status,
+            failure_code=failure_code,
+            prediction_path=(f"predictions/{scene}/{ordinal:02d}-{observation_id}.npz"),
+            prediction=artifact.file,
+            prediction_members=artifact.members,
+            metrics=ObservationMetrics(
+                ordinal=ordinal,
+                scene_id=scene,
+                primary=endpoint,
+                all_27=endpoint,
+                per_category=(endpoint,) * 27,
+            ),
+        )
+        for ordinal, observation_id, scene in _package_identities()
+    )
+
+
+def _package_timings(
+    rows: tuple[ObservationPackageRow, ...],
+    prediction: Prediction,
+) -> tuple[TimingPackageRow, ...]:
+    source_hash = logical_label_sha256(prediction.source_labels)
+    mapped_hash = logical_label_sha256(prediction.mapped_labels)
+    result: list[TimingPackageRow] = []
+    for pass_index in (1, 2):
+        for row in rows:
+            if row.status is ObservationStatus.PASS:
+                components = ComponentTimings(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+            else:
+                components = ComponentTimings(1.0, 1.0, None, None, None, None)
+            result.append(
+                TimingPackageRow(
+                    TimingSample(
+                        sequence_index=20 + (pass_index - 1) * 50 + row.ordinal,
+                        pass_index=pass_index,
+                        ordinal=row.ordinal,
+                        end_to_end=6.0,
+                        components=components,
+                        source_labels_sha256=source_hash,
+                        mapped_labels_sha256=mapped_hash,
+                        status=row.status,
+                        failure_code=row.failure_code,
+                    )
+                )
+            )
+    return tuple(result)
+
+
+def _write_package_metadata(
+    root: Path,
+    rows: tuple[ObservationPackageRow, ...],
+    timings: tuple[TimingPackageRow, ...],
+) -> str:
+    observations_data = canonical_observations_bytes(rows)
+    timings_data = canonical_timings_bytes(timings)
+    (root / "observations.jsonl").write_bytes(observations_data)
+    (root / "timings.jsonl").write_bytes(timings_data)
+    manifest = _manifest(synthetic=True)
+    commitment = _dict_section(manifest, "candidate_commitment")
+    commitment["source_vocabulary"] = ["wall"]
+    commitment["mapping_sha256"] = _HASH
+    files = _dict_section(manifest, "files")
+    files["observations"] = {
+        "byte_length": len(observations_data),
+        "row_count": 50,
+        "sha256": hashlib.sha256(observations_data).hexdigest(),
+    }
+    files["timings"] = {
+        "byte_length": len(timings_data),
+        "row_count": 100,
+        "sha256": hashlib.sha256(timings_data).hexdigest(),
+    }
+    aggregate = file_tree_aggregate(
+        (row.prediction_path, row.prediction) for row in rows
+    )
+    files["predictions"] = {
+        "file_count": aggregate.file_count,
+        "total_byte_length": aggregate.total_byte_length,
+        "tree_sha256": aggregate.tree_sha256,
+    }
+    data = SyntheticSuccessfulManifest(manifest).canonical_bytes()
+    (root / "manifest.json").write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.fixture(scope="module")
+def candidate_package(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _BenchmarkPackageFixture:
+    root = tmp_path_factory.mktemp("candidate-package") / "package"
+    root.mkdir()
+    prediction = Prediction(
+        source_labels=np.zeros((12, 256, 256), dtype="<i2"),
+        mapped_labels=np.full((12, 256, 256), 15, dtype="<i2"),
+    )
+    artifact = encode_prediction_npz(prediction)
+    rows = _package_rows(artifact)
+    for row in rows:
+        path = root / row.prediction_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(artifact.data)
+    timings = _package_timings(rows, prediction)
+    return _BenchmarkPackageFixture(
+        root=root,
+        manifest_sha256=_write_package_metadata(root, rows, timings),
+        cohort=TrustedCohort(_package_identities()),
+        authority=_package_authority(),
+    )
+
+
+def _accept(value: _BenchmarkPackageFixture) -> package.AcceptedCandidatePackage:
+    return accept_candidate_package(
+        value.root,
+        expected_manifest_sha256=value.manifest_sha256,
+        trusted_cohort=value.cohort,
+        mapping_authority=value.authority,
+    )
+
+
+def _preserve_files(root: Path, paths: tuple[str, ...]) -> dict[str, bytes]:
+    return {path: (root / path).read_bytes() for path in paths}
+
+
+def _restore_files(root: Path, values: Mapping[str, bytes]) -> None:
+    for path, data in values.items():
+        target = root / path
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        target.write_bytes(data)
+
+
+def test_candidate_reader_accepts_target_free_package_and_owns_arrays(
+    candidate_package: _BenchmarkPackageFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_calls = 0
+    parser_arrays: list[np.ndarray] = []
+    original_parser = package.parse_prediction_npz_bytes
+
+    def forbidden_target(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal target_calls
+        target_calls += 1
+        raise AssertionError("target projector must not be called")
+
+    def capturing_parser(
+        data: bytes,
+        *,
+        expected_file: FileRecord | None = None,
+        expected_members: Mapping[str, package.PredictionMember] | None = None,
+    ) -> package.ParsedPrediction:
+        parsed = original_parser(
+            data,
+            expected_file=expected_file,
+            expected_members=expected_members,
+        )
+        if not parser_arrays:
+            parser_arrays.append(parsed.prediction.source_labels)
+        return parsed
+
+    monkeypatch.setattr(
+        rgbd_segmenter_benchmark_contract,
+        "project_oracle_frames",
+        forbidden_target,
+    )
+    monkeypatch.setattr(package, "parse_prediction_npz_bytes", capturing_parser)
+    accepted = _accept(candidate_package)
+
+    assert target_calls == 0
+    assert not hasattr(accepted, "targets")
+    assert accepted.validation.file_count == 53
+    assert len(accepted.predictions) == 50
+    with pytest.raises(ValueError):
+        accepted.predictions[0].prediction.source_labels.setflags(write=True)
+    parser_arrays[0][0, 0, 0] = 9
+    assert accepted.predictions[0].prediction.source_labels[0, 0, 0] == 0
+    with pytest.raises(ValueError, match="acceptance factory"):
+        package.AcceptedCandidatePackage(
+            manifest=accepted.manifest,
+            observations=accepted.observations,
+            timings=accepted.timings,
+            predictions=accepted.predictions,
+            validation=accepted.validation,
+        )
+    with pytest.raises(ValueError, match="acceptance factory"):
+        replace(accepted, predictions=accepted.predictions[::-1])
+    with pytest.raises(ValueError, match="acceptance factory"):
+        replace(
+            accepted,
+            validation=replace(accepted.validation, tree_sha256="2" * 64),
+        )
+
+
+def test_file_tree_aggregate_uses_canonical_sorted_records() -> None:
+    records = (
+        ("z/file", FileRecord(2, "2" * 64)),
+        ("a/file", FileRecord(1, "1" * 64)),
+    )
+    aggregate = file_tree_aggregate(records)
+    expected = canonical_json_bytes([
+        {"byte_length": 1, "path": "a/file", "sha256": "1" * 64},
+        {"byte_length": 2, "path": "z/file", "sha256": "2" * 64},
+    ])
+    assert aggregate.file_count == 2
+    assert aggregate.total_byte_length == 3
+    assert aggregate.tree_sha256 == hashlib.sha256(expected).hexdigest()
+    assert file_tree_aggregate(reversed(records)) == aggregate
+
+
+def test_file_tree_aggregate_rejects_backslash_path() -> None:
+    with pytest.raises(ValueError, match="relative POSIX"):
+        file_tree_aggregate((("directory\\file", FileRecord(1, "1" * 64)),))
+
+
+def test_accepted_prediction_defensively_owns_immutable_labels() -> None:
+    source = np.zeros((12, 256, 256), dtype="<i2")
+    mapped = np.zeros((12, 256, 256), dtype="<i2")
+    prediction = Prediction(source_labels=source, mapped_labels=mapped)
+    artifact = encode_prediction_npz(prediction)
+    source.setflags(write=False)
+    mapped.setflags(write=False)
+
+    accepted = package.AcceptedPrediction(
+        path="predictions/scene/observation.npz",
+        prediction=prediction,
+        file=artifact.file,
+        members=artifact.members,
+    )
+
+    source.setflags(write=True)
+    mapped.setflags(write=True)
+    source[0, 0, 0] = 1
+    mapped[0, 0, 0] = 2
+    assert accepted.prediction.source_labels[0, 0, 0] == 0
+    assert accepted.prediction.mapped_labels[0, 0, 0] == 0
+    with pytest.raises(ValueError):
+        accepted.prediction.source_labels.setflags(write=True)
+    with pytest.raises(ValueError):
+        accepted.prediction.mapped_labels.setflags(write=True)
+    with pytest.raises(ValueError, match="metadata is not canonical"):
+        package.AcceptedPrediction(
+            path="predictions/scene/observation.npz",
+            prediction=prediction,
+            file=FileRecord(artifact.file.byte_length, "2" * 64),
+            members=artifact.members,
+        )
+    wrong_members = dict(artifact.members)
+    wrong_members["source_labels"] = replace(
+        wrong_members["source_labels"],
+        array_sha256="2" * 64,
+    )
+    with pytest.raises(ValueError, match="metadata is not canonical"):
+        package.AcceptedPrediction(
+            path="predictions/scene/observation.npz",
+            prediction=prediction,
+            file=artifact.file,
+            members=wrong_members,
+        )
+
+
+def test_candidate_reader_requires_external_hash_cohort_and_mapping_authority(
+    candidate_package: _BenchmarkPackageFixture,
+) -> None:
+    with pytest.raises(ValueError, match="record mismatch"):
+        accept_candidate_package(
+            candidate_package.root,
+            expected_manifest_sha256="2" * 64,
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=candidate_package.authority,
+        )
+    wrong_vocabulary = CandidateMappingAuthority(
+        source_vocabulary=("ceiling",),
+        mapping=(
+            MappingEntry(
+                0,
+                "ceiling",
+                MappingKind.DIAGNOSTIC,
+                17,
+                "free-space",
+            ),
+        ),
+        mapping_sha256=_HASH,
+    )
+    with pytest.raises(ValueError, match="authority mismatch"):
+        accept_candidate_package(
+            candidate_package.root,
+            expected_manifest_sha256=candidate_package.manifest_sha256,
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=wrong_vocabulary,
+        )
+    identities = list(candidate_package.cohort.identities)
+    identities[0], identities[1] = identities[1], identities[0]
+    identities = [
+        (ordinal, observation_id, scene)
+        for ordinal, (_, observation_id, scene) in enumerate(identities)
+    ]
+    wrong_cohort = TrustedCohort(tuple(identities))
+    with pytest.raises(ValueError, match="trusted cohort|exact tree"):
+        accept_candidate_package(
+            candidate_package.root,
+            expected_manifest_sha256=candidate_package.manifest_sha256,
+            trusted_cohort=wrong_cohort,
+            mapping_authority=candidate_package.authority,
+        )
+
+
+def test_candidate_reader_rejects_tree_entry_types_and_sizes(
+    candidate_package: _BenchmarkPackageFixture,
+) -> None:
+    root = candidate_package.root
+    extra = root / "extra"
+    extra.write_text("x")
+    try:
+        with pytest.raises(ValueError, match="exact tree"):
+            _accept(candidate_package)
+    finally:
+        extra.unlink()
+
+    target = (
+        root / _package_rows(encode_prediction_npz(_prediction()))[0].prediction_path
+    )
+    original = target.read_bytes()
+    target.unlink()
+    target.symlink_to("missing")
+    try:
+        with pytest.raises(ValueError, match="entry type|exact tree"):
+            _accept(candidate_package)
+    finally:
+        target.unlink()
+        target.write_bytes(original)
+
+    second = root / (f"predictions/scene1/01-{1:020x}.npz")
+    target.unlink()
+    os.link(second, target)
+    try:
+        with pytest.raises(ValueError, match="hard-linked"):
+            _accept(candidate_package)
+    finally:
+        target.unlink()
+        target.write_bytes(original)
+
+    target.unlink()
+    os.mkfifo(target)
+    try:
+        with pytest.raises(ValueError, match="entry type"):
+            _accept(candidate_package)
+    finally:
+        target.unlink()
+        target.write_bytes(original)
+
+    unix_socket = socket.socket(socket.AF_UNIX)
+    socket_path = root / "socket"
+    unix_socket.bind(str(socket_path))
+    try:
+        with pytest.raises(ValueError, match="entry type"):
+            _accept(candidate_package)
+    finally:
+        unix_socket.close()
+        socket_path.unlink()
+
+    target.unlink()
+    with target.open("wb") as stream:
+        stream.truncate(4 * 1024 * 1024 + 1)
+    try:
+        with pytest.raises(ValueError, match="metadata"):
+            _accept(candidate_package)
+    finally:
+        target.unlink()
+        target.write_bytes(original)
+
+
+def test_candidate_reader_rejects_empty_deep_large_and_relative_trees(
+    candidate_package: _BenchmarkPackageFixture,
+) -> None:
+    root = candidate_package.root
+    empty = root / "empty"
+    empty.mkdir()
+    try:
+        with pytest.raises(ValueError, match="empty directory|exact tree"):
+            _accept(candidate_package)
+    finally:
+        empty.rmdir()
+
+    deep = root / "too" / "deep" / "forbidden"
+    deep.mkdir(parents=True)
+    (deep / "entry").write_text("x")
+    try:
+        with pytest.raises(ValueError, match="depth|too many|exact tree"):
+            _accept(candidate_package)
+    finally:
+        (deep / "entry").unlink()
+        deep.rmdir()
+        deep.parent.rmdir()
+        deep.parent.parent.rmdir()
+
+    extras = tuple(root / f"extra-{index}" for index in range(20))
+    for path in extras:
+        path.write_text("x")
+    try:
+        with pytest.raises(ValueError, match="too many"):
+            _accept(candidate_package)
+    finally:
+        for path in extras:
+            path.unlink()
+
+    with pytest.raises(ValueError, match="absolute"):
+        accept_candidate_package(
+            Path("relative/package"),
+            expected_manifest_sha256=candidate_package.manifest_sha256,
+            trusted_cohort=candidate_package.cohort,
+            mapping_authority=candidate_package.authority,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_value", "mapped_value", "status", "failure_code", "message"),
+    [
+        (1, 15, ObservationStatus.PASS, None, "out of range"),
+        (0, 17, ObservationStatus.PASS, None, "authoritative mapping"),
+        (
+            0,
+            15,
+            ObservationStatus.FAILED,
+            ObservationFailureCode.INFERENCE_FAILURE,
+            "all -1",
+        ),
+    ],
+)
+def test_candidate_reader_rejects_prediction_semantic_drift(
+    candidate_package: _BenchmarkPackageFixture,
+    source_value: int,
+    mapped_value: int,
+    status: ObservationStatus,
+    failure_code: ObservationFailureCode | None,
+    message: str,
+) -> None:
+    root = candidate_package.root
+    rows = parse_observations_bytes((root / "observations.jsonl").read_bytes())
+    first_path = rows[0].prediction_path
+    preserved = _preserve_files(
+        root,
+        ("manifest.json", "observations.jsonl", "timings.jsonl", first_path),
+    )
+    prediction = Prediction(
+        np.full((12, 256, 256), source_value, dtype="<i2"),
+        np.full((12, 256, 256), mapped_value, dtype="<i2"),
+    )
+    artifact = encode_prediction_npz(prediction)
+    changed_rows = (
+        replace(
+            rows[0],
+            status=status,
+            failure_code=failure_code,
+            prediction=artifact.file,
+            prediction_members=artifact.members,
+        ),
+    ) + rows[1:]
+    timings = _package_timings(changed_rows, prediction)
+    (root / first_path).write_bytes(artifact.data)
+    expected_manifest = _write_package_metadata(root, changed_rows, timings)
+    try:
+        with pytest.raises(ValueError, match=message):
+            accept_candidate_package(
+                root,
+                expected_manifest_sha256=expected_manifest,
+                trusted_cohort=candidate_package.cohort,
+                mapping_authority=candidate_package.authority,
+            )
+    finally:
+        _restore_files(root, preserved)
+
+
+def test_candidate_reader_rejects_timing_and_manifest_aggregate_mismatch(
+    candidate_package: _BenchmarkPackageFixture,
+) -> None:
+    root = candidate_package.root
+    rows = parse_observations_bytes((root / "observations.jsonl").read_bytes())
+    timings = parse_timings_bytes((root / "timings.jsonl").read_bytes())
+    preserved = _preserve_files(root, ("manifest.json", "timings.jsonl"))
+    changed = (
+        TimingPackageRow(replace(timings[0].sample, source_labels_sha256="2" * 64)),
+    ) + timings[1:]
+    expected_manifest = _write_package_metadata(root, rows, changed)
+    try:
+        with pytest.raises(ValueError, match="timing row"):
+            accept_candidate_package(
+                root,
+                expected_manifest_sha256=expected_manifest,
+                trusted_cohort=candidate_package.cohort,
+                mapping_authority=candidate_package.authority,
+            )
+    finally:
+        _restore_files(root, preserved)
+
+    manifest = _manifest(synthetic=True)
+    commitment = _dict_section(manifest, "candidate_commitment")
+    commitment["source_vocabulary"] = ["wall"]
+    commitment["mapping_sha256"] = _HASH
+    files = _dict_section(manifest, "files")
+    observations_data = (root / "observations.jsonl").read_bytes()
+    timings_data = (root / "timings.jsonl").read_bytes()
+    files["observations"] = {
+        "byte_length": len(observations_data),
+        "row_count": 50,
+        "sha256": hashlib.sha256(observations_data).hexdigest(),
+    }
+    files["timings"] = {
+        "byte_length": len(timings_data),
+        "row_count": 100,
+        "sha256": hashlib.sha256(timings_data).hexdigest(),
+    }
+    files["predictions"] = {
+        "file_count": 50,
+        "total_byte_length": sum(row.prediction.byte_length for row in rows),
+        "tree_sha256": "2" * 64,
+    }
+    bad_manifest = SyntheticSuccessfulManifest(manifest).canonical_bytes()
+    original_manifest = (root / "manifest.json").read_bytes()
+    (root / "manifest.json").write_bytes(bad_manifest)
+    try:
+        with pytest.raises(ValueError, match="tree aggregate"):
+            accept_candidate_package(
+                root,
+                expected_manifest_sha256=hashlib.sha256(bad_manifest).hexdigest(),
+                trusted_cohort=candidate_package.cohort,
+                mapping_authority=candidate_package.authority,
+            )
+    finally:
+        (root / "manifest.json").write_bytes(original_manifest)
+
+
+def test_candidate_reader_rejects_intermediate_directory_swap(
+    candidate_package: _BenchmarkPackageFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    original_open = package.os.open
+    scene_open_count = 0
+
+    def swapping_open(
+        path: str | bytes | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal scene_open_count
+        if path == "scene0":
+            scene_open_count += 1
+            if scene_open_count == 2:
+                return original_open(attacker, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(package.os, "open", swapping_open)
+    with pytest.raises(ValueError, match="directory changed|unsafe"):
+        _accept(candidate_package)
+
+
+def test_candidate_reader_rejects_root_binding_and_final_content_races(
+    candidate_package: _BenchmarkPackageFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = candidate_package.root
+    moved = root.with_name(f"{root.name}-moved")
+    original_read = package._read_file_at
+    swapped = False
+
+    def swapping_root(
+        root_descriptor: int,
+        path: str,
+        *,
+        expected_fingerprint: package._Fingerprint,
+        expected_directories: Mapping[str, package._Fingerprint],
+        expected_record: FileRecord | None = None,
+    ) -> tuple[bytes, FileRecord]:
+        nonlocal swapped
+        result = original_read(
+            root_descriptor,
+            path,
+            expected_fingerprint=expected_fingerprint,
+            expected_directories=expected_directories,
+            expected_record=expected_record,
+        )
+        if not swapped:
+            root.rename(moved)
+            root.mkdir()
+            swapped = True
+        return result
+
+    monkeypatch.setattr(package, "_read_file_at", swapping_root)
+    try:
+        with pytest.raises(ValueError, match="tree changed|ancestor binding"):
+            _accept(candidate_package)
+    finally:
+        root.rmdir()
+        moved.rename(root)
+
+    monkeypatch.setattr(package, "_read_file_at", original_read)
+    manifest_reads = 0
+    manifest_path = root / "manifest.json"
+    original_manifest = manifest_path.read_bytes()
+
+    def mutating_final_read(
+        root_descriptor: int,
+        path: str,
+        *,
+        expected_fingerprint: package._Fingerprint,
+        expected_directories: Mapping[str, package._Fingerprint],
+        expected_record: FileRecord | None = None,
+    ) -> tuple[bytes, FileRecord]:
+        nonlocal manifest_reads
+        result = original_read(
+            root_descriptor,
+            path,
+            expected_fingerprint=expected_fingerprint,
+            expected_directories=expected_directories,
+            expected_record=expected_record,
+        )
+        if path == "manifest.json":
+            manifest_reads += 1
+            if manifest_reads == 2:
+                manifest_path.write_bytes(original_manifest + b" ")
+        return result
+
+    monkeypatch.setattr(package, "_read_file_at", mutating_final_read)
+    try:
+        with pytest.raises(ValueError, match="final recapture"):
+            _accept(candidate_package)
+    finally:
+        manifest_path.write_bytes(original_manifest)

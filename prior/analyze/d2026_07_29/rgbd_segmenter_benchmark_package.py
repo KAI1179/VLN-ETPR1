@@ -6,13 +6,15 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import stat
 import struct
 import zipfile
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, fields
+from dataclasses import InitVar, asdict, dataclass, fields
 from enum import Enum
+from pathlib import Path, PurePosixPath
 from typing import (
     Generic,
     Iterable,
@@ -26,6 +28,7 @@ from typing import (
 )
 
 import numpy as np
+import torch
 
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     BOOTSTRAP_MATRIX_SHA256,
@@ -37,6 +40,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     GateStatus,
     LatencySummary,
     LicenseStatus,
+    MappingEntry,
     MetricAggregate,
     MetricEndpoint,
     ObservationFailureCode,
@@ -49,7 +53,10 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     StaticCoverage,
     TimingSample,
     TimingStage,
+    TrustedCohort,
     canonical_json_bytes,
+    logical_label_sha256,
+    map_source_labels,
 )
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -57,12 +64,19 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _IDENTITY = re.compile(r"[0-9a-f]{20}")
 _SCENE = re.compile(r"[A-Za-z0-9_-]+")
 _MAX_PREDICTION_BYTES = 4 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_OBSERVATIONS_BYTES = 16 * 1024 * 1024
+_MAX_TIMINGS_BYTES = 8 * 1024 * 1024
+_MAX_PACKAGE_ENTRIES = 80
+_MAX_PACKAGE_DEPTH = 3
+_READ_CHUNK_BYTES = 1024 * 1024
 _LABEL_SHAPE = (12, 256, 256)
 _LABEL_DTYPE = "<i2"
 _LABEL_ARRAY_BYTES = 12 * 256 * 256 * 2
 _MEMBER_NAMES = ("mapped_labels", "source_labels")
 _ZIP_EOCD = struct.Struct("<4s4H2LH")
 _ZIP_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
+_ACCEPTANCE_TOKEN = object()
 
 
 def _expected_npy_length() -> int:
@@ -89,6 +103,49 @@ class FileRecord:
     def __post_init__(self) -> None:
         _plain_int(self.byte_length, "file byte length")
         _hash(self.sha256, "file SHA-256")
+
+
+@dataclass(frozen=True)
+class FileTreeAggregate:
+    file_count: int
+    total_byte_length: int
+    tree_sha256: str
+
+    def __post_init__(self) -> None:
+        _plain_int(self.file_count, "tree file count", 1)
+        _plain_int(self.total_byte_length, "tree total byte length", 1)
+        _hash(self.tree_sha256, "tree SHA-256")
+
+
+def file_tree_aggregate(
+    records: Iterable[Tuple[str, FileRecord]],
+) -> FileTreeAggregate:
+    """Hash canonical lexical path/file records without delimiter ambiguity."""
+
+    materialized = tuple(records)
+    if not materialized:
+        raise ValueError("file tree aggregate requires at least one file")
+    for path, record in materialized:
+        _relative_path(path)
+        if not isinstance(record, FileRecord):
+            raise ValueError("file tree aggregate requires typed file records")
+    paths = tuple(path for path, _ in materialized)
+    if len(set(paths)) != len(paths):
+        raise ValueError("file tree aggregate paths must be unique")
+    ordered = tuple(sorted(materialized))
+    canonical = canonical_json_bytes([
+        {
+            "byte_length": record.byte_length,
+            "path": path,
+            "sha256": record.sha256,
+        }
+        for path, record in ordered
+    ])
+    return FileTreeAggregate(
+        file_count=len(ordered),
+        total_byte_length=sum(record.byte_length for _, record in ordered),
+        tree_sha256=hashlib.sha256(canonical).hexdigest(),
+    )
 
 
 @dataclass(frozen=True)
@@ -138,6 +195,137 @@ class ParsedPrediction:
             raise ValueError("parsed prediction must contain a Prediction")
         _require_member_schema(self.members)
         object.__setattr__(self, "members", _typed_mapping_copy(self.members))
+
+
+@dataclass(frozen=True)
+class CandidateMappingAuthority:
+    source_vocabulary: Tuple[str, ...]
+    mapping: Tuple[MappingEntry, ...]
+    mapping_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.source_vocabulary) is not tuple
+            or not self.source_vocabulary
+            or any(
+                not isinstance(name, str) or not name for name in self.source_vocabulary
+            )
+            or len(set(self.source_vocabulary)) != len(self.source_vocabulary)
+            or type(self.mapping) is not tuple
+            or len(self.mapping) != len(self.source_vocabulary)
+            or any(
+                not isinstance(entry, MappingEntry)
+                or entry.source_index != index
+                or entry.source_name != self.source_vocabulary[index]
+                for index, entry in enumerate(self.mapping)
+            )
+        ):
+            raise ValueError("candidate mapping authority is invalid")
+        _hash(self.mapping_sha256, "candidate mapping authority SHA-256")
+
+
+@dataclass(frozen=True)
+class AcceptedPrediction:
+    path: str
+    prediction: Prediction
+    file: FileRecord
+    members: Mapping[str, PredictionMember]
+
+    def __post_init__(self) -> None:
+        _relative_path(self.path)
+        if not isinstance(self.prediction, Prediction):
+            raise ValueError("accepted prediction must contain typed labels")
+        if not isinstance(self.file, FileRecord):
+            raise ValueError("accepted prediction file record is invalid")
+        _require_member_schema(self.members)
+        immutable_prediction = _immutable_prediction(self.prediction)
+        canonical_artifact = encode_prediction_npz(immutable_prediction)
+        if self.file != canonical_artifact.file or dict(self.members) != dict(
+            canonical_artifact.members
+        ):
+            raise ValueError("accepted prediction metadata is not canonical")
+        object.__setattr__(self, "prediction", immutable_prediction)
+        object.__setattr__(self, "members", _typed_mapping_copy(self.members))
+
+
+@dataclass(frozen=True)
+class PackageValidationRecord:
+    file_count: int
+    total_byte_length: int
+    tree_sha256: str
+    manifest: FileRecord
+
+    def __post_init__(self) -> None:
+        if self.file_count != 53:
+            raise ValueError("successful package must contain exactly 53 files")
+        _plain_int(self.total_byte_length, "package total byte length", 1)
+        _hash(self.tree_sha256, "package tree SHA-256")
+        if not isinstance(self.manifest, FileRecord):
+            raise ValueError("package manifest record is invalid")
+
+
+@dataclass(frozen=True)
+class AcceptedCandidatePackage:
+    manifest: "SuccessfulManifest"
+    observations: Tuple["ObservationPackageRow", ...]
+    timings: Tuple["TimingPackageRow", ...]
+    predictions: Tuple[AcceptedPrediction, ...]
+    validation: PackageValidationRecord
+    _acceptance_token: InitVar[Optional[object]] = None
+
+    def __post_init__(self, _acceptance_token: Optional[object]) -> None:
+        if _acceptance_token is not _ACCEPTANCE_TOKEN:
+            raise ValueError(
+                "accepted packages must be created by the acceptance factory"
+            )
+        if not isinstance(
+            self.manifest, (RealSuccessfulManifest, SyntheticSuccessfulManifest)
+        ):
+            raise ValueError("accepted package manifest is invalid")
+        if (
+            type(self.observations) is not tuple
+            or len(self.observations) != 50
+            or any(
+                not isinstance(value, ObservationPackageRow) or value.ordinal != ordinal
+                for ordinal, value in enumerate(self.observations)
+            )
+            or type(self.timings) is not tuple
+            or len(self.timings) != 100
+            or any(not isinstance(value, TimingPackageRow) for value in self.timings)
+            or type(self.predictions) is not tuple
+            or len(self.predictions) != 50
+            or any(
+                not isinstance(value, AcceptedPrediction) for value in self.predictions
+            )
+            or not isinstance(self.validation, PackageValidationRecord)
+        ):
+            raise ValueError("accepted package payload is incomplete")
+        if any(
+            prediction.path != observation.prediction_path
+            or prediction.file != observation.prediction
+            or dict(prediction.members) != dict(observation.prediction_members)
+            for observation, prediction in zip(self.observations, self.predictions)
+        ):
+            raise ValueError("accepted predictions do not bind observation order")
+        _bind_timings(self.timings, self.observations, self.predictions)
+        observations_record = _file_record(
+            canonical_observations_bytes(self.observations)
+        )
+        timings_record = _file_record(canonical_timings_bytes(self.timings))
+        if observations_record != _manifest_file_record(
+            self.manifest, "observations"
+        ) or timings_record != _manifest_file_record(self.manifest, "timings"):
+            raise ValueError("accepted package payload records differ from manifest")
+        manifest_record = _file_record(self.manifest.canonical_bytes())
+        complete_records = (
+            ("manifest.json", manifest_record),
+            ("observations.jsonl", observations_record),
+            ("timings.jsonl", timings_record),
+        ) + tuple((prediction.path, prediction.file) for prediction in self.predictions)
+        if self.validation != _package_validation_record(
+            complete_records, manifest_record
+        ):
+            raise ValueError("accepted package validation record is inconsistent")
 
 
 def _hash(data: object, label: str) -> str:
@@ -928,6 +1116,7 @@ _REAL_MANIFEST_KEYS = _COMMON_MANIFEST_KEYS + (
     "cuda_evidence",
     "gates",
     "latency",
+    "permission_evidence",
     "resource",
 )
 _SYNTHETIC_MANIFEST_KEYS = _COMMON_MANIFEST_KEYS + ("decision", "latency_claim")
@@ -970,11 +1159,11 @@ _SECTION_KEYS: Mapping[str, Tuple[str, ...]] = {
     "files": ("observations", "predictions", "timings"),
     "metric_summary": ("all_27", "per_category", "primary"),
     "raw_inputs": (
-        "cohort_sha256",
-        "index_sha256",
-        "manifest_sha256",
-        "package_sha256",
-        "producer_git_commit",
+        "cohort_jsonl_sha256",
+        "raw_index_sha256",
+        "raw_manifest_sha256",
+        "raw_payload_tree_sha256",
+        "raw_producer_git_commit",
         "selection_sha256",
     ),
     "robustness": ("f1", "iou"),
@@ -1022,15 +1211,23 @@ _SECTION_KEYS: Mapping[str, Tuple[str, ...]] = {
         "peak_allocated_bytes",
         "peak_reserved_bytes",
     ),
+    "permission_evidence": ("code", "weights"),
 }
-_REAL_SOURCE_HASH_KEYS = (
+_SOURCE_HASH_KEYS = (
+    "adapter",
     "constants",
     "contract",
     "mapping",
     "package",
     "projector",
 )
-_SYNTHETIC_SOURCE_HASH_KEYS = _REAL_SOURCE_HASH_KEYS + ("synthetic_adapter",)
+_FIXED_SOURCE_PATHS: Mapping[str, str] = {
+    "constants": "prior/constants.py",
+    "contract": ("prior/analyze/d2026_07_29/rgbd_segmenter_benchmark_contract.py"),
+    "mapping": "prior/analyze/d2026_07_29/rgbd_segmenter_nyu40_mapping.json",
+    "package": "prior/analyze/d2026_07_29/rgbd_segmenter_benchmark_package.py",
+    "projector": ("vlnce_baselines/models/etp_llm/llm_grid_oracle_cache.py"),
+}
 _ABORTED_MANIFEST_KEYS = (
     "attestations",
     "candidate_commitment",
@@ -1040,6 +1237,7 @@ _ABORTED_MANIFEST_KEYS = (
     "cuda_evidence",
     "failure_code",
     "failure_stage",
+    "permission_evidence",
     "producer_commit_prefix",
     "producer_git_commit",
     "raw_inputs",
@@ -1136,13 +1334,10 @@ def _validate_aborted_manifest(value: Mapping[str, object]) -> None:
         TimingStage(cast(str, raw["failure_stage"]))
     except (TypeError, ValueError) as error:
         raise ValueError("aborted OOM failure stage is invalid") from error
-    sources = _exact_object(
-        raw["source_hashes"], _REAL_SOURCE_HASH_KEYS, "aborted source hashes"
-    )
-    for key, item in sources.items():
-        _hash(item, f"aborted source_hashes.{key}")
+    _validate_source_hashes(raw["source_hashes"])
     _validate_raw_inputs(raw["raw_inputs"])
     _validate_attestations(raw["attestations"], comparable=True)
+    _validate_permission_evidence(raw["permission_evidence"])
     ArchivalCudaEvidence.from_json(raw["cuda_evidence"])
     snapshot = _exact_object(
         raw["resource_snapshot"],
@@ -1219,12 +1414,7 @@ def _validate_manifest(value: Mapping[str, object], kind: RunKind) -> None:
     for section, keys in _SECTION_KEYS.items():
         if section in raw:
             _exact_object(raw[section], keys, f"manifest.{section}")
-    source_keys = (
-        _REAL_SOURCE_HASH_KEYS if kind is RunKind.REAL else _SYNTHETIC_SOURCE_HASH_KEYS
-    )
-    sources = _exact_object(raw["source_hashes"], source_keys, "manifest.source_hashes")
-    for key, item in sources.items():
-        _hash(item, f"manifest.source_hashes.{key}")
+    _validate_source_hashes(raw["source_hashes"])
     candidate = cast(Mapping[str, object], raw["candidate_commitment"])
     if candidate["candidate_id"] != candidate_id or candidate["synthetic"] is not (
         kind is RunKind.SYNTHETIC
@@ -1264,6 +1454,7 @@ def _validate_manifest_sections(raw: Mapping[str, object], kind: RunKind) -> Non
     _validate_metric_summary(raw["metric_summary"])
     _validate_robustness(raw["robustness"])
     if kind is RunKind.REAL:
+        _validate_permission_evidence(raw["permission_evidence"])
         _validate_real_sections(raw)
 
 
@@ -1312,16 +1503,57 @@ def _candidate_from_json(value: object) -> CandidateCommitment:
 def _validate_raw_inputs(value: object) -> None:
     raw = _exact_object(value, _SECTION_KEYS["raw_inputs"], "manifest.raw_inputs")
     for name in (
-        "cohort_sha256",
-        "index_sha256",
-        "manifest_sha256",
-        "package_sha256",
+        "cohort_jsonl_sha256",
+        "raw_index_sha256",
+        "raw_manifest_sha256",
+        "raw_payload_tree_sha256",
         "selection_sha256",
     ):
         _hash(raw[name], f"raw_inputs.{name}")
-    commit = raw["producer_git_commit"]
+    commit = raw["raw_producer_git_commit"]
     if not isinstance(commit, str) or _COMMIT.fullmatch(commit) is None:
         raise ValueError("raw producer commit is invalid")
+
+
+def _validate_source_hashes(value: object) -> None:
+    raw = _exact_object(value, _SOURCE_HASH_KEYS, "manifest.source_hashes")
+    for role in _SOURCE_HASH_KEYS:
+        record = _exact_object(raw[role], ("path", "sha256"), f"source_hashes.{role}")
+        path = record["path"]
+        if not isinstance(path, str):
+            raise ValueError(f"source_hashes.{role}.path is invalid")
+        _relative_path(path)
+        expected_path = _FIXED_SOURCE_PATHS.get(role)
+        if expected_path is not None and path != expected_path:
+            raise ValueError(f"source_hashes.{role}.path differs from frozen role")
+        _hash(record["sha256"], f"source_hashes.{role}.sha256")
+
+
+def _validate_permission_evidence(value: object) -> None:
+    raw = _exact_object(
+        value, _SECTION_KEYS["permission_evidence"], "permission_evidence"
+    )
+    for role in ("code", "weights"):
+        record = _exact_object(
+            raw[role],
+            ("byte_length", "path", "root_role", "sha256"),
+            f"permission_evidence.{role}",
+        )
+        if record["root_role"] not in {
+            "benchmark_repository",
+            "candidate_repository",
+        }:
+            raise ValueError(f"permission_evidence.{role}.root_role is invalid")
+        path = record["path"]
+        if not isinstance(path, str):
+            raise ValueError(f"permission_evidence.{role}.path is invalid")
+        _relative_path(path)
+        _plain_int(
+            record["byte_length"],
+            f"permission_evidence.{role}.byte_length",
+            1,
+        )
+        _hash(record["sha256"], f"permission_evidence.{role}.sha256")
 
 
 def _validate_attestations(value: object, *, comparable: bool) -> None:
@@ -1657,3 +1889,585 @@ def _outcome(
         failure_code, ObservationFailureCode
     ):
         raise ValueError("failure code is invalid")
+
+
+@dataclass(frozen=True)
+class _Fingerprint:
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    user: int
+    group: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+@dataclass(frozen=True)
+class _DirectoryIdentity:
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True)
+class _TreeSnapshot:
+    root: _Fingerprint
+    directories: Mapping[str, _Fingerprint]
+    files: Mapping[str, _Fingerprint]
+
+
+class _DescriptorCleanupError(RuntimeError):
+    def __init__(self, primary: BaseException, cleanup: BaseException) -> None:
+        super().__init__(
+            "candidate package validation failed and descriptor cleanup also failed"
+        )
+        self.primary = primary
+        self.cleanup = cleanup
+
+
+def _fingerprint(value: os.stat_result) -> _Fingerprint:
+    return _Fingerprint(
+        device=value.st_dev,
+        inode=value.st_ino,
+        mode=value.st_mode,
+        link_count=value.st_nlink,
+        user=value.st_uid,
+        group=value.st_gid,
+        size=value.st_size,
+        modified_ns=value.st_mtime_ns,
+        changed_ns=value.st_ctime_ns,
+    )
+
+
+def _directory_identity(value: os.stat_result) -> _DirectoryIdentity:
+    return _DirectoryIdentity(
+        device=value.st_dev,
+        inode=value.st_ino,
+        mode=value.st_mode,
+    )
+
+
+def _relative_path(value: str) -> None:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or path.is_absolute()
+        or str(path) != value
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
+    ):
+        raise ValueError("package path must be normalized printable relative POSIX")
+
+
+def _open_anchored_root(
+    root: Path,
+) -> Tuple[
+    int,
+    Tuple[int, ...],
+    Tuple[Tuple[int, str, _DirectoryIdentity], ...],
+]:
+    if not isinstance(root, Path) or not root.is_absolute() or root == Path("/"):
+        raise ValueError("candidate package root must be an absolute non-root Path")
+    if any(part in {"", ".", ".."} for part in root.parts[1:]):
+        raise ValueError("candidate package root is not normalized")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    bindings: list[Tuple[int, str, _DirectoryIdentity]] = []
+    try:
+        descriptor = os.open("/", flags)
+        descriptors.append(descriptor)
+        for component in root.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            metadata = os.fstat(child)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("candidate package path contains a non-directory")
+            descriptors.append(child)
+            bindings.append((descriptor, component, _directory_identity(metadata)))
+            descriptor = child
+        return descriptor, tuple(descriptors), tuple(bindings)
+    except BaseException:
+        _close_descriptors(tuple(reversed(descriptors)))
+        raise
+
+
+def _close_descriptors(descriptors: Sequence[int]) -> None:
+    failures: list[OSError] = []
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            failures.append(error)
+    if failures:
+        raise RuntimeError(
+            "failed to close candidate package descriptors"
+        ) from failures[0]
+
+
+def _recapture_ancestor_bindings(
+    bindings: Sequence[Tuple[int, str, _DirectoryIdentity]],
+) -> None:
+    for parent, name, expected in bindings:
+        try:
+            metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except OSError as error:
+            raise ValueError("candidate package ancestor binding changed") from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or _directory_identity(metadata) != expected
+        ):
+            raise ValueError("candidate package ancestor binding changed")
+
+
+def _capture_tree(root_descriptor: int) -> _TreeSnapshot:
+    root_metadata = os.fstat(root_descriptor)
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("candidate package root must remain a directory")
+    directories: dict[str, _Fingerprint] = {}
+    files: dict[str, _Fingerprint] = {}
+    count = [0]
+
+    def walk(descriptor: int, relative: str, depth: int) -> None:
+        if depth >= _MAX_PACKAGE_DEPTH:
+            raise ValueError("candidate package tree exceeds maximum depth")
+        try:
+            names = sorted(os.listdir(descriptor))
+        except OSError as error:
+            raise ValueError("candidate package directory cannot be listed") from error
+        if not names:
+            raise ValueError("candidate package contains an empty directory")
+        for name in names:
+            if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+                raise ValueError("candidate package contains an invalid entry name")
+            path = f"{relative}/{name}" if relative else name
+            _relative_path(path)
+            count[0] += 1
+            if count[0] > _MAX_PACKAGE_ENTRIES:
+                raise ValueError("candidate package contains too many entries")
+            try:
+                metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except OSError as error:
+                raise ValueError(
+                    "candidate package entry cannot be inspected"
+                ) from error
+            fingerprint = _fingerprint(metadata)
+            if stat.S_ISDIR(metadata.st_mode):
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+                try:
+                    child = os.open(name, flags, dir_fd=descriptor)
+                except OSError as error:
+                    raise ValueError("candidate package directory is unsafe") from error
+                try:
+                    if _fingerprint(os.fstat(child)) != fingerprint:
+                        raise ValueError("candidate package directory changed")
+                    directories[path] = fingerprint
+                    walk(child, path, depth + 1)
+                    if _fingerprint(os.fstat(child)) != fingerprint:
+                        raise ValueError("candidate package directory changed")
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_nlink != 1:
+                    raise ValueError("candidate package hard-linked file is forbidden")
+                files[path] = fingerprint
+            else:
+                raise ValueError("candidate package entry type is forbidden")
+
+    walk(root_descriptor, "", 0)
+    return _TreeSnapshot(
+        root=_fingerprint(root_metadata),
+        directories=_FrozenMapping(tuple(sorted(directories.items()))),
+        files=_FrozenMapping(tuple(sorted(files.items()))),
+    )
+
+
+def _expected_tree(
+    trusted_cohort: TrustedCohort,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    if not isinstance(trusted_cohort, TrustedCohort):
+        raise ValueError("trusted cohort authority is required")
+    directories = ("predictions",) + tuple(
+        f"predictions/{scene}" for scene in trusted_cohort.scenes
+    )
+    for path in directories:
+        _relative_path(path)
+    predictions = tuple(
+        f"predictions/{scene}/{ordinal:02d}-{observation_id}.npz"
+        for ordinal, observation_id, scene in trusted_cohort.identities
+    )
+    for path in predictions:
+        _relative_path(path)
+    files = ("manifest.json", "observations.jsonl", "timings.jsonl") + predictions
+    return tuple(sorted(directories)), tuple(sorted(files))
+
+
+def _require_exact_tree(
+    snapshot: _TreeSnapshot,
+    expected_directories: Sequence[str],
+    expected_files: Sequence[str],
+) -> None:
+    if tuple(sorted(snapshot.directories)) != tuple(expected_directories):
+        raise ValueError("candidate package directories differ from the exact tree")
+    if tuple(sorted(snapshot.files)) != tuple(expected_files):
+        raise ValueError("candidate package files differ from the exact tree")
+
+
+def _max_file_bytes(path: str) -> int:
+    if path == "manifest.json":
+        return _MAX_MANIFEST_BYTES
+    if path == "observations.jsonl":
+        return _MAX_OBSERVATIONS_BYTES
+    if path == "timings.jsonl":
+        return _MAX_TIMINGS_BYTES
+    if path.startswith("predictions/") and path.endswith(".npz"):
+        return _MAX_PREDICTION_BYTES
+    raise ValueError("candidate package path is outside the frozen tree")
+
+
+def _read_file_at(
+    root_descriptor: int,
+    path: str,
+    *,
+    expected_fingerprint: _Fingerprint,
+    expected_directories: Mapping[str, _Fingerprint],
+    expected_record: FileRecord | None = None,
+) -> Tuple[bytes, FileRecord]:
+    _relative_path(path)
+    parts = PurePosixPath(path).parts
+    opened: list[int] = []
+    opened_directories: list[Tuple[int, _Fingerprint]] = []
+    descriptor = root_descriptor
+    relative_directory = ""
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        for component in parts[:-1]:
+            descriptor = os.open(component, directory_flags, dir_fd=descriptor)
+            opened.append(descriptor)
+            relative_directory = (
+                f"{relative_directory}/{component}" if relative_directory else component
+            )
+            expected_directory = expected_directories.get(relative_directory)
+            if (
+                expected_directory is None
+                or _fingerprint(os.fstat(descriptor)) != expected_directory
+            ):
+                raise ValueError(
+                    f"candidate package directory changed: {relative_directory}"
+                )
+            opened_directories.append((descriptor, expected_directory))
+        file_descriptor = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=descriptor,
+        )
+        opened.append(file_descriptor)
+    except BaseException as error:
+        _close_descriptors(tuple(reversed(opened)))
+        raise ValueError(f"candidate package file is unsafe: {path}") from error
+    try:
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or _fingerprint(before) != expected_fingerprint
+            or before.st_size < 1
+            or before.st_size > _max_file_bytes(path)
+        ):
+            raise ValueError(f"candidate package file metadata is invalid: {path}")
+        remaining = before.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(file_descriptor, min(_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ValueError(f"candidate package file is truncated: {path}")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(file_descriptor, 1):
+            raise ValueError(f"candidate package file grew while reading: {path}")
+        after = os.fstat(file_descriptor)
+        if _fingerprint(after) != expected_fingerprint:
+            raise ValueError(f"candidate package file changed while reading: {path}")
+        if any(
+            _fingerprint(os.fstat(directory)) != expected
+            for directory, expected in opened_directories
+        ):
+            raise ValueError(
+                f"candidate package directory changed while reading: {path}"
+            )
+    finally:
+        _close_descriptors(tuple(reversed(opened)))
+    data = b"".join(chunks)
+    record = _file_record(data)
+    if expected_record is not None and record != expected_record:
+        raise ValueError(f"candidate package file record mismatch: {path}")
+    return data, record
+
+
+def _manifest_file_record(manifest: SuccessfulManifest, name: str) -> FileRecord:
+    fields = manifest.fields
+    files = _mapping(fields["files"], "manifest.files")
+    record = _mapping(files[name], f"manifest.files.{name}")
+    return FileRecord(
+        byte_length=cast(int, record["byte_length"]),
+        sha256=cast(str, record["sha256"]),
+    )
+
+
+def _mapping(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return cast(Mapping[str, object], value)
+
+
+def _bind_manifest_authority(
+    manifest: SuccessfulManifest,
+    authority: CandidateMappingAuthority,
+) -> None:
+    fields = _mapping(manifest.fields, "manifest")
+    commitment_raw = _mapping(
+        fields["candidate_commitment"], "manifest.candidate_commitment"
+    )
+    vocabulary = commitment_raw["source_vocabulary"]
+    if (
+        not isinstance(vocabulary, tuple)
+        or tuple(vocabulary) != authority.source_vocabulary
+        or commitment_raw["mapping_sha256"] != authority.mapping_sha256
+    ):
+        raise ValueError("manifest candidate mapping authority mismatch")
+
+
+def _accept_predictions(
+    root_descriptor: int,
+    snapshot: _TreeSnapshot,
+    observations: Sequence[ObservationPackageRow],
+    authority: CandidateMappingAuthority,
+) -> Tuple[AcceptedPrediction, ...]:
+    accepted: list[AcceptedPrediction] = []
+    source_class_count = len(authority.source_vocabulary)
+    for row in observations:
+        data, record = _read_file_at(
+            root_descriptor,
+            row.prediction_path,
+            expected_fingerprint=snapshot.files[row.prediction_path],
+            expected_directories=snapshot.directories,
+            expected_record=row.prediction,
+        )
+        parsed = parse_prediction_npz_bytes(
+            data,
+            expected_file=row.prediction,
+            expected_members=row.prediction_members,
+        )
+        source = parsed.prediction.source_labels
+        mapped = parsed.prediction.mapped_labels
+        if row.status is ObservationStatus.PASS:
+            if np.any(source < 0) or np.any(source >= source_class_count):
+                raise ValueError("PASS prediction source labels are out of range")
+            expected_mapped = (
+                map_source_labels(
+                    torch.from_numpy(source.copy()),
+                    authority.mapping,
+                )
+                .cpu()
+                .numpy()
+                .astype("<i2", copy=False)
+            )
+            if not np.array_equal(mapped, expected_mapped):
+                raise ValueError("mapped prediction differs from authoritative mapping")
+        elif not (np.all(source == -1) and np.all(mapped == -1)):
+            raise ValueError("FAILED prediction arrays must both be all -1")
+        accepted.append(
+            AcceptedPrediction(
+                path=row.prediction_path,
+                prediction=parsed.prediction,
+                file=record,
+                members=parsed.members,
+            )
+        )
+    return tuple(accepted)
+
+
+def _immutable_prediction(prediction: Prediction) -> Prediction:
+    source = np.frombuffer(
+        prediction.source_labels.tobytes(order="C"), dtype="<i2"
+    ).reshape(_LABEL_SHAPE)
+    mapped = np.frombuffer(
+        prediction.mapped_labels.tobytes(order="C"), dtype="<i2"
+    ).reshape(_LABEL_SHAPE)
+    if source.flags.writeable or mapped.flags.writeable:
+        raise RuntimeError("immutable prediction construction failed")
+    return Prediction(source_labels=source, mapped_labels=mapped)
+
+
+def _bind_observations(
+    rows: Sequence[ObservationPackageRow], trusted_cohort: TrustedCohort
+) -> None:
+    if len(rows) != 50:
+        raise ValueError("candidate package must contain 50 observation rows")
+    for row, identity in zip(rows, trusted_cohort.identities):
+        ordinal, observation_id, scene_id = identity
+        if (
+            row.ordinal,
+            row.observation_id,
+            row.scene_id,
+        ) != (ordinal, observation_id, scene_id):
+            raise ValueError("observation row differs from trusted cohort authority")
+
+
+def _bind_timings(
+    rows: Sequence[TimingPackageRow],
+    observations: Sequence[ObservationPackageRow],
+    predictions: Sequence[AcceptedPrediction],
+) -> None:
+    if len(rows) != 100:
+        raise ValueError("candidate package must contain 100 timing rows")
+    for timing in rows:
+        sample = timing.sample
+        observation = observations[sample.ordinal]
+        prediction = predictions[sample.ordinal].prediction
+        if (
+            sample.status is not observation.status
+            or sample.failure_code is not observation.failure_code
+            or sample.source_labels_sha256
+            != logical_label_sha256(prediction.source_labels)
+            or sample.mapped_labels_sha256
+            != logical_label_sha256(prediction.mapped_labels)
+        ):
+            raise ValueError("timing row differs from canonical observation output")
+
+
+def _bind_manifest_payloads(
+    manifest: SuccessfulManifest,
+    observations_record: FileRecord,
+    timings_record: FileRecord,
+    prediction_records: Sequence[Tuple[str, FileRecord]],
+) -> None:
+    if _manifest_file_record(manifest, "observations") != observations_record:
+        raise ValueError("manifest observations record mismatch")
+    if _manifest_file_record(manifest, "timings") != timings_record:
+        raise ValueError("manifest timings record mismatch")
+    fields = _mapping(manifest.fields, "manifest")
+    files = _mapping(fields["files"], "manifest.files")
+    predictions = _mapping(files["predictions"], "manifest.files.predictions")
+    aggregate = file_tree_aggregate(prediction_records)
+    if (
+        predictions["file_count"] != aggregate.file_count
+        or predictions["total_byte_length"] != aggregate.total_byte_length
+        or predictions["tree_sha256"] != aggregate.tree_sha256
+    ):
+        raise ValueError("manifest prediction tree aggregate mismatch")
+
+
+def _package_validation_record(
+    records: Sequence[Tuple[str, FileRecord]], manifest: FileRecord
+) -> PackageValidationRecord:
+    aggregate = file_tree_aggregate(records)
+    return PackageValidationRecord(
+        file_count=aggregate.file_count,
+        total_byte_length=aggregate.total_byte_length,
+        tree_sha256=aggregate.tree_sha256,
+        manifest=manifest,
+    )
+
+
+def accept_candidate_package(
+    root: Path,
+    *,
+    expected_manifest_sha256: str,
+    trusted_cohort: TrustedCohort,
+    mapping_authority: CandidateMappingAuthority,
+) -> AcceptedCandidatePackage:
+    """Accept every untrusted candidate payload without reading oracle targets."""
+
+    _hash(expected_manifest_sha256, "external candidate manifest SHA-256")
+    if not isinstance(mapping_authority, CandidateMappingAuthority):
+        raise ValueError("candidate mapping authority is required")
+    expected_directories, expected_files = _expected_tree(trusted_cohort)
+    root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    primary: BaseException | None = None
+    try:
+        snapshot = _capture_tree(root_descriptor)
+        _require_exact_tree(snapshot, expected_directories, expected_files)
+        manifest_data, manifest_record = _read_file_at(
+            root_descriptor,
+            "manifest.json",
+            expected_fingerprint=snapshot.files["manifest.json"],
+            expected_directories=snapshot.directories,
+            expected_record=FileRecord(
+                snapshot.files["manifest.json"].size,
+                expected_manifest_sha256,
+            ),
+        )
+        manifest = parse_successful_manifest_bytes(manifest_data)
+        _bind_manifest_authority(manifest, mapping_authority)
+        observations_data, observations_record = _read_file_at(
+            root_descriptor,
+            "observations.jsonl",
+            expected_fingerprint=snapshot.files["observations.jsonl"],
+            expected_directories=snapshot.directories,
+            expected_record=_manifest_file_record(manifest, "observations"),
+        )
+        timings_data, timings_record = _read_file_at(
+            root_descriptor,
+            "timings.jsonl",
+            expected_fingerprint=snapshot.files["timings.jsonl"],
+            expected_directories=snapshot.directories,
+            expected_record=_manifest_file_record(manifest, "timings"),
+        )
+        observations = parse_observations_bytes(observations_data)
+        _bind_observations(observations, trusted_cohort)
+        timings = parse_timings_bytes(timings_data)
+        accepted_predictions = _accept_predictions(
+            root_descriptor,
+            snapshot,
+            observations,
+            mapping_authority,
+        )
+        _bind_timings(timings, observations, accepted_predictions)
+        prediction_records = tuple(
+            (value.path, value.file) for value in accepted_predictions
+        )
+        _bind_manifest_payloads(
+            manifest,
+            observations_record,
+            timings_record,
+            prediction_records,
+        )
+        complete_records = (
+            ("manifest.json", manifest_record),
+            ("observations.jsonl", observations_record),
+            ("timings.jsonl", timings_record),
+        ) + prediction_records
+        recaptured = _capture_tree(root_descriptor)
+        if recaptured != snapshot:
+            raise ValueError("candidate package tree changed during validation")
+        for path, record in complete_records:
+            _read_file_at(
+                root_descriptor,
+                path,
+                expected_fingerprint=recaptured.files[path],
+                expected_directories=recaptured.directories,
+                expected_record=record,
+            )
+        if _capture_tree(root_descriptor) != recaptured:
+            raise ValueError("candidate package tree changed during final recapture")
+        _recapture_ancestor_bindings(bindings)
+        return AcceptedCandidatePackage(
+            manifest=manifest,
+            observations=observations,
+            timings=timings,
+            predictions=accepted_predictions,
+            validation=_package_validation_record(complete_records, manifest_record),
+            _acceptance_token=_ACCEPTANCE_TOKEN,
+        )
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            _close_descriptors(tuple(reversed(descriptors)))
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            raise _DescriptorCleanupError(primary, cleanup) from primary
