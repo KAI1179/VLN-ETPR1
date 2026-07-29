@@ -137,6 +137,12 @@ _LOCKED_RUNTIME_DISTRIBUTIONS = {
     "pytz": "2025.2",
     "tzdata": "2025.3",
 }
+_RUNTIME_LOADER_ALIAS = "libstdc++.so.6"
+_RUNTIME_LOADER_TARGET = "libstdc++.so.6.0.34"
+_RUNTIME_LOADER_BYTE_LENGTH = 21_295_144
+_RUNTIME_LOADER_SHA256 = (
+    "9581ad615b7c073423f57b69a3b148a89f8ea76fc909124211f9007909b807a6"
+)
 
 __all__ = ("ESANetBenchmarkArgs", "main", "parse_args")
 
@@ -266,6 +272,69 @@ def _candidate_paths(root: Path) -> ESANetPaths:
     )
 
 
+def _require_runtime_loader(venv: Path) -> None:
+    def stable_identity(value: os.stat_result) -> Tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_gid,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    loader_directory = venv / "lib"
+    if loader_directory.resolve(strict=True) != loader_directory:
+        raise ValueError("runtime-loader directory must be canonical")
+    directory_descriptor = os.open(
+        loader_directory,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    target_descriptor: Optional[int] = None
+    try:
+        alias_info = os.stat(
+            _RUNTIME_LOADER_ALIAS,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISLNK(alias_info.st_mode)
+            or os.readlink(
+                _RUNTIME_LOADER_ALIAS,
+                dir_fd=directory_descriptor,
+            )
+            != _RUNTIME_LOADER_TARGET
+        ):
+            raise ValueError("runtime-loader alias differs from the pinned target")
+        target_descriptor = os.open(
+            _RUNTIME_LOADER_TARGET,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_descriptor,
+        )
+        before = os.fstat(target_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o555
+            or before.st_nlink != 1
+            or before.st_size != _RUNTIME_LOADER_BYTE_LENGTH
+        ):
+            raise ValueError("runtime-loader target metadata differs")
+        digest = hashlib.sha256()
+        while chunk := os.read(target_descriptor, 1024 * 1024):
+            digest.update(chunk)
+        if digest.hexdigest() != _RUNTIME_LOADER_SHA256 or stable_identity(
+            os.fstat(target_descriptor)
+        ) != stable_identity(before):
+            raise ValueError("runtime-loader target bytes differ")
+    finally:
+        if target_descriptor is not None:
+            os.close(target_descriptor)
+        os.close(directory_descriptor)
+
+
 def _require_dedicated_interpreter(root: Path) -> None:
     venv = (root / _VENV_RELATIVE).absolute()
     expected = (root / _VENV_RELATIVE / "bin/python").absolute()
@@ -282,6 +351,7 @@ def _require_dedicated_interpreter(root: Path) -> None:
         or stat.S_IMODE(info.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
     ):
         raise ValueError("P5.6 requires the pinned copy-based experiment interpreter")
+    _require_runtime_loader(venv)
     for name, version in _LOCKED_RUNTIME_DISTRIBUTIONS.items():
         distribution = importlib.metadata.distribution(name)
         if (

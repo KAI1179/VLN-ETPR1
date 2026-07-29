@@ -87,6 +87,17 @@ def test_dedicated_interpreter_requires_copy_not_symlink(
     executable.parent.mkdir(parents=True)
     executable.write_bytes(b"python")
     executable.chmod(0o555)
+    loader = executable.parent.parent / "lib/libstdc++.so.6.0.34"
+    loader.parent.mkdir()
+    loader.write_bytes(b"loader")
+    loader.chmod(0o555)
+    (loader.parent / "libstdc++.so.6").symlink_to(loader.name)
+    monkeypatch.setattr(benchmark, "_RUNTIME_LOADER_BYTE_LENGTH", len(b"loader"))
+    monkeypatch.setattr(
+        benchmark,
+        "_RUNTIME_LOADER_SHA256",
+        benchmark.hashlib.sha256(b"loader").hexdigest(),
+    )
     monkeypatch.setattr(sys, "executable", str(executable))
     monkeypatch.setattr(sys, "prefix", str(executable.parent.parent))
     monkeypatch.setattr(
@@ -135,6 +146,36 @@ def test_dedicated_interpreter_requires_copy_not_symlink(
     executable.symlink_to("/bin/true")
     with pytest.raises(ValueError, match="copy-based"):
         benchmark._require_dedicated_interpreter(tmp_path)
+
+
+def test_runtime_loader_requires_exact_relative_alias_and_immutable_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    venv = tmp_path / "venv"
+    loader = venv / "lib/libstdc++.so.6.0.34"
+    loader.parent.mkdir(parents=True)
+    loader.write_bytes(b"loader")
+    loader.chmod(0o555)
+    alias = loader.parent / "libstdc++.so.6"
+    alias.symlink_to(loader.name)
+    monkeypatch.setattr(benchmark, "_RUNTIME_LOADER_BYTE_LENGTH", len(b"loader"))
+    monkeypatch.setattr(
+        benchmark,
+        "_RUNTIME_LOADER_SHA256",
+        benchmark.hashlib.sha256(b"loader").hexdigest(),
+    )
+    benchmark._require_runtime_loader(venv)
+
+    alias.unlink()
+    alias.symlink_to(loader)
+    with pytest.raises(ValueError, match="alias differs"):
+        benchmark._require_runtime_loader(venv)
+    alias.unlink()
+    alias.symlink_to(loader.name)
+    loader.chmod(0o755)
+    with pytest.raises(ValueError, match="metadata differs"):
+        benchmark._require_runtime_loader(venv)
 
 
 def test_source_activation_rejects_preloaded_and_competing_src(
