@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import platform
 import stat
 import struct
 import zipfile
+import zlib
 from dataclasses import replace
 from functools import lru_cache
 
@@ -65,6 +67,7 @@ def _rewrite_zip(
     member_extra: bytes = b"",
     external_attr: int = 0o100600 << 16,
     compression: int = zipfile.ZIP_DEFLATED,
+    compression_level: int = 6,
     reverse: bool = False,
 ) -> bytes:
     source = zipfile.ZipFile(io.BytesIO(encoded))
@@ -82,7 +85,7 @@ def _rewrite_zip(
             clone.external_attr = external_attr
             clone.create_system = 3
             clone.extra = member_extra if info.filename == source.namelist()[0] else b""
-            target.writestr(clone, payload, compresslevel=6)
+            target.writestr(clone, payload, compresslevel=compression_level)
         if extra is not None:
             info = zipfile.ZipInfo(extra[0], date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
@@ -134,10 +137,86 @@ def test_encode_is_deterministic_and_reports_both_hash_domains() -> None:
     )
     assert TOTAL_ARRAY_BYTE_LENGTH == 8_661_560
     assert TOTAL_NPY_BYTE_LENGTH == 8_663_736
+    assert first.members["schema_version"].npy_sha256 == (
+        "3000b48558aa1351dddd3bec5bc18ec2261975d520508ba39dedfe07b80e4ca7"
+    )
+    assert first.members["rgb"].npy_sha256 == (
+        "2a5d2a2f7cab67f777ffdc0c795a806bdbb2180a4fa5468fae9b389fd1e6da1c"
+    )
+    assert first.members["depth_m"].npy_sha256 == (
+        "8783bbb9d66d808026cee954d6a53ff22ceba024497e49b58c220d4c3c8601cd"
+    )
+    assert first.members["sensor_yaw_degrees"].npy_sha256 == (
+        "47055554251589bc50ad6a401d0f0749ba1c2be6ea3e267e28492888827a7611"
+    )
+    runtime_key = (
+        platform.python_implementation(),
+        platform.python_version(),
+        zlib.ZLIB_VERSION,
+        zlib.ZLIB_RUNTIME_VERSION,
+    )
+    runtime_npz_pin = {
+        ("CPython", "3.8.19", "1.2.13", "1.2.13"): (
+            11_837,
+            "e35e7163dc24f66edb4d0657e3a7d41e54f78bd74fb33e70523a12ae08fc04e0",
+        )
+    }.get(runtime_key)
+    if runtime_npz_pin is not None:
+        assert (len(first.data), hashlib.sha256(first.data).hexdigest()) == (
+            runtime_npz_pin
+        )
 
     parsed = parse_raw_frame_npz_bytes(first.data, expected_members=first.members)
     assert parsed.sha256 == hashlib.sha256(first.data).hexdigest()
     assert np.array_equal(parsed.arrays.rgb, arrays.rgb)
+
+
+def test_parser_rejects_self_consistent_noncanonical_npy_header() -> None:
+    canonical = encode_raw_frame_npz(_arrays())
+    with zipfile.ZipFile(io.BytesIO(canonical.data)) as archive:
+        payload = bytearray(archive.read("depth_m.npy"))
+    header_length = struct.unpack_from("<H", payload, 8)[0]
+    reordered = (
+        b"{'shape': (12, 256, 256), 'fortran_order': False, "
+        b"'descr': '<f4', }"
+    )
+    assert len(reordered) < header_length
+    replacement = reordered + b" " * (header_length - len(reordered) - 1) + b"\n"
+    payload[10 : 10 + header_length] = replacement
+    mutated = _rewrite_zip(
+        canonical.data, transform=("depth_m.npy", bytes(payload))
+    )
+    expected_members = dict(canonical.members)
+    expected_members["depth_m"] = replace(
+        expected_members["depth_m"],
+        npy_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        parse_raw_frame_npz_bytes(
+            mutated,
+            expected_members=expected_members,
+            expected_npz=FileRecord(
+                byte_length=len(mutated),
+                sha256=hashlib.sha256(mutated).hexdigest(),
+            ),
+        )
+
+
+def test_parser_rejects_self_consistent_noncanonical_deflate_level() -> None:
+    canonical = encode_raw_frame_npz(_arrays())
+    mutated = _rewrite_zip(canonical.data, compression_level=1)
+    assert mutated != canonical.data
+
+    with pytest.raises(ValueError, match="canonical"):
+        parse_raw_frame_npz_bytes(
+            mutated,
+            expected_members=canonical.members,
+            expected_npz=FileRecord(
+                byte_length=len(mutated),
+                sha256=hashlib.sha256(mutated).hexdigest(),
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -412,6 +491,9 @@ def test_tree_aggregate_is_lexical_and_hashes_exact_lines() -> None:
     assert aggregate.file_count == 2
     assert aggregate.total_byte_length == 3
     assert aggregate.tree_sha256 == hashlib.sha256(expected).hexdigest()
+    assert aggregate.tree_sha256 == (
+        "25441b4a77a6c64b5f6fc6298f3968916206f205710ba3209c6f0dc7ac02177b"
+    )
 
     with pytest.raises(ValueError):
         tree_aggregate((records[0], records[0]))

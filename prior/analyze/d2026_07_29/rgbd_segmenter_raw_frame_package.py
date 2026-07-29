@@ -448,6 +448,11 @@ def parse_raw_frame_npz_bytes(
 
     parsed_arrays = RawFrameArrays(**arrays)
     _validate_arrays(parsed_arrays)
+    canonical = encode_raw_frame_npz(parsed_arrays)
+    if canonical.data != data or any(
+        canonical.members[name] != members[name] for name in MEMBER_NAMES
+    ):
+        raise ValueError("raw-frame NPZ is not the canonical frozen encoding")
     if expected_members is not None:
         if set(expected_members) != set(MEMBER_NAMES):
             raise ValueError("expected member metadata has an invalid schema")
