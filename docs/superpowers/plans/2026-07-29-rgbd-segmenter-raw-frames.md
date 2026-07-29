@@ -181,9 +181,17 @@ Call `get_observations_at(position=list(start_position),
 rotation=list(start_rotation), keep_agent_at_new_pose=True)` exactly. Require
 the returned agent position to be exactly equal to the sealed float64 start
 position. For the returned raw agent quaternion and every raw sensor
-quaternion, first require a finite float64 vector with norm within `5e-8` of
-one (`rtol=0`), then normalize exactly once. Compare the normalized agent
-quaternion to the sealed normalized quaternion by
+quaternion, first require a finite float64 vector with norm within exact
+float32 epsilon `2**-23` (`1.1920928955078125e-7`) of one (`rtol=0`), then
+normalize exactly once. This replaces the preregistered `5e-8` after the
+reviewed live first-row smoke exposed Habitat's float32 quaternion components
+promoted to float64. A read-only scan of all 50 sealed observations across 11
+scenes measured 1,800 sensor quaternions: maximum raw sensor norm error
+`7.99814713e-8` (`0.671 * float32 epsilon`), maximum raw agent norm error
+`1.71142710e-8`, maximum normalized agent-vs-sealed error `2.22e-16`, and all
+600 normalized RGB/depth/semantic pose triples remained exactly
+`np.array_equal`. Compare the normalized agent quaternion to the sealed
+normalized quaternion by
 `1 - abs(dot(agent, sealed)) <= 1e-12`, making sign equivalence explicit.
 
 Only after the raw norm check, compare normalized RGB/depth/semantic positions

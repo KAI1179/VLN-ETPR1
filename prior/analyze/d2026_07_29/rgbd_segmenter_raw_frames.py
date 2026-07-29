@@ -775,6 +775,7 @@ class _Simulator(Protocol):
 _SENSOR_YAWS = tuple(range(0, 360, 30))
 _SENSOR_KINDS = ("RGB", "DEPTH", "SEMANTIC")
 _SENSOR_POSITION = np.asarray([0.0, 1.25, 0.0], dtype="<f8")
+_RAW_QUATERNION_NORM_ABS_TOLERANCE = float(np.finfo(np.float32).eps)
 
 
 def _sensor_name(kind: str, yaw_degrees: int) -> str:
@@ -864,7 +865,12 @@ def _quaternion_components(value: object, label: str) -> np.ndarray:
         raise ValueError(f"{label} quaternion must be finite float64 XYZW")
     components = struct.unpack("<4d", raw.tobytes())
     norm = math.sqrt(sum(component**2 for component in components))
-    if not math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=5e-8):
+    if not math.isclose(
+        norm,
+        1.0,
+        rel_tol=0.0,
+        abs_tol=_RAW_QUATERNION_NORM_ABS_TOLERANCE,
+    ):
         raise ValueError(f"{label} quaternion norm is outside tolerance")
     return np.asarray([component / norm for component in components], dtype="<f8")
 

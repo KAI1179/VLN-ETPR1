@@ -937,7 +937,15 @@ def test_render_rejects_modality_coercion(
         lambda _observations, state: setattr(
             state.sensor_states["depth_000"],
             "rotation",
-            _quaternion(0, scale=1.0 + 6e-8),
+            _quaternion(
+                0,
+                scale=float(
+                    np.nextafter(
+                        np.float64(1.0 + 2**-23),
+                        np.float64(np.inf),
+                    ),
+                ),
+            ),
         ),
         lambda _observations, state: setattr(
             state.sensor_states["depth_000"],
@@ -965,12 +973,12 @@ def test_render_rejects_pose_drift(
         )
 
 
-def test_render_accepts_sign_equivalent_agent_rotation_and_norm_boundary() -> None:
+def test_render_accepts_sign_equivalent_agent_and_habitat_float32_precision() -> None:
     def mutate(_observations: dict[str, np.ndarray], state: SimpleNamespace) -> None:
         state.rotation = -_quaternion(0)
         for kind in ("rgb", "depth", "semantic"):
             state.sensor_states[f"{kind}_000"].rotation = _quaternion(
-                0, scale=1.0 + 5e-8
+                0, scale=1.0 + 7.99814713e-8
             )
 
     arrays = render_raw_frame_artifact(
