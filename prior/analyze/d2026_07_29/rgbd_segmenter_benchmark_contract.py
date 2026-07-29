@@ -2793,10 +2793,13 @@ def emit_p53_validation_attestation(raw_root: Path) -> bytes:
 
 
 _ATTEST_EXPRESSION = (
-    "import pathlib,sys;"
-    "from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract "
-    "import emit_p53_validation_attestation;"
-    "sys.stdout.buffer.write(emit_p53_validation_attestation(pathlib.Path(sys.argv[1])))"
+    "import contextlib,os,pathlib,sys\n"
+    "with open(os.devnull,'w') as import_errors:\n"
+    "    with contextlib.redirect_stderr(import_errors):\n"
+    "        from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract "
+    "import emit_p53_validation_attestation\n"
+    "sys.stdout.buffer.write("
+    "emit_p53_validation_attestation(pathlib.Path(sys.argv[1])))\n"
 )
 
 

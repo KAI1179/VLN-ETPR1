@@ -2675,6 +2675,98 @@ def test_path_pinned_validator_launcher_is_canonical_and_fail_closed(
 
 
 @pytest.mark.parametrize(
+    ("mode", "returncode", "stdout", "stderr"),
+    [
+        ("import-noise", 0, b"ok", b""),
+        ("import-error", 1, b"", b"RuntimeError: import failed"),
+        ("validator-error", 0, b"ok", b"validator failed"),
+        ("validator-exception", 1, b"", b"RuntimeError: validator failed"),
+    ],
+)
+def test_p53_child_suppresses_only_import_noise(
+    tmp_path: Path,
+    mode: str,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    module = tmp_path / "attest_probe.py"
+    if mode == "import-error":
+        module.write_text(
+            "import sys\n"
+            "sys.stderr.write('import noise')\n"
+            "raise RuntimeError('import failed')\n"
+        )
+    else:
+        validator_body = (
+            "    sys.stderr.write('validator failed')\n"
+            if mode == "validator-error"
+            else (
+                "    raise RuntimeError('validator failed')\n"
+                if mode == "validator-exception"
+                else ""
+            )
+        )
+        module.write_text(
+            "import sys\n"
+            + ("sys.stderr.write('import noise')\n" if mode == "import-noise" else "")
+            + "def emit_p53_validation_attestation(_root):\n"
+            + validator_body
+            + "    return b'ok'\n"
+        )
+    expression = contract._ATTEST_EXPRESSION.replace(  # noqa: SLF001
+        "prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract",
+        "attest_probe",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(tmp_path)
+
+    completed = subprocess.run(
+        (
+            str(Path(sys.executable).resolve(strict=True)),
+            "-c",
+            expression,
+            str(tmp_path),
+        ),
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=30.0,
+    )
+
+    assert (completed.returncode == 0) is (returncode == 0)
+    assert completed.stdout == stdout
+    assert stderr in completed.stderr
+    assert b"import noise" not in completed.stderr
+
+
+@_RAW_INTEGRATION
+def test_real_p53_child_emits_no_stderr() -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    environment = dict(os.environ)
+    environment.pop("CUDA_VISIBLE_DEVICES", None)
+    completed = subprocess.run(
+        (
+            str(Path(sys.executable).resolve(strict=True)),
+            "-c",
+            contract._ATTEST_EXPRESSION,  # noqa: SLF001
+            str(RAW_FRAME_ROOT.resolve(strict=True)),
+        ),
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=300.0,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stderr == b""
+    P53ValidationAttestation.parse(completed.stdout)
+
+
+@pytest.mark.parametrize(
     ("mode", "message"),
     [
         ("nonzero", "exit successfully"),
