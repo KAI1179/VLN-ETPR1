@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import io
 import json
 import math
 import os
 import re
+import secrets
+import selectors
 import stat
 import struct
 import subprocess
+import time
 import zipfile
 from collections.abc import Iterator
 from dataclasses import InitVar, asdict, dataclass, field, fields
@@ -48,6 +53,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     RAW_PRODUCER_COMMIT,
     RAW_VALIDATOR_SOURCE_SHA256,
     BenchmarkEnvironmentAttestation,
+    BenchmarkCudaOutOfMemory,
     BenchmarkMetricSummary,
     CandidateCommitment,
     CandidateGateResult,
@@ -58,6 +64,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     LatencySummary,
     LicenseStatus,
     MappingEntry,
+    MappingKind,
     MetricAggregate,
     MetricEndpoint,
     ObservationFailureCode,
@@ -69,7 +76,11 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ProvenanceChecks,
     ResourceMeasurement,
     RobustnessEstimate,
+    SegmenterAdapter,
     StaticCoverage,
+    TimedBenchmarkInput,
+    TimedBenchmarkRun,
+    TimingBackend,
     TimingSample,
     TimingStage,
     TimingProtocol,
@@ -87,6 +98,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     project_mapped_labels,
     project_oracle_target_labels,
     run_p53_validation_subprocess,
+    run_timed_benchmark,
     score_observation,
     summarize_latency,
 )
@@ -110,6 +122,7 @@ _MAX_OBSERVATIONS_BYTES = 16 * 1024 * 1024
 _MAX_TIMINGS_BYTES = 8 * 1024 * 1024
 _MAX_PACKAGE_ENTRIES = 80
 _MAX_PACKAGE_DEPTH = 3
+_MAX_PUBLICATION_CHILD_OUTPUT_BYTES = 64 * 1024
 _READ_CHUNK_BYTES = 1024 * 1024
 _LABEL_SHAPE = (12, 256, 256)
 _LABEL_DTYPE = "<i2"
@@ -119,6 +132,7 @@ _ZIP_EOCD = struct.Struct("<4s4H2LH")
 _ZIP_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
 _ACCEPTANCE_TOKEN = object()
 _VALIDATION_TOKEN = object()
+_PUBLICATION_TOKEN = object()
 _COHORT_JSONL_SHA256 = (
     "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
 )
@@ -396,6 +410,31 @@ class CandidateValidationAuthority:
 
 
 @dataclass(frozen=True)
+class AbortedOomPublicationAuthority:
+    candidate: CandidateValidationAuthority
+    cuda_evidence: "ArchivalCudaEvidence"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.candidate, CandidateValidationAuthority)
+            or self.candidate.real is None
+            or self.candidate.candidate.synthetic
+            or not isinstance(self.cuda_evidence, ArchivalCudaEvidence)
+        ):
+            raise ValueError("aborted OOM publication requires real authority")
+        benchmark = self.candidate.benchmark_attestation
+        if any(
+            (snapshot.gpu_name, snapshot.gpu_uuid)
+            != (benchmark.gpu_name, benchmark.gpu_uuid)
+            for snapshot in (
+                self.cuda_evidence.before,
+                self.cuda_evidence.after,
+            )
+        ):
+            raise ValueError("aborted CUDA evidence differs from real authority")
+
+
+@dataclass(frozen=True)
 class GitRepositoryState:
     commit: str
     clean: bool
@@ -516,6 +555,91 @@ class AcceptedCandidatePackage:
             complete_records, manifest_record
         ):
             raise ValueError("accepted package validation record is inconsistent")
+
+
+@dataclass(frozen=True)
+class SuccessfulPackageArtifacts:
+    files: Tuple[Tuple[str, bytes], ...]
+    manifest: "SuccessfulManifest"
+    validation: PackageValidationRecord
+    _publication_token: InitVar[Optional[object]] = None
+
+    def __post_init__(self, _publication_token: Optional[object]) -> None:
+        if (
+            _publication_token is not _PUBLICATION_TOKEN
+            or type(self.files) is not tuple
+            or len(self.files) != 53
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], bytes)
+                for item in self.files
+            )
+            or not isinstance(
+                self.manifest,
+                (RealSuccessfulManifest, SyntheticSuccessfulManifest),
+            )
+            or not isinstance(self.validation, PackageValidationRecord)
+        ):
+            raise ValueError(
+                "successful artifacts must be created by the canonical factory"
+            )
+
+    @classmethod
+    def from_accepted(
+        cls,
+        package: AcceptedCandidatePackage,
+    ) -> "SuccessfulPackageArtifacts":
+        if not isinstance(package, AcceptedCandidatePackage):
+            raise ValueError("successful artifact factory requires accepted package")
+        files = (
+            ("manifest.json", package.manifest.canonical_bytes()),
+            ("observations.jsonl", canonical_observations_bytes(package.observations)),
+            ("timings.jsonl", canonical_timings_bytes(package.timings)),
+        ) + tuple(
+            (prediction.path, encode_prediction_npz(prediction.prediction).data)
+            for prediction in package.predictions
+        )
+        return cls(
+            files=files,
+            manifest=package.manifest,
+            validation=package.validation,
+            _publication_token=_PUBLICATION_TOKEN,
+        )
+
+
+@dataclass(frozen=True)
+class PublishedCandidatePackage:
+    path: Path
+    validation: "CandidateValidationRecord"
+
+    def __post_init__(self) -> None:
+        _absolute_authority_root(self.path, "published candidate path")
+        if not isinstance(self.validation, CandidateValidationRecord):
+            raise ValueError("published candidate validation is invalid")
+
+
+class PublicationDurabilityUncertain(RuntimeError):
+    def __init__(
+        self,
+        final_path: Path,
+        validation: object,
+        cause: BaseException,
+    ) -> None:
+        super().__init__(
+            f"publication renamed to {final_path}, but parent durability is uncertain"
+        )
+        self.final_path = final_path
+        self.validation = validation
+        self.cause = cause
+
+
+class PublicationCleanupError(RuntimeError):
+    def __init__(self, primary: BaseException, cleanup: BaseException) -> None:
+        super().__init__("publication failed and owned staging cleanup also failed")
+        self.primary = primary
+        self.cleanup = cleanup
 
 
 def _hash(data: object, label: str) -> str:
@@ -1683,6 +1807,22 @@ class AbortedOomManifest:
         return canonical_json_bytes(_thaw_json(self.fields))
 
 
+@dataclass(frozen=True)
+class AbortedOomPackage:
+    manifest: AbortedOomManifest
+    failure_stage: TimingStage
+    _publication_token: InitVar[Optional[object]] = None
+
+    def __post_init__(self, _publication_token: Optional[object]) -> None:
+        if (
+            _publication_token is not _PUBLICATION_TOKEN
+            or not isinstance(self.manifest, AbortedOomManifest)
+            or type(self.failure_stage) is not TimingStage
+            or self.manifest.fields["failure_stage"] != self.failure_stage.value
+        ):
+            raise ValueError("aborted OOM packages must be created by the OOM factory")
+
+
 def _validate_aborted_manifest(value: Mapping[str, object]) -> None:
     raw = _exact_object(value, _ABORTED_MANIFEST_KEYS, "aborted OOM manifest")
     _validate_json_tree(raw, "aborted OOM manifest")
@@ -1767,6 +1907,164 @@ def parse_aborted_oom_manifest_bytes(data: bytes) -> AbortedOomManifest:
     if manifest.canonical_bytes() != data:
         raise ValueError("aborted OOM manifest is not canonical JSON")
     return manifest
+
+
+def _attestation_envelope(data: bytes) -> Mapping[str, object]:
+    value = _strict_json_object(data, "publication attestation")
+    if canonical_json_bytes(value) != data:
+        raise ValueError("publication attestation is noncanonical")
+    return {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "value": value,
+    }
+
+
+def _aborted_manifest_fields(
+    *,
+    authority: AbortedOomPublicationAuthority,
+    p53: P53ValidationAttestation,
+    failure_stage: TimingStage,
+    baseline_allocated_bytes: int,
+    baseline_reserved_bytes: int,
+    peak_allocated_bytes: int,
+    peak_reserved_bytes: int,
+) -> Mapping[str, object]:
+    candidate_authority = authority.candidate
+    source_hashes: dict[str, object] = {}
+    for role in _SOURCE_HASH_KEYS:
+        path = (
+            candidate_authority.adapter_path
+            if role == "adapter"
+            else _FIXED_SOURCE_PATHS[role]
+        )
+        source_hashes[role] = {
+            "path": path,
+            "sha256": _trusted_file_record(
+                candidate_authority.benchmark_repository_root,
+                path,
+            ).sha256,
+        }
+    real = candidate_authority.real
+    if real is None:
+        raise ValueError("aborted OOM authority lost real provenance")
+
+    def permission(value: TrustedArtifactAuthority) -> Mapping[str, object]:
+        return {
+            "byte_length": value.file.byte_length,
+            "path": value.path,
+            "root_role": value.root_role,
+            "sha256": value.file.sha256,
+        }
+
+    return {
+        "attestations": {
+            "benchmark": _attestation_envelope(
+                candidate_authority.benchmark_attestation.canonical_bytes()
+            ),
+            "p53_validator": _attestation_envelope(p53.canonical_bytes()),
+        },
+        "candidate_commitment": _publication_candidate_json(
+            candidate_authority.candidate
+        ),
+        "candidate_id": candidate_authority.candidate.candidate_id,
+        "candidate_status": "FAIL_RESOURCE",
+        "command": list(candidate_authority.expected_command),
+        "cuda_evidence": authority.cuda_evidence.to_json(),
+        "failure_code": "CUDA_OUT_OF_MEMORY",
+        "failure_stage": failure_stage.value,
+        "permission_evidence": {
+            "code": permission(real.code_permission),
+            "weights": permission(real.weight_permission),
+        },
+        "producer_commit_prefix": candidate_authority.expected_producer_commit[:12],
+        "producer_git_commit": candidate_authority.expected_producer_commit,
+        "raw_inputs": {
+            "cohort_jsonl_sha256": _COHORT_JSONL_SHA256,
+            "raw_index_sha256": RAW_INDEX_SHA256,
+            "raw_manifest_sha256": RAW_MANIFEST_SHA256,
+            "raw_payload_tree_sha256": _RAW_PAYLOAD_TREE_SHA256,
+            "raw_producer_git_commit": RAW_PRODUCER_COMMIT,
+            "selection_sha256": _SELECTION_SHA256,
+        },
+        "resource_gate": "FAIL",
+        "resource_snapshot": {
+            "baseline_allocated_bytes": baseline_allocated_bytes,
+            "baseline_reserved_bytes": baseline_reserved_bytes,
+            "peak_allocated_bytes": peak_allocated_bytes,
+            "peak_reserved_bytes": peak_reserved_bytes,
+        },
+        "run_kind": RunKind.REAL.value,
+        "run_status": "aborted",
+        "schema_version": 1,
+        "source_hashes": source_hashes,
+    }
+
+
+def _require_committed_benchmark_oom(error: BenchmarkCudaOutOfMemory) -> None:
+    if (
+        type(error) is not BenchmarkCudaOutOfMemory
+        or type(error.stage) is not TimingStage
+        or type(error.__cause__) is not torch.cuda.OutOfMemoryError
+    ):
+        raise ValueError("benchmark OOM chain is not contract-minted")
+    trusted_codes = {
+        _benchmark_contract_module._measure_stage.__code__,
+        _benchmark_contract_module._synchronize_at.__code__,
+    }
+    traceback = error.__traceback__
+    if traceback is None:
+        raise ValueError("benchmark OOM traceback is absent")
+    while traceback.tb_next is not None:
+        traceback = traceback.tb_next
+    if traceback.tb_frame.f_code not in trusted_codes:
+        raise ValueError("benchmark OOM origin is not a committed timing raise site")
+
+
+def run_timed_benchmark_for_publication(
+    inputs: Sequence[TimedBenchmarkInput],
+    *,
+    trusted_cohort: TrustedCohort,
+    adapter: SegmenterAdapter,
+    backend: TimingBackend,
+    authority: AbortedOomPublicationAuthority,
+) -> Union[TimedBenchmarkRun, AbortedOomPackage]:
+    """Run the committed benchmark and mint an aborted package only at its boundary."""
+
+    if not isinstance(authority, AbortedOomPublicationAuthority):
+        raise ValueError("timed publication requires typed real OOM authority")
+    candidate_authority = authority.candidate
+    p53 = run_p53_validation_subprocess(candidate_authority.p53_launch)
+    baseline_allocated = torch.cuda.memory_allocated()
+    baseline_reserved = torch.cuda.memory_reserved()
+    torch.cuda.reset_peak_memory_stats()
+    try:
+        return run_timed_benchmark(
+            inputs,
+            trusted_cohort=trusted_cohort,
+            commitment=candidate_authority.candidate,
+            adapter=adapter,
+            mapping=candidate_authority.mapping.mapping,
+            backend=backend,
+        )
+    except BenchmarkCudaOutOfMemory as error:
+        _require_committed_benchmark_oom(error)
+        fields = _aborted_manifest_fields(
+            authority=authority,
+            p53=p53,
+            failure_stage=error.stage,
+            baseline_allocated_bytes=baseline_allocated,
+            baseline_reserved_bytes=baseline_reserved,
+            peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+            peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+        )
+        manifest = AbortedOomManifest(fields)
+        _validate_aborted_authority(manifest, candidate_authority)
+        _capture_publication_provenance(fields, candidate_authority)
+        return AbortedOomPackage(
+            manifest=manifest,
+            failure_stage=error.stage,
+            _publication_token=_PUBLICATION_TOKEN,
+        )
 
 
 def _validate_manifest(
@@ -2362,6 +2660,12 @@ class _DescriptorCleanupError(RuntimeError):
         self.cleanup = cleanup
 
 
+class _DescriptorCloseError(RuntimeError):
+    def __init__(self, failures: Sequence[OSError]) -> None:
+        super().__init__(f"failed to close {len(failures)} descriptors")
+        self.failures = tuple(failures)
+
+
 def _fingerprint(value: os.stat_result) -> _Fingerprint:
     return _Fingerprint(
         device=value.st_dev,
@@ -2446,9 +2750,7 @@ def _close_descriptors(descriptors: Sequence[int]) -> None:
         except OSError as error:
             failures.append(error)
     if failures:
-        raise RuntimeError(
-            "failed to close candidate package descriptors"
-        ) from failures[0]
+        raise _DescriptorCloseError(failures) from failures[0]
 
 
 def _recapture_ancestor_bindings(
@@ -4325,3 +4627,1232 @@ def validate_candidate_package(
         record=record,
         _validation_token=_VALIDATION_TOKEN,
     )
+
+
+@dataclass(frozen=True)
+class _PublicationProvenance:
+    benchmark_git: GitRepositoryState
+    candidate_git: Optional[GitRepositoryState]
+    p53: P53ValidationAttestation
+    raw_cohort: TrustedCohort
+    sources: Mapping[str, FileRecord]
+    environment: FileRecord
+    checkpoint: Optional[FileRecord]
+    code_permission: Optional[FileRecord]
+    weight_permission: Optional[FileRecord]
+
+
+def _capture_publication_provenance(
+    fields: Mapping[str, object],
+    authority: CandidateValidationAuthority,
+) -> _PublicationProvenance:
+    authority.benchmark_attestation.require_current_process()
+    _require_runtime_source_bindings(authority)
+    p53 = run_p53_validation_subprocess(authority.p53_launch)
+    raw_cohort = _trusted_cohort_from_raw_index(
+        authority.p53_launch.raw_root,
+        p53_attestation=p53,
+    )
+    benchmark_git = _inspect_git_repository(authority.benchmark_repository_root)
+    _require_git_state(
+        benchmark_git,
+        expected_commit=authority.expected_producer_commit,
+        label="benchmark repository",
+    )
+    source_fields = _mapping(fields["source_hashes"], "publication source hashes")
+    sources: dict[str, FileRecord] = {}
+    for role in _SOURCE_HASH_KEYS:
+        raw = _mapping(source_fields[role], f"publication source {role}")
+        path = cast(str, raw["path"])
+        if role == "adapter" and path != authority.adapter_path:
+            raise ValueError("publication adapter path differs from authority")
+        record = _trusted_file_record(authority.benchmark_repository_root, path)
+        if record.sha256 != raw["sha256"]:
+            raise ValueError(f"publication source differs from bytes: {role}")
+        sources[role] = record
+    environment = _capture_environment_lock(authority)
+    candidate_git: Optional[GitRepositoryState] = None
+    checkpoint: Optional[FileRecord] = None
+    code_permission: Optional[FileRecord] = None
+    weight_permission: Optional[FileRecord] = None
+    if authority.real is not None:
+        candidate_git = _inspect_git_repository(
+            authority.real.candidate_repository_root
+        )
+        _require_git_state(
+            candidate_git,
+            expected_commit=authority.candidate.revision,
+            expected_origin_url=authority.candidate.repository_url,
+            label="candidate repository",
+        )
+        checkpoint = _trusted_file_record(
+            authority.real.checkpoint_root,
+            authority.real.checkpoint_path,
+        )
+        if (
+            checkpoint != authority.real.checkpoint_file
+            or checkpoint.sha256 != authority.candidate.checkpoint_sha256
+        ):
+            raise ValueError("publication checkpoint differs from authority")
+        permissions = _mapping(fields["permission_evidence"], "permission evidence")
+        code_permission = _require_permission_record(
+            _mapping(permissions["code"], "code permission"),
+            expected=authority.real.code_permission,
+            authority=authority,
+            label="code",
+        )
+        weight_permission = _require_permission_record(
+            _mapping(permissions["weights"], "weight permission"),
+            expected=authority.real.weight_permission,
+            authority=authority,
+            label="weight",
+        )
+    return _PublicationProvenance(
+        benchmark_git=benchmark_git,
+        candidate_git=candidate_git,
+        p53=p53,
+        raw_cohort=raw_cohort,
+        sources=_FrozenMapping(tuple(sorted(sources.items()))),
+        environment=environment,
+        checkpoint=checkpoint,
+        code_permission=code_permission,
+        weight_permission=weight_permission,
+    )
+
+
+def _validate_aborted_authority(
+    manifest: AbortedOomManifest,
+    authority: CandidateValidationAuthority,
+) -> None:
+    if authority.real is None or authority.candidate.synthetic:
+        raise ValueError("aborted OOM publication requires real authority")
+    fields = manifest.fields
+    p53, benchmark = _validate_attestations(
+        _thaw_json(fields["attestations"]),
+        comparable=True,
+    )
+    if (
+        _candidate_from_json(_thaw_json(fields["candidate_commitment"]))
+        != authority.candidate
+        or fields["candidate_id"] != authority.candidate.candidate_id
+        or fields["producer_git_commit"] != authority.expected_producer_commit
+        or fields["command"] != authority.expected_command
+        or benchmark != authority.benchmark_attestation
+        or benchmark.sha256 != authority.expected_benchmark_attestation_sha256
+        or p53 != run_p53_validation_subprocess(authority.p53_launch)
+    ):
+        raise ValueError("aborted OOM manifest differs from publication authority")
+    if _mapping(fields["raw_inputs"], "aborted raw inputs") != {
+        "cohort_jsonl_sha256": _COHORT_JSONL_SHA256,
+        "raw_index_sha256": RAW_INDEX_SHA256,
+        "raw_manifest_sha256": RAW_MANIFEST_SHA256,
+        "raw_payload_tree_sha256": _RAW_PAYLOAD_TREE_SHA256,
+        "raw_producer_git_commit": RAW_PRODUCER_COMMIT,
+        "selection_sha256": _SELECTION_SHA256,
+    }:
+        raise ValueError("aborted OOM raw inputs differ from frozen authority")
+    cuda = ArchivalCudaEvidence.from_json(_thaw_json(fields["cuda_evidence"]))
+    if any(
+        (snapshot.gpu_name, snapshot.gpu_uuid)
+        != (benchmark.gpu_name, benchmark.gpu_uuid)
+        for snapshot in (cuda.before, cuda.after)
+    ):
+        raise ValueError("aborted CUDA evidence differs from benchmark authority")
+
+
+def _validate_aborted_package(
+    root: Path,
+    authority: CandidateValidationAuthority,
+) -> bytes:
+    root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    try:
+        snapshot = _capture_tree(root_descriptor)
+        if snapshot.directories or tuple(snapshot.files) != ("manifest.json",):
+            raise ValueError("aborted OOM package must contain only manifest.json")
+        data, _ = _read_file_at(
+            root_descriptor,
+            "manifest.json",
+            expected_fingerprint=snapshot.files["manifest.json"],
+            expected_directories=snapshot.directories,
+        )
+        manifest = parse_aborted_oom_manifest_bytes(data)
+        _validate_aborted_authority(manifest, authority)
+        if _capture_tree(root_descriptor) != snapshot:
+            raise ValueError("aborted OOM package changed during validation")
+        _recapture_ancestor_bindings(bindings)
+        return manifest.canonical_bytes()
+    finally:
+        _close_descriptors(tuple(reversed(descriptors)))
+
+
+def _publication_child(mode: str, root: Path, payload: object) -> bytes:
+    if mode == "successful":
+        if not isinstance(payload, CandidateValidationAuthority):
+            raise ValueError("successful publication authority is invalid")
+        validated = validate_candidate_package(root, authority=payload)
+        if not isinstance(validated, ValidatedCandidatePackage):
+            raise RuntimeError(
+                "public validator did not mint a typed validation result"
+            )
+        return validated.record.canonical_bytes()
+    if mode == "aborted":
+        if not isinstance(payload, CandidateValidationAuthority):
+            raise ValueError("aborted publication authority is invalid")
+        return _validate_aborted_package(root, payload)
+    raise ValueError("publication child mode is invalid")
+
+
+def _publication_file_record_json(value: FileRecord) -> Mapping[str, object]:
+    return {"byte_length": value.byte_length, "sha256": value.sha256}
+
+
+def _publication_file_record_from_json(value: object, label: str) -> FileRecord:
+    raw = _exact_object(value, ("byte_length", "sha256"), label)
+    return FileRecord(cast(int, raw["byte_length"]), cast(str, raw["sha256"]))
+
+
+def _publication_artifact_json(
+    value: TrustedArtifactAuthority,
+) -> Mapping[str, object]:
+    return {
+        "file": _publication_file_record_json(value.file),
+        "path": value.path,
+        "root_role": value.root_role,
+    }
+
+
+def _publication_artifact_from_json(
+    value: object,
+    label: str,
+) -> TrustedArtifactAuthority:
+    raw = _exact_object(value, ("file", "path", "root_role"), label)
+    return TrustedArtifactAuthority(
+        root_role=cast(str, raw["root_role"]),
+        path=cast(str, raw["path"]),
+        file=_publication_file_record_from_json(raw["file"], f"{label}.file"),
+    )
+
+
+def _publication_candidate_json(
+    value: CandidateCommitment,
+) -> Mapping[str, object]:
+    result: dict[str, object] = {}
+    for value_field in fields(value):
+        item = getattr(value, value_field.name)
+        if isinstance(item, Enum):
+            item = item.value
+        elif type(item) is tuple:
+            item = list(item)
+        result[value_field.name] = item
+    return result
+
+
+def _publication_authority_json(
+    authority: CandidateValidationAuthority,
+) -> Mapping[str, object]:
+    real: Optional[Mapping[str, object]] = None
+    if authority.real is not None:
+        real = {
+            "candidate_repository_root": str(authority.real.candidate_repository_root),
+            "checkpoint_file": _publication_file_record_json(
+                authority.real.checkpoint_file
+            ),
+            "checkpoint_path": authority.real.checkpoint_path,
+            "checkpoint_root": str(authority.real.checkpoint_root),
+            "code_permission": _publication_artifact_json(
+                authority.real.code_permission
+            ),
+            "weight_permission": _publication_artifact_json(
+                authority.real.weight_permission
+            ),
+        }
+    return {
+        "adapter_path": authority.adapter_path,
+        "benchmark_attestation": {
+            "environment_sha256": authority.benchmark_attestation.environment_sha256,
+            "gpu_name": authority.benchmark_attestation.gpu_name,
+            "gpu_uuid": authority.benchmark_attestation.gpu_uuid,
+            "python_executable": authority.benchmark_attestation.python_executable,
+            "timing_comparable": authority.benchmark_attestation.timing_comparable,
+            "visible_device_count": (
+                authority.benchmark_attestation.visible_device_count
+            ),
+        },
+        "benchmark_repository_root": str(authority.benchmark_repository_root),
+        "candidate": _publication_candidate_json(authority.candidate),
+        "environment_lock": _publication_artifact_json(authority.environment_lock),
+        "expected_benchmark_attestation_sha256": (
+            authority.expected_benchmark_attestation_sha256
+        ),
+        "expected_command": list(authority.expected_command),
+        "expected_manifest_sha256": authority.expected_manifest_sha256,
+        "expected_producer_commit": authority.expected_producer_commit,
+        "mapping": {
+            "mapping": [
+                {
+                    "canonical_index": entry.canonical_index,
+                    "canonical_name": entry.canonical_name,
+                    "kind": entry.kind.value,
+                    "source_index": entry.source_index,
+                    "source_name": entry.source_name,
+                }
+                for entry in authority.mapping.mapping
+            ],
+            "mapping_sha256": authority.mapping.mapping_sha256,
+            "source_vocabulary": list(authority.mapping.source_vocabulary),
+        },
+        "p53_launch": {
+            "expected_environment_sha256": (
+                authority.p53_launch.expected_environment_sha256
+            ),
+            "python_executable": str(authority.p53_launch.python_executable),
+            "raw_root": str(authority.p53_launch.raw_root),
+            "timeout_seconds": authority.p53_launch.timeout_seconds,
+        },
+        "real": real,
+    }
+
+
+def _publication_authority_from_json(value: object) -> CandidateValidationAuthority:
+    keys = (
+        "adapter_path",
+        "benchmark_attestation",
+        "benchmark_repository_root",
+        "candidate",
+        "environment_lock",
+        "expected_benchmark_attestation_sha256",
+        "expected_command",
+        "expected_manifest_sha256",
+        "expected_producer_commit",
+        "mapping",
+        "p53_launch",
+        "real",
+    )
+    raw = _exact_object(value, keys, "publication authority")
+    launch = _exact_object(
+        raw["p53_launch"],
+        (
+            "expected_environment_sha256",
+            "python_executable",
+            "raw_root",
+            "timeout_seconds",
+        ),
+        "publication P5.3 launch",
+    )
+    benchmark = _exact_object(
+        raw["benchmark_attestation"],
+        (
+            "environment_sha256",
+            "gpu_name",
+            "gpu_uuid",
+            "python_executable",
+            "timing_comparable",
+            "visible_device_count",
+        ),
+        "publication benchmark attestation",
+    )
+    mapping_raw = _exact_object(
+        raw["mapping"],
+        ("mapping", "mapping_sha256", "source_vocabulary"),
+        "publication mapping",
+    )
+    mapping_rows = mapping_raw["mapping"]
+    source_vocabulary = mapping_raw["source_vocabulary"]
+    command = raw["expected_command"]
+    if (
+        not isinstance(mapping_rows, list)
+        or not isinstance(source_vocabulary, list)
+        or not isinstance(command, list)
+    ):
+        raise ValueError("publication authority sequences are invalid")
+    mapping = tuple(
+        MappingEntry(
+            source_index=cast(
+                int,
+                _exact_object(
+                    row,
+                    (
+                        "canonical_index",
+                        "canonical_name",
+                        "kind",
+                        "source_index",
+                        "source_name",
+                    ),
+                    "publication mapping row",
+                )["source_index"],
+            ),
+            source_name=cast(
+                str,
+                _exact_object(
+                    row,
+                    (
+                        "canonical_index",
+                        "canonical_name",
+                        "kind",
+                        "source_index",
+                        "source_name",
+                    ),
+                    "publication mapping row",
+                )["source_name"],
+            ),
+            kind=MappingKind(
+                cast(
+                    str,
+                    _exact_object(
+                        row,
+                        (
+                            "canonical_index",
+                            "canonical_name",
+                            "kind",
+                            "source_index",
+                            "source_name",
+                        ),
+                        "publication mapping row",
+                    )["kind"],
+                )
+            ),
+            canonical_index=cast(
+                Optional[int],
+                _exact_object(
+                    row,
+                    (
+                        "canonical_index",
+                        "canonical_name",
+                        "kind",
+                        "source_index",
+                        "source_name",
+                    ),
+                    "publication mapping row",
+                )["canonical_index"],
+            ),
+            canonical_name=cast(
+                Optional[str],
+                _exact_object(
+                    row,
+                    (
+                        "canonical_index",
+                        "canonical_name",
+                        "kind",
+                        "source_index",
+                        "source_name",
+                    ),
+                    "publication mapping row",
+                )["canonical_name"],
+            ),
+        )
+        for row in mapping_rows
+    )
+    real_raw = raw["real"]
+    real: Optional[RealProvenanceAuthority] = None
+    if real_raw is not None:
+        real_values = _exact_object(
+            real_raw,
+            (
+                "candidate_repository_root",
+                "checkpoint_file",
+                "checkpoint_path",
+                "checkpoint_root",
+                "code_permission",
+                "weight_permission",
+            ),
+            "publication real authority",
+        )
+        real = RealProvenanceAuthority(
+            candidate_repository_root=Path(
+                cast(str, real_values["candidate_repository_root"])
+            ),
+            checkpoint_root=Path(cast(str, real_values["checkpoint_root"])),
+            checkpoint_path=cast(str, real_values["checkpoint_path"]),
+            checkpoint_file=_publication_file_record_from_json(
+                real_values["checkpoint_file"],
+                "publication checkpoint",
+            ),
+            code_permission=_publication_artifact_from_json(
+                real_values["code_permission"],
+                "publication code permission",
+            ),
+            weight_permission=_publication_artifact_from_json(
+                real_values["weight_permission"],
+                "publication weight permission",
+            ),
+        )
+    return CandidateValidationAuthority(
+        expected_manifest_sha256=cast(str, raw["expected_manifest_sha256"]),
+        p53_launch=P53ValidatorLaunch(
+            python_executable=Path(cast(str, launch["python_executable"])),
+            expected_environment_sha256=cast(
+                str,
+                launch["expected_environment_sha256"],
+            ),
+            raw_root=Path(cast(str, launch["raw_root"])),
+            timeout_seconds=cast(float, launch["timeout_seconds"]),
+        ),
+        benchmark_attestation=BenchmarkEnvironmentAttestation(
+            python_executable=cast(str, benchmark["python_executable"]),
+            environment_sha256=cast(str, benchmark["environment_sha256"]),
+            visible_device_count=cast(int, benchmark["visible_device_count"]),
+            gpu_name=cast(str, benchmark["gpu_name"]),
+            gpu_uuid=cast(str, benchmark["gpu_uuid"]),
+            timing_comparable=cast(bool, benchmark["timing_comparable"]),
+        ),
+        expected_benchmark_attestation_sha256=cast(
+            str,
+            raw["expected_benchmark_attestation_sha256"],
+        ),
+        expected_command=tuple(cast(Sequence[str], command)),
+        benchmark_repository_root=Path(cast(str, raw["benchmark_repository_root"])),
+        expected_producer_commit=cast(str, raw["expected_producer_commit"]),
+        candidate=_candidate_from_json(raw["candidate"]),
+        mapping=CandidateMappingAuthority(
+            source_vocabulary=tuple(cast(Sequence[str], source_vocabulary)),
+            mapping=mapping,
+            mapping_sha256=cast(str, mapping_raw["mapping_sha256"]),
+        ),
+        adapter_path=cast(str, raw["adapter_path"]),
+        environment_lock=_publication_artifact_from_json(
+            raw["environment_lock"],
+            "publication environment lock",
+        ),
+        real=real,
+    )
+
+
+def _publication_child_request(data: bytes) -> bytes:
+    request = _exact_object(
+        _strict_json_object(data, "publication request"),
+        ("authority", "mode", "root"),
+        "publication request",
+    )
+    if canonical_json_bytes(request) != data:
+        raise ValueError("publication request is noncanonical")
+    root = request["root"]
+    mode = request["mode"]
+    if not isinstance(root, str) or not isinstance(mode, str):
+        raise ValueError("publication request mode or root is invalid")
+    return _publication_child(
+        mode,
+        Path(root),
+        _publication_authority_from_json(request["authority"]),
+    )
+
+
+def _terminate_publication_child(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_bounded_publication_process(
+    command: Tuple[str, ...],
+    *,
+    request: bytes,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[bytes]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(environment),
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        _terminate_publication_child(process)
+        raise RuntimeError("publication child pipes are unavailable")
+    streams = (process.stdin, process.stdout, process.stderr)
+    streams_by_descriptor = {stream.fileno(): stream for stream in streams}
+    selector = selectors.DefaultSelector()
+    output = bytearray()
+    errors = bytearray()
+    request_view = memoryview(request)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_publication_child(process)
+                raise ValueError("fresh-process publication validation timed out")
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _ in events:
+                descriptor = key.fd
+                stream = streams_by_descriptor[descriptor]
+                if key.data == "stdin":
+                    try:
+                        written = os.write(descriptor, request_view)
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except BrokenPipeError:
+                        written = 0
+                    if written:
+                        request_view = request_view[written:]
+                    if not request_view or written == 0:
+                        selector.unregister(stream)
+                        stream.close()
+                    continue
+                target = output if key.data == "stdout" else errors
+                remaining_capacity = _MAX_PUBLICATION_CHILD_OUTPUT_BYTES - len(target)
+                try:
+                    chunk = os.read(
+                        descriptor,
+                        min(_READ_CHUNK_BYTES, remaining_capacity + 1),
+                    )
+                except (BlockingIOError, InterruptedError):
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if len(chunk) > remaining_capacity:
+                    _terminate_publication_child(process)
+                    raise ValueError(
+                        "fresh-process publication output exceeded its hard cap"
+                    )
+                target.extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_publication_child(process)
+            raise ValueError("fresh-process publication validation timed out")
+        returncode = process.wait(timeout=remaining)
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            bytes(output),
+            bytes(errors),
+        )
+    except subprocess.TimeoutExpired as error:
+        _terminate_publication_child(process)
+        raise ValueError("fresh-process publication validation timed out") from error
+    finally:
+        selector.close()
+        for stream in streams:
+            if not stream.closed:
+                stream.close()
+
+
+def _run_publication_child(
+    mode: str,
+    root_descriptor: int,
+    authority: CandidateValidationAuthority,
+) -> bytes:
+    script = (
+        "import sys;"
+        "from prior.analyze.d2026_07_29."
+        "rgbd_segmenter_benchmark_package import _publication_child_request;"
+        "sys.stdout.buffer.write("
+        "_publication_child_request(sys.stdin.buffer.read()))"
+    )
+    root = Path(os.readlink(f"/proc/self/fd/{root_descriptor}"))
+    _absolute_authority_root(root, "publication staging root")
+    serialized = canonical_json_bytes({
+        "authority": _publication_authority_json(authority),
+        "mode": mode,
+        "root": str(root),
+    })
+    configured_interpreter = Path(authority.benchmark_attestation.python_executable)
+    interpreter = configured_interpreter.resolve(strict=True)
+    if (
+        interpreter != configured_interpreter
+        or not interpreter.is_file()
+        or stat.S_ISLNK(os.lstat(interpreter).st_mode)
+        or not os.access(interpreter, os.X_OK)
+    ):
+        raise ValueError("publication interpreter must be canonical and executable")
+    environment = {
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": str(authority.benchmark_repository_root),
+        "PYTHONWARNINGS": "ignore",
+    }
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices is not None:
+        environment["CUDA_VISIBLE_DEVICES"] = visible_devices
+    result = _run_bounded_publication_process(
+        (str(interpreter), "-c", script),
+        request=serialized,
+        environment=environment,
+        timeout_seconds=3600.0,
+    )
+    if result.returncode != 0 or result.stderr or not result.stdout:
+        raise ValueError("fresh-process publication validation failed")
+    return result.stdout
+
+
+def _successful_artifact_bytes(
+    artifacts: SuccessfulPackageArtifacts,
+) -> Tuple[Tuple[str, bytes], ...]:
+    records = artifacts.files
+    manifest_record = _file_record(dict(records)["manifest.json"])
+    if (
+        _package_validation_record(
+            tuple((path, _file_record(data)) for path, data in records),
+            manifest_record,
+        )
+        != artifacts.validation
+    ):
+        raise ValueError("successful publication artifacts are inconsistent")
+    return records
+
+
+def _write_publication_file(parent_descriptor: int, name: str, data: bytes) -> None:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=parent_descriptor,
+    )
+    primary: Optional[BaseException] = None
+    try:
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(data)
+        while view:
+            try:
+                written = os.write(descriptor, view)
+            except InterruptedError:
+                continue
+            if written <= 0:
+                raise OSError("publication file write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            _close_descriptors((descriptor,))
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            raise PublicationCleanupError(primary, cleanup) from primary
+
+
+def _remove_owned_staging(
+    parent_descriptor: int,
+    staging_name: str,
+    staging_descriptor: int,
+    owned_identity: _DirectoryIdentity,
+) -> None:
+    if (
+        _directory_identity(os.fstat(staging_descriptor)) != owned_identity
+        or _directory_identity(
+            os.stat(staging_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        )
+        != owned_identity
+    ):
+        raise RuntimeError("staging ownership changed; raced replacement preserved")
+    tombstone_name = f".publication-cleanup-{secrets.token_hex(16)}"
+    _relative_path(tombstone_name)
+    _require_publication_paths_absent(parent_descriptor, (tombstone_name,))
+    _rename_noreplace(
+        parent_descriptor,
+        staging_name,
+        tombstone_name,
+    )
+    tombstone_identity = _directory_identity(
+        os.stat(
+            tombstone_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    )
+    if tombstone_identity != owned_identity:
+        try:
+            _rename_noreplace(
+                parent_descriptor,
+                tombstone_name,
+                staging_name,
+            )
+        except BaseException as restore_error:
+            raise RuntimeError(
+                "raced staging replacement was isolated but could not be restored"
+            ) from restore_error
+        raise RuntimeError("staging ownership raced cleanup; replacement preserved")
+
+    def remove_contents(descriptor: int) -> None:
+        for name in os.listdir(descriptor):
+            metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                child = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+                try:
+                    remove_contents(child)
+                finally:
+                    os.close(child)
+                os.rmdir(name, dir_fd=descriptor)
+            else:
+                os.unlink(name, dir_fd=descriptor)
+
+    remove_contents(staging_descriptor)
+    if (
+        _directory_identity(
+            os.stat(
+                tombstone_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        != owned_identity
+    ):
+        raise RuntimeError("owned cleanup tombstone changed; replacement preserved")
+    os.rmdir(tombstone_name, dir_fd=parent_descriptor)
+    os.fsync(parent_descriptor)
+
+
+def _rename_noreplace(
+    parent_descriptor: int,
+    staging_name: str,
+    destination_name: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as error:
+        raise RuntimeError("Linux renameat2 is unavailable") from error
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    if (
+        renameat2(
+            parent_descriptor,
+            os.fsencode(staging_name),
+            parent_descriptor,
+            os.fsencode(destination_name),
+            1,
+        )
+        != 0
+    ):
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), destination_name)
+
+
+def _publication_names(
+    destination: Path,
+    parent_descriptor: int,
+) -> Tuple[str, str]:
+    _absolute_authority_root(destination, "publication destination")
+    destination_name = destination.name
+    staging_name = f".{destination_name}.staging"
+    name_max = os.fpathconf(parent_descriptor, "PC_NAME_MAX")
+    for name in (destination_name, staging_name):
+        _relative_path(name)
+        if len(PurePosixPath(name).parts) != 1:
+            raise ValueError("publication names must be single POSIX components")
+        if len(os.fsencode(name)) > name_max:
+            raise ValueError("publication name exceeds parent NAME_MAX")
+    return destination_name, staging_name
+
+
+def _require_publication_paths_absent(
+    parent_descriptor: int,
+    names: Sequence[str],
+) -> None:
+    for name in names:
+        try:
+            os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise FileExistsError(errno.EEXIST, "publication path exists", name)
+
+
+def _preflight_publication_destination(destination: Path) -> None:
+    _absolute_authority_root(destination, "publication destination")
+    parent_descriptor, descriptors, _ = _open_anchored_root(destination.parent)
+    try:
+        destination_name, staging_name = _publication_names(
+            destination,
+            parent_descriptor,
+        )
+        _require_publication_paths_absent(
+            parent_descriptor,
+            (destination_name, staging_name),
+        )
+    finally:
+        _close_descriptors(tuple(reversed(descriptors)))
+
+
+def _require_publication_permissions(snapshot: _TreeSnapshot) -> None:
+    if (
+        stat.S_IMODE(snapshot.root.mode) != 0o700
+        or snapshot.root.link_count < 2
+        or any(
+            stat.S_IMODE(value.mode) != 0o700 or value.link_count < 2
+            for value in snapshot.directories.values()
+        )
+        or any(
+            stat.S_IMODE(value.mode) != 0o600 or value.link_count != 1
+            for value in snapshot.files.values()
+        )
+    ):
+        raise ValueError("publication tree permissions or link counts are invalid")
+
+
+def _publish_package(
+    destination: Path,
+    files: Tuple[Tuple[str, bytes], ...],
+    *,
+    mode: str,
+    authority: CandidateValidationAuthority,
+    expected_child: Callable[[bytes], object],
+    provenance_fields: Mapping[str, object],
+) -> Tuple[Path, object]:
+    _absolute_authority_root(destination, "publication destination")
+    parent = destination.parent
+    parent_descriptor, descriptors, bindings = _open_anchored_root(parent)
+    destination_name, staging_name = _publication_names(
+        destination,
+        parent_descriptor,
+    )
+    staging_descriptor: Optional[int] = None
+    staging_identity: Optional[_DirectoryIdentity] = None
+    renamed = False
+    primary: Optional[BaseException] = None
+    validation: object = None
+    try:
+        _require_publication_paths_absent(
+            parent_descriptor,
+            (destination_name, staging_name),
+        )
+        os.mkdir(staging_name, 0o700, dir_fd=parent_descriptor)
+        staging_descriptor = os.open(
+            staging_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(staging_descriptor, 0o700)
+        staging_identity = _directory_identity(os.fstat(staging_descriptor))
+        directory_descriptors = {"": staging_descriptor}
+        artifact_paths: list[Tuple[PurePosixPath, bytes]] = []
+        for path, data in files:
+            _relative_path(path)
+            artifact_path = PurePosixPath(path)
+            artifact_paths.append((artifact_path, data))
+        directory_paths = sorted(
+            {
+                str(parent)
+                for path, _ in artifact_paths
+                for parent in path.parents
+                if str(parent) != "."
+            },
+            key=lambda value: (len(PurePosixPath(value).parts), value),
+        )
+        directory_primary: Optional[BaseException] = None
+        try:
+            for directory_path in directory_paths:
+                path = PurePosixPath(directory_path)
+                parent_path = str(path.parent)
+                parent_key = "" if parent_path == "." else parent_path
+                directory_parent_descriptor = directory_descriptors[parent_key]
+                os.mkdir(path.name, 0o700, dir_fd=directory_parent_descriptor)
+                descriptor = os.open(
+                    path.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_parent_descriptor,
+                )
+                os.fchmod(descriptor, 0o700)
+                directory_descriptors[directory_path] = descriptor
+            for path, data in artifact_paths:
+                parent_path = str(path.parent)
+                parent_key = "" if parent_path == "." else parent_path
+                _write_publication_file(
+                    directory_descriptors[parent_key],
+                    path.name,
+                    data,
+                )
+            for directory_path in reversed(directory_paths):
+                os.fsync(directory_descriptors[directory_path])
+            os.fsync(staging_descriptor)
+        except BaseException as error:
+            directory_primary = error
+            raise
+        finally:
+            raw_descriptors = tuple(
+                descriptor
+                for directory_path in reversed(directory_paths)
+                if (descriptor := directory_descriptors.get(directory_path)) is not None
+            )
+            try:
+                _close_descriptors(raw_descriptors)
+            except BaseException as cleanup:
+                if directory_primary is None:
+                    raise
+                raise PublicationCleanupError(
+                    directory_primary,
+                    cleanup,
+                ) from directory_primary
+        expected_snapshot = _capture_tree(staging_descriptor)
+        _require_publication_permissions(expected_snapshot)
+        provenance_before = _capture_publication_provenance(
+            provenance_fields,
+            authority,
+        )
+        child_output = _run_publication_child(mode, staging_descriptor, authority)
+        validation = expected_child(child_output)
+        if (
+            _directory_identity(os.fstat(staging_descriptor)) != staging_identity
+            or _directory_identity(
+                os.stat(
+                    staging_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != staging_identity
+            or _capture_publication_provenance(provenance_fields, authority)
+            != provenance_before
+        ):
+            raise ValueError(
+                "publication staging or provenance changed after validation"
+            )
+        final_snapshot = _capture_tree(staging_descriptor)
+        _require_publication_permissions(final_snapshot)
+        if (
+            final_snapshot != expected_snapshot
+            or _directory_identity(os.fstat(staging_descriptor)) != staging_identity
+            or _directory_identity(
+                os.stat(
+                    staging_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != staging_identity
+        ):
+            raise ValueError("publication staging changed before rename")
+        _recapture_ancestor_bindings(bindings)
+        _rename_noreplace(
+            parent_descriptor,
+            staging_name,
+            destination_name,
+        )
+        renamed = True
+        if (
+            _directory_identity(
+                os.stat(
+                    destination_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != staging_identity
+        ):
+            raise RuntimeError("published destination binding changed after rename")
+        try:
+            os.fsync(parent_descriptor)
+        except BaseException as error:
+            raise PublicationDurabilityUncertain(
+                destination,
+                validation,
+                error,
+            ) from error
+        return destination, validation
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        cleanup: Optional[BaseException] = None
+        if (
+            not renamed
+            and staging_descriptor is not None
+            and staging_identity is not None
+        ):
+            try:
+                _remove_owned_staging(
+                    parent_descriptor,
+                    staging_name,
+                    staging_descriptor,
+                    staging_identity,
+                )
+            except BaseException as error:
+                cleanup = error
+        close_failure: Optional[BaseException] = None
+        close_descriptors = (
+            () if staging_descriptor is None else (staging_descriptor,)
+        ) + tuple(reversed(descriptors))
+        try:
+            _close_descriptors(close_descriptors)
+        except BaseException as error:
+            close_failure = error
+        combined_cleanup = cleanup
+        if close_failure is not None:
+            combined_cleanup = (
+                close_failure
+                if combined_cleanup is None
+                else PublicationCleanupError(combined_cleanup, close_failure)
+            )
+        if combined_cleanup is not None:
+            if primary is None:
+                raise combined_cleanup
+            raise PublicationCleanupError(primary, combined_cleanup) from primary
+
+
+def _rebind_child_validation(
+    data: bytes,
+    artifacts: SuccessfulPackageArtifacts,
+    authority: CandidateValidationAuthority,
+) -> CandidateValidationRecord:
+    raw = _exact_object(
+        _strict_json_object(data, "child validation record"),
+        (
+            "benchmark_attestation_sha256",
+            "candidate_id",
+            "candidate_status",
+            "observation_count",
+            "p53_attestation_sha256",
+            "package",
+            "producer_git_commit",
+            "run_kind",
+            "schema_version",
+            "synthetic_semantic_scores_exposed",
+            "validation_status",
+        ),
+        "child validation record",
+    )
+    package_raw = _exact_object(
+        raw["package"],
+        ("file_count", "manifest", "total_byte_length", "tree_sha256"),
+        "child validation package",
+    )
+    manifest_raw = _exact_object(
+        package_raw["manifest"],
+        ("byte_length", "sha256"),
+        "child validation manifest",
+    )
+    package_record = PackageValidationRecord(
+        file_count=cast(int, package_raw["file_count"]),
+        total_byte_length=cast(int, package_raw["total_byte_length"]),
+        tree_sha256=cast(str, package_raw["tree_sha256"]),
+        manifest=FileRecord(
+            byte_length=cast(int, manifest_raw["byte_length"]),
+            sha256=cast(str, manifest_raw["sha256"]),
+        ),
+    )
+    record = CandidateValidationRecord(
+        schema_version=cast(int, raw["schema_version"]),
+        validation_status=cast(str, raw["validation_status"]),
+        candidate_status=cast(str, raw["candidate_status"]),
+        run_kind=RunKind(cast(str, raw["run_kind"])),
+        candidate_id=cast(str, raw["candidate_id"]),
+        producer_git_commit=cast(str, raw["producer_git_commit"]),
+        p53_attestation_sha256=cast(str, raw["p53_attestation_sha256"]),
+        benchmark_attestation_sha256=cast(
+            str,
+            raw["benchmark_attestation_sha256"],
+        ),
+        synthetic_semantic_scores_exposed=cast(
+            bool,
+            raw["synthetic_semantic_scores_exposed"],
+        ),
+        observation_count=cast(int, raw["observation_count"]),
+        package=package_record,
+        _validation_token=_VALIDATION_TOKEN,
+    )
+    expected_status = (
+        "NOT_APPLICABLE"
+        if artifacts.manifest.summary.real is None
+        else artifacts.manifest.summary.real.gates.overall.value
+    )
+    if (
+        record.package != artifacts.validation
+        or record.candidate_id != authority.candidate.candidate_id
+        or record.producer_git_commit != authority.expected_producer_commit
+        or record.benchmark_attestation_sha256
+        != authority.expected_benchmark_attestation_sha256
+        or record.p53_attestation_sha256
+        != artifacts.manifest.summary.p53_attestation.sha256
+        or record.run_kind is not artifacts.manifest.summary.run_kind
+        or record.candidate_status != expected_status
+        or record.canonical_bytes() != data
+    ):
+        raise ValueError("child validation record differs from publication authority")
+    return record
+
+
+def publish_successful_candidate_package(
+    destination: Path,
+    artifacts: SuccessfulPackageArtifacts,
+    authority: CandidateValidationAuthority,
+) -> PublishedCandidatePackage:
+    _preflight_publication_destination(destination)
+    if not isinstance(artifacts, SuccessfulPackageArtifacts) or not isinstance(
+        authority, CandidateValidationAuthority
+    ):
+        raise ValueError("typed successful artifacts and authority are required")
+    if _file_record(artifacts.manifest.canonical_bytes()).sha256 != (
+        authority.expected_manifest_sha256
+    ):
+        raise ValueError("successful artifacts differ from publication authority")
+
+    def require_child(data: bytes) -> CandidateValidationRecord:
+        return _rebind_child_validation(data, artifacts, authority)
+
+    path, validation = _publish_package(
+        destination,
+        _successful_artifact_bytes(artifacts),
+        mode="successful",
+        authority=authority,
+        expected_child=require_child,
+        provenance_fields=artifacts.manifest.fields,
+    )
+    if not isinstance(validation, CandidateValidationRecord):
+        raise RuntimeError("successful publication validation type was lost")
+    return PublishedCandidatePackage(path=path, validation=validation)
+
+
+def publish_aborted_oom_package(
+    parent: Path,
+    package: AbortedOomPackage,
+    authority: AbortedOomPublicationAuthority,
+) -> Path:
+    _absolute_authority_root(parent, "aborted publication parent")
+    if not isinstance(package, AbortedOomPackage) or not isinstance(
+        authority, AbortedOomPublicationAuthority
+    ):
+        raise ValueError("factory-minted aborted package and authority are required")
+    manifest = package.manifest
+    candidate_authority = authority.candidate
+    _validate_aborted_authority(manifest, candidate_authority)
+    name = (
+        f"{manifest.fields['candidate_id']}-aborted-oom-"
+        f"{manifest.fields['producer_commit_prefix']}"
+    )
+    _relative_path(name)
+    destination = parent / name
+    _preflight_publication_destination(destination)
+    canonical = manifest.canonical_bytes()
+
+    def require_child(data: bytes) -> AbortedOomManifest:
+        if data != canonical:
+            raise ValueError("child aborted validation differs from manifest")
+        return parse_aborted_oom_manifest_bytes(data)
+
+    path, _ = _publish_package(
+        destination,
+        (("manifest.json", canonical),),
+        mode="aborted",
+        authority=candidate_authority,
+        expected_child=require_child,
+        provenance_fields=manifest.fields,
+    )
+    return path

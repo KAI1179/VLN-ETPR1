@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import io
 import hashlib
 import inspect
@@ -16,6 +18,7 @@ from typing import Callable, Dict, Mapping, Tuple, cast
 
 import numpy as np
 import pytest
+import torch
 
 from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_contract
 from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_package as package
@@ -3361,3 +3364,1155 @@ def test_candidate_reader_rejects_root_binding_and_final_content_races(
             _accept(candidate_package)
     finally:
         manifest_path.write_bytes(original_manifest)
+
+
+def _publication_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted: package.AcceptedCandidatePackage,
+) -> tuple[
+    package.SuccessfulPackageArtifacts,
+    CandidateValidationAuthority,
+    package.CandidateValidationRecord,
+]:
+    bound, authority, _ = _public_validation_fixture(tmp_path, accepted)
+    artifacts = package.SuccessfulPackageArtifacts.from_accepted(bound)
+    record = package.CandidateValidationRecord(
+        schema_version=1,
+        validation_status="PASS",
+        candidate_status="NOT_APPLICABLE",
+        run_kind=package.RunKind.SYNTHETIC,
+        candidate_id=authority.candidate.candidate_id,
+        producer_git_commit=authority.expected_producer_commit,
+        p53_attestation_sha256=artifacts.manifest.summary.p53_attestation.sha256,
+        benchmark_attestation_sha256=(authority.expected_benchmark_attestation_sha256),
+        synthetic_semantic_scores_exposed=False,
+        observation_count=50,
+        package=artifacts.validation,
+        _validation_token=package._VALIDATION_TOKEN,  # noqa: SLF001
+    )
+    provenance = object()
+    monkeypatch.setattr(
+        package,
+        "_capture_publication_provenance",
+        lambda _fields, _authority: provenance,
+    )
+    monkeypatch.setattr(
+        package,
+        "_run_publication_child",
+        lambda _mode, _descriptor, _authority: record.canonical_bytes(),
+    )
+    return artifacts, authority, record
+
+
+def test_successful_publisher_atomically_writes_exact_canonical_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    destination = tmp_path / "published"
+
+    published = package.publish_successful_candidate_package(
+        destination,
+        artifacts,
+        authority,
+    )
+
+    assert published == package.PublishedCandidatePackage(destination, record)
+    assert not (tmp_path / ".published.staging").exists()
+    files = tuple(
+        sorted(
+            str(path.relative_to(destination))
+            for path in destination.rglob("*")
+            if path.is_file()
+        )
+    )
+    assert files == tuple(sorted(path for path, _ in artifacts.files))
+    assert all(
+        path.stat().st_mode & 0o777 == 0o600
+        for path in destination.rglob("*")
+        if path.is_file()
+    )
+    assert all(
+        path.stat().st_mode & 0o777 == 0o700
+        for path in (
+            destination,
+            *tuple(path for path in destination.rglob("*") if path.is_dir()),
+        )
+    )
+
+
+@pytest.mark.parametrize("occupied", ["published", ".published.staging"])
+def test_successful_publisher_preserves_preexisting_paths_before_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    occupied: str,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    existing = tmp_path / occupied
+    existing.mkdir()
+    marker = existing / "keep"
+    marker.write_text("owned elsewhere")
+
+    def unexpected_artifact_build(
+        _artifacts: package.SuccessfulPackageArtifacts,
+    ) -> tuple[tuple[str, bytes], ...]:
+        raise AssertionError("artifacts built before collision preflight")
+
+    monkeypatch.setattr(
+        package,
+        "_successful_artifact_bytes",
+        unexpected_artifact_build,
+    )
+
+    with pytest.raises(FileExistsError):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+    assert marker.read_text() == "owned elsewhere"
+
+
+def test_successful_publisher_losing_rename_race_preserves_winner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    original = package._rename_noreplace  # noqa: SLF001
+
+    def lose_race(
+        parent_descriptor: int,
+        staging_name: str,
+        destination_name: str,
+    ) -> None:
+        if destination_name == "published":
+            os.mkdir(destination_name, dir_fd=parent_descriptor)
+        original(parent_descriptor, staging_name, destination_name)
+
+    monkeypatch.setattr(package, "_rename_noreplace", lose_race)
+    destination = tmp_path / "published"
+    with pytest.raises(FileExistsError):
+        package.publish_successful_candidate_package(
+            destination,
+            artifacts,
+            authority,
+        )
+
+    assert destination.is_dir()
+    assert tuple(destination.iterdir()) == ()
+    assert not (tmp_path / ".published.staging").exists()
+
+
+def test_successful_publisher_preserves_final_on_postrename_fsync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    renamed = False
+    original_rename = package._rename_noreplace  # noqa: SLF001
+    original_fsync = package.os.fsync
+
+    def tracked_rename(
+        parent_descriptor: int,
+        staging_name: str,
+        destination_name: str,
+    ) -> None:
+        nonlocal renamed
+        original_rename(parent_descriptor, staging_name, destination_name)
+        renamed = True
+
+    def failing_fsync(descriptor: int) -> None:
+        if renamed:
+            raise OSError("parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(package, "_rename_noreplace", tracked_rename)
+    monkeypatch.setattr(package.os, "fsync", failing_fsync)
+    destination = tmp_path / "published"
+
+    with pytest.raises(package.PublicationDurabilityUncertain) as raised:
+        package.publish_successful_candidate_package(
+            destination,
+            artifacts,
+            authority,
+        )
+
+    assert raised.value.final_path == destination
+    assert raised.value.validation == record
+    assert destination.is_dir()
+    assert not (tmp_path / ".published.staging").exists()
+
+
+def test_successful_publisher_fsyncs_files_then_directories_postorder_then_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    calls: list[str] = []
+    original_fsync = package.os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        calls.append(os.readlink(f"/proc/self/fd/{descriptor}"))
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(package.os, "fsync", record_fsync)
+    package.publish_successful_candidate_package(
+        tmp_path / "published",
+        artifacts,
+        authority,
+    )
+
+    staging = tmp_path / ".published.staging"
+    artifact_paths = [str(staging / path) for path, _ in artifacts.files]
+    directory_paths = sorted(
+        {
+            str(parent)
+            for path, _ in artifacts.files
+            for parent in Path(path).parents
+            if parent != Path(".")
+        },
+        key=lambda value: (len(Path(value).parts), value),
+    )
+    expected = (
+        artifact_paths
+        + [str(staging / path) for path in reversed(directory_paths)]
+        + [str(staging), str(tmp_path)]
+    )
+    assert calls == expected
+
+
+def test_successful_publisher_rejects_postchild_tree_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+
+    def mutate_after_validation(
+        _mode: str,
+        descriptor: int,
+        _authority: CandidateValidationAuthority,
+    ) -> bytes:
+        manifest = Path(f"/proc/self/fd/{descriptor}/manifest.json")
+        manifest.write_bytes(manifest.read_bytes() + b" ")
+        return record.canonical_bytes()
+
+    monkeypatch.setattr(package, "_run_publication_child", mutate_after_validation)
+    destination = tmp_path / "published"
+    with pytest.raises(ValueError, match="changed"):
+        package.publish_successful_candidate_package(
+            destination,
+            artifacts,
+            authority,
+        )
+
+    assert not destination.exists()
+    assert not (tmp_path / ".published.staging").exists()
+
+
+def test_successful_publisher_rejects_parent_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    parent = tmp_path / "ancestor"
+    parent.mkdir()
+    moved = tmp_path / "ancestor-moved"
+
+    def swap_parent(
+        _mode: str,
+        _descriptor: int,
+        _authority: CandidateValidationAuthority,
+    ) -> bytes:
+        parent.rename(moved)
+        parent.mkdir()
+        return record.canonical_bytes()
+
+    monkeypatch.setattr(package, "_run_publication_child", swap_parent)
+    try:
+        with pytest.raises(ValueError, match="ancestor binding"):
+            package.publish_successful_candidate_package(
+                parent / "published",
+                artifacts,
+                authority,
+            )
+        assert tuple(parent.iterdir()) == ()
+    finally:
+        parent.rmdir()
+        moved.rename(parent)
+
+
+def test_successful_publisher_rejects_child_p53_hash_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    raw = cast(Dict[str, object], json.loads(record.canonical_bytes()))
+    raw["p53_attestation_sha256"] = "2" * 64
+    monkeypatch.setattr(
+        package,
+        "_run_publication_child",
+        lambda _mode, _descriptor, _authority: canonical_json_bytes(raw),
+    )
+    with pytest.raises(ValueError, match="differs"):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+
+def test_successful_publisher_rejects_postchild_provenance_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, record = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    captures = iter((object(), object()))
+    monkeypatch.setattr(
+        package,
+        "_capture_publication_provenance",
+        lambda _fields, _authority: next(captures),
+    )
+    monkeypatch.setattr(
+        package,
+        "_run_publication_child",
+        lambda _mode, _descriptor, _authority: record.canonical_bytes(),
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+
+def test_publication_provenance_recaptures_runtime_p53_and_raw_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    bound, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    changed_p53 = replace(p53, environment_sha256="2" * 64)
+    p53_values = iter((p53, changed_p53))
+    events: list[str] = []
+    monkeypatch.setattr(
+        BenchmarkEnvironmentAttestation,
+        "require_current_process",
+        lambda _self: events.append("runtime"),
+    )
+    monkeypatch.setattr(
+        package,
+        "_require_runtime_source_bindings",
+        lambda _authority: events.append("sources"),
+    )
+    monkeypatch.setattr(
+        package,
+        "run_p53_validation_subprocess",
+        lambda _launch: next(p53_values),
+    )
+    monkeypatch.setattr(
+        package,
+        "_trusted_cohort_from_raw_index",
+        lambda _root, **_kwargs: (
+            events.append("raw") or TrustedCohort(_package_identities())
+        ),
+    )
+    monkeypatch.setattr(
+        package,
+        "_inspect_git_repository",
+        lambda _root: package.GitRepositoryState(_COMMIT, True),
+    )
+    source_records = {
+        cast(str, value["path"]): FileRecord(1, cast(str, value["sha256"]))
+        for value in cast(
+            Mapping[str, Mapping[str, object]],
+            bound.manifest.fields["source_hashes"],
+        ).values()
+    }
+    monkeypatch.setattr(
+        package,
+        "_trusted_file_record",
+        lambda _root, path: source_records[path],
+    )
+    monkeypatch.setattr(
+        package,
+        "_capture_environment_lock",
+        lambda _authority: authority.environment_lock.file,
+    )
+
+    before = package._capture_publication_provenance(  # noqa: SLF001
+        bound.manifest.fields,
+        authority,
+    )
+    after = package._capture_publication_provenance(  # noqa: SLF001
+        bound.manifest.fields,
+        authority,
+    )
+
+    assert before.p53 == p53
+    assert after.p53 == changed_p53
+    assert before != after
+    assert events == ["runtime", "sources", "raw"] * 2
+
+
+def test_successful_publisher_cleans_owned_staging_after_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    original = package._write_publication_file  # noqa: SLF001
+    writes = 0
+
+    def fail_second_write(descriptor: int, name: str, data: bytes) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("injected write failure")
+        original(descriptor, name, data)
+
+    monkeypatch.setattr(package, "_write_publication_file", fail_second_write)
+    with pytest.raises(OSError, match="injected"):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+    assert not (tmp_path / "published").exists()
+    assert not (tmp_path / ".published.staging").exists()
+
+
+def test_successful_publisher_preserves_primary_and_cleanup_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+
+    def fail_write(_descriptor: int, _name: str, _data: bytes) -> None:
+        raise OSError("primary failure")
+
+    def fail_cleanup(*_args: object) -> None:
+        raise OSError("cleanup failure")
+
+    monkeypatch.setattr(
+        package,
+        "_write_publication_file",
+        fail_write,
+    )
+    monkeypatch.setattr(
+        package,
+        "_remove_owned_staging",
+        fail_cleanup,
+    )
+
+    with pytest.raises(package.PublicationCleanupError) as raised:
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+    assert str(raised.value.primary) == "primary failure"
+    assert str(raised.value.cleanup) == "cleanup failure"
+
+
+def test_publication_file_write_retries_eintr_and_partial_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original_write = package.os.write
+    calls = 0
+
+    def interrupted_partial_write(file_descriptor: int, data: memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InterruptedError
+        return original_write(file_descriptor, data[: max(1, len(data) // 2)])
+
+    monkeypatch.setattr(package.os, "write", interrupted_partial_write)
+    try:
+        package._write_publication_file(  # noqa: SLF001
+            descriptor,
+            "artifact",
+            b"partial-write-payload",
+        )
+    finally:
+        os.close(descriptor)
+    assert (tmp_path / "artifact").read_bytes() == b"partial-write-payload"
+    assert calls > 2
+
+
+def test_publication_file_close_failure_preserves_write_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original_close = package.os.close
+    artifact_descriptor: int | None = None
+
+    def fail_write(descriptor: int, _data: memoryview) -> int:
+        nonlocal artifact_descriptor
+        artifact_descriptor = descriptor
+        raise OSError("write primary")
+
+    def fail_artifact_close(descriptor: int) -> None:
+        if descriptor == artifact_descriptor:
+            raise OSError("artifact close")
+        original_close(descriptor)
+
+    monkeypatch.setattr(package.os, "write", fail_write)
+    monkeypatch.setattr(package.os, "close", fail_artifact_close)
+    try:
+        with pytest.raises(package.PublicationCleanupError) as raised:
+            package._write_publication_file(  # noqa: SLF001
+                parent_descriptor,
+                "artifact",
+                b"payload",
+            )
+        assert str(raised.value.primary) == "write primary"
+        assert isinstance(raised.value.cleanup, package._DescriptorCloseError)  # noqa: SLF001
+        assert len(raised.value.cleanup.failures) == 1
+    finally:
+        if artifact_descriptor is not None:
+            original_close(artifact_descriptor)
+        original_close(parent_descriptor)
+
+
+def test_publication_directory_closes_are_exhaustive_and_preserve_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+
+    def fail_artifact_write(
+        _descriptor: int,
+        _name: str,
+        _data: bytes,
+    ) -> None:
+        raise OSError("artifact primary")
+
+    monkeypatch.setattr(
+        package,
+        "_write_publication_file",
+        fail_artifact_write,
+    )
+    original_close = package.os.close
+    attempted: list[int] = []
+    failed: list[int] = []
+    expected_directory_count = len({
+        str(parent)
+        for path, _ in artifacts.files
+        for parent in Path(path).parents
+        if parent != Path(".")
+    })
+
+    def fail_first_two_directory_closes(descriptor: int) -> None:
+        if len(attempted) < expected_directory_count:
+            try:
+                target = os.readlink(f"/proc/self/fd/{descriptor}")
+            except OSError:
+                target = ""
+            if "/.published.staging/predictions" in target:
+                attempted.append(descriptor)
+                if len(failed) < 2:
+                    failed.append(descriptor)
+                    raise OSError(f"directory close {len(failed)}")
+        original_close(descriptor)
+
+    monkeypatch.setattr(package.os, "close", fail_first_two_directory_closes)
+    try:
+        with pytest.raises(package.PublicationCleanupError) as raised:
+            package.publish_successful_candidate_package(
+                tmp_path / "published",
+                artifacts,
+                authority,
+            )
+        assert str(raised.value.primary) == "artifact primary"
+        assert isinstance(raised.value.cleanup, package._DescriptorCloseError)  # noqa: SLF001
+        assert len(raised.value.cleanup.failures) == 2
+        assert len(attempted) == expected_directory_count
+    finally:
+        for descriptor in failed:
+            original_close(descriptor)
+
+
+def test_cleanup_isolates_and_preserves_raced_staging_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    original_file_write = package._write_publication_file  # noqa: SLF001
+
+    def fail_write(_descriptor: int, _name: str, _data: bytes) -> None:
+        raise OSError("primary")
+
+    monkeypatch.setattr(
+        package,
+        "_write_publication_file",
+        fail_write,
+    )
+    original = package._rename_noreplace  # noqa: SLF001
+    moved = tmp_path / "owned-moved"
+
+    def swap_before_isolation(
+        parent_descriptor: int,
+        staging_name: str,
+        destination_name: str,
+    ) -> None:
+        if destination_name.startswith(".publication-cleanup-"):
+            os.rename(
+                staging_name,
+                moved.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.mkdir(staging_name, dir_fd=parent_descriptor)
+            replacement = os.open(
+                staging_name,
+                os.O_RDONLY | os.O_DIRECTORY,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                original_file_write(
+                    replacement,
+                    "keep",
+                    b"replacement",
+                )
+            finally:
+                os.close(replacement)
+        original(parent_descriptor, staging_name, destination_name)
+
+    monkeypatch.setattr(package, "_rename_noreplace", swap_before_isolation)
+    with pytest.raises(package.PublicationCleanupError):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+    replacement = tmp_path / ".published.staging"
+    assert (replacement / "keep").read_bytes() == b"replacement"
+    assert moved.is_dir()
+
+
+def test_cleanup_parent_fsync_failure_composes_with_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+
+    def fail_write(_descriptor: int, _name: str, _data: bytes) -> None:
+        raise OSError("primary")
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("cleanup fsync")
+
+    monkeypatch.setattr(package, "_write_publication_file", fail_write)
+    monkeypatch.setattr(package.os, "fsync", fail_fsync)
+    with pytest.raises(package.PublicationCleanupError) as raised:
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+    assert str(raised.value.primary) == "primary"
+    assert str(raised.value.cleanup) == "cleanup fsync"
+    assert not (tmp_path / ".published.staging").exists()
+
+
+def test_publication_collects_all_final_descriptor_close_failures_with_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    staging_descriptor: int | None = None
+
+    def malformed_child(
+        _mode: str,
+        descriptor: int,
+        _authority: CandidateValidationAuthority,
+    ) -> bytes:
+        nonlocal staging_descriptor
+        staging_descriptor = descriptor
+        return b"{}"
+
+    monkeypatch.setattr(package, "_run_publication_child", malformed_child)
+    original_close = package.os.close
+    final_closing = False
+    failed: list[int] = []
+    attempted: list[int] = []
+
+    def failing_close(descriptor: int) -> None:
+        nonlocal final_closing
+        if descriptor == staging_descriptor:
+            final_closing = True
+        if final_closing:
+            attempted.append(descriptor)
+            if len(failed) < 2:
+                failed.append(descriptor)
+                raise OSError(f"injected close failure {len(failed)}")
+        original_close(descriptor)
+
+    monkeypatch.setattr(package.os, "close", failing_close)
+    try:
+        with pytest.raises(package.PublicationCleanupError) as raised:
+            package.publish_successful_candidate_package(
+                tmp_path / "published",
+                artifacts,
+                authority,
+            )
+        assert isinstance(raised.value.primary, ValueError)
+        assert isinstance(raised.value.cleanup, package._DescriptorCloseError)  # noqa: SLF001
+        assert len(raised.value.cleanup.failures) == 2
+        assert len(attempted) > len(failed)
+    finally:
+        for descriptor in failed:
+            original_close(descriptor)
+
+
+def test_publication_name_rejects_staging_name_over_name_max(
+    tmp_path: Path,
+) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        name_max = os.fpathconf(descriptor, "PC_NAME_MAX")
+        destination = tmp_path / ("a" * (name_max - len("..staging") + 1))
+        with pytest.raises(ValueError, match="NAME_MAX"):
+            package._publication_names(destination, descriptor)  # noqa: SLF001
+    finally:
+        os.close(descriptor)
+
+
+def test_publication_authority_canonical_json_codec_round_trips(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    encoded = canonical_json_bytes(
+        package._publication_authority_json(authority)  # noqa: SLF001
+    )
+    decoded = package._publication_authority_from_json(  # noqa: SLF001
+        json.loads(encoded)
+    )
+    assert decoded == authority
+
+
+def test_fresh_publication_child_uses_canonical_request_and_minimal_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    captured: dict[str, object] = {}
+
+    def run(
+        command: tuple[str, ...],
+        *,
+        request: bytes,
+        environment: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        captured["command"] = command
+        captured["input"] = request
+        captured["env"] = environment
+        captured["timeout"] = timeout_seconds
+        return subprocess.CompletedProcess(command, 0, b"validated", b"")
+
+    monkeypatch.setattr(package, "_run_bounded_publication_process", run)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/hostile/loader")
+    monkeypatch.setenv("LD_PRELOAD", "/hostile/preload.so")
+    monkeypatch.setenv("PYTHONHOME", "/hostile/python")
+    monkeypatch.setenv("PYTHONSTARTUP", "/hostile/startup.py")
+    try:
+        assert (
+            package._run_publication_child(  # noqa: SLF001
+                "successful",
+                descriptor,
+                authority,
+            )
+            == b"validated"
+        )
+    finally:
+        os.close(descriptor)
+
+    command = cast(Tuple[str, ...], captured["command"])
+    request = cast(bytes, captured["input"])
+    environment = cast(Dict[str, str], captured["env"])
+    assert Path(command[0]).is_absolute()
+    assert command[1] == "-c"
+    assert "pickle" not in command[2]
+    assert canonical_json_bytes(json.loads(request)) == request
+    assert json.loads(request)["root"] == str(staging)
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONPATH"] == str(authority.benchmark_repository_root)
+    assert not {
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+    } & set(environment)
+    assert captured["timeout"] == 3600.0
+
+
+@pytest.mark.parametrize(
+    ("outcome", "returncode", "stdout", "stderr"),
+    [
+        ("timeout", 0, b"", b""),
+        ("nonzero", 1, b"record", b""),
+        ("signal", -9, b"record", b""),
+        ("stderr", 0, b"record", b"diagnostic"),
+        ("empty", 0, b"", b""),
+    ],
+)
+def test_fresh_publication_child_rejects_process_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    outcome: str,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+
+    def run(
+        command: tuple[str, ...],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if outcome == "timeout":
+            raise ValueError("fresh-process publication validation timed out")
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    monkeypatch.setattr(package, "_run_bounded_publication_process", run)
+    try:
+        with pytest.raises(ValueError, match="fresh-process"):
+            package._run_publication_child(  # noqa: SLF001
+                "successful",
+                descriptor,
+                authority,
+            )
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize("descriptor", [1, 2])
+def test_bounded_publication_child_terminates_on_output_cap(
+    descriptor: int,
+) -> None:
+    script = (
+        "import os\n"
+        "chunk=b'x'*4096\n"
+        f"fd={descriptor}\n"
+        "for _ in range(1024): os.write(fd,chunk)\n"
+    )
+    with pytest.raises(ValueError, match="hard cap"):
+        package._run_bounded_publication_process(  # noqa: SLF001
+            (str(Path(sys.executable).resolve(strict=True)), "-c", script),
+            request=b"",
+            environment={
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+                "PYTHONNOUSERSITE": "1",
+            },
+            timeout_seconds=10.0,
+        )
+
+
+@pytest.mark.parametrize("payload", [b"{}", b"not-json", b"{}\n", b"{}{}"])
+def test_successful_publisher_rejects_malformed_or_extra_child_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    payload: bytes,
+) -> None:
+    artifacts, authority, _ = _publication_fixture(
+        tmp_path,
+        monkeypatch,
+        accepted_science_package,
+    )
+    monkeypatch.setattr(
+        package,
+        "_run_publication_child",
+        lambda _mode, _descriptor, _authority: payload,
+    )
+    with pytest.raises(ValueError):
+        package.publish_successful_candidate_package(
+            tmp_path / "published",
+            artifacts,
+            authority,
+        )
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOSYS, errno.EINVAL])
+def test_rename_noreplace_has_no_unsupported_kernel_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    class RenameAt2:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *_args: object) -> int:
+            ctypes.set_errno(error_number)
+            return -1
+
+    class Libc:
+        renameat2 = RenameAt2()
+
+    monkeypatch.setattr(package.ctypes, "CDLL", lambda *_args, **_kwargs: Libc())
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            package._rename_noreplace(  # noqa: SLF001
+                descriptor,
+                "source",
+                "destination",
+            )
+    finally:
+        os.close(descriptor)
+    assert raised.value.errno == error_number
+
+
+def test_aborted_oom_factory_and_publisher_require_exact_real_cuda_oom(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    real = _real_science_accepted(accepted_science_package)
+    bound, candidate_authority, p53 = _public_validation_fixture(tmp_path, real)
+    assert bound.manifest.summary.real is not None
+    authority = package.AbortedOomPublicationAuthority(
+        candidate_authority,
+        bound.manifest.summary.real.cuda_evidence,
+    )
+    provenance = object()
+    monkeypatch.setattr(
+        package,
+        "run_p53_validation_subprocess",
+        lambda _launch: p53,
+    )
+    monkeypatch.setattr(
+        package,
+        "_capture_publication_provenance",
+        lambda _fields, _authority: provenance,
+    )
+    monkeypatch.setattr(
+        package,
+        "_trusted_file_record",
+        lambda _root, _path: FileRecord(1, _HASH),
+    )
+    allocator_events: list[str] = []
+    monkeypatch.setattr(
+        package.torch.cuda,
+        "memory_allocated",
+        lambda: allocator_events.append("baseline-allocated") or 1,
+    )
+    monkeypatch.setattr(
+        package.torch.cuda,
+        "memory_reserved",
+        lambda: allocator_events.append("baseline-reserved") or 2,
+    )
+    monkeypatch.setattr(
+        package.torch.cuda,
+        "reset_peak_memory_stats",
+        lambda: allocator_events.append("reset"),
+    )
+    monkeypatch.setattr(
+        package.torch.cuda,
+        "max_memory_allocated",
+        lambda: allocator_events.append("peak-allocated") or 3,
+    )
+    monkeypatch.setattr(
+        package.torch.cuda,
+        "max_memory_reserved",
+        lambda: allocator_events.append("peak-reserved") or 4,
+    )
+
+    def committed_oom(*_args: object, **_kwargs: object) -> object:
+        allocator_events.append("run")
+
+        def raise_oom() -> object:
+            raise torch.cuda.OutOfMemoryError("expected")
+
+        return rgbd_segmenter_benchmark_contract._measure_stage(  # noqa: SLF001
+            cast(package.TimingBackend, object()),
+            package.TimingStage.INFERENCE,
+            raise_oom,
+            measured=False,
+            device_stage=False,
+        )
+
+    monkeypatch.setattr(package, "run_timed_benchmark", committed_oom)
+    aborted = package.run_timed_benchmark_for_publication(
+        (),
+        trusted_cohort=cast(TrustedCohort, object()),
+        adapter=cast(package.SegmenterAdapter, object()),
+        backend=cast(package.TimingBackend, object()),
+        authority=authority,
+    )
+    assert isinstance(aborted, package.AbortedOomPackage)
+    assert allocator_events == [
+        "baseline-allocated",
+        "baseline-reserved",
+        "reset",
+        "run",
+        "peak-allocated",
+        "peak-reserved",
+    ]
+    with pytest.raises(ValueError, match="factory"):
+        replace(aborted)
+
+    def fabricated_oom(*_args: object, **_kwargs: object) -> object:
+        raise torch.cuda.OutOfMemoryError("fabricated outside contract")
+
+    monkeypatch.setattr(package, "run_timed_benchmark", fabricated_oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError, match="fabricated"):
+        package.run_timed_benchmark_for_publication(
+            (),
+            trusted_cohort=cast(TrustedCohort, object()),
+            adapter=cast(package.SegmenterAdapter, object()),
+            backend=cast(package.TimingBackend, object()),
+            authority=authority,
+        )
+
+    def prewrapped_oom(*_args: object, **_kwargs: object) -> object:
+        def operation() -> object:
+            try:
+                raise torch.cuda.OutOfMemoryError("fabricated cause")
+            except torch.cuda.OutOfMemoryError as cause:
+                raise package.BenchmarkCudaOutOfMemory(
+                    package.TimingStage.INFERENCE
+                ) from cause
+
+        return rgbd_segmenter_benchmark_contract._measure_stage(  # noqa: SLF001
+            cast(package.TimingBackend, object()),
+            package.TimingStage.INFERENCE,
+            operation,
+            measured=False,
+            device_stage=False,
+        )
+
+    monkeypatch.setattr(package, "run_timed_benchmark", prewrapped_oom)
+    with pytest.raises(ValueError, match="origin"):
+        package.run_timed_benchmark_for_publication(
+            (),
+            trusted_cohort=cast(TrustedCohort, object()),
+            adapter=cast(package.SegmenterAdapter, object()),
+            backend=cast(package.TimingBackend, object()),
+            authority=authority,
+        )
+
+    manifest = aborted.manifest
+    monkeypatch.setattr(
+        package,
+        "_run_publication_child",
+        lambda _mode, _descriptor, _authority: manifest.canonical_bytes(),
+    )
+    published = package.publish_aborted_oom_package(
+        tmp_path,
+        aborted,
+        authority,
+    )
+    assert published.name == (
+        f"{candidate_authority.candidate.candidate_id}-aborted-oom-"
+        f"{candidate_authority.expected_producer_commit[:12]}"
+    )
+    assert tuple(path.name for path in published.iterdir()) == ("manifest.json",)
+    assert (published / "manifest.json").read_bytes() == manifest.canonical_bytes()
