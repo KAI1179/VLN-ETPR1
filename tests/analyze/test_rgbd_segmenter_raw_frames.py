@@ -1862,6 +1862,7 @@ def _patch_external_fixture(
     observations: tuple[CollectionObservation, ...],
     events: list[tuple[str, int]],
 ) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(
         raw_frames,
         "_capture_source_state",
@@ -4319,6 +4320,7 @@ def test_publisher_validates_fresh_then_recaptures_and_renames(
 ) -> None:
     import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
 
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     parent = tmp_path / "benchmark"
     parent.mkdir()
     final = parent / "final"
@@ -4685,6 +4687,7 @@ def test_publisher_dirty_git_creates_no_owned_roots(
 ) -> None:
     import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
 
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     parent = tmp_path / "benchmark"
     parent.mkdir()
     roots = {
@@ -4821,6 +4824,7 @@ def test_publisher_attempts_both_owned_cleanups(
 ) -> None:
     import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
 
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     parent = tmp_path / "benchmark"
     parent.mkdir()
     for attribute, name in (
@@ -5012,6 +5016,7 @@ def _patch_happy_publisher(
 ) -> tuple[ModuleType, Mapping[str, Path]]:
     import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
 
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     parent = tmp_path / "benchmark"
     parent.mkdir()
     roots = {
