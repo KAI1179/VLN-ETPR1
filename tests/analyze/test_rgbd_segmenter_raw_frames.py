@@ -1229,6 +1229,47 @@ def test_render_rejects_bad_semantic_suffix_and_region_mapping() -> None:
         )
 
 
+def test_aabb_minimum_matches_magnum_float32_arithmetic() -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    center = np.asarray([0.0, 0.0, 3.3453002], dtype=np.float32)
+    sizes = np.asarray([1.0, 1.0, 30.112198], dtype=np.float32)
+
+    minimum = raw_frames._aabb_minimum(
+        SimpleNamespace(center=center, sizes=sizes)
+    )
+
+    assert minimum.dtype == np.dtype("<f8")
+    assert minimum[2] == -11.710798263549805
+    assert minimum[2] != (
+        np.asarray(center, dtype=np.float64)
+        - np.asarray(sizes, dtype=np.float64) / 2.0
+    )[2]
+    start_xz = np.asarray(
+        [0.04092890024185181, 1.0015300512313843],
+        dtype=np.float64,
+    )
+    correct_origin = np.asarray(
+        [-10.510200500488281, minimum[2]],
+        dtype=np.float64,
+    )
+    old_float64_origin = np.asarray(
+        [-10.510200500488281, -11.710798740386963],
+        dtype=np.float64,
+    )
+    assert (
+        (start_xz - correct_origin).astype(np.float32).view(np.uint32).tolist()
+        == [1093194093, 1095460274]
+    )
+    assert (
+        (start_xz - old_float64_origin)
+        .astype(np.float32)
+        .view(np.uint32)
+        .tolist()[1]
+        == 1095460275
+    )
+
+
 def test_level_origin_selects_below_and_between_floors_and_rejects_nan() -> None:
     import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
 
@@ -1393,6 +1434,21 @@ def test_replay_requires_exact_stored_pose_and_float32_oracle_metadata(
         _observation(artifact_sha256="0" * 64),
         oracle,
     )
+    one_ulp_start = (
+        oracle.start_position[0],
+        float(
+            np.nextafter(
+                np.float32(oracle.start_position[1]),
+                np.float32(np.inf),
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="target-local start_position"):
+        replay_and_require_exact(
+            changed,
+            _observation(artifact_sha256="0" * 64),
+            replace(oracle, start_position=one_ulp_start),
+        )
 
     raw_target_start = changed.start_position[[0, 2]] - changed_origin
     assert not np.array_equal(

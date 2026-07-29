@@ -1375,16 +1375,16 @@ def _map_semantic_ids(
 
 
 def _aabb_minimum(aabb: _AABB) -> np.ndarray:
-    center = np.asarray(aabb.center, dtype="<f8")
-    sizes = np.asarray(aabb.sizes, dtype="<f8")
-    minimum = center - sizes / 2.0
+    center = np.asarray(aabb.center, dtype="<f4")
+    sizes = np.asarray(aabb.sizes, dtype="<f4")
+    minimum = center - sizes / np.float32(2.0)
     if (
         center.shape != (3,)
         or sizes.shape != (3,)
         or not np.isfinite(minimum).all()
     ):
-        raise ValueError("semantic AABB must contain finite float64 vectors")
-    return minimum
+        raise ValueError("semantic AABB must contain finite 3-vectors")
+    return minimum.astype("<f8")
 
 
 def _level_floor_y(level: _SemanticLevel) -> float:
