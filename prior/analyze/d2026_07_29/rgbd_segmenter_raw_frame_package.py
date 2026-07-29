@@ -186,7 +186,9 @@ def strict_read_bytes(path: Path, expected_sha256: str, label: str) -> bytes:
             os.close(descriptor)
             descriptor = child
         file_descriptor = os.open(
-            absolute.name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=descriptor
+            absolute.name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=descriptor,
         )
     except OSError as error:
         os.close(descriptor)

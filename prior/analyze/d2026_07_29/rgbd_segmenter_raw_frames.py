@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import io
 import json
@@ -28,6 +27,10 @@ RAW_SPLIT_PATH = Path(
     "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
 )
 SCENE_DATASET_ROOT = Path("data/scene_datasets/mp3d")
+FINAL_PACKAGE_ROOT = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-raw-v1")
+SMOKE_PACKAGE_ROOT = Path(
+    "data/rgbd_segmenter_benchmark/.r2r-val-unseen-50-raw-v1-smoke"
+)
 _COHORT_MANIFEST_SHA256 = (
     "d71f04f102d80df3799e5fea76162147ad76c060c82ccbca88813d8b14a0b191"
 )
@@ -327,29 +330,6 @@ def _parse_evidence_metadata(
     return MappingProxyType(records)
 
 
-def _raw_split_aliases(raw_split_bytes: bytes) -> set[str]:
-    try:
-        root = _json_object(gzip.decompress(raw_split_bytes), "raw split")
-    except (OSError, EOFError) as error:
-        raise ValueError("raw split is not valid gzip") from error
-    episodes = root.get("episodes")
-    if not isinstance(episodes, list):
-        raise ValueError("raw split episodes are invalid")
-    aliases = set()
-    for number, raw_episode in enumerate(episodes, start=1):
-        if not isinstance(raw_episode, dict):
-            raise ValueError(f"raw split episode {number} is invalid")
-        episode = cast(Mapping[str, object], raw_episode)
-        if type(episode.get("episode_id")) is not int:
-            raise ValueError(f"raw split episode {number} is invalid")
-        episode_id = episode["episode_id"]
-        alias = f"R2R_val_unseen_{episode_id}"
-        if alias in aliases:
-            raise ValueError("raw split aliases are not unique")
-        aliases.add(alias)
-    return aliases
-
-
 def load_collection_inputs() -> CollectionInputs:
     """Bind the sealed metadata; oracle arrays remain unopened until rendering ends."""
 
@@ -367,12 +347,9 @@ def load_collection_inputs() -> CollectionInputs:
     evidence_index = strict_read_bytes(
         ORACLE_ARTIFACT_ROOT / "index.jsonl", _EVIDENCE_INDEX_SHA256, "evidence index"
     )
-    raw_split = strict_read_bytes(RAW_SPLIT_PATH, _RAW_SPLIT_SHA256, "raw split")
+    strict_read_bytes(RAW_SPLIT_PATH, _RAW_SPLIT_SHA256, "raw split")
     cohort = _parse_cohort(cohort_manifest, cohort_rows)[1]
     evidence = _parse_evidence_metadata(evidence_manifest, evidence_index)
-    raw_aliases = _raw_split_aliases(raw_split)
-    if set(evidence) != raw_aliases:
-        raise ValueError("raw split/evidence aliases drift")
     observations = []
     for row in cohort:
         aliases = tuple(cast(List[str], row["example_ids"]))
@@ -533,10 +510,33 @@ def _open_real_directory(path: Path, label: str) -> int:
         raise
 
 
+def _absolute_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _is_equal_or_descendant(path: Path, root: Path) -> bool:
+    try:
+        _absolute_path(path).relative_to(_absolute_path(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _require_private_snapshot_root(path: Path, descriptor: int) -> None:
+    if any(
+        _is_equal_or_descendant(path, forbidden)
+        for forbidden in (FINAL_PACKAGE_ROOT, SMOKE_PACKAGE_ROOT)
+    ):
+        raise ValueError("private snapshot root cannot be package staging")
+    state = os.fstat(descriptor)
+    if state.st_uid != os.geteuid() or stat.S_IMODE(state.st_mode) != 0o700:
+        raise ValueError("private snapshot root must be process-private mode 0700")
+
+
 def _copy_asset(
     source_directory: int, destination_directory: int, name: str
 ) -> SnapshotFile:
-    source_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    source_flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
     destination_flags = (
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
     )
@@ -558,6 +558,7 @@ def _copy_asset(
         source_hash = hashlib.sha256()
         destination_hash = hashlib.sha256()
         byte_length = 0
+        successful_writes = 0
         while True:
             chunk = os.read(source, 1024 * 1024)
             if not chunk:
@@ -570,8 +571,10 @@ def _copy_asset(
                     raise OSError("short asset write")
                 destination_hash.update(chunk[written : written + count])
                 written += count
+                successful_writes += count
             byte_length += len(chunk)
         after = os.fstat(source)
+        destination_state = os.fstat(destination)
         fingerprint = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
         if any(
             getattr(before, field) != getattr(after, field) for field in fingerprint
@@ -579,6 +582,8 @@ def _copy_asset(
             raise ValueError(f"scene asset changed while copied: {name}")
         if (
             byte_length != before.st_size
+            or successful_writes != before.st_size
+            or destination_state.st_size != before.st_size
             or source_hash.digest() != destination_hash.digest()
         ):
             raise ValueError(f"scene asset copy verification failed: {name}")
@@ -592,8 +597,8 @@ def _copy_asset(
             try:
                 os.unlink(name, dir_fd=destination_directory)
                 os.fsync(destination_directory)
-            except OSError:
-                pass
+            except OSError as error:
+                raise RuntimeError(f"asset cleanup failed: {name}") from error
         raise
     finally:
         if destination >= 0:
@@ -607,11 +612,19 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
     scene_id = _require_scene_id(scene_id, "scene_id")
     if not isinstance(private_sibling, Path):
         raise ValueError("private snapshot root is invalid")
+    if any(
+        _is_equal_or_descendant(private_sibling, forbidden)
+        for forbidden in (FINAL_PACKAGE_ROOT, SMOKE_PACKAGE_ROOT)
+    ):
+        raise ValueError("private snapshot root cannot be package staging")
     source_root = _open_real_directory(SCENE_DATASET_ROOT, "scene dataset root")
     private_root = _open_real_directory(private_sibling, "private snapshot root")
     scene_source = -1
     scene_destination = -1
+    scene_created = False
+    copied_names: list[str] = []
     try:
+        _require_private_snapshot_root(private_sibling, private_root)
         try:
             scene_source = os.open(
                 scene_id,
@@ -621,6 +634,7 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
             if not stat.S_ISDIR(os.fstat(scene_source).st_mode):
                 raise ValueError("scene source must be a directory")
             os.mkdir(scene_id, 0o700, dir_fd=private_root)
+            scene_created = True
             os.fsync(private_root)
             scene_destination = os.open(
                 scene_id,
@@ -640,6 +654,7 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
         files = {}
         for role, name in names.items():
             copied = _copy_asset(scene_source, scene_destination, name)
+            copied_names.append(name)
             files[role] = SnapshotFile(
                 path=private_sibling / scene_id / copied.path,
                 byte_length=copied.byte_length,
@@ -648,6 +663,20 @@ def snapshot_scene_bundle(scene_id: str, private_sibling: Path) -> SceneBundle:
         os.fsync(scene_destination)
         os.fsync(private_root)
         return SceneBundle(scene_id=scene_id, files=MappingProxyType(files))
+    except BaseException:
+        if scene_created:
+            try:
+                for name in reversed(copied_names):
+                    os.unlink(name, dir_fd=scene_destination)
+                if scene_destination >= 0:
+                    os.fsync(scene_destination)
+                    os.close(scene_destination)
+                    scene_destination = -1
+                os.rmdir(scene_id, dir_fd=private_root)
+                os.fsync(private_root)
+            except OSError as error:
+                raise RuntimeError(f"snapshot cleanup failed: {scene_id}") from error
+        raise
     finally:
         if scene_destination >= 0:
             os.close(scene_destination)

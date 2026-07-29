@@ -84,7 +84,7 @@ def test_strict_read_bytes_uses_single_nofollow_regular_file_open(
     monkeypatch.setattr(os, "open", checked_open)
 
     assert strict_read_bytes(path, expected, "source") == payload
-    assert calls == [os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW]
+    assert calls == [os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW]
 
 
 def test_strict_read_bytes_rejects_symlink_and_hash_drift(tmp_path: Path) -> None:
@@ -105,6 +105,14 @@ def test_strict_read_bytes_rejects_symlink_and_hash_drift(tmp_path: Path) -> Non
             hashlib.sha256(b"target").hexdigest(),
             "source",
         )
+
+
+def test_strict_read_bytes_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "source.fifo"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="regular file"):
+        strict_read_bytes(fifo, "0" * 64, "source")
 
 
 def test_collection_inputs_reproduce_the_sealed_50_observations_without_oracle_open(
@@ -133,6 +141,23 @@ def test_collection_inputs_reproduce_the_sealed_50_observations_without_oracle_o
         tuple(sorted({item.scene_id for item in inputs.observations})) == inputs.scenes
     )
     assert len(inputs.scenes) == 11
+    assert sum(len(item.example_ids) for item in inputs.observations) == 255
+    assert {
+        scene: sum(item.scene_id == scene for item in inputs.observations)
+        for scene in inputs.scenes
+    } == {
+        "2azQ1b91cZZ": 8,
+        "8194nk5LbLH": 1,
+        "EU6Fwq7SyZv": 4,
+        "QUCTc6BB5sX": 8,
+        "TbHJrupSAjP": 7,
+        "X7HyMhZNoso": 4,
+        "Z6MFQCViBuw": 4,
+        "oLBMNvg9in8": 5,
+        "pLe4wQe7qrG": 1,
+        "x8F5xyUWy9e": 3,
+        "zsNo4HB9uLZ": 5,
+    }
     assert opened_oracles == []
     assert all(
         item.artifact_path.parts[:1] == ("observations",)
@@ -162,6 +187,31 @@ def test_collection_input_rejects_alias_and_artifact_hash_drift(
     assert inputs.observations
 
 
+def test_collection_input_hashes_but_never_parses_the_raw_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    original_reader = raw_frames.strict_read_bytes
+    raw_reads: list[tuple[Path, str]] = []
+
+    def opaque_raw_reader(path: Path, expected_sha256: str, label: str) -> bytes:
+        if path == raw_frames.RAW_SPLIT_PATH:
+            raw_reads.append((path, expected_sha256))
+            return b"not a gzip or JSON payload"
+        return original_reader(path, expected_sha256, label)
+
+    monkeypatch.setattr(raw_frames, "strict_read_bytes", opaque_raw_reader)
+
+    assert len(load_collection_inputs().observations) == 50
+    assert raw_reads == [
+        (
+            raw_frames.RAW_SPLIT_PATH,
+            "6140b46759fe332ee96aa849d4bb64e1c1829b8f65acee127355040a6ee23484",
+        )
+    ]
+
+
 def test_pinned_oracle_is_hashed_and_parsed_from_one_accepted_buffer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -177,11 +227,49 @@ def test_pinned_oracle_is_hashed_and_parsed_from_one_accepted_buffer(
         tmp_path,
     )
 
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    original_reader = raw_frames.strict_read_bytes
+    original_open = os.open
+    oracle_reads = 0
+    oracle_opens = 0
+
+    def counted_reader(path: Path, expected_sha256: str, label: str) -> bytes:
+        nonlocal oracle_reads
+        if label == "oracle artifact":
+            oracle_reads += 1
+        return original_reader(path, expected_sha256, label)
+
+    def one_oracle_open(
+        name: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        nonlocal oracle_opens
+        if str(name) == artifact.name:
+            oracle_opens += 1
+            if oracle_opens > 1:
+                raise AssertionError("oracle artifact reopened")
+        return original_open(name, flags, mode, dir_fd=dir_fd)
+
+    from vlnce_baselines.models.etp_llm.llm_grid_evidence import GridEvidence
+
+    def forbidden_core_loader(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("path-reopening core loader was called")
+
+    monkeypatch.setattr(raw_frames, "strict_read_bytes", counted_reader)
+    monkeypatch.setattr(os, "open", one_oracle_open)
+    monkeypatch.setattr(GridEvidence, "load", forbidden_core_loader)
     parsed = load_pinned_oracle_after_render(observation)
 
     assert parsed.sha256 == expected
     assert parsed.ego_semantic_grid.dtype == np.bool_
     assert parsed.target_semantic_grid[0, 0, 0]
+    assert oracle_reads == 1
+    assert oracle_opens == 1
+    monkeypatch.setattr(os, "open", original_open)
     artifact.write_bytes(payload + b"drift")
     with pytest.raises(ValueError, match="SHA-256"):
         load_pinned_oracle_after_render(observation)
@@ -228,6 +316,7 @@ def test_snapshot_scene_bundle_copies_exact_immutable_assets(
         (source / name).write_bytes(payload)
     private_sibling = tmp_path / "private"
     private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
     fsyncs: list[int] = []
     opens: list[tuple[str, int]] = []
     original_fsync = os.fsync
@@ -269,7 +358,8 @@ def test_snapshot_scene_bundle_copies_exact_immutable_assets(
     )
     assert len(fsyncs) >= 6
     assert any(
-        flags == os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW for _, flags in opens
+        flags == os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+        for _, flags in opens
     )
     assert any(
         flags & os.O_WRONLY and flags & os.O_EXCL and flags & os.O_NOFOLLOW
@@ -290,7 +380,8 @@ def test_snapshot_rejects_symlink_source_and_private_path_escape(
     (source / "scene.glb").unlink()
     (source / "scene.glb").symlink_to(source / "scene.house")
     private_sibling = tmp_path / "private"
-    private_sibling.mkdir()
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
     monkeypatch.setattr(
         "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
         source_root,
@@ -311,7 +402,8 @@ def test_snapshot_rejects_intermediate_symlinks_and_nonregular_sources(
     for name in ("scene.glb", "scene.house", "scene_semantic.ply", "scene.navmesh"):
         (source / name).write_bytes(b"x")
     private_sibling = tmp_path / "private"
-    private_sibling.mkdir()
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
     source_link = tmp_path / "source-link"
     source_link.symlink_to(source_root, target_is_directory=True)
     monkeypatch.setattr(
@@ -331,6 +423,162 @@ def test_snapshot_rejects_intermediate_symlinks_and_nonregular_sources(
     (source / "scene.glb").unlink()
     os.mkfifo(source / "scene.glb")
     with pytest.raises(ValueError, match="regular file"):
+        snapshot_scene_bundle("scene", private_sibling)
+
+
+def test_snapshot_rejects_shared_or_package_staging_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "scene"
+    source.mkdir(parents=True)
+    for name in ("scene.glb", "scene.house", "scene_semantic.ply", "scene.navmesh"):
+        (source / name).write_bytes(b"x")
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    shared.chmod(0o755)
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
+        source_root,
+    )
+    with pytest.raises(ValueError, match="process-private"):
+        snapshot_scene_bundle("scene", shared)
+    package_root = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-raw-v1")
+    with pytest.raises(ValueError, match="package staging"):
+        snapshot_scene_bundle("scene", package_root)
+    with pytest.raises(ValueError, match="package staging"):
+        snapshot_scene_bundle("scene", package_root / "private")
+
+
+def test_snapshot_checks_destination_file_state_before_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "scene"
+    source.mkdir(parents=True)
+    for name in ("scene.glb", "scene.house", "scene_semantic.ply", "scene.navmesh"):
+        (source / name).write_bytes(b"asset")
+    private_sibling = tmp_path / "private"
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
+        source_root,
+    )
+    original_open = os.open
+    original_fstat = os.fstat
+    destination_descriptor: list[int] = []
+
+    def tracked_open(
+        name: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        descriptor = original_open(name, flags, mode, dir_fd=dir_fd)
+        if flags & os.O_WRONLY:
+            destination_descriptor.append(descriptor)
+        return descriptor
+
+    def changed_destination_state(descriptor: int) -> os.stat_result:
+        state = original_fstat(descriptor)
+        if descriptor in destination_descriptor:
+            values = list(state)
+            values[6] += 1
+            return os.stat_result(values)
+        return state
+
+    monkeypatch.setattr(os, "open", tracked_open)
+    monkeypatch.setattr(os, "fstat", changed_destination_state)
+
+    with pytest.raises(ValueError, match="copy verification"):
+        snapshot_scene_bundle("scene", private_sibling)
+    assert not (private_sibling / "scene").exists()
+
+
+def test_snapshot_detects_source_mutation_during_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "scene"
+    source.mkdir(parents=True)
+    for name in ("scene.glb", "scene.house", "scene_semantic.ply", "scene.navmesh"):
+        (source / name).write_bytes(b"asset")
+    private_sibling = tmp_path / "private"
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
+        source_root,
+    )
+    original_read = os.read
+    mutated = False
+
+    def mutating_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        data = original_read(descriptor, size)
+        if data == b"asset" and not mutated:
+            mutated = True
+            (source / "scene.glb").write_bytes(b"mutated-source")
+        return data
+
+    monkeypatch.setattr(os, "read", mutating_read)
+
+    with pytest.raises(ValueError, match="changed while copied"):
+        snapshot_scene_bundle("scene", private_sibling)
+    assert mutated
+    assert not (private_sibling / "scene").exists()
+
+
+def test_snapshot_rolls_back_late_role_failure_and_allows_clean_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "scene"
+    source.mkdir(parents=True)
+    for name in ("scene.glb", "scene.house", "scene_semantic.ply"):
+        (source / name).write_bytes(b"x")
+    private_sibling = tmp_path / "private"
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
+        source_root,
+    )
+
+    with pytest.raises(ValueError, match="regular file"):
+        snapshot_scene_bundle("scene", private_sibling)
+    assert not (private_sibling / "scene").exists()
+    (source / "scene.navmesh").write_bytes(b"x")
+    assert snapshot_scene_bundle("scene", private_sibling).files["navmesh"].path.exists()
+
+
+def test_snapshot_surfaces_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "scene"
+    source.mkdir(parents=True)
+    for name in ("scene.glb", "scene.house", "scene_semantic.ply"):
+        (source / name).write_bytes(b"x")
+    private_sibling = tmp_path / "private"
+    private_sibling.mkdir(mode=0o700)
+    private_sibling.chmod(0o700)
+    monkeypatch.setattr(
+        "prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames.SCENE_DATASET_ROOT",
+        source_root,
+    )
+    original_unlink = os.unlink
+
+    def failed_unlink(name: str, *, dir_fd: Optional[int] = None) -> None:
+        if name == "scene.glb":
+            raise OSError("cleanup denied")
+        original_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", failed_unlink)
+
+    with pytest.raises(RuntimeError, match="cleanup"):
         snapshot_scene_bundle("scene", private_sibling)
 
 
