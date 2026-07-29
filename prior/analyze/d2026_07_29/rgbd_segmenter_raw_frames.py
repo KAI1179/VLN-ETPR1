@@ -48,6 +48,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     IndexRow,
     RawFrameArrays,
     SourceRecord,
+    _MAX_ARTIFACT_BYTES,
     _fingerprint,
     _close_many,
     _require_closed,
@@ -1673,9 +1674,23 @@ def _distribution_name(name: str) -> str:
     return normalized
 
 
+def _require_unmasked_physical_gpu_zero() -> None:
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        raise RuntimeError(
+            "CUDA_VISIBLE_DEVICES must be absent to bind logical GPU 0 "
+            "to physical GPU 0"
+        )
+
+
+def _require_little_endian() -> None:
+    if sys.byteorder != "little":
+        raise RuntimeError("official raw-frame publication requires little-endian")
+
+
 def capture_environment() -> EnvironmentCapture:
     """Capture the exact software and fixed GPU-0 identity."""
 
+    _require_unmasked_physical_gpu_zero()
     distributions = tuple(
         sorted(
             {
@@ -2148,6 +2163,7 @@ def _require_owned_bundle_unchanged(
                 f"{bundle.scene_id}/{names[role]}",
                 expected=FileRecord(record.byte_length, record.sha256),
                 label=f"{role} snapshot",
+                max_bytes=record.byte_length,
             )
             if len(accepted) != record.byte_length:
                 raise ValueError(f"{role} snapshot byte length changed")
@@ -2298,8 +2314,18 @@ def _validate_external_raw_frame_directory(
         collection = cast(Mapping[str, object], manifest["collection"])
         if collection["git_commit"] != expected_git_commit:
             raise ValueError("manifest producer commit differs from expected commit")
+        _require_unmasked_physical_gpu_zero()
+        pre_input_source_state = _capture_source_state()
         inputs = load_collection_inputs()
         initial_source_state = _capture_source_state()
+        if (
+            initial_source_state.sources != pre_input_source_state.sources
+            or initial_source_state.fingerprints
+            != pre_input_source_state.fingerprints
+        ):
+            raise ValueError(
+                "collection sources changed while loading sealed collection inputs"
+            )
         initial_sources = initial_source_state.sources
         _require_external_sources(manifest, initial_sources)
         initial_environment = capture_environment()
@@ -2459,7 +2485,7 @@ def _write_exclusive_at(
     root_descriptor: int,
     relative: PurePosixPath,
     data: bytes,
-) -> None:
+) -> tuple[_EntryFingerprint, FileRecord]:
     directory = _open_or_create_directory_at(
         root_descriptor, relative.parts[:-1]
     )
@@ -2486,15 +2512,24 @@ def _write_exclusive_at(
                 raise OSError("package write made no progress")
             view = view[written:]
         os.fsync(descriptor)
+        accepted = _fingerprint(os.fstat(descriptor))
+        record = FileRecord(
+            byte_length=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
     except BaseException as caught:
         error = caught
         raise
     finally:
         descriptors = (directory,) if descriptor < 0 else (descriptor, directory)
         _require_closed(error, *descriptors)
+    return accepted, record
 
 
-def _fsync_directories_postorder(descriptor: int) -> None:
+def _fsync_directories_postorder(
+    descriptor: int,
+) -> tuple[_EntryFingerprint, Mapping[str, _EntryFingerprint]]:
+    directories: dict[str, _EntryFingerprint] = {}
     for name in sorted(os.listdir(descriptor)):
         metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
         if stat.S_ISDIR(metadata.st_mode):
@@ -2509,7 +2544,26 @@ def _fsync_directories_postorder(descriptor: int) -> None:
                     raise RuntimeError(
                         "package directory changed during durability walk"
                     )
-                _fsync_directories_postorder(child)
+                child_root, descendants = _fsync_directories_postorder(child)
+                after = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    child_root != _fingerprint(metadata)
+                    or child_root != _fingerprint(after)
+                ):
+                    raise RuntimeError(
+                        "package directory changed during durability walk"
+                    )
+                directories[name] = child_root
+                directories.update(
+                    {
+                        f"{name}/{relative}": fingerprint
+                        for relative, fingerprint in descendants.items()
+                    }
+                )
             except BaseException as caught:
                 error = caught
                 raise
@@ -2517,7 +2571,12 @@ def _fsync_directories_postorder(descriptor: int) -> None:
                 _require_closed(error, child)
         elif not stat.S_ISREG(metadata.st_mode):
             raise ValueError("package durability walk found a non-regular entry")
+    before_fsync = _fingerprint(os.fstat(descriptor))
     os.fsync(descriptor)
+    after_fsync = _fingerprint(os.fstat(descriptor))
+    if after_fsync != before_fsync:
+        raise RuntimeError("package directory changed during durability fsync")
+    return after_fsync, MappingProxyType(directories)
 
 
 def collect_attempt(
@@ -2547,6 +2606,7 @@ def collect_attempt(
         raise ValueError("sealed observations are not grouped in lexical scene order")
     rows = []
     scene_assets = {}
+    written_files: dict[str, tuple[_EntryFingerprint, FileRecord]] = {}
     try:
         ordinal = 0
         for scene_id, observations in grouped:
@@ -2574,20 +2634,18 @@ def collect_attempt(
                         / scene_id
                         / f"{ordinal:02d}-{observation.observation_id}.npz"
                     )
-                    _write_exclusive_at(
+                    written_files[relative.as_posix()] = _write_exclusive_at(
                         attempt.descriptor,
                         PurePosixPath(relative.as_posix()),
                         encoded.data,
                     )
-                    npz_record = FileRecord(
-                        byte_length=len(encoded.data),
-                        sha256=hashlib.sha256(encoded.data).hexdigest(),
-                    )
+                    npz_record = written_files[relative.as_posix()][1]
                     accepted, _ = _strict_read_at(
                         attempt.descriptor,
                         relative.as_posix(),
                         expected=npz_record,
                         label="raw-frame artifact",
+                        max_bytes=_MAX_ARTIFACT_BYTES,
                     )
                     parsed = parse_raw_frame_npz_bytes(
                         accepted,
@@ -2643,7 +2701,7 @@ def collect_attempt(
         _require_original_asset_commitments(scene_assets)
         _remove_owned_root(snapshots)
         index_bytes = canonical_index_bytes(rows)
-        _write_exclusive_at(
+        written_files["index.jsonl"] = _write_exclusive_at(
             attempt.descriptor,
             PurePosixPath("index.jsonl"),
             index_bytes,
@@ -2657,12 +2715,14 @@ def collect_attempt(
             index_bytes=index_bytes,
             rows=rows,
         )
-        _write_exclusive_at(
+        written_files["manifest.json"] = _write_exclusive_at(
             attempt.descriptor,
             PurePosixPath("manifest.json"),
             manifest,
         )
-        _fsync_directories_postorder(attempt.descriptor)
+        durable_root, durable_directories = _fsync_directories_postorder(
+            attempt.descriptor
+        )
         structural_snapshot = _validate_raw_frame_descriptor_structural(
             attempt.descriptor,
             expected_manifest=manifest,
@@ -2670,6 +2730,9 @@ def collect_attempt(
                 attempt.fingerprint.st_dev,
                 attempt.fingerprint.st_ino,
             ),
+            expected_written_files=written_files,
+            expected_durable_root=durable_root,
+            expected_durable_directories=durable_directories,
         )
         if _capture_attempt_state() != initial_state:
             raise ValueError("collection commit, sources, environment, or GPU changed")
@@ -3304,6 +3367,8 @@ def publish_raw_frame_directory() -> bytes:
     try:
         for name in (final_name, staging_name, snapshot_name, smoke_name):
             _require_absent_at(parent_descriptor, name)
+        _require_little_endian()
+        _require_unmasked_physical_gpu_zero()
         initial_head = _require_clean_git()
         initial_sources = _capture_source_state()
         initial_environment = capture_environment()
@@ -3341,6 +3406,7 @@ def publish_raw_frame_directory() -> bytes:
         )
         _require_absent_at(parent_descriptor, final_name)
         _require_absent_at(parent_descriptor, smoke_name)
+        _require_absent_at(parent_descriptor, snapshot_name)
         if not _same_directory_identity(
             staging.fingerprint, os.fstat(staging.descriptor)
         ):

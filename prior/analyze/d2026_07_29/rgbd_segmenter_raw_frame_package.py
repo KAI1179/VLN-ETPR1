@@ -22,6 +22,9 @@ _HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
 _OBSERVATION_PATTERN = re.compile(r"[0-9a-f]{20}")
 _SCENE_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+_MAX_ARTIFACT_BYTES = _MAX_ARCHIVE_BYTES
+_MAX_INDEX_BYTES = 8 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 1024 * 1024
 _ZIP_EOCD = struct.Struct("<4s4H2LH")
 _ZIP_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
 
@@ -1271,8 +1274,15 @@ def _strict_read_at(
     *,
     expected: FileRecord | None,
     label: str,
+    max_bytes: int,
 ) -> tuple[bytes, _EntryFingerprint]:
     _validate_relative_path(relative)
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes < 0
+    ):
+        raise ValueError("read size cap must be a non-negative plain integer")
     parts = PurePosixPath(relative).parts
     directory = os.dup(root_descriptor)
     try:
@@ -1306,9 +1316,20 @@ def _strict_read_at(
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError(f"{label} must be a regular package file")
+        if before.st_size > max_bytes:
+            raise ValueError(f"{label} exceeds its size cap")
+        if expected is not None and before.st_size != expected.byte_length:
+            raise ValueError(f"{label} differs from its committed size")
         chunks = []
-        while chunk := os.read(descriptor, 1024 * 1024):
+        total = 0
+        while chunk := os.read(
+            descriptor,
+            min(1024 * 1024, max_bytes + 1 - total),
+        ):
             chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{label} exceeds its size cap")
         after = os.fstat(descriptor)
     except OSError as error:
         converted = ValueError(f"{label} must be a regular package file")
@@ -1428,6 +1449,7 @@ def _read_manifest_at(
         "manifest.json",
         expected=None,
         label="raw-frame manifest",
+        max_bytes=_MAX_MANIFEST_BYTES,
     )
     _parse_manifest_bytes(data)
     return data, fingerprint
@@ -1467,6 +1489,12 @@ def _validate_raw_frame_descriptor_structural(
     on_row: Callable[[IndexRow, RawFrameArrays], None] | None = None,
     expected_root_identity: tuple[int, int] | None = None,
     accepted_manifest: tuple[bytes, _EntryFingerprint] | None = None,
+    expected_written_files: Mapping[
+        str, Tuple[_EntryFingerprint, FileRecord]
+    ]
+    | None = None,
+    expected_durable_root: _EntryFingerprint | None = None,
+    expected_durable_directories: Mapping[str, _EntryFingerprint] | None = None,
 ) -> _PackageSnapshot:
     manifest = _parse_manifest_bytes(expected_manifest)
     root_metadata = os.fstat(root_descriptor)
@@ -1481,6 +1509,7 @@ def _validate_raw_frame_descriptor_structural(
             "manifest.json",
             expected=FileRecord(len(expected_manifest), _sha256(expected_manifest)),
             label="raw-frame manifest",
+            max_bytes=_MAX_MANIFEST_BYTES,
         )
     else:
         accepted_bytes, manifest_fingerprint = accepted_manifest
@@ -1499,6 +1528,7 @@ def _validate_raw_frame_descriptor_structural(
         "index.jsonl",
         expected=index_record,
         label="index",
+        max_bytes=_MAX_INDEX_BYTES,
     )
     package_files["index.jsonl"] = (index_fingerprint, index_record)
     rows = parse_index_bytes(index_data)
@@ -1534,6 +1564,7 @@ def _validate_raw_frame_descriptor_structural(
             row.artifact,
             expected=row.npz,
             label="raw-frame artifact",
+            max_bytes=_MAX_ARTIFACT_BYTES,
         )
         if artifact_fingerprint != tree_files[row.artifact]:
             raise ValueError("raw-frame artifact identity changed before replay")
@@ -1545,11 +1576,29 @@ def _validate_raw_frame_descriptor_structural(
         package_files[row.artifact] = (artifact_fingerprint, row.npz)
         if on_row is not None:
             on_row(row, parsed.arrays)
-    return _PackageSnapshot(
+    snapshot = _PackageSnapshot(
         root=root_fingerprint,
         directories=directories,
         files=package_files,
     )
+    if (
+        expected_written_files is not None
+        and snapshot.files != expected_written_files
+    ):
+        raise ValueError(
+            "structural snapshot differs from durable written file identity"
+        )
+    if (
+        expected_durable_root is not None
+        and snapshot.root != expected_durable_root
+    ) or (
+        expected_durable_directories is not None
+        and snapshot.directories != expected_durable_directories
+    ):
+        raise ValueError(
+            "structural snapshot differs from durable directory identity"
+        )
+    return snapshot
 
 
 def _recapture_package_descriptor(
@@ -1567,6 +1616,13 @@ def _recapture_package_descriptor(
             path,
             expected=record,
             label=path,
+            max_bytes=(
+                _MAX_MANIFEST_BYTES
+                if path == "manifest.json"
+                else _MAX_INDEX_BYTES
+                if path == "index.jsonl"
+                else _MAX_ARTIFACT_BYTES
+            ),
         )
         if tree_files[path] != fingerprint or accepted_fingerprint != fingerprint:
             raise ValueError("raw-frame package file changed during validation")

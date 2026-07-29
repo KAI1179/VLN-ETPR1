@@ -2399,6 +2399,79 @@ def test_source_capture_detects_identical_byte_replacement(
     assert first[1] != second[1]
 
 
+def test_external_validator_rejects_identical_source_replacement_during_input_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _, rows = _external_package_fixture(root)
+    observations = tuple(
+        replace(
+            _attempt_observations()[row.ordinal],
+            artifact_sha256=row.oracle_artifact_sha256,
+        )
+        for row in rows
+    )
+    events: list[tuple[str, int]] = []
+    _patch_external_fixture(monkeypatch, package, raw_frames, observations, events)
+    monkeypatch.chdir(tmp_path)
+    source = Path("source.py")
+    source.write_bytes(b"identical")
+
+    def capture() -> object:
+        return raw_frames._SourceCaptureState(
+            sources=_manifest_sources(),
+            fingerprints=MappingProxyType(
+                {"source": raw_frames._read_source_capture(source.as_posix())[1]}
+            ),
+        )
+
+    def replace_while_loading() -> CollectionInputs:
+        replacement = Path("replacement.py")
+        replacement.write_bytes(b"identical")
+        replacement.replace(source)
+        return CollectionInputs(
+            observations=observations,
+            scenes=tuple(_scene_assets()),
+        )
+
+    monkeypatch.setattr(raw_frames, "_capture_source_state", capture)
+    monkeypatch.setattr(raw_frames, "load_collection_inputs", replace_while_loading)
+
+    with pytest.raises(ValueError, match="sources changed.*input"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+    assert events == []
+
+
+def test_external_validator_rejects_cuda_device_remap_before_source_or_input_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "package"
+    _external_package_fixture(root)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_source_state",
+        lambda: (_ for _ in ()).throw(AssertionError("sources loaded")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: (_ for _ in ()).throw(AssertionError("inputs loaded")),
+    )
+
+    with pytest.raises(RuntimeError, match="CUDA_VISIBLE_DEVICES"):
+        package.validate_raw_frame_directory(root, expected_git_commit="a" * 40)
+
+
 @pytest.mark.parametrize("mutation", ["environment", "asset"])
 def test_external_validator_rejects_second_capture_mutation(
     mutation: str,
@@ -4267,9 +4340,10 @@ def test_publisher_validates_fresh_then_recaptures_and_renames(
 
     def collect(
         attempt: object,
-        _snapshot: object,
+        snapshot: object,
     ) -> SimpleNamespace:
         events.append("collect")
+        raw_frames._remove_owned_root(cast(_OwnedDirectory, snapshot))
         return SimpleNamespace(
             manifest=b"manifest\n",
             structural_snapshot=SimpleNamespace(root=object()),
@@ -4362,6 +4436,115 @@ def test_write_call_site_preserves_primary_and_both_close_failures(
 
     assert str(caught.value.primary) == "write primary"
     assert len(caught.value.failures) == 2
+
+
+@pytest.mark.parametrize("mutation", ["file", "directory"])
+def test_structural_validation_rejects_identity_change_after_durable_write(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    artifact = b"durably-written"
+    artifact_record = FileRecord(
+        byte_length=len(artifact),
+        sha256=hashlib.sha256(artifact).hexdigest(),
+    )
+    rows = tuple(replace(row, npz=artifact_record) for row in _manifest_rows())
+    index = canonical_index_bytes(rows)
+    manifest = build_manifest(
+        git_commit="a" * 40,
+        sources=_manifest_sources(),
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=index,
+        rows=rows,
+    )
+    root = tmp_path / "attempt"
+    root.mkdir()
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    written = {}
+    try:
+        for row in rows:
+            written[row.artifact] = raw_frames._write_exclusive_at(
+                descriptor,
+                PurePosixPath(row.artifact),
+                artifact,
+            )
+        written["index.jsonl"] = raw_frames._write_exclusive_at(
+            descriptor,
+            PurePosixPath("index.jsonl"),
+            index,
+        )
+        written["manifest.json"] = raw_frames._write_exclusive_at(
+            descriptor,
+            PurePosixPath("manifest.json"),
+            manifest,
+        )
+        durable_root, durable_directories = (
+            raw_frames._fsync_directories_postorder(descriptor)
+        )
+        if mutation == "file":
+            replaced = root / rows[0].artifact
+            replaced.unlink()
+            replaced.write_bytes(artifact)
+        else:
+            observations = root / "observations"
+            displaced = root / "displaced"
+            observations.rename(displaced)
+            displaced.rename(observations)
+        monkeypatch.setattr(
+            package,
+            "parse_raw_frame_npz_bytes",
+            lambda *_args, **_kwargs: SimpleNamespace(arrays=object()),
+        )
+
+        with pytest.raises(ValueError, match="durable.*identity"):
+            package._validate_raw_frame_descriptor_structural(
+                descriptor,
+                expected_manifest=manifest,
+                expected_written_files=written,
+                expected_durable_root=durable_root,
+                expected_durable_directories=durable_directories,
+            )
+    finally:
+        os.close(descriptor)
+
+
+def test_durability_walk_rejects_directory_rename_during_fsync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "attempt"
+    root.mkdir()
+    child = root / "child"
+    child.mkdir()
+    (child / "leaf").write_bytes(b"data")
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    root_inode = os.fstat(descriptor).st_ino
+    real_fsync = raw_frames.os.fsync
+    raced = False
+
+    def race_after_fsync(target: int) -> None:
+        nonlocal raced
+        real_fsync(target)
+        if not raced and os.fstat(target).st_ino == root_inode:
+            raced = True
+            time.sleep(0.01)
+            displaced = root / "displaced"
+            child.rename(displaced)
+            displaced.rename(child)
+
+    monkeypatch.setattr(raw_frames.os, "fsync", race_after_fsync)
+    try:
+        with pytest.raises(RuntimeError, match="changed during durability"):
+            raw_frames._fsync_directories_postorder(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def test_source_capture_attempts_leaf_and_directory_close_after_read_failure(
@@ -4522,6 +4705,59 @@ def test_publisher_dirty_git_creates_no_owned_roots(
         raw_frames.publish_raw_frame_directory()
 
     assert all(not path.exists() for path in roots.values())
+
+
+@pytest.mark.parametrize("preflight", ["cuda-remap", "big-endian"])
+def test_publisher_rejects_platform_preflight_before_git_or_source_load(
+    preflight: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_frames, roots = _patch_happy_publisher(tmp_path, monkeypatch)
+    if preflight == "cuda-remap":
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        message = "CUDA_VISIBLE_DEVICES"
+    else:
+        monkeypatch.setattr(raw_frames.sys, "byteorder", "big")
+        message = "little-endian"
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_clean_git",
+        lambda: (_ for _ in ()).throw(AssertionError("Git loaded")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_source_state",
+        lambda: (_ for _ in ()).throw(AssertionError("sources loaded")),
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        raw_frames.publish_raw_frame_directory()
+
+    assert all(not path.exists() for path in roots.values())
+
+
+def test_environment_capture_rejects_cuda_remap_before_gpu_or_package_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(
+        raw_frames.importlib.metadata,
+        "distributions",
+        lambda: (_ for _ in ()).throw(AssertionError("packages queried")),
+    )
+    monkeypatch.setattr(
+        raw_frames.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("GPU queried")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="CUDA_VISIBLE_DEVICES"):
+        raw_frames.capture_environment()
 
 
 def test_owned_cleanup_preserves_replaced_root(
@@ -4844,8 +5080,8 @@ def test_publisher_changed_head_cleans_both_owned_roots(
     assert not roots["FINAL_PACKAGE_ROOT"].exists()
 
 
-@pytest.mark.parametrize("race", ["final", "smoke"])
-def test_publisher_preserves_raced_final_or_smoke_root(
+@pytest.mark.parametrize("race", ["final", "smoke", "snapshot"])
+def test_publisher_preserves_raced_publication_sibling(
     race: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5122,6 +5358,7 @@ def test_publisher_rejects_identical_byte_staging_restore_after_child(
                 sha256=hashlib.sha256(payload).hexdigest(),
             ),
             label="artifact",
+            max_bytes=len(payload),
         )
         accepted_fingerprints.append(fingerprint)
         return SimpleNamespace(

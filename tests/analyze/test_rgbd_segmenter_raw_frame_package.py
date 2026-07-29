@@ -566,12 +566,77 @@ def test_strict_read_preserves_read_and_leaf_close_failures(
     monkeypatch.setattr(package.os, "close", close_then_fail)
     try:
         with pytest.raises(package._DescriptorCleanupError) as caught:
-            package._strict_read_at(root, "leaf", expected=None, label="leaf")
+            package._strict_read_at(
+                root,
+                "leaf",
+                expected=None,
+                label="leaf",
+                max_bytes=1024,
+            )
     finally:
         real_close(root)
 
     assert isinstance(caught.value.primary, ValueError)
     assert [str(error) for error in caught.value.failures] == ["leaf close"]
+
+
+def test_strict_read_rejects_self_consistent_oversized_sparse_file_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    leaf = tmp_path / "leaf"
+    with leaf.open("wb") as stream:
+        stream.truncate(9)
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(
+        package.os,
+        "read",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("read oversized file")),
+    )
+    try:
+        with pytest.raises(ValueError, match="size cap"):
+            package._strict_read_at(
+                root,
+                "leaf",
+                expected=FileRecord(9, "0" * 64),
+                label="leaf",
+                max_bytes=8,
+            )
+    finally:
+        os.close(root)
+
+
+def test_strict_read_stops_growth_at_cap_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    (tmp_path / "leaf").write_bytes(b"x")
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    chunks = iter((b"abcd", b"x"))
+    requested = []
+
+    def grow(_descriptor: int, size: int) -> bytes:
+        requested.append(size)
+        return next(chunks)
+
+    monkeypatch.setattr(package.os, "read", grow)
+    try:
+        with pytest.raises(ValueError, match="size cap"):
+            package._strict_read_at(
+                root,
+                "leaf",
+                expected=None,
+                label="leaf",
+                max_bytes=4,
+            )
+    finally:
+        os.close(root)
+
+    assert requested == [5, 1]
 
 
 def test_tree_walk_preserves_recursive_and_child_close_failures(
