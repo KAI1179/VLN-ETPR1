@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import io
 import hashlib
+import inspect
 import json
 import os
 import socket
+import subprocess
+import sys
+import time
 import zipfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, Mapping, cast
+from typing import Callable, Dict, Mapping, Tuple, cast
 
 import numpy as np
 import pytest
@@ -17,8 +21,13 @@ from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_contract
 from prior.analyze.d2026_07_29 import rgbd_segmenter_benchmark_package as package
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     BOOTSTRAP_MATRIX_SHA256,
+    NYU40_MAPPING_SHA256,
     RAW_GPU_UUID,
+    RAW_INDEX_SHA256,
+    RAW_MANIFEST_SHA256,
+    RAW_PRODUCER_COMMIT,
     RAW_VALIDATOR_SOURCE_SHA256,
+    BenchmarkEnvironmentAttestation,
     ComponentTimings,
     ConfusionCounts,
     EndpointRow,
@@ -28,6 +37,8 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ObservationFailureCode,
     ObservationMetrics,
     ObservationStatus,
+    P53ValidationAttestation,
+    P53ValidatorLaunch,
     Prediction,
     ProvenanceChecks,
     SegmenterInput,
@@ -39,6 +50,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     compute_static_coverage,
     estimate_scene_robustness,
     logical_label_sha256,
+    load_nyu40_mapping,
     score_observation,
     summarize_latency,
 )
@@ -51,11 +63,14 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
     AbortedOomManifest,
     ArchivalCudaEvidence,
     CandidateMappingAuthority,
+    CandidateValidationAuthority,
     FileRecord,
     ObservationPackageRow,
     RealSuccessfulManifest,
+    RealProvenanceAuthority,
     SyntheticSuccessfulManifest,
     TimingPackageRow,
+    TrustedArtifactAuthority,
     accept_candidate_package,
     canonical_observations_bytes,
     canonical_timings_bytes,
@@ -1106,6 +1121,289 @@ def _accepted_with_manifest(
     )
 
 
+def _public_validation_fixture(
+    tmp_path: Path,
+    accepted: package.AcceptedCandidatePackage,
+) -> tuple[
+    package.AcceptedCandidatePackage,
+    CandidateValidationAuthority,
+    P53ValidationAttestation,
+]:
+    benchmark_root = Path(package.__file__).resolve(strict=True).parents[3]
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    real_run = accepted.manifest.summary.run_kind is package.RunKind.REAL
+    python_executable = Path(sys.executable).resolve(strict=True)
+    p53 = P53ValidationAttestation(
+        python_executable=str(python_executable),
+        environment_sha256=_HASH,
+        gpu_device_id=0,
+        gpu_uuid=RAW_GPU_UUID,
+        producer_git_commit=RAW_PRODUCER_COMMIT,
+        raw_root=str(raw_root),
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+        raw_index_sha256=RAW_INDEX_SHA256,
+        validator_source_sha256=RAW_VALIDATOR_SOURCE_SHA256,
+    )
+    benchmark = BenchmarkEnvironmentAttestation(
+        python_executable=str(python_executable),
+        environment_sha256=_HASH,
+        visible_device_count=1 if real_run else 0,
+        gpu_name="NVIDIA GeForce RTX 3090" if real_run else "NOT_APPLICABLE",
+        gpu_uuid=RAW_GPU_UUID if real_run else "NOT_APPLICABLE",
+        timing_comparable=real_run,
+    )
+    raw = cast(
+        Dict[str, object],
+        json.loads(accepted.manifest.canonical_bytes()),
+    )
+    raw["attestations"] = {
+        "benchmark": _embedded(
+            cast(Dict[str, object], json.loads(benchmark.canonical_bytes()))
+        ),
+        "p53_validator": _embedded(
+            cast(Dict[str, object], json.loads(p53.canonical_bytes()))
+        ),
+    }
+    raw["raw_inputs"] = {
+        "cohort_jsonl_sha256": package._COHORT_JSONL_SHA256,  # noqa: SLF001
+        "raw_index_sha256": RAW_INDEX_SHA256,
+        "raw_manifest_sha256": RAW_MANIFEST_SHA256,
+        "raw_payload_tree_sha256": package._RAW_PAYLOAD_TREE_SHA256,  # noqa: SLF001
+        "raw_producer_git_commit": RAW_PRODUCER_COMMIT,
+        "selection_sha256": package._SELECTION_SHA256,  # noqa: SLF001
+    }
+    frozen_mapping = load_nyu40_mapping()
+    frozen_vocabulary = tuple(entry.source_name for entry in frozen_mapping)
+    candidate = _dict_section(raw, "candidate_commitment")
+    candidate["mapping_sha256"] = NYU40_MAPPING_SHA256
+    candidate["source_vocabulary"] = list(frozen_vocabulary)
+    coverage = compute_static_coverage(frozen_mapping, (_science_grid(),) * 50)
+    raw["coverage"] = {
+        **asdict(coverage),
+        "support_ratio": coverage.support_ratio,
+    }
+    if real_run:
+        assert accepted.manifest.summary.real is not None
+        metric_summary = accepted.manifest.summary.metrics
+        assert metric_summary.primary.mean_iou is not None
+        assert metric_summary.primary.mean_f1 is not None
+        iou_rows = tuple(
+            EndpointRow(
+                ordinal=row.ordinal,
+                observation_id=row.observation_id,
+                scene_id=row.scene_id,
+                endpoint=row.metrics.primary.iou,
+                status=row.status,
+                failure_code=row.failure_code,
+            )
+            for row in accepted.observations
+        )
+        gates = package.evaluate_candidate_gates(
+            synthetic=False,
+            coverage=coverage,
+            trusted_cohort=TrustedCohort(_package_identities()),
+            rows=iou_rows,
+            mean_iou=metric_summary.primary.mean_iou,
+            mean_f1=metric_summary.primary.mean_f1,
+            latency=accepted.manifest.summary.real.latency,
+            resource=accepted.manifest.summary.real.resource,
+            code_license_status=accepted.manifest.summary.candidate.code_license_status,
+            weight_license_status=(
+                accepted.manifest.summary.candidate.weight_license_status
+            ),
+            provenance=_passed_provenance(),
+        )
+        raw["gates"] = {
+            name: getattr(gates, name).value
+            for name in (
+                "complete_rows",
+                "coverage",
+                "latency",
+                "license",
+                "overall",
+                "provenance",
+                "quality",
+                "resource",
+            )
+        }
+        raw["candidate_status"] = gates.overall.value
+    source_hashes = _dict_section(raw, "source_hashes")
+    for value in source_hashes.values():
+        assert isinstance(value, dict)
+        cast(Dict[str, object], value)["sha256"] = _HASH
+    mapping_source = source_hashes["mapping"]
+    assert isinstance(mapping_source, dict)
+    cast(Dict[str, object], mapping_source)["sha256"] = NYU40_MAPPING_SHA256
+    bound = _accepted_with_manifest(accepted, raw)
+    command = bound.manifest.fields["command"]
+    assert isinstance(command, tuple)
+    adapter = cast(Mapping[str, object], bound.manifest.fields["source_hashes"])[
+        "adapter"
+    ]
+    assert isinstance(adapter, Mapping)
+    real_authority: RealProvenanceAuthority | None = None
+    if real_run:
+        candidate_root = tmp_path / "candidate"
+        checkpoint_root = tmp_path / "checkpoints"
+        candidate_root.mkdir()
+        checkpoint_root.mkdir()
+        code_permission = TrustedArtifactAuthority(
+            root_role="candidate_repository",
+            path="LICENSE",
+            file=FileRecord(1, _HASH),
+        )
+        weight_permission = TrustedArtifactAuthority(
+            root_role="candidate_repository",
+            path="WEIGHTS_LICENSE",
+            file=FileRecord(1, _HASH),
+        )
+        real_authority = RealProvenanceAuthority(
+            candidate_repository_root=candidate_root,
+            checkpoint_root=checkpoint_root,
+            checkpoint_path="model.pt",
+            checkpoint_file=FileRecord(1, _HASH),
+            code_permission=code_permission,
+            weight_permission=weight_permission,
+        )
+    authority = CandidateValidationAuthority(
+        expected_manifest_sha256=bound.validation.manifest.sha256,
+        p53_launch=P53ValidatorLaunch(
+            python_executable=python_executable,
+            expected_environment_sha256=_HASH,
+            raw_root=raw_root,
+            timeout_seconds=30.0,
+        ),
+        benchmark_attestation=benchmark,
+        expected_benchmark_attestation_sha256=benchmark.sha256,
+        expected_command=cast(Tuple[str, ...], command),
+        benchmark_repository_root=benchmark_root,
+        expected_producer_commit=_COMMIT,
+        candidate=bound.manifest.summary.candidate,
+        mapping=CandidateMappingAuthority(
+            source_vocabulary=frozen_vocabulary,
+            mapping=frozen_mapping,
+            mapping_sha256=NYU40_MAPPING_SHA256,
+        ),
+        adapter_path=cast(str, cast(Mapping[str, object], adapter)["path"]),
+        environment_lock=TrustedArtifactAuthority(
+            root_role="benchmark_repository",
+            path=bound.manifest.summary.candidate.environment_lock_path,
+            file=FileRecord(1, _HASH),
+        ),
+        real=real_authority,
+    )
+    return bound, authority, p53
+
+
+def _install_public_validation_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    accepted: package.AcceptedCandidatePackage,
+    authority: CandidateValidationAuthority,
+    p53: P53ValidationAttestation,
+    events: list[str],
+) -> None:
+    raw = _science_raw_observations()
+
+    def inspect_git(root: Path) -> package.GitRepositoryState:
+        events.append("git")
+        if root == authority.benchmark_repository_root:
+            return package.GitRepositoryState(_COMMIT, True)
+        assert authority.real is not None
+        assert root == authority.real.candidate_repository_root
+        return package.GitRepositoryState(
+            _COMMIT,
+            True,
+            authority.candidate.repository_url,
+        )
+
+    def cohort_index(
+        root: Path,
+        *,
+        p53_attestation: P53ValidationAttestation,
+    ) -> TrustedCohort:
+        assert root == authority.p53_launch.raw_root
+        assert p53_attestation == p53
+        events.append("cohort-index")
+        return TrustedCohort(_package_identities())
+
+    def load_raw(
+        root: Path,
+        **kwargs: object,
+    ) -> tuple[ValidatedRawObservation, ...]:
+        assert root == authority.p53_launch.raw_root
+        assert kwargs["p53_attestation"] == p53
+        events.append("raw")
+        return raw
+
+    def accept(
+        root: Path,
+        *,
+        expected_manifest_sha256: str,
+        trusted_cohort: TrustedCohort,
+        mapping_authority: CandidateMappingAuthority,
+    ) -> package.AcceptedCandidatePackage:
+        del root
+        assert expected_manifest_sha256 == authority.expected_manifest_sha256
+        assert trusted_cohort.identities == _package_identities()
+        assert mapping_authority == authority.mapping
+        events.append("b1")
+        return accepted
+
+    def source_record(root: Path, path: str) -> FileRecord:
+        allowed_roots = {authority.benchmark_repository_root}
+        if authority.real is not None:
+            allowed_roots.update({
+                authority.real.candidate_repository_root,
+                authority.real.checkpoint_root,
+            })
+        assert root in allowed_roots
+        assert path
+        events.append("source")
+        sha256 = (
+            NYU40_MAPPING_SHA256
+            if path.endswith("rgbd_segmenter_nyu40_mapping.json")
+            else (
+                RAW_VALIDATOR_SOURCE_SHA256
+                if path.endswith("rgbd_segmenter_raw_frame_package.py")
+                else _HASH
+            )
+        )
+        return FileRecord(1, sha256)
+
+    def oracle(_arrays: RawFrameArrays) -> np.ndarray:
+        events.append("oracle")
+        return _science_grid()
+
+    monkeypatch.setattr(
+        package,
+        "run_p53_validation_subprocess",
+        lambda launch: events.append("p53") or p53,
+    )
+    monkeypatch.setattr(package, "iter_validated_raw_observations", load_raw)
+    monkeypatch.setattr(package, "_trusted_cohort_from_raw_index", cohort_index)
+    monkeypatch.setattr(package, "accept_candidate_package", accept)
+    monkeypatch.setattr(package, "_inspect_git_repository", inspect_git)
+    monkeypatch.setattr(package, "_trusted_file_record", source_record)
+    monkeypatch.setattr(
+        package,
+        "load_nyu40_mapping",
+        lambda _path: authority.mapping.mapping,
+    )
+    monkeypatch.setattr(package, "project_oracle_target_labels", oracle)
+    monkeypatch.setattr(
+        package,
+        "project_mapped_labels",
+        lambda _labels, _arrays: _science_grid(),
+    )
+    monkeypatch.setattr(
+        BenchmarkEnvironmentAttestation,
+        "require_current_process",
+        lambda self: None,
+    )
+
+
 def _passed_provenance() -> ProvenanceChecks:
     return ProvenanceChecks(*(True for _ in range(12)))
 
@@ -1510,6 +1808,1118 @@ def test_real_scientific_validator_accepts_exact_recomputation(
     assert recomputed.latency is not None
     assert recomputed.gates is not None
     assert not hasattr(recomputed, "record")
+
+
+def test_public_validator_mints_only_endpoint_free_factory_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    events: list[str] = []
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=events,
+    )
+
+    validated = package.validate_candidate_package(
+        tmp_path / "untrusted-package",
+        authority=authority,
+    )
+
+    assert (
+        events.index("p53")
+        < events.index("cohort-index")
+        < events.index("b1")
+        < events.index("raw")
+        < events.index("oracle")
+    )
+    assert events.count("p53") == 2
+    assert events.count("cohort-index") == 2
+    assert events.count("b1") == 2
+    assert validated.validation == accepted.validation
+    assert validated.record.run_kind is package.RunKind.SYNTHETIC
+    assert validated.record.candidate_id == authority.candidate.candidate_id
+    assert validated.record.synthetic_semantic_scores_exposed is False
+    record = json.loads(validated.record.canonical_bytes())
+    assert "metrics" not in record
+    assert "coverage" not in record
+    assert "robustness" not in record
+    with pytest.raises(ValueError, match="validator"):
+        replace(validated.record, validation_status="PASS")
+    with pytest.raises(ValueError, match="validator"):
+        replace(validated, validation=validated.validation)
+
+
+def test_public_validator_signature_has_no_injectable_science_authority() -> None:
+    signature = inspect.signature(package.validate_candidate_package)
+    assert tuple(signature.parameters) == ("root", "authority")
+    assert signature.parameters["authority"].kind is inspect.Parameter.KEYWORD_ONLY
+    forbidden = {
+        "raw_observations",
+        "provenance",
+        "oracle_projector",
+        "prediction_projector",
+        "runtime",
+    }
+    assert forbidden.isdisjoint(signature.parameters)
+
+
+def test_public_validator_rejects_stale_embedded_p53_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    raw = cast(
+        Dict[str, object],
+        json.loads(accepted.manifest.canonical_bytes()),
+    )
+    stale = replace(p53, environment_sha256="2" * 64)
+    attestations = _dict_section(raw, "attestations")
+    attestations["p53_validator"] = _embedded(
+        cast(Dict[str, object], json.loads(stale.canonical_bytes()))
+    )
+    stale_accepted = _accepted_with_manifest(accepted, raw)
+    stale_authority = replace(
+        authority,
+        expected_manifest_sha256=stale_accepted.validation.manifest.sha256,
+    )
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=stale_accepted,
+        authority=stale_authority,
+        p53=p53,
+        events=[],
+    )
+
+    with pytest.raises(ValueError, match="manifest differs"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=stale_authority,
+        )
+
+
+def test_public_validator_rejects_mapping_tuple_not_bound_to_frozen_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    altered = replace(
+        authority.mapping.mapping[0],
+        canonical_name=authority.mapping.mapping[1].canonical_name,
+        canonical_index=authority.mapping.mapping[1].canonical_index,
+    )
+    altered_mapping = CandidateMappingAuthority(
+        source_vocabulary=authority.mapping.source_vocabulary,
+        mapping=(altered,) + authority.mapping.mapping[1:],
+        mapping_sha256=NYU40_MAPPING_SHA256,
+    )
+    altered_authority = replace(authority, mapping=altered_mapping)
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=altered_authority,
+        p53=p53,
+        events=[],
+    )
+    monkeypatch.setattr(
+        package,
+        "load_nyu40_mapping",
+        lambda _path: authority.mapping.mapping,
+    )
+
+    with pytest.raises(ValueError, match="mapping source contents"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=altered_authority,
+        )
+
+
+def test_public_validator_rejects_unrelated_benchmark_clone(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _accepted, authority, _p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    unrelated = tmp_path / "unrelated-clone"
+    unrelated.mkdir()
+    unrelated_authority = replace(
+        authority,
+        benchmark_repository_root=unrelated,
+    )
+
+    with pytest.raises(ValueError, match="runtime .* source"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=unrelated_authority,
+        )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["_constants_module", "_raw_package_module"],
+)
+def test_public_validator_rejects_relocated_runtime_modules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    module_name: str,
+) -> None:
+    _accepted, authority, _p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    relocated = tmp_path / f"{module_name}.py"
+    relocated.write_text("# relocated\n")
+    module = getattr(package, module_name)
+    monkeypatch.setattr(module, "__file__", str(relocated))
+
+    with pytest.raises(ValueError, match="outside benchmark authority root"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+
+
+def test_public_validator_rejects_command_and_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    wrong_command = replace(
+        authority,
+        expected_command=authority.expected_command + ("--extra",),
+    )
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=wrong_command,
+        p53=p53,
+        events=[],
+    )
+    with pytest.raises(ValueError, match="manifest differs"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=wrong_command,
+        )
+
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=[],
+    )
+
+    def wrong_source(_root: Path, path: str) -> FileRecord:
+        sha256 = (
+            RAW_VALIDATOR_SOURCE_SHA256
+            if path.endswith("rgbd_segmenter_raw_frame_package.py")
+            else (
+                NYU40_MAPPING_SHA256
+                if path.endswith("rgbd_segmenter_nyu40_mapping.json")
+                else "2" * 64
+            )
+        )
+        return FileRecord(1, sha256)
+
+    monkeypatch.setattr(package, "_trusted_file_record", wrong_source)
+    with pytest.raises(ValueError, match="source hash differs"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+
+
+def test_public_validator_rejects_final_git_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=[],
+    )
+    calls = 0
+
+    def drifting_git(_root: Path) -> package.GitRepositoryState:
+        nonlocal calls
+        calls += 1
+        return package.GitRepositoryState(_COMMIT, calls == 1)
+
+    monkeypatch.setattr(package, "_inspect_git_repository", drifting_git)
+    with pytest.raises(ValueError, match="Git state"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+
+
+def test_public_real_validator_accepts_but_keeps_deployability_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    real = _real_science_accepted(accepted_science_package)
+    accepted, authority, p53 = _public_validation_fixture(tmp_path, real)
+    events: list[str] = []
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=events,
+    )
+
+    validated = package.validate_candidate_package(
+        tmp_path / "untrusted-package",
+        authority=authority,
+    )
+
+    assert validated.record.validation_status == "PASS"
+    assert validated.record.candidate_status == "FAIL"
+    assert validated.record.run_kind is package.RunKind.REAL
+    assert events.count("b1") == 2
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "checkpoint",
+        "environment_lock",
+        "code_permission_root",
+        "code_permission_bytes",
+        "weight_permission_root",
+        "weight_permission_bytes",
+        "candidate_commit",
+        "candidate_origin",
+        "cuda_identity",
+        "final_checkpoint_drift",
+    ],
+)
+def test_public_real_validator_rejects_provenance_perturbations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+    fault: str,
+) -> None:
+    real = _real_science_accepted(accepted_science_package)
+    accepted, authority, p53 = _public_validation_fixture(tmp_path, real)
+    assert authority.real is not None
+    if fault in {"code_permission_bytes", "code_permission_root"}:
+        authority = replace(
+            authority,
+            real=replace(
+                authority.real,
+                code_permission=replace(
+                    authority.real.code_permission,
+                    root_role=(
+                        "benchmark_repository"
+                        if fault == "code_permission_root"
+                        else authority.real.code_permission.root_role
+                    ),
+                    file=(
+                        FileRecord(2, _HASH)
+                        if fault == "code_permission_bytes"
+                        else authority.real.code_permission.file
+                    ),
+                ),
+            ),
+        )
+    elif fault in {"weight_permission_bytes", "weight_permission_root"}:
+        authority = replace(
+            authority,
+            real=replace(
+                authority.real,
+                weight_permission=replace(
+                    authority.real.weight_permission,
+                    root_role=(
+                        "benchmark_repository"
+                        if fault == "weight_permission_root"
+                        else authority.real.weight_permission.root_role
+                    ),
+                    file=(
+                        FileRecord(2, _HASH)
+                        if fault == "weight_permission_bytes"
+                        else authority.real.weight_permission.file
+                    ),
+                ),
+            ),
+        )
+    elif fault == "cuda_identity":
+        raw = cast(
+            Dict[str, object],
+            json.loads(accepted.manifest.canonical_bytes()),
+        )
+        cuda = _dict_section(raw, "cuda_evidence")
+        for name in ("before", "after"):
+            snapshot = _dict_section(cuda, name)
+            snapshot["gpu_uuid"] = "GPU-ffffffff-ffff-ffff-ffff-ffffffffffff"
+        accepted = _accepted_with_manifest(accepted, raw)
+        authority = replace(
+            authority,
+            expected_manifest_sha256=accepted.validation.manifest.sha256,
+        )
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=[],
+    )
+    original_file_record = package._trusted_file_record  # noqa: SLF001
+    checkpoint_calls = 0
+
+    def perturbed_file_record(root: Path, path: str) -> FileRecord:
+        nonlocal checkpoint_calls
+        record = original_file_record(root, path)
+        if fault == "checkpoint" and path == "model.pt":
+            return FileRecord(1, "2" * 64)
+        if fault == "environment_lock" and path == "environment.lock":
+            return FileRecord(1, "2" * 64)
+        if fault == "final_checkpoint_drift" and path == "model.pt":
+            checkpoint_calls += 1
+            if checkpoint_calls == 2:
+                return FileRecord(1, "2" * 64)
+        return record
+
+    monkeypatch.setattr(package, "_trusted_file_record", perturbed_file_record)
+    if fault in {"candidate_commit", "candidate_origin"}:
+        original_git = package._inspect_git_repository  # noqa: SLF001
+        assert authority.real is not None
+        candidate_repository_root = authority.real.candidate_repository_root
+
+        def wrong_git_identity(root: Path) -> package.GitRepositoryState:
+            state = original_git(root)
+            if root == candidate_repository_root:
+                return replace(
+                    state,
+                    commit=("f" * 40 if fault == "candidate_commit" else state.commit),
+                    origin_url=(
+                        "https://example.invalid/wrong"
+                        if fault == "candidate_origin"
+                        else state.origin_url
+                    ),
+                )
+            return state
+
+        monkeypatch.setattr(package, "_inspect_git_repository", wrong_git_identity)
+
+    with pytest.raises(ValueError):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+
+
+def test_trusted_file_record_rejects_final_name_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "authority"
+    root.mkdir()
+    target = root / "artifact"
+    moved = root / "moved"
+    target.write_bytes(b"trusted")
+    original_read = package.os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, count: int) -> bytes:
+        nonlocal swapped
+        data = original_read(descriptor, count)
+        if not swapped:
+            target.rename(moved)
+            target.write_bytes(b"trusted")
+            swapped = True
+        return data
+
+    monkeypatch.setattr(package.os, "read", swapping_read)
+    with pytest.raises(ValueError, match="binding changed|changed while reading"):
+        package._trusted_file_record(root, "artifact")  # noqa: SLF001
+
+
+def test_trusted_file_record_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    root = tmp_path / "authority"
+    root.mkdir()
+    os.mkfifo(root / "artifact")
+    with pytest.raises(ValueError, match="bounded unique file"):
+        package._trusted_file_record(root, "artifact")  # noqa: SLF001
+
+
+def test_public_validator_rejects_package_mutation_after_first_b1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=[],
+    )
+    calls = 0
+
+    def mutating_accept(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("candidate package mutated after B1")
+        return accepted
+
+    monkeypatch.setattr(package, "accept_candidate_package", mutating_accept)
+    with pytest.raises(ValueError, match="mutated after B1"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+    assert calls == 2
+
+
+def test_public_validator_rejects_final_benchmark_attestation_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    events: list[str] = []
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=events,
+    )
+
+    def drifted(_self: BenchmarkEnvironmentAttestation) -> None:
+        raise ValueError("benchmark environment drifted")
+
+    monkeypatch.setattr(
+        BenchmarkEnvironmentAttestation,
+        "require_current_process",
+        drifted,
+    )
+    with pytest.raises(ValueError, match="environment drifted"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+    assert events.count("b1") == 2
+
+
+def test_public_validator_rejects_final_p53_attestation_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    accepted, authority, p53 = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    events: list[str] = []
+    _install_public_validation_fakes(
+        monkeypatch,
+        accepted=accepted,
+        authority=authority,
+        p53=p53,
+        events=events,
+    )
+    calls = 0
+
+    def drifting_p53(_launch: P53ValidatorLaunch) -> P53ValidationAttestation:
+        nonlocal calls
+        calls += 1
+        return p53 if calls == 1 else replace(p53, environment_sha256="2" * 64)
+
+    monkeypatch.setattr(package, "run_p53_validation_subprocess", drifting_p53)
+    with pytest.raises(ValueError, match="P5.3 attestation changed"):
+        package.validate_candidate_package(
+            tmp_path / "untrusted-package",
+            authority=authority,
+        )
+    assert calls == 2
+    assert events.count("b1") == 1
+
+
+def _write_fake_git_metadata(root: Path, revision: str = _COMMIT) -> None:
+    git_directory = root / ".git"
+    git_directory.mkdir()
+    (git_directory / "objects" / "info").mkdir(parents=True)
+    (git_directory / "info").mkdir()
+    (git_directory / "refs" / "heads").mkdir(parents=True)
+    (git_directory / "HEAD").write_text(f"{revision}\n")
+    (git_directory / "config").write_text("[core]\n\tbare = false\n")
+    (git_directory / "info" / "exclude").write_text("")
+
+
+def _git_blob_id(data: bytes) -> str:
+    digest = hashlib.new("sha1", usedforsecurity=False)
+    digest.update(f"blob {len(data)}\0".encode())
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def _git_tree_bytes(entries: Mapping[str, Tuple[str, bytes]]) -> bytes:
+    return b"".join(
+        f"{mode} blob {_git_blob_id(data)}\t{path}\x00".encode()
+        for path, (mode, data) in sorted(entries.items())
+    )
+
+
+def test_git_inspection_normalizes_subprocess_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise subprocess.CalledProcessError(1, ("git",))
+
+    monkeypatch.setattr(package.subprocess, "run", fail)
+    with pytest.raises(ValueError, match="inspection failed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+
+
+def test_git_inspection_anchors_repo_fd_and_ignores_process_poisoning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "attacker"))
+    poisoned_index = str(tmp_path / "attacker-index")
+    monkeypatch.setenv("GIT_INDEX_FILE", poisoned_index)
+    monkeypatch.setenv("PATH", str(tmp_path / "fake-bin"))
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "attacker.so"))
+    calls: list[tuple[tuple[str, ...], Mapping[str, str], float, tuple[int, ...]]] = []
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        environment = cast(Mapping[str, str], kwargs["env"])
+        timeout = cast(float, kwargs["timeout"])
+        passed = cast(Tuple[int, ...], kwargs["pass_fds"])
+        calls.append((args, environment, timeout, passed))
+        stdout = (
+            b"remote.origin.url\nhttps://example.invalid/repository\x00"
+            if "config" in args
+            else b""
+        )
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert state == package.GitRepositoryState(
+        _COMMIT,
+        True,
+        "https://example.invalid/repository",
+    )
+    assert len(calls) == 3
+    base_environment_keys = {
+        "GIT_ATTR_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_TERMINAL_PROMPT",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+    }
+    assert set(calls[0][1]) == base_environment_keys
+    assert all(
+        set(environment) == base_environment_keys for _, environment, _, _ in calls
+    )
+    assert all(
+        environment["GIT_OPTIONAL_LOCKS"] == "0" for _, environment, _, _ in calls
+    )
+    assert all(args[0] == "/usr/bin/git" for args, _, _, _ in calls)
+    assert all(str(root) not in args for args, _, _, _ in calls)
+    assert all(
+        any("/proc/self/fd/" in value for value in args) for args, _, _, _ in calls
+    )
+    assert len(calls[0][3]) == 1
+    assert all(len(passed) == 3 for _, _, _, passed in calls[1:])
+    assert all(
+        any(f"/proc/self/fd/{passed[0]}" in value for value in args)
+        for args, _, _, passed in calls[1:]
+    )
+    assert (
+        "core.fsmonitor=false" in calls[1][0]
+        and "core.hooksPath=/dev/null" in calls[1][0]
+        and "diff.external=" in calls[1][0]
+        and "core.excludesFile=/dev/null" in calls[1][0]
+        and "core.ignoreCase=false" in calls[1][0]
+    )
+    commands = [
+        next(name for name in ("config", "ls-tree", "check-ignore") if name in args)
+        for args, _, _, _ in calls
+    ]
+    assert commands == ["config", "ls-tree", "check-ignore"]
+    assert all("GIT_INDEX_FILE" not in environment for _, environment, _, _ in calls)
+    assert all(
+        poisoned_index not in environment.values() for _, environment, _, _ in calls
+    )
+    assert all(
+        not any(
+            forbidden in args
+            for forbidden in ("status", "read-tree", "ls-files", "diff", "hash-object")
+        )
+        for args, _, _, _ in calls
+    )
+    assert all(
+        timeout == package._GIT_INSPECTION_TIMEOUT_SECONDS  # noqa: SLF001
+        for _, _, timeout, _ in calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_clean"),
+    [
+        ("clean", True),
+        ("same-size-content", False),
+        ("executable-bit", False),
+        ("executable-owner-bit-removed", False),
+        ("regular-nonowner-execute", True),
+        ("symlink-target", False),
+        ("untracked-file", False),
+        ("missing-file", False),
+        ("ignored-file", True),
+        ("nested-ignored-file", True),
+        ("info-excluded-file", False),
+        ("extra-empty-directory", True),
+    ],
+)
+def test_git_inspection_uses_no_filter_real_worktree_check(
+    tmp_path: Path,
+    fault: str,
+    expected_clean: bool,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    subprocess.run(
+        ("/usr/bin/git", "init", "-q"),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "config", "user.email", "validator@example.invalid"),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "config", "user.name", "Validator"),
+        cwd=root,
+        check=True,
+    )
+    (root / "bin").mkdir()
+    executable = b"#!/bin/sh\n"
+    (root / "bin" / "run").write_bytes(executable)
+    (root / "bin" / "run").chmod(0o755)
+    original = b"original"
+    (root / "tracked.txt").write_bytes(original)
+    os.symlink("tracked.txt", root / "link")
+    (root / ".gitignore").write_text("ignored.txt\n")
+    (root / "nested").mkdir()
+    (root / "nested" / ".gitignore").write_text("nested-ignored.txt\n")
+    subprocess.run(
+        ("/usr/bin/git", "add", "."),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+
+    if fault == "same-size-content":
+        (root / "tracked.txt").write_bytes(b"mutated!")
+    elif fault == "executable-bit":
+        (root / "tracked.txt").chmod(0o755)
+    elif fault == "executable-owner-bit-removed":
+        (root / "bin" / "run").chmod(0o601)
+    elif fault == "regular-nonowner-execute":
+        (root / "tracked.txt").chmod(0o601)
+    elif fault == "symlink-target":
+        (root / "link").unlink()
+        os.symlink("bin/run", root / "link")
+    elif fault == "untracked-file":
+        (root / "extra.txt").write_text("extra")
+    elif fault == "missing-file":
+        (root / "tracked.txt").unlink()
+    elif fault == "ignored-file":
+        (root / "ignored.txt").write_text("ignored")
+    elif fault == "nested-ignored-file":
+        (root / "nested" / "nested-ignored.txt").write_text("ignored")
+    elif fault == "info-excluded-file":
+        (root / ".git" / "info" / "exclude").write_text("private.txt\n")
+        (root / "private.txt").write_text("must remain dirty")
+    elif fault == "extra-empty-directory":
+        (root / "empty").mkdir()
+
+    if fault == "info-excluded-file":
+        with pytest.raises(ValueError):
+            package._inspect_git_repository(root)  # noqa: SLF001
+        return
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert state.clean is expected_clean
+
+
+def test_git_inspection_does_not_reopen_mutated_filter_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    git_directory = root / ".git"
+    config_path = git_directory / "config"
+    commands: list[str] = []
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        command = next(
+            name for name in ("config", "ls-tree", "check-ignore") if name in args
+        )
+        commands.append(command)
+        if command == "config":
+            config_path.write_text('[filter "attack"]\n\tclean = /bin/false\n')
+            stdout = b"core.bare\nfalse\x00"
+        else:
+            stdout = b""
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    with pytest.raises(ValueError, match="metadata file changed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert commands == ["config", "ls-tree", "check-ignore"]
+    assert all(
+        command not in commands for command in ("diff", "checkout", "hash-object")
+    )
+
+
+def test_git_inspection_recaptures_tracked_gitignore_after_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    ignore_bytes = b"ignored.txt\n"
+    (root / ".gitignore").write_bytes(ignore_bytes)
+    (root / "ignored.txt").write_text("ignored")
+    tree = _git_tree_bytes({".gitignore": ("100644", ignore_bytes)})
+    mutations = 0
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal mutations
+        del kwargs
+        if "config" in args:
+            stdout = b""
+        elif "ls-tree" in args:
+            stdout = tree
+        else:
+            mutations += 1
+            (root / ".gitignore").write_bytes(b"ignored.bin\n")
+            time.sleep(0.01)
+            (root / ".gitignore").write_bytes(ignore_bytes)
+            stdout = b".gitignore\x001\x00ignored.txt\x00ignored.txt\x00"
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    with pytest.raises(ValueError, match="worktree changed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert mutations == 1
+
+
+def test_git_inspection_recaptures_tracked_gitignore_ancestor_aba(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    ignore_bytes = b"ignored.txt\n"
+    nested = root / "nested"
+    nested.mkdir()
+    (nested / ".gitignore").write_bytes(ignore_bytes)
+    (nested / "ignored.txt").write_text("ignored")
+    tree = _git_tree_bytes({"nested/.gitignore": ("100644", ignore_bytes)})
+    mutations = 0
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal mutations
+        del kwargs
+        if "config" in args:
+            stdout = b""
+        elif "ls-tree" in args:
+            stdout = tree
+        else:
+            mutations += 1
+            saved = tmp_path / "saved-nested"
+            replacement = tmp_path / "replacement-nested"
+            nested.rename(saved)
+            replacement.mkdir()
+            replacement.rename(nested)
+            nested.rename(replacement)
+            saved.rename(nested)
+            nested.chmod(0o700)
+            time.sleep(0.01)
+            nested.chmod(0o755)
+            stdout = b"nested/.gitignore\x001\x00ignored.txt\x00nested/ignored.txt\x00"
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    with pytest.raises(
+        ValueError, match="worktree changed|directory changed|root changed"
+    ):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert mutations == 1
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        b".gitignore\x001\x00!ignored.txt\x00ignored.txt\x00",
+        (
+            b".gitignore\x001\x00ignored.txt\x00ignored.txt\x00"
+            b".gitignore\x002\x00ignored.txt\x00ignored.txt\x00"
+        ),
+        b"/outside/.gitignore\x001\x00ignored.txt\x00ignored.txt\x00",
+    ],
+)
+def test_git_check_ignore_rejects_malformed_or_unsafe_decisions(output: bytes) -> None:
+    with pytest.raises(ValueError):
+        package._parse_git_check_ignore(output)  # noqa: SLF001
+
+
+def test_git_inspection_rejects_head_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    other_commit = "f" * 40
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        if "check-ignore" in args:
+            (root / ".git" / "HEAD").write_text(f"{other_commit}\n")
+        stdout = b""
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    with pytest.raises(ValueError, match="metadata file changed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+
+
+def test_git_tree_rejects_submodules() -> None:
+    submodule = f"160000 commit {_COMMIT}\tdependency\x00".encode()
+    with pytest.raises(ValueError, match="submodules"):
+        package._parse_git_tree(submodule)  # noqa: SLF001
+
+
+def test_git_inspection_rejects_root_path_aba(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    moved = tmp_path / "repository-moved"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    captured: list[tuple[tuple[str, ...], tuple[int, ...]]] = []
+
+    def swapping_completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        passed = cast(Tuple[int, ...], kwargs["pass_fds"])
+        captured.append((args, passed))
+        if len(captured) == 1:
+            root.rename(moved)
+            root.mkdir()
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(package.subprocess, "run", swapping_completed)
+    try:
+        with pytest.raises(ValueError, match="root changed|ancestor binding"):
+            package._inspect_git_repository(root)  # noqa: SLF001
+        assert all(str(root) not in args for args, _ in captured)
+        assert len(captured[0][1]) == 1
+        assert all(len(passed) == 3 for _, passed in captured[1:])
+        assert all(
+            any(f"/proc/self/fd/{passed[0]}" in value for value in args)
+            for args, passed in captured[1:]
+        )
+    finally:
+        if moved.exists():
+            root.rmdir()
+            moved.rename(root)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "filter.attack.clean",
+        "include.path",
+        "includeif.gitdir:/tmp.path",
+        "core.worktree",
+        "core.attributesfile",
+        "extensions.objectformat",
+        "extensions.partialclone",
+        "extensions.worktreeconfig",
+        "core.fsmonitor",
+        "core.hookspath",
+        "diff.external",
+    ],
+)
+def test_git_inspection_rejects_unsafe_local_config_before_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    commands: list[str] = []
+
+    def unsafe_config(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        command = next(
+            name for name in ("config", "ls-tree", "check-ignore") if name in args
+        )
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            f"{key}\nmalicious\x00".encode(),
+            b"",
+        )
+
+    monkeypatch.setattr(package.subprocess, "run", unsafe_config)
+    with pytest.raises(ValueError, match="unsafe local Git config"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert commands == ["config"]
+
+
+def test_git_inspection_rejects_git_directory_file_and_aba(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_root = tmp_path / "file-root"
+    file_root.mkdir()
+    (file_root / ".git").write_text("gitdir: elsewhere\n")
+    with pytest.raises(ValueError, match="anchored .git directory"):
+        package._inspect_git_repository(file_root)  # noqa: SLF001
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    git_directory = root / ".git"
+    moved = root / ".git-moved"
+    _write_fake_git_metadata(root)
+    calls = 0
+
+    def swapping_git_directory(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            git_directory.rename(moved)
+            git_directory.mkdir()
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(package.subprocess, "run", swapping_git_directory)
+    try:
+        with pytest.raises(ValueError, match="changed"):
+            package._inspect_git_repository(root)  # noqa: SLF001
+    finally:
+        git_directory.rmdir()
+        moved.rename(git_directory)
+
+
+def test_real_provenance_authority_supports_external_checkpoint_root(
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    checkpoint_root = tmp_path / "checkpoints"
+    candidate_root.mkdir()
+    checkpoint_root.mkdir()
+    record = FileRecord(1, _HASH)
+    permission = TrustedArtifactAuthority(
+        root_role="candidate_repository",
+        path="LICENSE",
+        file=record,
+    )
+    real = RealProvenanceAuthority(
+        candidate_repository_root=candidate_root,
+        checkpoint_root=checkpoint_root,
+        checkpoint_path="model.pt",
+        checkpoint_file=record,
+        code_permission=permission,
+        weight_permission=permission,
+    )
+    assert real.checkpoint_root == checkpoint_root
 
 
 def test_file_tree_aggregate_uses_canonical_sorted_records() -> None:

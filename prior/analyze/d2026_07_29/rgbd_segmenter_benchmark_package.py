@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import struct
+import subprocess
 import zipfile
 from collections.abc import Iterator
 from dataclasses import InitVar, asdict, dataclass, field, fields
@@ -31,8 +32,21 @@ from typing import (
 import numpy as np
 import torch
 
+from prior import constants as _constants_module
+from prior.analyze.d2026_07_29 import (
+    rgbd_segmenter_benchmark_contract as _benchmark_contract_module,
+)
+from prior.analyze.d2026_07_29 import (
+    rgbd_segmenter_raw_frame_package as _raw_package_module,
+)
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     BOOTSTRAP_MATRIX_SHA256,
+    NYU40_MAPPING_SHA256,
+    RAW_INDEX_SHA256,
+    RAW_INDEX_BYTE_LENGTH,
+    RAW_MANIFEST_SHA256,
+    RAW_PRODUCER_COMMIT,
+    RAW_VALIDATOR_SOURCE_SHA256,
     BenchmarkEnvironmentAttestation,
     BenchmarkMetricSummary,
     CandidateCommitment,
@@ -50,6 +64,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ObservationMetrics,
     ObservationStatus,
     P53ValidationAttestation,
+    P53ValidatorLaunch,
     Prediction,
     ProvenanceChecks,
     ResourceMeasurement,
@@ -65,20 +80,28 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     compute_static_coverage,
     estimate_scene_robustness,
     evaluate_candidate_gates,
+    iter_validated_raw_observations,
     logical_label_sha256,
+    load_nyu40_mapping,
     map_source_labels,
     project_mapped_labels,
     project_oracle_target_labels,
+    run_p53_validation_subprocess,
     score_observation,
     summarize_latency,
+)
+from vlnce_baselines.models.etp_llm import (
+    llm_grid_oracle_cache as _projector_module,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     IndexRow,
     RawFrameArrays,
+    parse_index_bytes,
 )
 
 _HASH = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+_GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}")
 _IDENTITY = re.compile(r"[0-9a-f]{20}")
 _SCENE = re.compile(r"[A-Za-z0-9_-]+")
 _MAX_PREDICTION_BYTES = 4 * 1024 * 1024
@@ -95,6 +118,24 @@ _MEMBER_NAMES = ("mapped_labels", "source_labels")
 _ZIP_EOCD = struct.Struct("<4s4H2LH")
 _ZIP_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
 _ACCEPTANCE_TOKEN = object()
+_VALIDATION_TOKEN = object()
+_COHORT_JSONL_SHA256 = (
+    "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
+)
+_SELECTION_SHA256 = "32a7adddf32291f059eb1045e63e077a693ca64d6fdf6e7418b54dd5d3644cb2"
+_RAW_PAYLOAD_TREE_SHA256 = (
+    "6b9c48460493bf8f50aeed408173c95210426723fb0c845324e87cfd4dad1c46"
+)
+_MAX_TRUSTED_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+_GIT_INSPECTION_TIMEOUT_SECONDS = 10.0
+_MAX_LOCAL_GIT_CONFIG_BYTES = 1024 * 1024
+_MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
+_MAX_GIT_IGNORE_BYTES = 16 * 1024 * 1024
+_MAX_GIT_METADATA_FILE_BYTES = 1024 * 1024
+_TRUSTED_GIT_PATH = "/usr/bin/git"
+_RAW_PACKAGE_SOURCE_PATH = (
+    "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frame_package.py"
+)
 
 
 def _expected_npy_length() -> int:
@@ -240,6 +281,137 @@ class CandidateMappingAuthority:
         ):
             raise ValueError("candidate mapping authority is invalid")
         _hash(self.mapping_sha256, "candidate mapping authority SHA-256")
+
+
+@dataclass(frozen=True)
+class TrustedArtifactAuthority:
+    root_role: str
+    path: str
+    file: FileRecord
+
+    def __post_init__(self) -> None:
+        if self.root_role not in {
+            "benchmark_repository",
+            "candidate_repository",
+        }:
+            raise ValueError("trusted artifact root role is invalid")
+        _relative_path(self.path)
+        if not isinstance(self.file, FileRecord):
+            raise ValueError("trusted artifact file record is invalid")
+
+
+@dataclass(frozen=True)
+class RealProvenanceAuthority:
+    candidate_repository_root: Path
+    checkpoint_root: Path
+    checkpoint_path: str
+    checkpoint_file: FileRecord
+    code_permission: TrustedArtifactAuthority
+    weight_permission: TrustedArtifactAuthority
+
+    def __post_init__(self) -> None:
+        _absolute_authority_root(
+            self.candidate_repository_root,
+            "candidate repository root",
+        )
+        _absolute_authority_root(self.checkpoint_root, "checkpoint root")
+        _relative_path(self.checkpoint_path)
+        if (
+            not isinstance(self.checkpoint_file, FileRecord)
+            or not isinstance(self.code_permission, TrustedArtifactAuthority)
+            or not isinstance(self.weight_permission, TrustedArtifactAuthority)
+        ):
+            raise ValueError("real provenance artifact authority is invalid")
+
+
+@dataclass(frozen=True)
+class CandidateValidationAuthority:
+    expected_manifest_sha256: str
+    p53_launch: P53ValidatorLaunch
+    benchmark_attestation: BenchmarkEnvironmentAttestation
+    expected_benchmark_attestation_sha256: str
+    expected_command: Tuple[str, ...]
+    benchmark_repository_root: Path
+    expected_producer_commit: str
+    candidate: CandidateCommitment
+    mapping: CandidateMappingAuthority
+    adapter_path: str
+    environment_lock: TrustedArtifactAuthority
+    real: Optional[RealProvenanceAuthority] = None
+
+    def __post_init__(self) -> None:
+        _hash(self.expected_manifest_sha256, "expected candidate manifest SHA-256")
+        _hash(
+            self.expected_benchmark_attestation_sha256,
+            "expected benchmark attestation SHA-256",
+        )
+        if (
+            not isinstance(self.p53_launch, P53ValidatorLaunch)
+            or not isinstance(
+                self.benchmark_attestation, BenchmarkEnvironmentAttestation
+            )
+            or self.benchmark_attestation.sha256
+            != self.expected_benchmark_attestation_sha256
+            or type(self.expected_command) is not tuple
+            or not self.expected_command
+            or any(
+                not isinstance(value, str) or not value
+                for value in self.expected_command
+            )
+            or not isinstance(self.candidate, CandidateCommitment)
+            or not isinstance(self.mapping, CandidateMappingAuthority)
+            or not isinstance(
+                self.environment_lock,
+                TrustedArtifactAuthority,
+            )
+            or (
+                self.real is not None
+                and not isinstance(self.real, RealProvenanceAuthority)
+            )
+            or (self.real is not None) is not (not self.candidate.synthetic)
+        ):
+            raise ValueError("candidate validation authority is invalid")
+        _absolute_authority_root(
+            self.benchmark_repository_root,
+            "benchmark repository root",
+        )
+        if (
+            not isinstance(self.expected_producer_commit, str)
+            or _COMMIT.fullmatch(self.expected_producer_commit) is None
+        ):
+            raise ValueError("expected producer commit is invalid")
+        _relative_path(self.adapter_path)
+        if (
+            self.candidate.source_vocabulary != self.mapping.source_vocabulary
+            or self.candidate.mapping_sha256 != self.mapping.mapping_sha256
+            or self.candidate.environment_lock_path != self.environment_lock.path
+            or self.candidate.environment_lock_sha256
+            != self.environment_lock.file.sha256
+            or (
+                self.candidate.synthetic
+                and self.environment_lock.root_role != "benchmark_repository"
+            )
+        ):
+            raise ValueError("candidate authorities differ from commitment")
+
+
+@dataclass(frozen=True)
+class GitRepositoryState:
+    commit: str
+    clean: bool
+    origin_url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.commit, str)
+            or _COMMIT.fullmatch(self.commit) is None
+            or type(self.clean) is not bool
+            or (
+                self.origin_url is not None
+                and (not isinstance(self.origin_url, str) or not self.origin_url)
+            )
+        ):
+            raise ValueError("Git repository state is invalid")
 
 
 @dataclass(frozen=True)
@@ -1409,6 +1581,93 @@ SuccessfulManifest = Union[RealSuccessfulManifest, SyntheticSuccessfulManifest]
 
 
 @dataclass(frozen=True)
+class CandidateValidationRecord:
+    schema_version: int
+    validation_status: str
+    candidate_status: str
+    run_kind: RunKind
+    candidate_id: str
+    producer_git_commit: str
+    p53_attestation_sha256: str
+    benchmark_attestation_sha256: str
+    synthetic_semantic_scores_exposed: bool
+    observation_count: int
+    package: PackageValidationRecord
+    _validation_token: InitVar[Optional[object]] = None
+
+    def __post_init__(self, _validation_token: Optional[object]) -> None:
+        if _validation_token is not _VALIDATION_TOKEN:
+            raise ValueError("validation records must be created by the validator")
+        if (
+            self.schema_version != 1
+            or self.validation_status != "PASS"
+            or not isinstance(self.run_kind, RunKind)
+            or not isinstance(self.candidate_id, str)
+            or not self.candidate_id
+            or not isinstance(self.package, PackageValidationRecord)
+            or self.synthetic_semantic_scores_exposed is not False
+            or self.observation_count != 50
+            or not isinstance(self.producer_git_commit, str)
+            or _COMMIT.fullmatch(self.producer_git_commit) is None
+        ):
+            raise ValueError("candidate validation record is invalid")
+        expected_candidate_statuses = (
+            {"NOT_APPLICABLE"}
+            if self.run_kind is RunKind.SYNTHETIC
+            else {"PASS", "FAIL"}
+        )
+        if self.candidate_status not in expected_candidate_statuses:
+            raise ValueError("candidate status is invalid for validation run kind")
+        _hash(self.p53_attestation_sha256, "validation P5.3 attestation SHA-256")
+        _hash(
+            self.benchmark_attestation_sha256,
+            "validation benchmark attestation SHA-256",
+        )
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes({
+            "benchmark_attestation_sha256": self.benchmark_attestation_sha256,
+            "candidate_id": self.candidate_id,
+            "candidate_status": self.candidate_status,
+            "observation_count": self.observation_count,
+            "p53_attestation_sha256": self.p53_attestation_sha256,
+            "package": {
+                "file_count": self.package.file_count,
+                "manifest": {
+                    "byte_length": self.package.manifest.byte_length,
+                    "sha256": self.package.manifest.sha256,
+                },
+                "total_byte_length": self.package.total_byte_length,
+                "tree_sha256": self.package.tree_sha256,
+            },
+            "producer_git_commit": self.producer_git_commit,
+            "run_kind": self.run_kind.value,
+            "schema_version": self.schema_version,
+            "validation_status": self.validation_status,
+            "synthetic_semantic_scores_exposed": (
+                self.synthetic_semantic_scores_exposed
+            ),
+        })
+
+
+@dataclass(frozen=True)
+class ValidatedCandidatePackage:
+    validation: PackageValidationRecord
+    record: CandidateValidationRecord
+    _validation_token: InitVar[Optional[object]] = None
+
+    def __post_init__(self, _validation_token: Optional[object]) -> None:
+        if _validation_token is not _VALIDATION_TOKEN:
+            raise ValueError("validated packages must be created by the validator")
+        if (
+            not isinstance(self.validation, PackageValidationRecord)
+            or not isinstance(self.record, CandidateValidationRecord)
+            or self.record.package != self.validation
+        ):
+            raise ValueError("validated package result is inconsistent")
+
+
+@dataclass(frozen=True)
 class AbortedOomManifest:
     fields: Mapping[str, object]
 
@@ -2138,6 +2397,16 @@ def _relative_path(value: str) -> None:
         raise ValueError("package path must be normalized printable relative POSIX")
 
 
+def _absolute_authority_root(value: Path, label: str) -> None:
+    if (
+        not isinstance(value, Path)
+        or not value.is_absolute()
+        or value == Path(value.anchor)
+        or Path(os.path.abspath(value)) != value
+    ):
+        raise ValueError(f"{label} must be a normalized absolute non-root path")
+
+
 def _open_anchored_root(
     root: Path,
 ) -> Tuple[
@@ -2195,6 +2464,835 @@ def _recapture_ancestor_bindings(
             or _directory_identity(metadata) != expected
         ):
             raise ValueError("candidate package ancestor binding changed")
+
+
+def _trusted_file_record(root: Path, path: str) -> FileRecord:
+    """Descriptor-read one authority-rooted regular file without symlink traversal."""
+
+    _relative_path(path)
+    try:
+        root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    except OSError as error:
+        raise ValueError("trusted artifact root is unsafe") from error
+    opened: list[int] = []
+    directories: list[Tuple[int, _Fingerprint]] = [
+        (root_descriptor, _fingerprint(os.fstat(root_descriptor)))
+    ]
+    name_bindings: list[Tuple[int, str, _Fingerprint]] = []
+    try:
+        current = root_descriptor
+        parts = PurePosixPath(path).parts
+        for part in parts[:-1]:
+            descriptor = os.open(
+                part,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+                dir_fd=current,
+            )
+            opened.append(descriptor)
+            fingerprint = _fingerprint(os.fstat(descriptor))
+            name_bindings.append((current, part, fingerprint))
+            current = descriptor
+            directories.append((descriptor, fingerprint))
+        descriptor = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=current,
+        )
+        opened.append(descriptor)
+        before = _fingerprint(os.fstat(descriptor))
+        name_bindings.append((current, parts[-1], before))
+        if (
+            not stat.S_ISREG(before.mode)
+            or before.link_count != 1
+            or not 0 < before.size <= _MAX_TRUSTED_ARTIFACT_BYTES
+        ):
+            raise ValueError(f"trusted artifact is not a bounded unique file: {path}")
+        digest = hashlib.sha256()
+        byte_length = 0
+        remaining = before.size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, _READ_CHUNK_BYTES))
+            if not chunk:
+                raise ValueError(f"trusted artifact was truncated: {path}")
+            digest.update(chunk)
+            byte_length += len(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError(f"trusted artifact grew while reading: {path}")
+        if _fingerprint(os.fstat(descriptor)) != before or any(
+            _fingerprint(os.fstat(directory)) != expected
+            for directory, expected in directories
+        ):
+            raise ValueError(f"trusted artifact changed while reading: {path}")
+        for parent, name, expected in name_bindings:
+            try:
+                recaptured = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as error:
+                raise ValueError(f"trusted artifact binding changed: {path}") from error
+            if _fingerprint(recaptured) != expected:
+                raise ValueError(f"trusted artifact binding changed: {path}")
+        _recapture_ancestor_bindings(bindings)
+        return FileRecord(byte_length=byte_length, sha256=digest.hexdigest())
+    except OSError as error:
+        raise ValueError(f"trusted artifact is unsafe: {path}") from error
+    finally:
+        _close_descriptors(tuple(reversed(opened)) + tuple(reversed(descriptors)))
+
+
+def _trusted_cohort_from_raw_index(
+    root: Path,
+    *,
+    p53_attestation: P53ValidationAttestation,
+) -> TrustedCohort:
+    """Read only sealed target-free index identities before package acceptance."""
+
+    if (
+        str(root) != p53_attestation.raw_root
+        or p53_attestation.raw_index_sha256 != RAW_INDEX_SHA256
+        or p53_attestation.raw_manifest_sha256 != RAW_MANIFEST_SHA256
+        or p53_attestation.producer_git_commit != RAW_PRODUCER_COMMIT
+    ):
+        raise ValueError("raw index authority differs from P5.3 attestation")
+    try:
+        root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    except OSError as error:
+        raise ValueError("raw index root is unsafe") from error
+    opened: list[int] = []
+    try:
+        root_before = _fingerprint(os.fstat(root_descriptor))
+        descriptor = os.open(
+            "index.jsonl",
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=root_descriptor,
+        )
+        opened.append(descriptor)
+        before = _fingerprint(os.fstat(descriptor))
+        if (
+            not stat.S_ISREG(before.mode)
+            or before.link_count != 1
+            or before.size != RAW_INDEX_BYTE_LENGTH
+        ):
+            raise ValueError("raw index is not the exact sealed regular file")
+        chunks: list[bytes] = []
+        remaining = before.size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, _READ_CHUNK_BYTES))
+            if not chunk:
+                raise ValueError("raw index was truncated")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("raw index grew while reading")
+        data = b"".join(chunks)
+        if (
+            _fingerprint(os.fstat(descriptor)) != before
+            or _fingerprint(os.fstat(root_descriptor)) != root_before
+            or hashlib.sha256(data).hexdigest() != RAW_INDEX_SHA256
+        ):
+            raise ValueError("raw index changed or differs from frozen authority")
+        recaptured = os.stat(
+            "index.jsonl",
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        if _fingerprint(recaptured) != before:
+            raise ValueError("raw index name binding changed")
+        _recapture_ancestor_bindings(bindings)
+        rows = parse_index_bytes(data)
+        return TrustedCohort(
+            tuple((row.ordinal, row.observation_id, row.scene_id) for row in rows)
+        )
+    except OSError as error:
+        raise ValueError("raw index is unsafe") from error
+    finally:
+        _close_descriptors(tuple(reversed(opened)) + tuple(reversed(descriptors)))
+
+
+def _origin_from_safe_local_git_config(data: bytes) -> Optional[str]:
+    if (
+        not isinstance(data, bytes)
+        or len(data) > _MAX_LOCAL_GIT_CONFIG_BYTES
+        or (data and not data.endswith(b"\x00"))
+    ):
+        raise ValueError("local Git config output is invalid")
+    unsafe_exact = {
+        "core.attributesfile",
+        "core.fsmonitor",
+        "core.hookspath",
+        "core.worktree",
+        "diff.external",
+        "extensions.objectformat",
+        "extensions.partialclone",
+        "extensions.worktreeconfig",
+    }
+    origins: list[str] = []
+    for entry in data.split(b"\x00")[:-1]:
+        if entry.count(b"\n") < 1:
+            raise ValueError("local Git config entry is invalid")
+        key_bytes, value_bytes = entry.split(b"\n", 1)
+        try:
+            key = key_bytes.decode("utf-8").lower()
+            value = value_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("local Git config is not valid UTF-8") from error
+        if (
+            not key
+            or key in unsafe_exact
+            or key.startswith(("filter.", "include.", "includeif."))
+        ):
+            raise ValueError(f"unsafe local Git config key: {key}")
+        if key == "remote.origin.url":
+            if not value or any(
+                ord(character) < 0x20 or ord(character) == 0x7F for character in value
+            ):
+                raise ValueError("Git origin URL is invalid")
+            origins.append(value)
+    if len(origins) > 1:
+        raise ValueError("local Git config has ambiguous origin URLs")
+    return origins[0] if origins else None
+
+
+def _read_git_metadata_file(descriptor: int, label: str) -> bytes:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size < 0
+        or metadata.st_size > _MAX_GIT_METADATA_FILE_BYTES
+    ):
+        raise ValueError(f"{label} is not a bounded unique regular file")
+    before = _fingerprint(metadata)
+    data = bytearray()
+    remaining = metadata.st_size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, _READ_CHUNK_BYTES))
+        if not chunk:
+            raise ValueError(f"{label} was truncated")
+        data.extend(chunk)
+        remaining -= len(chunk)
+    if os.read(descriptor, 1) or _fingerprint(os.fstat(descriptor)) != before:
+        raise ValueError(f"{label} changed while reading")
+    return bytes(data)
+
+
+@dataclass(frozen=True)
+class _GitTreeEntry:
+    mode: str
+    object_id: str
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"100644", "100755", "120000"}:
+            raise ValueError("unsupported Git tree file mode")
+        if _GIT_OBJECT_ID.fullmatch(self.object_id) is None:
+            raise ValueError("invalid Git tree object ID")
+
+
+def _parse_git_tree(data: bytes) -> Mapping[str, _GitTreeEntry]:
+    if (
+        not isinstance(data, bytes)
+        or len(data) > _MAX_GIT_TREE_BYTES
+        or (data and not data.endswith(b"\x00"))
+    ):
+        raise ValueError("Git tree output is invalid")
+    parsed: dict[str, _GitTreeEntry] = {}
+    for entry in data.split(b"\x00")[:-1]:
+        try:
+            header, raw_path = entry.split(b"\t", 1)
+            mode, object_type, object_id = header.decode("ascii").split(" ")
+            path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ValueError("Git tree entry is invalid") from error
+        _relative_path(path)
+        if path == ".git" or path.startswith(".git/") or path in parsed:
+            raise ValueError("Git tree path is unsafe or duplicated")
+        if any(
+            path.startswith(f"{existing}/") or existing.startswith(f"{path}/")
+            for existing in parsed
+        ):
+            raise ValueError("Git tree paths have conflicting prefixes")
+        if mode == "160000" or object_type == "commit":
+            raise ValueError("Git submodules are unsupported")
+        if object_type != "blob":
+            raise ValueError("Git tree contains an unsupported object type")
+        parsed[path] = _GitTreeEntry(mode=mode, object_id=object_id)
+    return _FrozenMapping(tuple(sorted(parsed.items())))
+
+
+def _git_blob_digest(length: int, chunks: Iterable[bytes]) -> str:
+    digest = hashlib.new("sha1", usedforsecurity=False)
+    digest.update(f"blob {length}\0".encode("ascii"))
+    for chunk in chunks:
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class _GitWorktreeCapture:
+    root: _Fingerprint
+    entries: Mapping[str, _GitTreeEntry]
+    directories: Mapping[str, _Fingerprint]
+    bindings: Mapping[str, _Fingerprint]
+    extra_paths: Tuple[str, ...]
+
+
+def _capture_git_worktree(
+    root_descriptor: int,
+    *,
+    git_directory_fingerprint: _Fingerprint,
+) -> _GitWorktreeCapture:
+    captured: dict[str, _GitTreeEntry] = {}
+    directories: dict[str, _Fingerprint] = {}
+    bindings: dict[str, _Fingerprint] = {}
+    extra_paths: list[str] = []
+    root_before = _fingerprint(os.fstat(root_descriptor))
+
+    def walk(descriptor: int, relative: str) -> None:
+        try:
+            names = sorted(os.listdir(descriptor))
+        except OSError as error:
+            raise ValueError("Git worktree directory cannot be listed") from error
+        for name in names:
+            if relative == "" and name == ".git":
+                if (
+                    _fingerprint(
+                        os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    )
+                    != git_directory_fingerprint
+                ):
+                    raise ValueError("Git metadata directory binding changed")
+                continue
+            path = f"{relative}/{name}" if relative else name
+            _relative_path(path)
+            try:
+                metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except OSError as error:
+                raise ValueError(
+                    f"Git worktree path cannot be inspected: {path}"
+                ) from error
+            before = _fingerprint(metadata)
+            if stat.S_ISDIR(metadata.st_mode):
+                directories[path] = before
+                try:
+                    child = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                except OSError as error:
+                    raise ValueError(
+                        f"Git worktree directory is unsafe: {path}"
+                    ) from error
+                try:
+                    if _fingerprint(os.fstat(child)) != before:
+                        raise ValueError(f"Git worktree directory changed: {path}")
+                    walk(child, path)
+                    if (
+                        _fingerprint(os.fstat(child)) != before
+                        or _fingerprint(
+                            os.stat(
+                                name,
+                                dir_fd=descriptor,
+                                follow_symlinks=False,
+                            )
+                        )
+                        != before
+                    ):
+                        raise ValueError(f"Git worktree directory changed: {path}")
+                finally:
+                    os.close(child)
+                continue
+            if stat.S_ISREG(metadata.st_mode):
+                if (
+                    metadata.st_nlink != 1
+                    or metadata.st_size < 0
+                    or metadata.st_size > _MAX_TRUSTED_ARTIFACT_BYTES
+                ):
+                    raise ValueError(f"Git worktree file is unsafe: {path}")
+                try:
+                    file_descriptor = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                except OSError as error:
+                    raise ValueError(f"Git worktree file is unsafe: {path}") from error
+                try:
+                    if _fingerprint(os.fstat(file_descriptor)) != before:
+                        raise ValueError(f"Git worktree file changed: {path}")
+                    remaining = metadata.st_size
+
+                    def chunks() -> Iterator[bytes]:
+                        nonlocal remaining
+                        while remaining:
+                            chunk = os.read(
+                                file_descriptor,
+                                min(remaining, _READ_CHUNK_BYTES),
+                            )
+                            if not chunk:
+                                raise ValueError(
+                                    f"Git worktree file was truncated: {path}"
+                                )
+                            remaining -= len(chunk)
+                            yield chunk
+                        if os.read(file_descriptor, 1):
+                            raise ValueError(
+                                f"Git worktree file grew while reading: {path}"
+                            )
+
+                    object_id = _git_blob_digest(metadata.st_size, chunks())
+                    if (
+                        _fingerprint(os.fstat(file_descriptor)) != before
+                        or _fingerprint(
+                            os.stat(
+                                name,
+                                dir_fd=descriptor,
+                                follow_symlinks=False,
+                            )
+                        )
+                        != before
+                    ):
+                        raise ValueError(f"Git worktree file changed: {path}")
+                finally:
+                    os.close(file_descriptor)
+                mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+            elif stat.S_ISLNK(metadata.st_mode):
+                try:
+                    target = os.readlink(name, dir_fd=descriptor)
+                    recaptured = os.stat(
+                        name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    raise ValueError(
+                        f"Git worktree symlink is unsafe: {path}"
+                    ) from error
+                if _fingerprint(recaptured) != before:
+                    raise ValueError(f"Git worktree symlink changed: {path}")
+                target_bytes = os.fsencode(target)
+                object_id = _git_blob_digest(len(target_bytes), (target_bytes,))
+                mode = "120000"
+            else:
+                raise ValueError(f"Git worktree entry type is unsupported: {path}")
+            captured[path] = _GitTreeEntry(mode=mode, object_id=object_id)
+            bindings[path] = before
+            extra_paths.append(path)
+
+    walk(root_descriptor, "")
+    if _fingerprint(os.fstat(root_descriptor)) != root_before:
+        raise ValueError("Git worktree root changed during capture")
+    return _GitWorktreeCapture(
+        root=root_before,
+        entries=_FrozenMapping(tuple(sorted(captured.items()))),
+        directories=_FrozenMapping(tuple(sorted(directories.items()))),
+        bindings=_FrozenMapping(tuple(sorted(bindings.items()))),
+        extra_paths=tuple(sorted(extra_paths)),
+    )
+
+
+def _parse_git_check_ignore(data: bytes) -> Mapping[str, Tuple[str, str]]:
+    if (
+        not isinstance(data, bytes)
+        or len(data) > _MAX_GIT_IGNORE_BYTES
+        or (data and not data.endswith(b"\x00"))
+    ):
+        raise ValueError("Git check-ignore output is invalid")
+    fields = data.split(b"\x00")[:-1]
+    if len(fields) % 4:
+        raise ValueError("Git check-ignore verbose output is malformed")
+    matches: dict[str, Tuple[str, str]] = {}
+    for index in range(0, len(fields), 4):
+        try:
+            source = fields[index].decode("utf-8")
+            line_number = fields[index + 1].decode("ascii")
+            pattern = fields[index + 2].decode("utf-8")
+            path = fields[index + 3].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("Git check-ignore output has invalid encoding") from error
+        _relative_path(source)
+        _relative_path(path)
+        if (
+            not line_number.isdigit()
+            or int(line_number) < 1
+            or not pattern
+            or pattern.startswith("!")
+            or path in matches
+        ):
+            raise ValueError("Git check-ignore output is ambiguous")
+        matches[path] = (source, pattern)
+    return _FrozenMapping(tuple(sorted(matches.items())))
+
+
+def _inspect_git_repository(root: Path) -> GitRepositoryState:
+    _absolute_authority_root(root, "Git repository root")
+    try:
+        root_descriptor, descriptors, bindings = _open_anchored_root(root)
+    except OSError as error:
+        raise ValueError("Git repository root is unsafe") from error
+    git_descriptor: Optional[int] = None
+    git_directory_descriptor: Optional[int] = None
+    metadata_descriptors: list[int] = []
+    metadata_files: list[Tuple[int, str, int, _Fingerprint, bytes]] = []
+    metadata_directories: list[Tuple[int, str, int, _Fingerprint]] = []
+    try:
+        root_before = _fingerprint(os.fstat(root_descriptor))
+        try:
+            git_directory_descriptor = os.open(
+                ".git",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=root_descriptor,
+            )
+        except OSError as error:
+            raise ValueError(
+                "Git repository must contain an anchored .git directory"
+            ) from error
+        git_directory_before = _fingerprint(os.fstat(git_directory_descriptor))
+        if not stat.S_ISDIR(git_directory_before.mode):
+            raise ValueError("Git metadata is not a directory")
+
+        def open_metadata_directory(parent: int, name: str, label: str) -> int:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent,
+                )
+            except OSError as error:
+                raise ValueError(f"{label} is unsafe or missing") from error
+            metadata_descriptors.append(descriptor)
+            fingerprint = _fingerprint(os.fstat(descriptor))
+            if not stat.S_ISDIR(fingerprint.mode):
+                raise ValueError(f"{label} is not a directory")
+            if (
+                _fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                != fingerprint
+            ):
+                raise ValueError(f"{label} binding changed")
+            metadata_directories.append((parent, name, descriptor, fingerprint))
+            return descriptor
+
+        def open_metadata_file(parent: int, name: str, label: str) -> bytes:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent,
+                )
+            except OSError as error:
+                raise ValueError(f"{label} is unsafe or missing") from error
+            metadata_descriptors.append(descriptor)
+            fingerprint = _fingerprint(os.fstat(descriptor))
+            data = _read_git_metadata_file(descriptor, label)
+            if (
+                _fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                != fingerprint
+            ):
+                raise ValueError(f"{label} binding changed")
+            metadata_files.append((parent, name, descriptor, fingerprint, data))
+            return data
+
+        head_bytes = open_metadata_file(git_directory_descriptor, "HEAD", "Git HEAD")
+        if not head_bytes or not head_bytes.endswith(b"\n"):
+            raise ValueError("Git HEAD is invalid")
+        head_value = head_bytes[:-1]
+        if head_value.startswith(b"ref: "):
+            try:
+                head_reference = head_value[5:].decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValueError("Git HEAD reference is invalid") from error
+            _relative_path(head_reference)
+            if not head_reference.startswith("refs/heads/"):
+                raise ValueError(
+                    "only loose local branch HEAD references are supported"
+                )
+            reference_parent = git_directory_descriptor
+            reference_parts = PurePosixPath(head_reference).parts
+            for index, part in enumerate(reference_parts[:-1]):
+                reference_parent = open_metadata_directory(
+                    reference_parent,
+                    part,
+                    f"Git HEAD reference directory {index}",
+                )
+            reference_bytes = open_metadata_file(
+                reference_parent,
+                reference_parts[-1],
+                "Git HEAD loose reference",
+            )
+            if not reference_bytes.endswith(b"\n"):
+                raise ValueError("Git HEAD loose reference is invalid")
+            revision_bytes = reference_bytes[:-1]
+        else:
+            revision_bytes = head_value
+        try:
+            revision = revision_bytes.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ValueError("Git HEAD object ID has invalid encoding") from error
+        if _GIT_OBJECT_ID.fullmatch(revision) is None:
+            raise ValueError("Git HEAD object ID is invalid")
+
+        config_bytes = open_metadata_file(
+            git_directory_descriptor,
+            "config",
+            "Git local config",
+        )
+        if not config_bytes:
+            raise ValueError("Git local config is empty")
+        config_descriptor = metadata_files[-1][2]
+        objects_descriptor = open_metadata_directory(
+            git_directory_descriptor,
+            "objects",
+            "Git objects directory",
+        )
+        objects_info_descriptor = open_metadata_directory(
+            objects_descriptor,
+            "info",
+            "Git objects info directory",
+        )
+        try:
+            os.stat(
+                "alternates",
+                dir_fd=objects_info_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("Git object alternates are unsupported")
+        info_descriptor = open_metadata_directory(
+            git_directory_descriptor,
+            "info",
+            "Git info directory",
+        )
+        open_metadata_file(
+            info_descriptor,
+            "exclude",
+            "Git info exclude",
+        )
+        try:
+            git_descriptor = os.open(
+                _TRUSTED_GIT_PATH,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+        except OSError as error:
+            raise ValueError("trusted Git executable cannot be opened") from error
+        git_before = _fingerprint(os.fstat(git_descriptor))
+        if (
+            not stat.S_ISREG(git_before.mode)
+            or git_before.user != 0
+            or git_before.mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise ValueError("Git executable is not trusted")
+        repository_fd_path = f"/proc/self/fd/{root_descriptor}"
+        git_directory_fd_path = f"/proc/self/fd/{git_directory_descriptor}"
+        git_prefix = (
+            _TRUSTED_GIT_PATH,
+            "--no-pager",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "diff.external=",
+            "-c",
+            "core.excludesFile=/dev/null",
+            "-c",
+            "core.ignoreCase=false",
+            f"--git-dir={git_directory_fd_path}",
+            f"--work-tree={repository_fd_path}",
+        )
+        git_environment = {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "HOME": "/nonexistent",
+            "LANG": "C",
+            "LC_ALL": "C",
+        }
+        try:
+            config = subprocess.run(
+                (
+                    _TRUSTED_GIT_PATH,
+                    "--no-pager",
+                    "config",
+                    f"--file=/proc/self/fd/{config_descriptor}",
+                    "--no-includes",
+                    "--null",
+                    "--list",
+                ),
+                check=True,
+                capture_output=True,
+                env=git_environment,
+                pass_fds=(config_descriptor,),
+                timeout=_GIT_INSPECTION_TIMEOUT_SECONDS,
+            )
+            if config.stderr:
+                raise ValueError("Git config inspection emitted unexpected stderr")
+            origin_url = _origin_from_safe_local_git_config(config.stdout)
+            passed_descriptors = (
+                root_descriptor,
+                git_directory_descriptor,
+                objects_descriptor,
+            )
+            tree_result = subprocess.run(
+                git_prefix
+                + (
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--full-tree",
+                    revision,
+                ),
+                check=True,
+                capture_output=True,
+                env=git_environment,
+                pass_fds=passed_descriptors,
+                timeout=_GIT_INSPECTION_TIMEOUT_SECONDS,
+            )
+            tree = _parse_git_tree(tree_result.stdout)
+            worktree = _capture_git_worktree(
+                root_descriptor,
+                git_directory_fingerprint=git_directory_before,
+            )
+            tracked_ignore_paths: set[str] = set()
+            for ignore_path, entry in tree.items():
+                if PurePosixPath(ignore_path).name != ".gitignore":
+                    continue
+                if entry.mode not in {"100644", "100755"}:
+                    raise ValueError("tracked .gitignore must be a regular file")
+                parent = root_descriptor
+                parts = PurePosixPath(ignore_path).parts
+                for index, part in enumerate(parts[:-1]):
+                    parent = open_metadata_directory(
+                        parent,
+                        part,
+                        f"tracked .gitignore ancestor {index}",
+                    )
+                ignore_bytes = open_metadata_file(
+                    parent,
+                    parts[-1],
+                    "tracked .gitignore",
+                )
+                if (
+                    _git_blob_digest(len(ignore_bytes), (ignore_bytes,))
+                    != entry.object_id
+                ):
+                    raise ValueError("tracked .gitignore differs from Git tree")
+                tracked_ignore_paths.add(ignore_path)
+            extra_paths = tuple(
+                path for path in worktree.extra_paths if path not in tree
+            )
+            ignore_result = subprocess.run(
+                git_prefix
+                + (
+                    "check-ignore",
+                    "--no-index",
+                    "-v",
+                    "-z",
+                    "--stdin",
+                ),
+                check=False,
+                capture_output=True,
+                env=git_environment,
+                input=b"".join(os.fsencode(path) + b"\x00" for path in extra_paths),
+                pass_fds=passed_descriptors,
+                timeout=_GIT_INSPECTION_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError("Git repository inspection failed") from error
+        if any(
+            result.stderr
+            for result in (
+                tree_result,
+                ignore_result,
+            )
+        ):
+            raise ValueError("Git inspection emitted unexpected stderr")
+        if ignore_result.returncode not in {0, 1}:
+            raise ValueError("Git check-ignore failed")
+        final_worktree = _capture_git_worktree(
+            root_descriptor,
+            git_directory_fingerprint=git_directory_before,
+        )
+        if final_worktree != worktree:
+            raise ValueError("Git worktree changed during inspection")
+        ignored = _parse_git_check_ignore(ignore_result.stdout)
+        if set(ignored) != set(extra_paths) or any(
+            source not in tracked_ignore_paths for source, _ in ignored.values()
+        ):
+            extras_clean = False
+        else:
+            extras_clean = True
+        tracked_clean = all(
+            worktree.entries.get(path) == entry for path, entry in tree.items()
+        )
+        for parent, name, descriptor, expected, expected_bytes in metadata_files:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if (
+                _fingerprint(os.fstat(descriptor)) != expected
+                or _read_git_metadata_file(descriptor, name) != expected_bytes
+                or _fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                != expected
+            ):
+                raise ValueError("Git metadata file changed during inspection")
+        for parent, name, descriptor, expected in metadata_directories:
+            if (
+                _fingerprint(os.fstat(descriptor)) != expected
+                or _fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                != expected
+            ):
+                raise ValueError("Git metadata directory changed during inspection")
+        try:
+            os.stat(
+                "alternates",
+                dir_fd=objects_info_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("Git object alternates changed during inspection")
+        if _fingerprint(os.fstat(root_descriptor)) != root_before:
+            raise ValueError("Git repository root changed during inspection")
+        if _fingerprint(os.fstat(git_directory_descriptor)) != git_directory_before:
+            raise ValueError("Git metadata directory changed during inspection")
+        try:
+            git_directory_path_after = _fingerprint(
+                os.stat(".git", dir_fd=root_descriptor, follow_symlinks=False)
+            )
+        except OSError as error:
+            raise ValueError("Git metadata directory binding changed") from error
+        if git_directory_path_after != git_directory_before:
+            raise ValueError("Git metadata directory binding changed")
+        try:
+            git_path_after = _fingerprint(
+                os.stat(_TRUSTED_GIT_PATH, follow_symlinks=False)
+            )
+        except OSError as error:
+            raise ValueError("trusted Git executable binding changed") from error
+        if (
+            _fingerprint(os.fstat(git_descriptor)) != git_before
+            or git_path_after != git_before
+        ):
+            raise ValueError("trusted Git executable binding changed")
+        _recapture_ancestor_bindings(bindings)
+        return GitRepositoryState(
+            commit=revision,
+            clean=tracked_clean and extras_clean,
+            origin_url=origin_url,
+        )
+    finally:
+        git_descriptors = (() if git_descriptor is None else (git_descriptor,)) + (
+            () if git_directory_descriptor is None else (git_directory_descriptor,)
+        )
+        _close_descriptors(
+            git_descriptors
+            + tuple(reversed(metadata_descriptors))
+            + tuple(reversed(descriptors))
+        )
 
 
 def _capture_tree(root_descriptor: int) -> _TreeSnapshot:
@@ -2701,12 +3799,10 @@ def _recompute_accepted_candidate_science(
     trusted_cohort: TrustedCohort,
     mapping_authority: CandidateMappingAuthority,
     provenance: Optional[ProvenanceChecks] = None,
-    oracle_projector: Callable[[RawFrameArrays], np.ndarray] = (
-        project_oracle_target_labels
-    ),
-    prediction_projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray] = (
-        project_mapped_labels
-    ),
+    oracle_projector: Optional[Callable[[RawFrameArrays], np.ndarray]] = None,
+    prediction_projector: Optional[
+        Callable[[np.ndarray, RawFrameArrays], np.ndarray]
+    ] = None,
 ) -> _ScientificRecomputation:
     """Recompute claims without minting an authority-bearing PASS record."""
 
@@ -2716,6 +3812,12 @@ def _recompute_accepted_candidate_science(
         raise ValueError("scientific validation requires a trusted cohort")
     if not isinstance(mapping_authority, CandidateMappingAuthority):
         raise ValueError("scientific validation requires mapping authority")
+    sealed_oracle_projector = (
+        project_oracle_target_labels if oracle_projector is None else oracle_projector
+    )
+    sealed_prediction_projector = (
+        project_mapped_labels if prediction_projector is None else prediction_projector
+    )
     raw = tuple(raw_observations)
     if len(raw) != 50 or any(
         not isinstance(value, ValidatedRawObservation)
@@ -2750,8 +3852,8 @@ def _recompute_accepted_candidate_science(
     for raw_value, row, accepted_prediction in zip(
         raw, accepted.observations, accepted.predictions
     ):
-        target = oracle_projector(raw_value.audit_arrays)
-        projected = prediction_projector(
+        target = sealed_oracle_projector(raw_value.audit_arrays)
+        projected = sealed_prediction_projector(
             accepted_prediction.prediction.mapped_labels,
             raw_value.audit_arrays,
         )
@@ -2835,4 +3937,391 @@ def _recompute_accepted_candidate_science(
         latency=latency,
         provenance=provenance,
         gates=gates,
+    )
+
+
+def _require_git_state(
+    actual: GitRepositoryState,
+    *,
+    expected_commit: str,
+    expected_origin_url: Optional[str] = None,
+    label: str,
+) -> None:
+    if (
+        not actual.clean
+        or actual.commit != expected_commit
+        or (
+            expected_origin_url is not None and actual.origin_url != expected_origin_url
+        )
+    ):
+        raise ValueError(f"{label} Git state differs from authority")
+
+
+def _require_runtime_source_bindings(
+    authority: CandidateValidationAuthority,
+) -> None:
+    runtime_sources = {
+        "constants": (_constants_module.__file__, _FIXED_SOURCE_PATHS["constants"]),
+        "contract": _benchmark_contract_module.__file__,
+        "package": __file__,
+        "projector": _projector_module.__file__,
+        "raw_package": (_raw_package_module.__file__, _RAW_PACKAGE_SOURCE_PATH),
+    }
+    for role, value in runtime_sources.items():
+        if isinstance(value, tuple):
+            module_path, relative_path = value
+        else:
+            module_path = value
+            relative_path = _FIXED_SOURCE_PATHS[role]
+        if not isinstance(module_path, str):
+            raise ValueError(f"runtime {role} module has no source path")
+        expected = authority.benchmark_repository_root / relative_path
+        try:
+            actual = Path(module_path).resolve(strict=True)
+            expected_resolved = expected.resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"runtime {role} source cannot be resolved") from error
+        if expected_resolved != expected or actual != expected:
+            raise ValueError(
+                f"runtime {role} source is outside benchmark authority root"
+            )
+    raw_source = _trusted_file_record(
+        authority.benchmark_repository_root,
+        _RAW_PACKAGE_SOURCE_PATH,
+    )
+    if raw_source.sha256 != RAW_VALIDATOR_SOURCE_SHA256:
+        raise ValueError("runtime raw package source differs from frozen validator")
+
+
+def _require_manifest_authority(
+    accepted: AcceptedCandidatePackage,
+    *,
+    authority: CandidateValidationAuthority,
+    p53_attestation: P53ValidationAttestation,
+) -> None:
+    summary = accepted.manifest.summary
+    fields = _mapping(accepted.manifest.fields, "manifest")
+    if (
+        summary.p53_attestation != p53_attestation
+        or summary.benchmark_attestation != authority.benchmark_attestation
+        or summary.candidate != authority.candidate
+        or fields["candidate_id"] != authority.candidate.candidate_id
+        or fields["producer_git_commit"] != authority.expected_producer_commit
+        or fields["command"] != authority.expected_command
+    ):
+        raise ValueError("candidate manifest differs from validation authority")
+    raw_inputs = _mapping(fields["raw_inputs"], "manifest.raw_inputs")
+    if raw_inputs != {
+        "cohort_jsonl_sha256": _COHORT_JSONL_SHA256,
+        "raw_index_sha256": RAW_INDEX_SHA256,
+        "raw_manifest_sha256": RAW_MANIFEST_SHA256,
+        "raw_payload_tree_sha256": _RAW_PAYLOAD_TREE_SHA256,
+        "raw_producer_git_commit": RAW_PRODUCER_COMMIT,
+        "selection_sha256": _SELECTION_SHA256,
+    }:
+        raise ValueError("candidate manifest raw inputs differ from frozen authority")
+
+
+def _capture_source_records(
+    manifest: SuccessfulManifest,
+    *,
+    authority: CandidateValidationAuthority,
+) -> Mapping[str, FileRecord]:
+    raw = _mapping(manifest.fields["source_hashes"], "manifest.source_hashes")
+    captured: dict[str, FileRecord] = {}
+    for role in _SOURCE_HASH_KEYS:
+        value = _mapping(raw[role], f"manifest.source_hashes.{role}")
+        path = cast(str, value["path"])
+        if role == "adapter" and path != authority.adapter_path:
+            raise ValueError("candidate adapter path differs from authority")
+        record = _trusted_file_record(authority.benchmark_repository_root, path)
+        if record.sha256 != value["sha256"]:
+            raise ValueError(f"candidate source hash differs from bytes: {role}")
+        captured[role] = record
+    mapping_path = cast(
+        str,
+        _mapping(raw["mapping"], "manifest.source_hashes.mapping")["path"],
+    )
+    mapping_record = captured["mapping"]
+    if (
+        mapping_record.sha256 != NYU40_MAPPING_SHA256
+        or authority.mapping.mapping_sha256 != NYU40_MAPPING_SHA256
+    ):
+        raise ValueError("mapping source differs from frozen NYU40 authority")
+    loaded_mapping = load_nyu40_mapping(
+        authority.benchmark_repository_root / mapping_path
+    )
+    if (
+        loaded_mapping != authority.mapping.mapping
+        or tuple(entry.source_name for entry in loaded_mapping)
+        != authority.mapping.source_vocabulary
+    ):
+        raise ValueError("mapping source contents differ from mapping authority")
+    return _FrozenMapping(tuple(sorted(captured.items())))
+
+
+def _authority_root(
+    authority: CandidateValidationAuthority,
+    root_role: str,
+) -> Path:
+    if root_role == "benchmark_repository":
+        return authority.benchmark_repository_root
+    if root_role == "candidate_repository" and authority.real is not None:
+        return authority.real.candidate_repository_root
+    raise ValueError("trusted artifact root role is unavailable")
+
+
+def _require_permission_record(
+    raw: Mapping[str, object],
+    *,
+    expected: TrustedArtifactAuthority,
+    authority: CandidateValidationAuthority,
+    label: str,
+) -> FileRecord:
+    if raw != {
+        "byte_length": expected.file.byte_length,
+        "path": expected.path,
+        "root_role": expected.root_role,
+        "sha256": expected.file.sha256,
+    }:
+        raise ValueError(f"{label} permission evidence differs from authority")
+    actual = _trusted_file_record(
+        _authority_root(authority, expected.root_role),
+        expected.path,
+    )
+    if actual != expected.file:
+        raise ValueError(f"{label} permission evidence differs from bytes")
+    return actual
+
+
+@dataclass(frozen=True)
+class _RealProvenanceCapture:
+    checkpoint: FileRecord
+    code_permission: FileRecord
+    weight_permission: FileRecord
+
+
+def _capture_real_provenance(
+    accepted: AcceptedCandidatePackage,
+    *,
+    authority: CandidateValidationAuthority,
+) -> _RealProvenanceCapture:
+    real = authority.real
+    summary = accepted.manifest.summary
+    if real is None or summary.real is None:
+        raise ValueError("real provenance authority is unavailable")
+    candidate = authority.candidate
+    checkpoint = _trusted_file_record(real.checkpoint_root, real.checkpoint_path)
+    if (
+        checkpoint != real.checkpoint_file
+        or checkpoint.sha256 != candidate.checkpoint_sha256
+    ):
+        raise ValueError("candidate checkpoint differs from authority")
+    permissions = _mapping(
+        accepted.manifest.fields["permission_evidence"],
+        "manifest.permission_evidence",
+    )
+    code_permission = _require_permission_record(
+        _mapping(permissions["code"], "manifest.permission_evidence.code"),
+        expected=real.code_permission,
+        authority=authority,
+        label="code",
+    )
+    weight_permission = _require_permission_record(
+        _mapping(permissions["weights"], "manifest.permission_evidence.weights"),
+        expected=real.weight_permission,
+        authority=authority,
+        label="weight",
+    )
+    benchmark = authority.benchmark_attestation
+    cuda = summary.real.cuda_evidence
+    if any(
+        (snapshot.gpu_name, snapshot.gpu_uuid)
+        != (benchmark.gpu_name, benchmark.gpu_uuid)
+        for snapshot in (cuda.before, cuda.after)
+    ):
+        raise ValueError("archival CUDA evidence differs from benchmark authority")
+    return _RealProvenanceCapture(
+        checkpoint=checkpoint,
+        code_permission=code_permission,
+        weight_permission=weight_permission,
+    )
+
+
+def _capture_environment_lock(
+    authority: CandidateValidationAuthority,
+) -> FileRecord:
+    expected = authority.environment_lock
+    actual = _trusted_file_record(
+        _authority_root(authority, expected.root_role),
+        expected.path,
+    )
+    if (
+        actual != expected.file
+        or expected.path != authority.candidate.environment_lock_path
+        or actual.sha256 != authority.candidate.environment_lock_sha256
+    ):
+        raise ValueError("candidate environment lock differs from authority")
+    return actual
+
+
+def _passed_provenance_checks() -> ProvenanceChecks:
+    return ProvenanceChecks(
+        clean_experiment_commit=True,
+        complete_command=True,
+        raw_package_pinned=True,
+        cohort_pinned=True,
+        candidate_revision_pinned=True,
+        checkpoint_hash_pinned=True,
+        environment_pinned=True,
+        mapping_pinned=True,
+        projector_pinned=True,
+        preprocessing_pinned=True,
+        precision_pinned=True,
+        permission_evidence_pinned=True,
+    )
+
+
+def validate_candidate_package(
+    root: Path,
+    *,
+    authority: CandidateValidationAuthority,
+) -> ValidatedCandidatePackage:
+    """Validate one package and mint an endpoint-free, factory-only PASS record."""
+
+    if not isinstance(authority, CandidateValidationAuthority):
+        raise ValueError("candidate validation authority is required")
+    _require_runtime_source_bindings(authority)
+    benchmark_before = _inspect_git_repository(authority.benchmark_repository_root)
+    _require_git_state(
+        benchmark_before,
+        expected_commit=authority.expected_producer_commit,
+        label="benchmark repository",
+    )
+    candidate_before: Optional[GitRepositoryState] = None
+    if authority.real is not None:
+        candidate_before = _inspect_git_repository(
+            authority.real.candidate_repository_root
+        )
+        _require_git_state(
+            candidate_before,
+            expected_commit=authority.candidate.revision,
+            expected_origin_url=authority.candidate.repository_url,
+            label="candidate repository",
+        )
+
+    p53_attestation = run_p53_validation_subprocess(authority.p53_launch)
+    trusted_cohort = _trusted_cohort_from_raw_index(
+        authority.p53_launch.raw_root,
+        p53_attestation=p53_attestation,
+    )
+    accepted = accept_candidate_package(
+        root,
+        expected_manifest_sha256=authority.expected_manifest_sha256,
+        trusted_cohort=trusted_cohort,
+        mapping_authority=authority.mapping,
+    )
+    _require_manifest_authority(
+        accepted,
+        authority=authority,
+        p53_attestation=p53_attestation,
+    )
+    source_before = _capture_source_records(
+        accepted.manifest,
+        authority=authority,
+    )
+    environment_before = _capture_environment_lock(authority)
+
+    provenance: Optional[ProvenanceChecks] = None
+    real_before: Optional[_RealProvenanceCapture] = None
+    if authority.real is not None:
+        real_before = _capture_real_provenance(accepted, authority=authority)
+        provenance = _passed_provenance_checks()
+    raw_observations = iter_validated_raw_observations(
+        authority.p53_launch.raw_root,
+        p53_attestation=p53_attestation,
+        expected_p53_attestation_sha256=p53_attestation.sha256,
+        benchmark_attestation=authority.benchmark_attestation,
+        expected_benchmark_attestation_sha256=(
+            authority.expected_benchmark_attestation_sha256
+        ),
+    )
+    _recompute_accepted_candidate_science(
+        accepted,
+        raw_observations=raw_observations,
+        trusted_cohort=trusted_cohort,
+        mapping_authority=authority.mapping,
+        provenance=provenance,
+    )
+
+    final_p53_attestation = run_p53_validation_subprocess(authority.p53_launch)
+    if final_p53_attestation != p53_attestation:
+        raise ValueError("P5.3 attestation changed during validation")
+    if (
+        _trusted_cohort_from_raw_index(
+            authority.p53_launch.raw_root,
+            p53_attestation=final_p53_attestation,
+        )
+        != trusted_cohort
+    ):
+        raise ValueError("raw cohort changed during validation")
+    final_accepted = accept_candidate_package(
+        root,
+        expected_manifest_sha256=authority.expected_manifest_sha256,
+        trusted_cohort=trusted_cohort,
+        mapping_authority=authority.mapping,
+    )
+    if final_accepted.validation != accepted.validation:
+        raise ValueError("candidate package changed during validation")
+    if _capture_source_records(accepted.manifest, authority=authority) != source_before:
+        raise ValueError("candidate sources changed during validation")
+    if _capture_environment_lock(authority) != environment_before:
+        raise ValueError("candidate environment changed during validation")
+    if authority.real is not None:
+        if _capture_real_provenance(accepted, authority=authority) != real_before:
+            raise ValueError("candidate provenance changed during validation")
+        candidate_after = _inspect_git_repository(
+            authority.real.candidate_repository_root
+        )
+        _require_git_state(
+            candidate_after,
+            expected_commit=authority.candidate.revision,
+            expected_origin_url=authority.candidate.repository_url,
+            label="candidate repository",
+        )
+        if candidate_after != candidate_before:
+            raise ValueError("candidate Git state changed during validation")
+    benchmark_after = _inspect_git_repository(authority.benchmark_repository_root)
+    _require_git_state(
+        benchmark_after,
+        expected_commit=authority.expected_producer_commit,
+        label="benchmark repository",
+    )
+    if benchmark_after != benchmark_before:
+        raise ValueError("benchmark Git state changed during validation")
+    authority.benchmark_attestation.require_current_process()
+
+    summary = accepted.manifest.summary
+    record = CandidateValidationRecord(
+        schema_version=1,
+        validation_status="PASS",
+        candidate_status=(
+            "NOT_APPLICABLE"
+            if summary.real is None
+            else summary.real.gates.overall.value
+        ),
+        run_kind=summary.run_kind,
+        candidate_id=summary.candidate.candidate_id,
+        producer_git_commit=authority.expected_producer_commit,
+        p53_attestation_sha256=p53_attestation.sha256,
+        benchmark_attestation_sha256=(authority.expected_benchmark_attestation_sha256),
+        synthetic_semantic_scores_exposed=False,
+        observation_count=50,
+        package=accepted.validation,
+        _validation_token=_VALIDATION_TOKEN,
+    )
+    return ValidatedCandidatePackage(
+        validation=accepted.validation,
+        record=record,
+        _validation_token=_VALIDATION_TOKEN,
     )
