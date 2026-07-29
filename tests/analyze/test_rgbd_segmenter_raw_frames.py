@@ -1989,6 +1989,49 @@ def test_manifest_is_canonical_and_binds_every_exact_commitment() -> None:
     assert manifest["files"]["payload"]["file_count"] == 51
 
 
+def test_tracked_asset_roles_bind_same_buffer_content_and_manifest_sha() -> None:
+    path = "prior/analyze/d2026_07_29/rgbd_segmenter_asset_roles.json"
+    data = Path(path).read_bytes()
+    expected = (
+        b"{\n"
+        b'  "algorithm": "single-role-omission-first-row-per-scene-v1",\n'
+        b'  "auxiliary": [\n'
+        b'    "navmesh"\n'
+        b"  ],\n"
+        b'  "required": [\n'
+        b'    "glb",\n'
+        b'    "house",\n'
+        b'    "semantic_ply"\n'
+        b"  ],\n"
+        b'  "schema_version": 1\n'
+        b"}\n"
+    )
+    digest = hashlib.sha256(data).hexdigest()
+    sources = replace(
+        _manifest_sources(),
+        asset_roles=SourceRecord(path=path, data=data),
+    )
+    rows = _manifest_rows()
+    manifest = json.loads(
+        build_manifest(
+            git_commit="a" * 40,
+            sources=sources,
+            scene_assets=_scene_assets(),
+            environment=_environment(),
+            index_bytes=canonical_index_bytes(rows),
+            rows=rows,
+        )
+    )
+
+    assert data == expected
+    assert digest == "a2cb167a71fb710f11c686589614c3e414c4f877ad83d6444d0e868983628b94"
+    assert manifest["collection"]["asset_roles"] == {
+        "path": path,
+        "byte_length": len(data),
+        "sha256": digest,
+    }
+
+
 def test_collection_input_preserves_same_buffer_cohort_row_hash() -> None:
     inputs = load_collection_inputs()
     cohort = Path(

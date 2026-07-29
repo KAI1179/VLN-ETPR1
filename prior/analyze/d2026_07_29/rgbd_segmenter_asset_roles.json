@@ -1,0 +1,12 @@
+{
+  "algorithm": "single-role-omission-first-row-per-scene-v1",
+  "auxiliary": [
+    "navmesh"
+  ],
+  "required": [
+    "glb",
+    "house",
+    "semantic_ply"
+  ],
+  "schema_version": 1
+}
