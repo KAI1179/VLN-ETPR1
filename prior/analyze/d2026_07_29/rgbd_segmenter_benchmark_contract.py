@@ -15,7 +15,7 @@ from importlib import metadata
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Mapping, Optional, Protocol, Sequence, Tuple, cast
+from typing import Iterable, Mapping, Optional, Protocol, Sequence, Tuple, cast
 
 import numpy as np
 import torch
@@ -51,6 +51,18 @@ DEFAULT_NYU40_MAPPING_PATH = Path(__file__).with_name(
 NYU40_MAPPING_SHA256 = (
     "133ebb300e5dc01f6176e4eb01a48569c3eec635a90fea2b8a602b53e50bc395"
 )
+BOOTSTRAP_MATRIX_SHA256 = (
+    "a89573633a8efd5dac5ffe03f292491a8aba5202ff2951f7ac186f07f2c07f99"
+)
+BOOTSTRAP_SEED = 20260728
+BOOTSTRAP_REPLICATES = 10_000
+BOOTSTRAP_SCENE_COUNT = 11
+MIN_COVERED_CATEGORIES = 14
+MIN_SUPPORT_COVERAGE = 0.8
+MIN_MEAN_IOU = 0.15
+MIN_MEAN_F1 = 0.25
+MAX_LATENCY_P95_SECONDS = 1.0
+MAX_ABSOLUTE_RESERVED_BYTES = 16 * 1024**3
 _MAX_RAW_FILE_BYTES = 64 * 1024 * 1024
 _MAX_TREE_ENTRIES = 64
 _MAX_TREE_DEPTH = 3
@@ -848,6 +860,251 @@ class ResourceMeasurement:
             raise ValueError("resource measurements are internally inconsistent")
 
 
+@dataclass(frozen=True)
+class TrustedCohort:
+    identities: Tuple[Tuple[int, str, str], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.identities) is not tuple
+            or len(self.identities) != 50
+            or any(
+                type(identity) is not tuple
+                or len(identity) != 3
+                or type(identity[0]) is not int
+                or identity[0] != ordinal
+                or not isinstance(identity[1], str)
+                or not identity[1]
+                or "\x00" in identity[1]
+                or not isinstance(identity[2], str)
+                or not identity[2]
+                or "\x00" in identity[2]
+                for ordinal, identity in enumerate(self.identities)
+            )
+            or len({identity[1] for identity in self.identities}) != 50
+        ):
+            raise ValueError("trusted cohort must contain exact ordered identities")
+        scenes = tuple(sorted({identity[2] for identity in self.identities}))
+        if len(scenes) != BOOTSTRAP_SCENE_COUNT:
+            raise ValueError("trusted cohort must contain exactly 11 scenes")
+
+    @property
+    def scenes(self) -> Tuple[str, ...]:
+        return tuple(sorted({identity[2] for identity in self.identities}))
+
+
+@dataclass(frozen=True)
+class EndpointRow:
+    ordinal: int
+    observation_id: str
+    scene_id: str
+    endpoint: Optional[float]
+    status: ObservationStatus = ObservationStatus.PASS
+    failure_code: Optional[ObservationFailureCode] = None
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or not 0 <= self.ordinal < 50:
+            raise ValueError("endpoint ordinal must be in [0, 49]")
+        if (
+            not isinstance(self.observation_id, str)
+            or not self.observation_id
+            or "\x00" in self.observation_id
+            or not isinstance(self.scene_id, str)
+            or not self.scene_id
+            or "\x00" in self.scene_id
+        ):
+            raise ValueError("endpoint identity is invalid")
+        if self.endpoint is not None and (
+            isinstance(self.endpoint, bool)
+            or not isinstance(self.endpoint, (int, float))
+            or not math.isfinite(self.endpoint)
+            or not 0 <= self.endpoint <= 1
+        ):
+            raise ValueError("endpoint must be null or finite in [0, 1]")
+        _require_outcome(self.status, self.failure_code)
+
+
+@dataclass(frozen=True)
+class RobustnessEstimate:
+    point_estimate: float
+    interval_low: float
+    interval_high: float
+    leave_one_scene_out_min: float
+    leave_one_scene_out_max: float
+    replicate_count: int = BOOTSTRAP_REPLICATES
+
+    def __post_init__(self) -> None:
+        _validate_estimate(
+            self.point_estimate,
+            self.interval_low,
+            self.interval_high,
+            self.leave_one_scene_out_min,
+            self.leave_one_scene_out_max,
+            self.replicate_count,
+            lower_bound=0.0,
+            upper_bound=1.0,
+        )
+
+
+@dataclass(frozen=True)
+class ContrastEstimate:
+    point_estimate: float
+    interval_low: float
+    interval_high: float
+    leave_one_scene_out_min: float
+    leave_one_scene_out_max: float
+    replicate_count: int = BOOTSTRAP_REPLICATES
+
+    def __post_init__(self) -> None:
+        _validate_estimate(
+            self.point_estimate,
+            self.interval_low,
+            self.interval_high,
+            self.leave_one_scene_out_min,
+            self.leave_one_scene_out_max,
+            self.replicate_count,
+            lower_bound=-1.0,
+            upper_bound=1.0,
+        )
+
+
+def _validate_estimate(
+    point_estimate: float,
+    interval_low: float,
+    interval_high: float,
+    leave_one_scene_out_min: float,
+    leave_one_scene_out_max: float,
+    replicate_count: int,
+    *,
+    lower_bound: float,
+    upper_bound: float,
+) -> None:
+    if type(replicate_count) is not int or replicate_count != BOOTSTRAP_REPLICATES:
+        raise ValueError("estimate replicate count is invalid")
+    numbers = (
+        point_estimate,
+        interval_low,
+        interval_high,
+        leave_one_scene_out_min,
+        leave_one_scene_out_max,
+    )
+    if any(
+        isinstance(number, bool)
+        or not isinstance(number, (int, float))
+        or not math.isfinite(number)
+        or not lower_bound <= number <= upper_bound
+        for number in numbers
+    ):
+        raise ValueError("estimate values are invalid")
+    if numbers[1] > numbers[2] or numbers[3] > numbers[4]:
+        raise ValueError("estimate bounds are reversed")
+
+
+class GateStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class StaticCoverage:
+    covered_category_count: int
+    covered_support_count: int
+    total_support_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.covered_category_count) is not int
+            or not 0 <= self.covered_category_count <= len(PRIMARY_CATEGORY_INDICES)
+            or type(self.covered_support_count) is not int
+            or type(self.total_support_count) is not int
+            or self.total_support_count < 1
+            or not 0 <= self.covered_support_count <= self.total_support_count
+        ):
+            raise ValueError("static coverage counts are invalid")
+
+    @property
+    def support_ratio(self) -> float:
+        return self.covered_support_count / self.total_support_count
+
+
+@dataclass(frozen=True)
+class ProvenanceChecks:
+    clean_experiment_commit: bool
+    complete_command: bool
+    raw_package_pinned: bool
+    cohort_pinned: bool
+    candidate_revision_pinned: bool
+    checkpoint_hash_pinned: bool
+    environment_pinned: bool
+    mapping_pinned: bool
+    projector_pinned: bool
+    preprocessing_pinned: bool
+    precision_pinned: bool
+    permission_evidence_pinned: bool
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not bool for value in vars(self).values()):
+            raise ValueError("provenance checks must be booleans")
+
+    @property
+    def passed(self) -> bool:
+        return all(vars(self).values())
+
+
+@dataclass(frozen=True)
+class CandidateGateResult:
+    coverage: GateStatus
+    complete_rows: GateStatus
+    quality: GateStatus
+    latency: GateStatus
+    resource: GateStatus
+    license: GateStatus
+    provenance: GateStatus
+    overall: GateStatus
+
+    def __post_init__(self) -> None:
+        values = tuple(vars(self).values())
+        if any(not isinstance(value, GateStatus) for value in values):
+            raise ValueError("candidate gate status is invalid")
+        expected = (
+            GateStatus.PASS
+            if all(value is GateStatus.PASS for value in values[:-1])
+            else GateStatus.FAIL
+        )
+        if self.overall is not expected:
+            raise ValueError("candidate overall gate is inconsistent")
+
+
+@dataclass(frozen=True)
+class LatencySummary:
+    timing_comparable: bool
+    unit: str
+    sample_count: int
+    p95_seconds: Optional[float]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.timing_comparable) is not bool
+            or not isinstance(self.unit, str)
+            or not self.unit
+            or type(self.sample_count) is not int
+            or self.sample_count < 0
+        ):
+            raise ValueError("latency summary schema is invalid")
+        if self.timing_comparable:
+            if (
+                self.unit != "seconds"
+                or self.sample_count != 100
+                or isinstance(self.p95_seconds, bool)
+                or not isinstance(self.p95_seconds, (int, float))
+                or not math.isfinite(self.p95_seconds)
+                or self.p95_seconds < 0
+            ):
+                raise ValueError("comparable latency summary is invalid")
+        elif self.p95_seconds is not None:
+            raise ValueError("non-comparable latency cannot claim a P95")
+
+
 def _require_outcome(
     status: ObservationStatus,
     failure_code: Optional[ObservationFailureCode],
@@ -1173,6 +1430,274 @@ def aggregate_observation_metrics(
             for index in range(27)
         ),
     )
+
+
+def linear_quantile(values: Iterable[float], probability: float) -> float:
+    """Return the frozen linearly interpolated order statistic."""
+
+    samples = tuple(values)
+    if (
+        not samples
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float, np.integer, np.floating))
+            or not math.isfinite(float(value))
+            for value in samples
+        )
+        or isinstance(probability, bool)
+        or not isinstance(probability, (int, float))
+        or not math.isfinite(probability)
+        or not 0 <= probability <= 1
+    ):
+        raise ValueError("linear quantile inputs are invalid")
+    ordered = sorted(float(value) for value in samples)
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    fraction = position - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def scene_bootstrap_matrix() -> np.ndarray:
+    """Return the immutable, hash-pinned scene-composition matrix."""
+
+    matrix = np.random.Generator(np.random.PCG64(BOOTSTRAP_SEED)).integers(
+        0,
+        BOOTSTRAP_SCENE_COUNT,
+        size=(BOOTSTRAP_REPLICATES, BOOTSTRAP_SCENE_COUNT),
+        endpoint=False,
+    )
+    matrix = np.ascontiguousarray(matrix, dtype="<i8")
+    _require_bootstrap_matrix(matrix)
+    matrix.flags.writeable = False
+    return matrix
+
+
+def _require_bootstrap_matrix(matrix: np.ndarray) -> np.ndarray:
+    if (
+        not isinstance(matrix, np.ndarray)
+        or matrix.dtype != np.dtype("<i8")
+        or matrix.shape != (BOOTSTRAP_REPLICATES, BOOTSTRAP_SCENE_COUNT)
+        or not matrix.flags.c_contiguous
+        or np.any(matrix < 0)
+        or np.any(matrix >= BOOTSTRAP_SCENE_COUNT)
+        or hashlib.sha256(matrix.tobytes(order="C")).hexdigest()
+        != BOOTSTRAP_MATRIX_SHA256
+    ):
+        raise ValueError("bootstrap matrix differs from the frozen contract")
+    return matrix
+
+
+def _validate_endpoint_rows(
+    rows: Sequence[EndpointRow],
+    trusted_cohort: TrustedCohort,
+) -> Tuple[Tuple[EndpointRow, ...], Tuple[str, ...]]:
+    values = tuple(rows)
+    if not isinstance(trusted_cohort, TrustedCohort):
+        raise ValueError("trusted cohort must be TrustedCohort")
+    identities = tuple(
+        (row.ordinal, row.observation_id, row.scene_id)
+        for row in values
+        if isinstance(row, EndpointRow)
+    )
+    if (
+        len(values) != 50
+        or any(not isinstance(row, EndpointRow) for row in values)
+        or identities != trusted_cohort.identities
+    ):
+        raise ValueError("endpoint identities differ from the trusted cohort")
+    return values, trusted_cohort.scenes
+
+
+def _scene_sums_and_counts(
+    rows: Sequence[EndpointRow],
+    scenes: Sequence[str],
+) -> Tuple[np.ndarray, np.ndarray]:
+    sums = np.zeros(BOOTSTRAP_SCENE_COUNT, dtype=np.float64)
+    counts = np.zeros(BOOTSTRAP_SCENE_COUNT, dtype="<i8")
+    scene_indices = {scene: index for index, scene in enumerate(scenes)}
+    for row in rows:
+        if row.endpoint is not None:
+            index = scene_indices[row.scene_id]
+            sums[index] += row.endpoint
+            counts[index] += 1
+    return sums, counts
+
+
+def _resampled_means(
+    sums: np.ndarray,
+    counts: np.ndarray,
+    matrix: np.ndarray,
+) -> np.ndarray:
+    denominators = counts[matrix].sum(axis=1)
+    if np.any(denominators == 0):
+        raise ValueError("bootstrap composition has no eligible endpoint")
+    return sums[matrix].sum(axis=1) / denominators
+
+
+def _leave_one_scene_out(
+    sums: np.ndarray,
+    counts: np.ndarray,
+) -> np.ndarray:
+    denominators = counts.sum() - counts
+    if np.any(denominators == 0):
+        raise ValueError("leave-one-scene-out composition has no eligible endpoint")
+    return (sums.sum() - sums) / denominators
+
+
+def estimate_scene_robustness(
+    rows: Sequence[EndpointRow],
+    *,
+    trusted_cohort: TrustedCohort,
+    matrix: Optional[np.ndarray] = None,
+) -> RobustnessEstimate:
+    """Estimate fixed-candidate scene-composition robustness."""
+
+    values, scenes = _validate_endpoint_rows(rows, trusted_cohort)
+    draws = _require_bootstrap_matrix(
+        scene_bootstrap_matrix() if matrix is None else matrix
+    )
+    sums, counts = _scene_sums_and_counts(values, scenes)
+    if counts.sum() == 0:
+        raise ValueError("candidate has no eligible endpoint")
+    replicates = _resampled_means(sums, counts, draws)
+    leave_one_out = _leave_one_scene_out(sums, counts)
+    return RobustnessEstimate(
+        point_estimate=float(sums.sum() / counts.sum()),
+        interval_low=linear_quantile(replicates, 0.025),
+        interval_high=linear_quantile(replicates, 0.975),
+        leave_one_scene_out_min=float(leave_one_out.min()),
+        leave_one_scene_out_max=float(leave_one_out.max()),
+    )
+
+
+def estimate_scene_contrast(
+    rows_a: Sequence[EndpointRow],
+    rows_b: Sequence[EndpointRow],
+    *,
+    trusted_cohort: TrustedCohort,
+    matrix: Optional[np.ndarray] = None,
+) -> ContrastEstimate:
+    """Estimate A-minus-B using separate eligibility on shared scene draws."""
+
+    candidate_a, scenes = _validate_endpoint_rows(rows_a, trusted_cohort)
+    candidate_b, scenes_b = _validate_endpoint_rows(rows_b, trusted_cohort)
+    if scenes_b != scenes:
+        raise ValueError("candidate endpoint scenes differ")
+    draws = _require_bootstrap_matrix(
+        scene_bootstrap_matrix() if matrix is None else matrix
+    )
+    sums_a, counts_a = _scene_sums_and_counts(candidate_a, scenes)
+    sums_b, counts_b = _scene_sums_and_counts(candidate_b, scenes)
+    if counts_a.sum() == 0 or counts_b.sum() == 0:
+        raise ValueError("contrast candidate has no eligible endpoint")
+    replicates = _resampled_means(sums_a, counts_a, draws) - _resampled_means(
+        sums_b, counts_b, draws
+    )
+    leave_one_out = _leave_one_scene_out(sums_a, counts_a) - _leave_one_scene_out(
+        sums_b, counts_b
+    )
+    return ContrastEstimate(
+        point_estimate=float(
+            sums_a.sum() / counts_a.sum() - sums_b.sum() / counts_b.sum()
+        ),
+        interval_low=linear_quantile(replicates, 0.025),
+        interval_high=linear_quantile(replicates, 0.975),
+        leave_one_scene_out_min=float(leave_one_out.min()),
+        leave_one_scene_out_max=float(leave_one_out.max()),
+    )
+
+
+def evaluate_candidate_gates(
+    *,
+    synthetic: bool,
+    coverage: StaticCoverage,
+    trusted_cohort: TrustedCohort,
+    rows: Sequence[EndpointRow],
+    mean_iou: float,
+    mean_f1: float,
+    latency: LatencySummary,
+    resource: ResourceMeasurement,
+    code_license_status: LicenseStatus,
+    weight_license_status: LicenseStatus,
+    provenance: ProvenanceChecks,
+) -> CandidateGateResult:
+    """Apply only the frozen pure per-candidate minimum gates."""
+
+    if type(synthetic) is not bool:
+        raise ValueError("synthetic flag must be a bool")
+    if synthetic:
+        raise ValueError("synthetic runs do not enter candidate gates")
+    if not isinstance(coverage, StaticCoverage):
+        raise ValueError("coverage must be StaticCoverage")
+    if not isinstance(trusted_cohort, TrustedCohort):
+        raise ValueError("trusted cohort must be TrustedCohort")
+    observations = tuple(rows)
+    if any(not isinstance(row, EndpointRow) for row in observations):
+        raise ValueError("gate rows must be EndpointRow values")
+    if (
+        isinstance(mean_iou, bool)
+        or not isinstance(mean_iou, (int, float))
+        or not math.isfinite(mean_iou)
+        or not 0 <= mean_iou <= 1
+        or isinstance(mean_f1, bool)
+        or not isinstance(mean_f1, (int, float))
+        or not math.isfinite(mean_f1)
+        or not 0 <= mean_f1 <= 1
+    ):
+        raise ValueError("quality endpoints must be finite in [0, 1]")
+    if (
+        not isinstance(latency, LatencySummary)
+        or not isinstance(resource, ResourceMeasurement)
+        or not isinstance(code_license_status, LicenseStatus)
+        or not isinstance(weight_license_status, LicenseStatus)
+        or not isinstance(provenance, ProvenanceChecks)
+    ):
+        raise ValueError("candidate gate typed input is invalid")
+
+    coverage_status = _gate(
+        coverage.covered_category_count >= MIN_COVERED_CATEGORIES
+        and coverage.support_ratio >= MIN_SUPPORT_COVERAGE
+    )
+    complete_status = _gate(
+        tuple((row.ordinal, row.observation_id, row.scene_id) for row in observations)
+        == trusted_cohort.identities
+    )
+    quality_status = _gate(
+        coverage_status is GateStatus.PASS
+        and complete_status is GateStatus.PASS
+        and mean_iou >= MIN_MEAN_IOU
+        and mean_f1 >= MIN_MEAN_F1
+    )
+    statuses = (
+        coverage_status,
+        complete_status,
+        quality_status,
+        _gate(
+            latency.timing_comparable
+            and cast(float, latency.p95_seconds) <= MAX_LATENCY_P95_SECONDS
+        ),
+        _gate(resource.peak_reserved_bytes <= MAX_ABSOLUTE_RESERVED_BYTES),
+        _gate(
+            code_license_status is LicenseStatus.PASS
+            and weight_license_status is LicenseStatus.PASS
+        ),
+        _gate(provenance.passed),
+    )
+    return CandidateGateResult(
+        coverage=statuses[0],
+        complete_rows=statuses[1],
+        quality=statuses[2],
+        latency=statuses[3],
+        resource=statuses[4],
+        license=statuses[5],
+        provenance=statuses[6],
+        overall=_gate(all(status is GateStatus.PASS for status in statuses)),
+    )
+
+
+def _gate(value: bool) -> GateStatus:
+    return GateStatus.PASS if value else GateStatus.FAIL
 
 
 def _strict_json(data: bytes, label: str) -> object:

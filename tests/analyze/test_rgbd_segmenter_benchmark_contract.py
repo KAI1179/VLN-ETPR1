@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Mapping, Sequence, cast
@@ -25,9 +26,20 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     RAW_VALIDATOR_SOURCE_SHA256,
     BenchmarkEnvironmentAttestation,
     BenchmarkMetricSummary,
+    MAX_ABSOLUTE_RESERVED_BYTES,
+    MAX_LATENCY_P95_SECONDS,
+    MIN_COVERED_CATEGORIES,
+    MIN_MEAN_F1,
+    MIN_MEAN_IOU,
+    MIN_SUPPORT_COVERAGE,
     CandidateCommitment,
+    CandidateGateResult,
     ConfusionCounts,
+    ContrastEstimate,
     DeviceBatch,
+    EndpointRow,
+    GateStatus,
+    LatencySummary,
     LicenseStatus,
     MappingEntry,
     MetricEndpoint,
@@ -39,22 +51,31 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     P53ValidationAttestation,
     P53ValidatorLaunch,
     PRIMARY_CATEGORY_INDICES,
+    ProvenanceChecks,
+    RobustnessEstimate,
     SegmenterInput,
     SpatialTransform,
     Prediction,
     PreparedHostBatch,
     ResourceMeasurement,
+    StaticCoverage,
     TimingSample,
+    TrustedCohort,
     aggregate_observation_metrics,
     capture_environment_sha256,
     canonical_json_bytes,
+    estimate_scene_contrast,
+    estimate_scene_robustness,
+    evaluate_candidate_gates,
     iter_validated_raw_observations,
     inspect_visible_gpu,
+    linear_quantile,
     load_nyu40_mapping,
     map_source_labels,
     project_mapped_labels,
     run_p53_validation_subprocess,
     restore_source_labels,
+    scene_bootstrap_matrix,
     score_observation,
     transfer_prepared_host_batch,
     validate_source_logits,
@@ -781,6 +802,480 @@ def test_metric_aggregation_rejects_empty_duplicate_and_scene_mutations() -> Non
             (scene_a, scene_b),
             expected_scenes=("scene-a",),
         )
+
+
+_STATISTIC_SCENES = tuple(f"scene-{index:02d}" for index in range(11))
+_TRUSTED_COHORT = TrustedCohort(
+    tuple(
+        (
+            ordinal,
+            f"observation-{ordinal:02d}",
+            _STATISTIC_SCENES[ordinal % 11],
+        )
+        for ordinal in range(50)
+    )
+)
+
+
+def _endpoint_rows(
+    *,
+    value_scale: float = 0.1,
+) -> tuple[EndpointRow, ...]:
+    return tuple(
+        EndpointRow(
+            ordinal=ordinal,
+            observation_id=f"observation-{ordinal:02d}",
+            scene_id=_STATISTIC_SCENES[ordinal % 11],
+            endpoint=(ordinal % 11) * value_scale,
+        )
+        for ordinal in range(50)
+    )
+
+
+def _cohort_mismatch(kind: str) -> tuple[EndpointRow, ...]:
+    rows = list(_endpoint_rows(value_scale=0.1))
+    if kind == "changed observation ID":
+        rows[0] = replace(rows[0], observation_id="changed-observation")
+    elif kind == "scene reassignment":
+        rows[0] = replace(rows[0], scene_id=rows[1].scene_id)
+    elif kind == "reorder with repaired ordinals":
+        rows[0], rows[1] = replace(rows[1], ordinal=0), replace(rows[0], ordinal=1)
+    elif kind == "self-consistent substitute":
+        rows = [
+            replace(row, observation_id=f"substitute-{row.ordinal:02d}") for row in rows
+        ]
+    else:
+        raise AssertionError(f"unknown mismatch kind: {kind}")
+    return tuple(rows)
+
+
+def test_linear_quantile_and_exact_scene_bootstrap_matrix_are_frozen() -> None:
+    assert linear_quantile((0.0, 10.0, 20.0, 30.0), 0.0) == 0
+    assert linear_quantile((0.0, 10.0, 20.0, 30.0), 0.25) == 7.5
+    assert linear_quantile((0.0, 10.0, 20.0, 30.0), 0.5) == 15
+    assert linear_quantile((0.0, 10.0, 20.0, 30.0), 1.0) == 30
+
+    matrix = scene_bootstrap_matrix()
+    assert matrix.dtype == np.dtype("<i8")
+    assert matrix.shape == (10_000, 11)
+    assert matrix.flags.c_contiguous
+    assert not matrix.flags.writeable
+    assert matrix[0].tolist() == [7, 6, 10, 0, 10, 1, 6, 10, 5, 3, 6]
+    assert matrix[1].tolist() == [1, 7, 7, 6, 3, 6, 2, 8, 0, 2, 10]
+    assert matrix[-1].tolist() == [5, 7, 9, 0, 5, 8, 2, 1, 4, 8, 6]
+    assert hashlib.sha256(matrix.tobytes(order="C")).hexdigest() == (
+        "a89573633a8efd5dac5ffe03f292491a8aba5202ff2951f7ac186f07f2c07f99"
+    )
+    independently_generated = np.random.Generator(np.random.PCG64(20260728)).integers(
+        0, 11, size=(10_000, 11), endpoint=False
+    )
+    independently_generated = np.ascontiguousarray(independently_generated, dtype="<i8")
+    assert np.array_equal(matrix, independently_generated)
+
+    mutated = matrix.copy()
+    mutated[0, 0] = (mutated[0, 0] + 1) % 11
+    with pytest.raises(ValueError, match="bootstrap matrix"):
+        estimate_scene_robustness(
+            _endpoint_rows(value_scale=0.1),
+            trusted_cohort=_TRUSTED_COHORT,
+            matrix=mutated,
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "changed observation ID",
+        "scene reassignment",
+        "reorder with repaired ordinals",
+        "self-consistent substitute",
+    ),
+)
+def test_statistics_bind_every_candidate_to_the_trusted_cohort(kind: str) -> None:
+    mismatched = _cohort_mismatch(kind)
+    trusted_rows = _endpoint_rows(value_scale=0.05)
+
+    with pytest.raises(ValueError, match="trusted cohort"):
+        estimate_scene_robustness(
+            mismatched,
+            trusted_cohort=_TRUSTED_COHORT,
+        )
+    with pytest.raises(ValueError, match="trusted cohort"):
+        estimate_scene_contrast(
+            mismatched,
+            trusted_rows,
+            trusted_cohort=_TRUSTED_COHORT,
+        )
+    with pytest.raises(ValueError, match="trusted cohort"):
+        estimate_scene_contrast(
+            trusted_rows,
+            mismatched,
+            trusted_cohort=_TRUSTED_COHORT,
+        )
+
+
+def test_scene_robustness_weights_all_rows_and_duplicate_scene_draws() -> None:
+    rows = _endpoint_rows(value_scale=0.1)
+    matrix = scene_bootstrap_matrix()
+    scene_sums = np.asarray([
+        sum(cast(float, row.endpoint) for row in rows if row.scene_id == scene)
+        for scene in _STATISTIC_SCENES
+    ])
+    scene_counts = np.asarray([
+        sum(row.scene_id == scene for row in rows) for scene in _STATISTIC_SCENES
+    ])
+    replicates = scene_sums[matrix].sum(axis=1) / scene_counts[matrix].sum(axis=1)
+    leave_one_out = tuple(
+        np.delete(scene_sums, index).sum() / np.delete(scene_counts, index).sum()
+        for index in range(11)
+    )
+
+    estimate = estimate_scene_robustness(
+        rows,
+        trusted_cohort=_TRUSTED_COHORT,
+        matrix=matrix,
+    )
+
+    assert isinstance(estimate, RobustnessEstimate)
+    assert estimate.point_estimate == pytest.approx(scene_sums.sum() / 50)
+    assert estimate.interval_low == pytest.approx(linear_quantile(replicates, 0.025))
+    assert estimate.interval_high == pytest.approx(linear_quantile(replicates, 0.975))
+    assert estimate.leave_one_scene_out_min == pytest.approx(min(leave_one_out))
+    assert estimate.leave_one_scene_out_max == pytest.approx(max(leave_one_out))
+
+
+def test_contrast_uses_separate_candidate_eligibility_and_ordered_direction() -> None:
+    rows_a = list(_endpoint_rows(value_scale=0.1))
+    rows_b = list(_endpoint_rows(value_scale=0.05))
+    # Candidate A has a target-empty false positive (eligible zero); candidate
+    # B is empty on that row. The opposite eligibility holds on row 1.
+    rows_a[0] = replace(rows_a[0], endpoint=0.0)
+    rows_b[0] = replace(rows_b[0], endpoint=None)
+    rows_a[1] = replace(rows_a[1], endpoint=None)
+    rows_b[1] = replace(rows_b[1], endpoint=0.0)
+
+    estimate = estimate_scene_contrast(
+        tuple(rows_a),
+        tuple(rows_b),
+        trusted_cohort=_TRUSTED_COHORT,
+    )
+    reverse = estimate_scene_contrast(
+        tuple(rows_b),
+        tuple(rows_a),
+        trusted_cohort=_TRUSTED_COHORT,
+    )
+
+    assert isinstance(estimate, ContrastEstimate)
+    matrix = scene_bootstrap_matrix()
+
+    def candidate_arrays(
+        rows: Sequence[EndpointRow],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        sums = np.asarray([
+            sum(
+                row.endpoint
+                for row in rows
+                if row.scene_id == scene and row.endpoint is not None
+            )
+            for scene in _STATISTIC_SCENES
+        ])
+        counts = np.asarray([
+            sum(row.scene_id == scene and row.endpoint is not None for row in rows)
+            for scene in _STATISTIC_SCENES
+        ])
+        return sums, counts
+
+    sums_a, counts_a = candidate_arrays(rows_a)
+    sums_b, counts_b = candidate_arrays(rows_b)
+    replicate_contrasts = sums_a[matrix].sum(axis=1) / counts_a[matrix].sum(
+        axis=1
+    ) - sums_b[matrix].sum(axis=1) / counts_b[matrix].sum(axis=1)
+    loo_contrasts = np.asarray([
+        np.delete(sums_a, index).sum() / np.delete(counts_a, index).sum()
+        - np.delete(sums_b, index).sum() / np.delete(counts_b, index).sum()
+        for index in range(11)
+    ])
+    expected_point = np.mean([
+        row.endpoint for row in rows_a if row.endpoint is not None
+    ]) - np.mean([row.endpoint for row in rows_b if row.endpoint is not None])
+    assert estimate.point_estimate == pytest.approx(expected_point)
+    assert estimate.interval_low == pytest.approx(
+        linear_quantile(replicate_contrasts, 0.025)
+    )
+    assert estimate.interval_high == pytest.approx(
+        linear_quantile(replicate_contrasts, 0.975)
+    )
+    assert estimate.leave_one_scene_out_min == pytest.approx(loo_contrasts.min())
+    assert estimate.leave_one_scene_out_max == pytest.approx(loo_contrasts.max())
+    intersection_delta = np.mean([
+        row_a.endpoint - row_b.endpoint
+        for row_a, row_b in zip(rows_a, rows_b)
+        if row_a.endpoint is not None and row_b.endpoint is not None
+    ])
+    assert estimate.point_estimate != pytest.approx(intersection_delta)
+    delta_sums = np.asarray([
+        sum(
+            row_a.endpoint - row_b.endpoint
+            for row_a, row_b in zip(rows_a, rows_b)
+            if row_a.scene_id == scene
+            and row_a.endpoint is not None
+            and row_b.endpoint is not None
+        )
+        for scene in _STATISTIC_SCENES
+    ])
+    delta_counts = np.asarray([
+        sum(
+            row_a.scene_id == scene
+            and row_a.endpoint is not None
+            and row_b.endpoint is not None
+            for row_a, row_b in zip(rows_a, rows_b)
+        )
+        for scene in _STATISTIC_SCENES
+    ])
+    wrong_delta_replicates = delta_sums[matrix].sum(axis=1) / delta_counts[matrix].sum(
+        axis=1
+    )
+    wrong_delta_loo = np.asarray([
+        np.delete(delta_sums, index).sum() / np.delete(delta_counts, index).sum()
+        for index in range(11)
+    ])
+    assert estimate.interval_low != pytest.approx(
+        linear_quantile(wrong_delta_replicates, 0.025)
+    )
+    assert estimate.leave_one_scene_out_max != pytest.approx(wrong_delta_loo.max())
+    assert reverse.point_estimate == pytest.approx(-estimate.point_estimate)
+    assert reverse.interval_low == pytest.approx(-estimate.interval_high)
+    assert reverse.interval_high == pytest.approx(-estimate.interval_low)
+    assert reverse.leave_one_scene_out_min == pytest.approx(
+        -estimate.leave_one_scene_out_max
+    )
+    assert reverse.leave_one_scene_out_max == pytest.approx(
+        -estimate.leave_one_scene_out_min
+    )
+
+    mismatched = list(rows_b)
+    mismatched[0] = replace(mismatched[0], observation_id="other")
+    with pytest.raises(ValueError, match="identities"):
+        estimate_scene_contrast(
+            tuple(rows_a),
+            tuple(mismatched),
+            trusted_cohort=_TRUSTED_COHORT,
+        )
+
+
+def test_scene_statistics_fail_closed_on_zero_eligible_compositions() -> None:
+    empty = tuple(replace(row, endpoint=None) for row in _endpoint_rows())
+    with pytest.raises(ValueError, match="eligible"):
+        estimate_scene_robustness(empty, trusted_cohort=_TRUSTED_COHORT)
+
+    one_scene = tuple(
+        replace(row, endpoint=0.5 if row.scene_id == _STATISTIC_SCENES[0] else None)
+        for row in _endpoint_rows()
+    )
+    with pytest.raises(ValueError, match="eligible"):
+        estimate_scene_robustness(one_scene, trusted_cohort=_TRUSTED_COHORT)
+    with pytest.raises(ValueError, match="eligible"):
+        estimate_scene_contrast(
+            _endpoint_rows(value_scale=0.1),
+            empty,
+            trusted_cohort=_TRUSTED_COHORT,
+        )
+
+
+def _complete_gate_rows() -> tuple[EndpointRow, ...]:
+    rows = list(_endpoint_rows(value_scale=0.01))
+    rows[7] = replace(
+        rows[7],
+        status=ObservationStatus.FAILED,
+        failure_code=ObservationFailureCode.INFERENCE_FAILURE,
+    )
+    return tuple(rows)
+
+
+def _provenance_checks() -> ProvenanceChecks:
+    return ProvenanceChecks(
+        clean_experiment_commit=True,
+        complete_command=True,
+        raw_package_pinned=True,
+        cohort_pinned=True,
+        candidate_revision_pinned=True,
+        checkpoint_hash_pinned=True,
+        environment_pinned=True,
+        mapping_pinned=True,
+        projector_pinned=True,
+        preprocessing_pinned=True,
+        precision_pinned=True,
+        permission_evidence_pinned=True,
+    )
+
+
+def _evaluate_gates(**overrides: object) -> CandidateGateResult:
+    values: dict[str, object] = {
+        "synthetic": False,
+        "coverage": StaticCoverage(14, 80, 100),
+        "trusted_cohort": _TRUSTED_COHORT,
+        "rows": _complete_gate_rows(),
+        "mean_iou": 0.15,
+        "mean_f1": 0.25,
+        "latency": LatencySummary(
+            timing_comparable=True,
+            unit="seconds",
+            sample_count=100,
+            p95_seconds=1.0,
+        ),
+        "resource": ResourceMeasurement(
+            baseline_allocated_bytes=0,
+            peak_allocated_bytes=MAX_ABSOLUTE_RESERVED_BYTES,
+            baseline_reserved_bytes=0,
+            peak_reserved_bytes=MAX_ABSOLUTE_RESERVED_BYTES,
+        ),
+        "code_license_status": LicenseStatus.PASS,
+        "weight_license_status": LicenseStatus.PASS,
+        "provenance": _provenance_checks(),
+    }
+    values.update(overrides)
+    return evaluate_candidate_gates(**values)
+
+
+def test_candidate_gates_use_exact_inclusive_thresholds_and_reserved_memory() -> None:
+    assert (MIN_COVERED_CATEGORIES, MIN_SUPPORT_COVERAGE) == (14, 0.8)
+    assert (MIN_MEAN_IOU, MIN_MEAN_F1) == (0.15, 0.25)
+    assert MAX_LATENCY_P95_SECONDS == 1.0
+    assert MAX_ABSOLUTE_RESERVED_BYTES == 16 * 1024**3
+    assert _evaluate_gates().overall is GateStatus.PASS
+
+    assert (
+        _evaluate_gates(coverage=StaticCoverage(13, 80, 100)).coverage
+        is GateStatus.FAIL
+    )
+    assert (
+        _evaluate_gates(coverage=StaticCoverage(13, 80, 100)).quality is GateStatus.FAIL
+    )
+    assert (
+        _evaluate_gates(coverage=StaticCoverage(14, 79, 100)).coverage
+        is GateStatus.FAIL
+    )
+    assert _evaluate_gates(mean_iou=np.nextafter(0.15, 0.0)).quality is GateStatus.FAIL
+    assert _evaluate_gates(mean_f1=np.nextafter(0.25, 0.0)).quality is GateStatus.FAIL
+    assert (
+        _evaluate_gates(
+            latency=LatencySummary(
+                timing_comparable=True,
+                unit="seconds",
+                sample_count=100,
+                p95_seconds=np.nextafter(1.0, math.inf),
+            )
+        ).latency
+        is GateStatus.FAIL
+    )
+    assert (
+        _evaluate_gates(
+            resource=ResourceMeasurement(
+                baseline_allocated_bytes=MAX_ABSOLUTE_RESERVED_BYTES - 1,
+                peak_allocated_bytes=MAX_ABSOLUTE_RESERVED_BYTES,
+                baseline_reserved_bytes=MAX_ABSOLUTE_RESERVED_BYTES,
+                peak_reserved_bytes=MAX_ABSOLUTE_RESERVED_BYTES + 1,
+            )
+        ).resource
+        is GateStatus.FAIL
+    )
+    assert (
+        _evaluate_gates(
+            latency=LatencySummary(
+                timing_comparable=False,
+                unit="synthetic-tick",
+                sample_count=0,
+                p95_seconds=None,
+            )
+        ).latency
+        is GateStatus.FAIL
+    )
+
+
+def test_candidate_gates_require_complete_rows_licenses_and_provenance() -> None:
+    complete = _complete_gate_rows()
+    assert _evaluate_gates(rows=complete).complete_rows is GateStatus.PASS
+    assert _evaluate_gates(rows=complete[:-1]).complete_rows is GateStatus.FAIL
+    assert _evaluate_gates(rows=complete[:-1]).quality is GateStatus.FAIL
+    duplicate = list(complete)
+    duplicate[-1] = replace(duplicate[-1], ordinal=48)
+    assert _evaluate_gates(rows=tuple(duplicate)).complete_rows is GateStatus.FAIL
+    assert _evaluate_gates(rows=complete + (complete[-1],)).complete_rows is (
+        GateStatus.FAIL
+    )
+    reordered = list(complete)
+    reordered[0], reordered[1] = reordered[1], reordered[0]
+    assert _evaluate_gates(rows=tuple(reordered)).complete_rows is GateStatus.FAIL
+
+    for code, weight in (
+        (LicenseStatus.FAIL, LicenseStatus.PASS),
+        (LicenseStatus.PASS, LicenseStatus.FAIL),
+        (LicenseStatus.FAIL, LicenseStatus.FAIL),
+        (LicenseStatus.NOT_APPLICABLE, LicenseStatus.PASS),
+        (LicenseStatus.PASS, LicenseStatus.NOT_APPLICABLE),
+    ):
+        assert (
+            _evaluate_gates(
+                code_license_status=code,
+                weight_license_status=weight,
+            ).license
+            is GateStatus.FAIL
+        )
+
+    provenance = _provenance_checks()
+    for field in fields(ProvenanceChecks):
+        failed = replace(provenance, **{field.name: False})
+        assert _evaluate_gates(provenance=failed).provenance is GateStatus.FAIL
+
+    with pytest.raises(ValueError, match="synthetic"):
+        _evaluate_gates(synthetic=True)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "changed observation ID",
+        "scene reassignment",
+        "reorder with repaired ordinals",
+        "self-consistent substitute",
+    ),
+)
+def test_gate_completeness_requires_exact_trusted_cohort(kind: str) -> None:
+    result = _evaluate_gates(rows=_cohort_mismatch(kind))
+    assert result.complete_rows is GateStatus.FAIL
+    assert result.quality is GateStatus.FAIL
+    assert result.overall is GateStatus.FAIL
+
+
+def test_task3a_gate_scope_rejects_synthetic_candidates_structurally() -> None:
+    # Task3B owns real timing/no-latency/GPU fields. Task4 owns the literal
+    # manifest decision/field-absence checks; Task3A intentionally defines no
+    # package schema for either concern.
+    with pytest.raises(ValueError, match="synthetic"):
+        _evaluate_gates(synthetic=True)
+
+
+def test_gate_boundaries_reject_bool_nonfinite_and_invalid_latency_claims() -> None:
+    with pytest.raises(ValueError, match="coverage"):
+        StaticCoverage(cast(int, True), 80, 100)
+    with pytest.raises(ValueError, match="endpoint"):
+        EndpointRow(0, "observation", "scene", cast(float, True))
+    with pytest.raises(ValueError, match="endpoint"):
+        EndpointRow(0, "observation", "scene", float("nan"))
+    with pytest.raises(ValueError, match="quality"):
+        _evaluate_gates(mean_iou=True)
+    with pytest.raises(ValueError, match="quality"):
+        _evaluate_gates(mean_f1=float("nan"))
+    with pytest.raises(ValueError, match="comparable latency"):
+        LatencySummary(True, "milliseconds", 100, 1.0)
+    with pytest.raises(ValueError, match="comparable latency"):
+        LatencySummary(True, "seconds", 99, 1.0)
+    with pytest.raises(ValueError, match="comparable latency"):
+        LatencySummary(True, "seconds", 100, cast(float, True))
+    with pytest.raises(ValueError, match="non-comparable"):
+        LatencySummary(False, "synthetic-tick", 100, 1.0)
+    with pytest.raises(ValueError, match="provenance"):
+        replace(_provenance_checks(), complete_command=cast(bool, 1))
 
 
 def test_runner_is_the_only_device_batch_producer_and_cpu_is_supported() -> None:
