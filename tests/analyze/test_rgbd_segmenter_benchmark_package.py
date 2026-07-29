@@ -15,7 +15,7 @@ import time
 import zipfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Tuple, cast
+from typing import Callable, Dict, Mapping, Optional, Tuple, cast
 
 import numpy as np
 import pytest
@@ -4683,6 +4683,166 @@ def test_publication_authority_canonical_json_codec_round_trips(
         json.loads(encoded)
     )
     assert decoded == authority
+
+
+@pytest.mark.parametrize(
+    "loader_path",
+    [
+        None,
+        "",
+        "/hostile/loader",
+        "/proc/self/fd/",
+        "/proc/self/fd/-1",
+        "/proc/self/fd/01",
+        "/proc/self/fd/1:/hostile/loader",
+        "/proc/123/fd/1",
+    ],
+)
+def test_publication_child_loader_rebinding_rejects_malformed_environment(
+    loader_path: Optional[str],
+) -> None:
+    descriptor = os.open(
+        Path(package.__file__).parent,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+    try:
+        environment = dict(os.environ)
+        if loader_path is None:
+            environment.pop("LD_LIBRARY_PATH", None)
+        else:
+            environment["LD_LIBRARY_PATH"] = loader_path
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                "import os,stat\n"
+                + package._publication_loader_bootstrap(  # noqa: SLF001
+                    descriptor
+                ),
+            ),
+            capture_output=True,
+            check=False,
+            env=environment,
+            pass_fds=(descriptor,),
+            timeout=30,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode != 0
+    assert b"publication loader environment is invalid" in result.stderr
+
+
+def test_publication_child_loader_rebinding_rejects_unusable_descriptor(
+    tmp_path: Path,
+) -> None:
+    ordinary_file = tmp_path / "loader"
+    ordinary_file.touch()
+    descriptor = os.open(ordinary_file, os.O_RDONLY)
+    try:
+        environment = dict(os.environ)
+        environment["LD_LIBRARY_PATH"] = f"/proc/self/fd/{descriptor}"
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                "import os,stat\n"
+                + package._publication_loader_bootstrap(  # noqa: SLF001
+                    descriptor
+                ),
+            ),
+            capture_output=True,
+            check=False,
+            env=environment,
+            pass_fds=(descriptor,),
+            timeout=30,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode != 0
+    assert b"publication loader descriptor is not a directory" in result.stderr
+
+
+def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    runtime_loader = authority.runtime_loader
+    assert runtime_loader is not None
+    (
+        actual_loader,
+        interpreter_descriptor,
+        loader_descriptor,
+    ) = package._open_runtime_loader(  # noqa: SLF001
+        Path(authority.benchmark_attestation.python_executable)
+    )
+    assert actual_loader == runtime_loader
+    loader_metadata = os.fstat(loader_descriptor)
+    nested_script = (
+        "import os,sys\n"
+        "loader_path=os.environ['LD_LIBRARY_PATH']\n"
+        f"expected=f'/proc/{{os.getppid()}}/fd/{loader_descriptor}'\n"
+        "assert loader_path == expected, (loader_path,expected)\n"
+        "metadata=os.stat(loader_path)\n"
+        f"assert (metadata.st_dev,metadata.st_ino)=="
+        f"({loader_metadata.st_dev},{loader_metadata.st_ino})\n"
+        "sys.stdout.write(loader_path)\n"
+    )
+    child_script = (
+        "import contextlib,os,stat,subprocess,sys\n"
+        + package._publication_loader_bootstrap(  # noqa: SLF001
+            loader_descriptor
+        )
+        + "with open(os.devnull,'w') as import_errors:\n"
+        "    with contextlib.redirect_stderr(import_errors):\n"
+        "        import prior.analyze.d2026_07_29."
+        "rgbd_segmenter_benchmark_package\n"
+        "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+        "result=subprocess.run("
+        f"({authority.benchmark_attestation.python_executable!r},'-c',"
+        f"{nested_script!r}),"
+        "check=True,capture_output=True,env=dict(os.environ),timeout=30)\n"
+        "sys.stdout.buffer.write(result.stdout)\n"
+    )
+    try:
+        result = package._run_bounded_publication_process(  # noqa: SLF001
+            (
+                f"/proc/self/fd/{interpreter_descriptor}",
+                "-c",
+                child_script,
+            ),
+            request=b"",
+            environment={
+                "HOME": "/nonexistent",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
+                "PATH": "/usr/bin:/bin",
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONPATH": str(authority.benchmark_repository_root),
+                "PYTHONWARNINGS": "ignore",
+            },
+            timeout_seconds=60.0,
+            working_directory=authority.benchmark_repository_root,
+            inherited_descriptors=(
+                interpreter_descriptor,
+                loader_descriptor,
+            ),
+        )
+    finally:
+        package._close_descriptors(  # noqa: SLF001
+            (interpreter_descriptor, loader_descriptor)
+        )
+
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout.startswith(b"/proc/")
+    assert result.stdout.endswith(f"/fd/{loader_descriptor}".encode("ascii"))
 
 
 def test_fresh_publication_child_uses_canonical_request_and_minimal_exec(

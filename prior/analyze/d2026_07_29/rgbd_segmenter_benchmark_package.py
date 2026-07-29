@@ -5854,6 +5854,27 @@ def _publication_child_request(data: bytes) -> bytes:
     )
 
 
+def _publication_loader_bootstrap(descriptor: int) -> str:
+    if isinstance(descriptor, bool) or descriptor < 0:
+        raise ValueError("publication loader descriptor is invalid")
+    expected = f"/proc/self/fd/{descriptor}"
+    return (
+        f"_loader_descriptor={descriptor}\n"
+        f"if os.environ.get('LD_LIBRARY_PATH') != {expected!r}:\n"
+        "    raise ValueError('publication loader environment is invalid')\n"
+        "try:\n"
+        "    _loader_metadata=os.fstat(_loader_descriptor)\n"
+        "except OSError as error:\n"
+        "    raise ValueError("
+        "'publication loader descriptor is unavailable') from error\n"
+        "if not stat.S_ISDIR(_loader_metadata.st_mode):\n"
+        "    raise ValueError("
+        "'publication loader descriptor is not a directory')\n"
+        "_bound_loader=f'/proc/{os.getpid()}/fd/{_loader_descriptor}'\n"
+        "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+    )
+
+
 def _terminate_publication_child(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
@@ -5977,15 +5998,6 @@ def _run_publication_child(
     root_descriptor: int,
     authority: CandidateValidationAuthority,
 ) -> bytes:
-    script = (
-        "import contextlib,os,sys\n"
-        "with open(os.devnull,'w') as import_errors:\n"
-        "    with contextlib.redirect_stderr(import_errors):\n"
-        "        from prior.analyze.d2026_07_29."
-        "rgbd_segmenter_benchmark_package import _publication_child_request\n"
-        "sys.stdout.buffer.write("
-        "_publication_child_request(sys.stdin.buffer.read()))\n"
-    )
     root = Path(os.readlink(f"/proc/self/fd/{root_descriptor}"))
     _absolute_authority_root(root, "publication staging root")
     serialized = canonical_json_bytes({
@@ -6009,6 +6021,17 @@ def _run_publication_child(
                 _close_descriptors((interpreter_descriptor, loader_descriptor))
             except BaseException as cleanup:
                 raise PublicationCleanupError(mismatch, cleanup) from mismatch
+    script = (
+        "import contextlib,os,stat,sys\n"
+        + _publication_loader_bootstrap(loader_descriptor)
+        + "with open(os.devnull,'w') as import_errors:\n"
+        "    with contextlib.redirect_stderr(import_errors):\n"
+        "        from prior.analyze.d2026_07_29."
+        "rgbd_segmenter_benchmark_package import _publication_child_request\n"
+        "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+        "sys.stdout.buffer.write("
+        "_publication_child_request(sys.stdin.buffer.read()))\n"
+    )
     environment = {
         "HOME": "/nonexistent",
         "LANG": "C",
