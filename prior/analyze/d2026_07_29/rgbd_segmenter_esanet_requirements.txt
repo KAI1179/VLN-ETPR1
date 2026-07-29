@@ -1,0 +1,19 @@
+# ESANet experiment-local overlay for the attested ETP-R1 base environment.
+# Base pyproject.toml SHA-256:
+# 3b411d4c0c3322006a5d6500292a604c34276bd9c224746ed78b924afba5348e
+# Base uv.lock SHA-256:
+# 142cbd37a450be3e46cb585335972f87e2ef9cd14b81586e6b0d4609c9f5791e
+# Runtime: CPython 3.8.*, x86_64-manylinux_2_17.
+# Install with --no-deps over the attested base. The base provides
+# numpy==1.24.3 and python-dateutil==2.9.0.post0.
+# P5.5 uses a hash-audited ignored target overlay. P5.6 uses an ignored
+# `python -m venv --copies --system-site-packages` interpreter and installs
+# these same wheels with --no-deps, --require-hashes, --only-binary=:all:,
+# --link-mode=copy, --no-index, and the verified local wheel directory.
+
+pandas==2.0.3 \
+    --hash=sha256:9eae3dc34fa1aa7772dd3fc60270d13ced7346fcbcfee017d3132ec625e23bb0
+pytz==2025.2 \
+    --hash=sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00
+tzdata==2025.3 \
+    --hash=sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1
