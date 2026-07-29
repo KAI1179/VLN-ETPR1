@@ -78,6 +78,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     aggregate_observation_metrics,
     capture_environment_sha256,
     canonical_json_bytes,
+    compute_static_coverage,
     estimate_scene_contrast,
     estimate_scene_robustness,
     evaluate_candidate_gates,
@@ -88,6 +89,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     load_nyu40_mapping,
     map_source_labels,
     project_mapped_labels,
+    project_oracle_target_labels,
     run_p53_validation_subprocess,
     run_timed_benchmark,
     restore_source_labels,
@@ -575,6 +577,110 @@ def test_projection_unions_views_and_ignores_zero_and_saturated_semantics() -> N
     assert not projected[3].any()
     assert not projected[4].any()
     assert projected.sum() == 2
+
+
+def test_oracle_target_projection_explicitly_accepts_canonical_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    object_categories = np.full((12, 256, 256), -1, dtype="<i2")
+    object_categories[0, 127, 127] = 16
+    arrays = replace(_projection_arrays(), object_categories=object_categories)
+    seen: list[OracleSensorFrame] = []
+
+    def projector(
+        frames: Sequence[OracleSensorFrame],
+        **_poses: object,
+    ) -> SimpleNamespace:
+        seen.extend(frames)
+        semantic = np.zeros((37, 50, 50), dtype="|b1")
+        semantic[16, 0, 0] = True
+        return SimpleNamespace(target_semantic_grid=semantic)
+
+    monkeypatch.setattr(contract, "project_oracle_frames", projector)
+
+    target = project_oracle_target_labels(arrays)
+
+    assert len(seen) == 12
+    assert all(
+        np.shares_memory(frame.object_categories, object_categories) for frame in seen
+    )
+    assert all(bool((frame.region_categories == -1).all()) for frame in seen)
+    assert target.dtype == np.dtype(np.bool_)
+    assert target.flags.c_contiguous
+    assert target[16, 0, 0]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda arrays: replace(
+            arrays,
+            object_categories=np.full((12, 256, 256), -2, dtype="<i2"),
+        ),
+        lambda arrays: replace(
+            arrays,
+            object_categories=np.full((12, 256, 256), 27, dtype="<i2"),
+        ),
+        lambda arrays: replace(arrays, depth_m=arrays.depth_m.astype("<f8")),
+        lambda arrays: replace(arrays, sensor_hfov_degrees=np.asarray(89, dtype="<f8")),
+        lambda arrays: replace(
+            arrays,
+            start_rotation_xyzw=np.asarray((0, 0, 0, 2), dtype="<f8"),
+        ),
+    ),
+)
+def test_oracle_target_projection_rejects_raw_schema_and_geometry_mutations(
+    mutation: Callable[[RawFrameArrays], RawFrameArrays],
+) -> None:
+    with pytest.raises(ValueError, match="schema|geometry|range"):
+        project_oracle_target_labels(mutation(_projection_arrays()))
+
+
+def test_static_coverage_counts_mapping_categories_and_target_category_cells() -> None:
+    mapping = (
+        MappingEntry(0, "chair", MappingKind.DIRECT, 1, "chair"),
+        MappingEntry(1, "desk", MappingKind.MANY_TO_ONE, 3, "table"),
+        MappingEntry(2, "wall", MappingKind.DIAGNOSTIC, 15, "structure"),
+        MappingEntry(3, "ignored", MappingKind.IGNORED, None, None),
+    )
+    targets = [_grid((1, 0, 0), (2, 0, 1), (3, 0, 2))]
+    targets.extend(_grid() for _ in range(49))
+
+    coverage = compute_static_coverage(mapping, targets)
+
+    assert coverage == StaticCoverage(
+        covered_category_count=2,
+        covered_support_count=2,
+        total_support_count=3,
+    )
+    assert compute_static_coverage(
+        (MappingEntry(0, "ignored", MappingKind.IGNORED, None, None),),
+        targets,
+    ) == StaticCoverage(
+        covered_category_count=0,
+        covered_support_count=0,
+        total_support_count=3,
+    )
+
+
+def test_static_coverage_rejects_mapping_and_target_mutations() -> None:
+    mapping = (
+        MappingEntry(0, "chair", MappingKind.DIRECT, 1, "chair"),
+        MappingEntry(1, "table", MappingKind.DIRECT, 3, "table"),
+    )
+    targets = tuple(_grid((1, 0, 0)) for _ in range(50))
+    invalid = (
+        (mapping[::-1], targets),
+        (mapping, targets[:49]),
+        (mapping, (targets[0].astype("|u1"), *targets[1:])),
+        (mapping, tuple(_grid() for _ in range(50))),
+    )
+
+    for candidate_mapping, candidate_targets in invalid:
+        with pytest.raises(ValueError, match="mapping|50|bool|support"):
+            compute_static_coverage(candidate_mapping, candidate_targets)
 
 
 def _grid(*entries: tuple[int, int, int]) -> np.ndarray:
@@ -2697,6 +2803,15 @@ def test_real_raw_package_integration_binds_order_and_adapter_boundary(
         assert observation.segmenter_input.rgb.is_pinned()
     assert ordinals == list(range(50))
     assert scenes == sorted(scenes)
+    targets = tuple(
+        project_oracle_target_labels(observation.audit_arrays)
+        for observation in observations
+    )
+    assert compute_static_coverage(load_nyu40_mapping(), targets) == StaticCoverage(
+        covered_category_count=17,
+        covered_support_count=5_447,
+        total_support_count=6_120,
+    )
 
     with pytest.raises(ValueError, match="trusted launcher"):
         tuple(

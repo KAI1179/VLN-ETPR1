@@ -1571,6 +1571,47 @@ class StaticCoverage:
         return self.covered_support_count / self.total_support_count
 
 
+def compute_static_coverage(
+    mapping: Sequence[MappingEntry],
+    target_grids: Sequence[np.ndarray],
+) -> StaticCoverage:
+    """Compute mapping coverage over the exact sealed target category-cells."""
+
+    entries = tuple(mapping)
+    targets = tuple(target_grids)
+    if (
+        not entries
+        or any(not isinstance(entry, MappingEntry) for entry in entries)
+        or tuple(entry.source_index for entry in entries) != tuple(range(len(entries)))
+    ):
+        raise ValueError("coverage mapping must be typed and source-ordered")
+    if len(targets) != 50:
+        raise ValueError("coverage requires exactly 50 target grids")
+    for target in targets:
+        _require_object_grid(target, "coverage target")
+    covered = {
+        cast(int, entry.canonical_index)
+        for entry in entries
+        if entry.kind
+        in {MappingKind.DIRECT, MappingKind.SYNONYM, MappingKind.MANY_TO_ONE}
+    }
+    primary = np.asarray(PRIMARY_CATEGORY_INDICES, dtype=np.intp)
+    covered_primary = np.asarray(
+        tuple(index for index in PRIMARY_CATEGORY_INDICES if index in covered),
+        dtype=np.intp,
+    )
+    total_support = sum(int(np.count_nonzero(target[primary])) for target in targets)
+    if total_support == 0:
+        raise ValueError("coverage targets contain no primary support")
+    return StaticCoverage(
+        covered_category_count=len(covered_primary),
+        covered_support_count=sum(
+            int(np.count_nonzero(target[covered_primary])) for target in targets
+        ),
+        total_support_count=total_support,
+    )
+
+
 @dataclass(frozen=True)
 class ProvenanceChecks:
     clean_experiment_commit: bool
@@ -1807,20 +1848,96 @@ def project_mapped_labels(
 ) -> np.ndarray:
     """Project twelve mapped views and return only the 27 object channels."""
 
+    _require_projection_labels(
+        mapped_labels,
+        allow_other=False,
+        label="mapped labels",
+    )
+    return _project_object_labels(mapped_labels, arrays)
+
+
+def project_oracle_target_labels(arrays: RawFrameArrays) -> np.ndarray:
+    """Reconstruct the sealed canonical object target, including ``other``."""
+
+    if not isinstance(arrays, RawFrameArrays):
+        raise ValueError("oracle projection requires RawFrameArrays")
+    _require_projection_labels(
+        arrays.object_categories,
+        allow_other=True,
+        label="oracle object labels",
+    )
+    return _project_object_labels(arrays.object_categories, arrays)
+
+
+def _require_projection_labels(
+    labels: np.ndarray,
+    *,
+    allow_other: bool,
+    label: str,
+) -> np.ndarray:
     if (
-        not isinstance(mapped_labels, np.ndarray)
-        or mapped_labels.dtype != np.dtype("<i2")
-        or mapped_labels.shape != (12, 256, 256)
-        or not mapped_labels.flags.c_contiguous
-        or np.any(mapped_labels < -1)
-        or np.any(mapped_labels > 26)
-        or np.any(mapped_labels == 16)
+        not isinstance(labels, np.ndarray)
+        or labels.dtype != np.dtype("<i2")
+        or labels.shape != (12, 256, 256)
+        or not labels.flags.c_contiguous
     ):
-        raise ValueError("mapped labels have wrong schema or range")
+        raise ValueError(f"{label} have wrong schema or range")
+    if (
+        np.any(labels < -1)
+        or np.any(labels > 26)
+        or (not allow_other and np.any(labels == 16))
+    ):
+        raise ValueError(f"{label} have wrong schema or range")
+    return labels
+
+
+def _require_projection_arrays(arrays: RawFrameArrays) -> None:
+    schemas = (
+        ("depth", arrays.depth_m, np.dtype("<f4"), (12, 256, 256)),
+        ("sensor positions", arrays.sensor_positions, np.dtype("<f8"), (12, 3)),
+        (
+            "sensor rotations",
+            arrays.sensor_rotations_xyzw,
+            np.dtype("<f8"),
+            (12, 4),
+        ),
+        ("start position", arrays.start_position, np.dtype("<f8"), (3,)),
+        ("start rotation", arrays.start_rotation_xyzw, np.dtype("<f8"), (4,)),
+        ("target origin", arrays.target_origin_xz, np.dtype("<f8"), (2,)),
+        ("sensor HFOV", arrays.sensor_hfov_degrees, np.dtype("<f8"), ()),
+    )
+    for label, value, dtype, shape in schemas:
+        if (
+            not isinstance(value, np.ndarray)
+            or value.dtype != dtype
+            or value.shape != shape
+            or not value.flags.c_contiguous
+            or not np.isfinite(value).all()
+        ):
+            raise ValueError(f"{label} has wrong projection schema")
+    if (
+        np.any(arrays.depth_m < 0)
+        or np.any(arrays.depth_m > 10)
+        or arrays.sensor_hfov_degrees.item() != 90
+        or not np.all(
+            np.abs(np.linalg.norm(arrays.sensor_rotations_xyzw, axis=1) - 1) <= 5e-8
+        )
+        or abs(np.linalg.norm(arrays.start_rotation_xyzw) - 1) > 5e-8
+    ):
+        raise ValueError("raw projection geometry is invalid")
+
+
+def _project_object_labels(
+    object_labels: np.ndarray,
+    arrays: RawFrameArrays,
+) -> np.ndarray:
+    if not isinstance(arrays, RawFrameArrays):
+        raise ValueError("projection requires RawFrameArrays")
+    _require_projection_arrays(arrays)
     frames = tuple(
         OracleSensorFrame(
             depth_m=arrays.depth_m[index],
-            object_categories=mapped_labels[index],
+            object_categories=object_labels[index],
             region_categories=np.full((256, 256), -1, dtype="<i2"),
             sensor_position=cast(
                 Tuple[float, float, float],
