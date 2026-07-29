@@ -324,9 +324,11 @@ Fixed version/ID: `1`, `r2r-val-unseen-50-raw-v1`.
   `asset_roles`, `command`, `gpu_device_id`. Each source/config record has
   exact `path`, `byte_length`, `sha256`; command is the no-argument official
   command; GPU is `0`.
-- `cohort`: exact `cohort_id`, `directory`, `manifest_sha256`,
-  `cohort_jsonl_sha256`, `selection_sha256`, `sealing_git_commit`,
-  `observation_count`, `scene_count`, with frozen values/counts 50/11.
+- `cohort`: exact `cohort_id`, `directory`, `manifest`, `cohort_jsonl`,
+  `selection_sha256`, `sealing_git_commit`, `observation_count`, `scene_count`,
+  with frozen values/counts 50/11. `manifest` and `cohort_jsonl` are complete
+  source records with exact `path`, `byte_length`, and `sha256`; hash-only
+  cohort records are invalid.
 - `evidence`: exact `root`, `evidence_key`, `dataset`, `split`, `manifest`,
   `index`, `raw_split`, `projector_source`, `mapping_source`,
   `mapping_sha256`; each file record has exact
