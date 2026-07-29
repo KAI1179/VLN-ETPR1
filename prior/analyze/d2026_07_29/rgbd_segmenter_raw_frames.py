@@ -25,6 +25,7 @@ from itertools import groupby
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import (
+    Callable,
     List,
     Literal,
     Mapping,
@@ -901,6 +902,7 @@ class _Closable(Protocol):
 
 
 class _ResolvedSensorConfig(Protocol):
+    TYPE: str
     HEIGHT: int
     HFOV: float
     MAX_DEPTH: float
@@ -997,25 +999,39 @@ def _sensor_config() -> Mapping[str, object]:
 
 
 def _require_live_sensor_config(config: object) -> None:
+    import habitat_sim
+
+    sensor_spec = cast(Callable[[], object], getattr(habitat_sim, "SensorSpec"))()
+    sensor_subtype = getattr(habitat_sim, "SensorSubType")
+    if (
+        getattr(sensor_spec, "sensor_subtype")
+        != getattr(sensor_subtype, "PINHOLE")
+    ):
+        raise ValueError("live Habitat sensor subtype differs from commitment")
     simulator = cast(_ResolvedHabitatConfig, config).SIMULATOR
     resolved = []
     type_names = {
-        "DEPTH": "DEPTH",
-        "RGB": "COLOR",
-        "SEMANTIC": "SEMANTIC",
+        "HabitatSimDepthSensor": ("depth", "DEPTH"),
+        "HabitatSimRGBSensor": ("rgb", "COLOR"),
+        "HabitatSimSemanticSensor": ("semantic", "SEMANTIC"),
     }
     for name in simulator.AGENT_0.SENSORS:
         sensor = cast(_ResolvedSensorConfig, getattr(simulator, name))
-        kind = name.split("_", 1)[0]
-        is_depth = kind == "DEPTH"
+        try:
+            modality, sensor_type = type_names[sensor.TYPE]
+        except KeyError as error:
+            raise ValueError("live Habitat sensor type differs from commitment") from error
+        if not name.startswith(f"{modality.upper()}_"):
+            raise ValueError("live Habitat sensor name and type disagree")
+        is_depth = modality == "depth"
         resolved.append(
             {
                 "habitat_sensor_subtype": "PINHOLE",
-                "habitat_sensor_type": type_names[kind],
+                "habitat_sensor_type": sensor_type,
                 "hfov_degrees": sensor.HFOV,
                 "max_depth_m": sensor.MAX_DEPTH if is_depth else None,
                 "min_depth_m": sensor.MIN_DEPTH if is_depth else None,
-                "modality": kind.lower(),
+                "modality": modality,
                 "normalize_depth": sensor.NORMALIZE_DEPTH if is_depth else None,
                 "orientation": list(sensor.ORIENTATION),
                 "position": list(sensor.POSITION),
@@ -1026,6 +1042,36 @@ def _require_live_sensor_config(config: object) -> None:
     resolved.sort(key=lambda item: cast(str, item["uuid"]))
     if resolved != _sensor_config()["resolved_specs"]:
         raise ValueError("live Habitat sensor configuration differs from commitment")
+
+
+def _require_live_simulator_sensor_specs(simulator: object) -> None:
+    try:
+        sim_config = getattr(simulator, "sim_config")
+        agent = getattr(sim_config, "agents")[0]
+        specifications = getattr(agent, "sensor_specifications")
+    except (AttributeError, IndexError, TypeError) as error:
+        raise ValueError("live Habitat simulator sensor specs are unavailable") from error
+    resolved = sorted(
+        (
+            getattr(specification, "uuid"),
+            getattr(getattr(specification, "sensor_type"), "name"),
+            getattr(getattr(specification, "sensor_subtype"), "name"),
+        )
+        for specification in specifications
+    )
+    expected = sorted(
+        (
+            cast(str, specification["uuid"]),
+            cast(str, specification["habitat_sensor_type"]),
+            cast(str, specification["habitat_sensor_subtype"]),
+        )
+        for specification in cast(
+            Sequence[Mapping[str, object]],
+            _sensor_config()["resolved_specs"],
+        )
+    )
+    if resolved != expected:
+        raise ValueError("live Habitat simulator sensor type or subtype differs")
 
 
 def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
@@ -1063,10 +1109,16 @@ def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
             config.SIMULATOR.AGENT_0.SENSORS.append(name)
     _require_live_sensor_config(config)
     config.freeze()
-    return cast(
+    simulator = cast(
         _Simulator,
         make_sim(id_sim=config.SIMULATOR.TYPE, config=config.SIMULATOR),
     )
+    try:
+        _require_live_simulator_sensor_specs(simulator)
+    except BaseException:
+        simulator.close()
+        raise
+    return simulator
 
 
 def _position(value: object, label: str) -> np.ndarray:
@@ -1688,50 +1740,72 @@ def build_manifest(
 
 
 def _read_source(path: str) -> SourceRecord:
-    source_path = Path(path)
+    source_path = PurePosixPath(path)
+    if source_path.is_absolute() or not source_path.parts or any(
+        part in ("", ".", "..") for part in source_path.parts
+    ):
+        raise ValueError(f"source path must be canonical and relative: {path}")
+    directory = os.open(
+        ".",
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY,
+    )
     try:
-        before = os.stat(source_path, follow_symlinks=False)
-    except OSError as error:
-        raise ValueError(f"source must be a regular file: {path}") from error
-    if not stat.S_ISREG(before.st_mode):
-        raise ValueError(f"source must be a regular non-symlink file: {path}")
-    try:
+        for part in source_path.parts[:-1]:
+            child = os.open(
+                part,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            os.close(directory)
+            directory = child
+        leaf = source_path.parts[-1]
+        before = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
         descriptor = os.open(
-            source_path,
+            leaf,
             os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory,
         )
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            ):
+                raise ValueError(f"source changed before read: {path}")
+            chunks = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            opened_after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        after = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
     except OSError as error:
-        raise ValueError(f"source must be a regular file: {path}") from error
-    try:
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise ValueError(f"source changed before read: {path}")
-        chunks = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
+        raise ValueError(f"source must be a stable regular file: {path}") from error
     finally:
-        os.close(descriptor)
+        os.close(directory)
     data = b"".join(chunks)
-    try:
-        after = os.stat(source_path, follow_symlinks=False)
-    except OSError as error:
-        raise ValueError(f"source changed after read: {path}") from error
-    if len(data) != opened.st_size or (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
+
+    def fingerprint(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_gid,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    if (
+        len(data) != opened.st_size
+        or fingerprint(before) != fingerprint(opened)
+        or fingerprint(opened) != fingerprint(opened_after)
+        or fingerprint(opened_after) != fingerprint(after)
     ):
         raise ValueError(f"source changed while read: {path}")
     return SourceRecord(path=path, data=data)
@@ -1861,11 +1935,68 @@ def _require_original_asset_commitments(
                 raise ValueError(f"{role} committed original byte length differs")
 
 
+def _absolute_lexical_path(path: Path) -> Path:
+    if not isinstance(path, Path) or any(part == ".." for part in path.parts):
+        raise ValueError("collection roots contain a lexical escape")
+    return Path(os.path.abspath(path))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _require_private_collection_roots(
+    attempt_root: Path,
+    snapshot_root: Path,
+) -> None:
+    attempt = _absolute_lexical_path(attempt_root)
+    snapshots = _absolute_lexical_path(snapshot_root)
+    forbidden = tuple(
+        _absolute_lexical_path(root)
+        for root in (FINAL_PACKAGE_ROOT, SMOKE_PACKAGE_ROOT)
+    )
+    if any(
+        _is_within(candidate, root)
+        for candidate in (attempt, snapshots)
+        for root in forbidden
+    ):
+        raise ValueError("collection root is inside a forbidden package root")
+    if _is_within(attempt, snapshots) or _is_within(snapshots, attempt):
+        raise ValueError("collection attempt and snapshot roots overlap")
+    resolved_attempt = attempt.resolve(strict=False)
+    resolved_snapshots = snapshots.resolve(strict=False)
+    resolved_forbidden = tuple(root.resolve(strict=False) for root in forbidden)
+    if any(
+        _is_within(candidate, root)
+        for candidate in (resolved_attempt, resolved_snapshots)
+        for root in resolved_forbidden
+    ):
+        raise ValueError("collection root resolves inside a forbidden package root")
+    if _is_within(
+        resolved_attempt, resolved_snapshots
+    ) or _is_within(resolved_snapshots, resolved_attempt):
+        raise ValueError("resolved collection roots overlap")
+
+    for candidate in (attempt, snapshots):
+        current = Path(candidate.anchor)
+        for part in candidate.parts[1:-1]:
+            current /= part
+            try:
+                metadata = os.stat(current, follow_symlinks=False)
+            except FileNotFoundError:
+                break
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError("collection root has a symlinked ancestor")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("collection root ancestor is not a directory")
+    if attempt_root.exists() or snapshot_root.exists():
+        raise FileExistsError("collection attempt and snapshot roots must be absent")
+
+
 def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
     """Collect all sealed rows into one unpublished private attempt."""
 
-    if attempt_root.exists() or snapshot_root.exists():
-        raise FileExistsError("collection attempt and snapshot roots must be absent")
+    _require_private_collection_roots(attempt_root, snapshot_root)
     initial_state = _capture_attempt_state()
     inputs = load_collection_inputs()
     grouped = [
@@ -1885,8 +2016,9 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
         for scene_id, observations in grouped:
             bundle = snapshot_scene_bundle(scene_id, snapshot_root)
             scene_assets[scene_id] = _scene_commitment(bundle)
-            simulator = build_scene_simulator(bundle)
+            simulator = None
             try:
+                simulator = build_scene_simulator(bundle)
                 for observation in observations:
                     arrays = render_raw_frame_artifact(simulator, observation)
                     encoded = encode_raw_frame_npz(arrays)
@@ -1926,7 +2058,10 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
                     )
                     ordinal += 1
             finally:
-                _close_and_require_bundle_unchanged(simulator, bundle)
+                if simulator is None:
+                    _require_bundle_unchanged(bundle)
+                else:
+                    _close_and_require_bundle_unchanged(simulator, bundle)
         if len(rows) != 50 or _capture_attempt_state() != initial_state:
             raise ValueError("collection commit, sources, environment, or GPU changed")
         _require_original_asset_commitments(scene_assets)
@@ -1947,6 +2082,8 @@ def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
             attempt_root,
             expected_manifest=manifest,
         )
+        if _capture_attempt_state() != initial_state:
+            raise ValueError("collection commit, sources, environment, or GPU changed")
         return manifest
     except BaseException:
         if attempt_root.exists():
@@ -2079,8 +2216,13 @@ def _run_smoke_variant(
         bundle.files[omitted_role].path.unlink()
     simulator = None
     try:
-        simulator = build_scene_simulator(bundle)
-        arrays = render_raw_frame_artifact(simulator, observation)
+        try:
+            simulator = build_scene_simulator(bundle)
+            arrays = render_raw_frame_artifact(simulator, observation)
+        except Exception:
+            if omitted_role is None:
+                raise
+            return False
         encoded = encode_raw_frame_npz(arrays)
         artifact = staging / f"{observation.scene_id}-{variant_name}.npz"
         artifact.write_bytes(encoded.data)
@@ -2097,11 +2239,12 @@ def _run_smoke_variant(
             expected_npz=record,
         )
         oracle = load_pinned_oracle_after_render(observation)
-        replay_and_require_exact(parsed.arrays, observation, oracle)
-    except Exception:
-        if omitted_role is None:
-            raise
-        return False
+        try:
+            replay_and_require_exact(parsed.arrays, observation, oracle)
+        except Exception:
+            if omitted_role is None:
+                raise
+            return False
     finally:
         if simulator is not None:
             try:

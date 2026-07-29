@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import stat
@@ -820,34 +821,98 @@ def _require_source_record(value: object, label: str) -> None:
     _require_hash(raw["sha256"], f"{label}.sha256")
 
 
+def _expected_sensor_config() -> Mapping[str, object]:
+    specs = []
+    for modality, sensor_type in (
+        ("depth", "DEPTH"),
+        ("rgb", "COLOR"),
+        ("semantic", "SEMANTIC"),
+    ):
+        for yaw in range(0, 360, 30):
+            is_depth = modality == "depth"
+            specs.append(
+                {
+                    "uuid": f"{modality}_{yaw:03d}",
+                    "modality": modality,
+                    "habitat_sensor_type": sensor_type,
+                    "habitat_sensor_subtype": "PINHOLE",
+                    "resolution": [256, 256],
+                    "hfov_degrees": 90.0,
+                    "position": [0.0, 1.25, 0.0],
+                    "orientation": [0.0, math.radians(yaw), 0.0],
+                    "min_depth_m": 0.0 if is_depth else None,
+                    "max_depth_m": 10.0 if is_depth else None,
+                    "normalize_depth": False if is_depth else None,
+                }
+            )
+    specs.sort(key=lambda item: cast(str, item["uuid"]))
+    return {
+        "views": 12,
+        "yaw_degrees": list(range(0, 360, 30)),
+        "height": 256,
+        "width": 256,
+        "hfov_degrees": 90.0,
+        "position": [0.0, 1.25, 0.0],
+        "min_depth_m": 0.0,
+        "max_depth_m": 10.0,
+        "normalize_depth": False,
+        "rgb_channel_order": "RGB",
+        "depth_units": "metres",
+        "orientation_rule": "[0,radians(yaw_degrees),0]",
+        "camera_pose_authority": "returned-depth-sensor-state",
+        "resolved_specs": specs,
+    }
+
+
 def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
     collection = _require_exact_keys(
         raw["collection"], _COLLECTION_KEYS, "manifest.collection"
     )
     for name in ("collector_source", "package_source", "asset_roles"):
         _require_source_record(collection[name], f"manifest.collection.{name}")
+    collection_paths = {
+        "collector_source": (
+            "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frames.py"
+        ),
+        "package_source": (
+            "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frame_package.py"
+        ),
+        "asset_roles": (
+            "prior/analyze/d2026_07_29/rgbd_segmenter_asset_roles.json"
+        ),
+    }
     if (
         collection["command"]
         != "python -m prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames"
         or collection["gpu_device_id"] != 0
         or not isinstance(collection["git_commit"], str)
         or re.fullmatch(r"[0-9a-f]{40}", collection["git_commit"]) is None
+        or any(
+            cast(Mapping[str, object], collection[name])["path"] != path
+            for name, path in collection_paths.items()
+        )
     ):
         raise ValueError("manifest.collection commitments have drifted")
 
     cohort = _require_exact_keys(raw["cohort"], _COHORT_KEYS, "manifest.cohort")
-    if (
-        cohort["observation_count"] != 50
-        or cohort["scene_count"] != 11
-        or cohort["cohort_id"] != "r2r-val-unseen-50-v1"
-    ):
+    expected_cohort = {
+        "cohort_id": "r2r-val-unseen-50-v1",
+        "directory": "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1",
+        "manifest_sha256": (
+            "d71f04f102d80df3799e5fea76162147ad76c060c82ccbca88813d8b14a0b191"
+        ),
+        "cohort_jsonl_sha256": (
+            "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
+        ),
+        "selection_sha256": (
+            "32a7adddf32291f059eb1045e63e077a693ca64d6fdf6e7418b54dd5d3644cb2"
+        ),
+        "sealing_git_commit": "80780e5a8a3736dc666b8dd861c00ce55f4685d8",
+        "observation_count": 50,
+        "scene_count": 11,
+    }
+    if cohort != expected_cohort:
         raise ValueError("manifest.cohort commitments have drifted")
-    for name in (
-        "manifest_sha256",
-        "cohort_jsonl_sha256",
-        "selection_sha256",
-    ):
-        _require_hash(cohort[name], f"manifest.cohort.{name}")
 
     evidence = _require_exact_keys(
         raw["evidence"], _EVIDENCE_KEYS, "manifest.evidence"
@@ -860,7 +925,37 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
         "mapping_source",
     ):
         _require_source_record(evidence[name], f"manifest.evidence.{name}")
-    _require_hash(evidence["mapping_sha256"], "manifest.evidence.mapping_sha256")
+    evidence_paths = {
+        "manifest": (
+            "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/"
+            "manifest.json"
+        ),
+        "index": (
+            "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/index.jsonl"
+        ),
+        "raw_split": (
+            "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/"
+            "val_unseen.json.gz"
+        ),
+        "projector_source": (
+            "vlnce_baselines/models/etp_llm/llm_grid_oracle_cache.py"
+        ),
+        "mapping_source": "prior/constants.py",
+    }
+    if (
+        evidence["root"]
+        != "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen"
+        or evidence["evidence_key"] != "oracle-t0-v1"
+        or evidence["dataset"] != "R2R"
+        or evidence["split"] != "val_unseen"
+        or evidence["mapping_sha256"]
+        != "0aedb9a63f9e12d919fa46a0be144b43262d26c9eb50fe7f374f128685a2b47d"
+        or any(
+            cast(Mapping[str, object], evidence[name])["path"] != path
+            for name, path in evidence_paths.items()
+        )
+    ):
+        raise ValueError("manifest.evidence commitments have drifted")
 
     sensor = _require_exact_keys(
         raw["sensor"], ("config", "config_sha256"), "manifest.sensor"
@@ -869,18 +964,18 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
         sensor["config"], _SENSOR_CONFIG_KEYS, "manifest.sensor.config"
     )
     specs = config["resolved_specs"]
-    if not isinstance(specs, list) or len(specs) != 36:
-        raise ValueError("manifest.sensor resolved specs must contain 36 records")
-    uuids = []
+    if not isinstance(specs, list):
+        raise ValueError("manifest.sensor resolved specs must be a list")
     for index, spec in enumerate(specs):
-        record = _require_exact_keys(
+        _require_exact_keys(
             spec, _SENSOR_SPEC_KEYS, f"manifest.sensor.resolved_specs[{index}]"
         )
-        if not isinstance(record["uuid"], str):
-            raise ValueError("manifest.sensor UUID must be a string")
-        uuids.append(record["uuid"])
-    if uuids != sorted(uuids) or len(set(uuids)) != 36:
-        raise ValueError("manifest.sensor UUID order is not lexical and unique")
+    if json.dumps(
+        config, sort_keys=True, separators=(",", ":")
+    ).encode() != json.dumps(
+        _expected_sensor_config(), sort_keys=True, separators=(",", ":")
+    ).encode():
+        raise ValueError("manifest.sensor configuration has drifted")
     config_hash = _sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
     )
@@ -902,6 +997,9 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
     if (
         scene_assets["required_roles"] != ["glb", "house", "semantic_ply"]
         or scene_assets["auxiliary_roles"] != ["navmesh"]
+        or scene_assets["source_root"] != "data/scene_datasets/mp3d"
+        or scene_assets["role_classification_algorithm"]
+        != "single-role-omission-first-row-per-scene-v1"
         or not isinstance(scenes, dict)
         or len(scenes) != 11
         or list(scenes) != sorted(scenes)
@@ -936,25 +1034,65 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
                 role_record["sha256"],
                 f"manifest.scene_assets.{scene_id}.{role}.sha256",
             )
+            suffix = "_semantic.ply" if role == "semantic_ply" else f".{role}"
+            if (
+                role_record["path"] != f"{scene_id}/{scene_id}{suffix}"
+                or role_record["required"] is not (role != "navmesh")
+            ):
+                raise ValueError("manifest scene asset path or role flag differs")
+        expected_bundle = _sha256(
+            json.dumps(
+                role_files, sort_keys=True, separators=(",", ":")
+            ).encode()
+        )
+        if scene_record["bundle_sha256"] != expected_bundle:
+            raise ValueError("manifest scene bundle hash differs from files")
 
     environment = _require_exact_keys(
         raw["environment"], _ENVIRONMENT_KEYS, "manifest.environment"
     )
     distributions = environment["installed_distributions"]
-    if not isinstance(distributions, list):
+    if not isinstance(distributions, list) or not distributions:
         raise ValueError("manifest.environment distributions must be a list")
+    distribution_pairs = []
     for index, distribution in enumerate(distributions):
-        _require_exact_keys(
+        record = _require_exact_keys(
             distribution,
             ("name", "version"),
             f"manifest.environment.distributions[{index}]",
         )
+        if (
+            not isinstance(record["name"], str)
+            or not isinstance(record["version"], str)
+            or not record["version"]
+            or re.sub(r"[-_.]+", "-", record["name"]).lower() != record["name"]
+            or not record["name"]
+        ):
+            raise ValueError("manifest.environment distribution is invalid")
+        distribution_pairs.append((record["name"], record["version"]))
     if environment["installed_distributions_sha256"] != _sha256(
         json.dumps(distributions, sort_keys=True, separators=(",", ":")).encode()
     ):
         raise ValueError("manifest.environment distribution hash differs")
-    if environment["gpu_device_id"] != 0:
-        raise ValueError("manifest.environment GPU device differs")
+    semantic_strings = tuple(
+        key for key in _ENVIRONMENT_KEYS
+        if key not in {
+            "gpu_device_id",
+            "installed_distributions",
+            "installed_distributions_sha256",
+        }
+    )
+    if (
+        distribution_pairs != sorted(distribution_pairs)
+        or len(distribution_pairs) != len(set(distribution_pairs))
+        or environment["gpu_device_id"] != 0
+        or any(
+            not isinstance(environment[key], str) or not environment[key]
+            for key in semantic_strings
+        )
+        or not cast(str, environment["gpu_uuid"]).startswith("GPU-")
+    ):
+        raise ValueError("manifest.environment semantics have drifted")
 
     replay = _require_exact_keys(
         raw["replay"],
@@ -967,11 +1105,23 @@ def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
         ),
         "manifest.replay",
     )
-    if (
-        replay["observation_count"],
-        replay["passed_count"],
-        replay["scene_count"],
-    ) != (50, 50, 11):
+    expected_replay = {
+        "observation_count": 50,
+        "passed_count": 50,
+        "scene_count": 11,
+        "array_equal_fields": [
+            "ego_free_mask",
+            "ego_observed_mask",
+            "ego_semantic_grid",
+            "target_free_mask",
+            "target_observed_mask",
+            "target_semantic_grid",
+        ],
+        "metadata_comparison": (
+            "cast-replayed-values-to-float32-then-array-equal"
+        ),
+    }
+    if replay != expected_replay:
         raise ValueError("manifest.replay counts have drifted")
 
 

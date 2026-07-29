@@ -6,7 +6,9 @@ import json
 import math
 import os
 import shutil
+import stat
 import tempfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -651,10 +653,29 @@ def test_build_scene_simulator_uses_snapshot_and_canonical_36_sensor_config(
     from habitat import sims
 
     captured = []
-    sentinel = object()
+    sentinel = SimpleNamespace()
 
     def fake_make_sim(*, id_sim: str, config: object) -> object:
         captured.append((id_sim, config))
+        agent = getattr(config, "AGENT_0")
+        sensor_types = {
+            "HabitatSimRGBSensor": "COLOR",
+            "HabitatSimDepthSensor": "DEPTH",
+            "HabitatSimSemanticSensor": "SEMANTIC",
+        }
+        specifications = [
+            SimpleNamespace(
+                uuid=getattr(config, name).UUID,
+                sensor_type=SimpleNamespace(
+                    name=sensor_types[getattr(config, name).TYPE]
+                ),
+                sensor_subtype=SimpleNamespace(name="PINHOLE"),
+            )
+            for name in agent.SENSORS
+        ]
+        sentinel.sim_config = SimpleNamespace(
+            agents=[SimpleNamespace(sensor_specifications=specifications)]
+        )
         return sentinel
 
     monkeypatch.setattr(sims, "make_sim", fake_make_sim)
@@ -691,6 +712,54 @@ def test_build_scene_simulator_uses_snapshot_and_canonical_36_sensor_config(
                 assert sensor.MIN_DEPTH == 0.0
                 assert sensor.MAX_DEPTH == 10.0
                 assert sensor.NORMALIZE_DEPTH is False
+
+
+@pytest.mark.parametrize("drift", ["type", "subtype"])
+def test_build_scene_simulator_rejects_resolved_sensor_type_drift(
+    drift: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import habitat
+    import habitat_sim
+
+    config = habitat.get_config()
+    config.defrost()
+    if drift == "type":
+        config.SIMULATOR.RGB_SENSOR.TYPE = "HabitatSimDepthSensor"
+        monkeypatch.setattr(habitat, "get_config", lambda: config)
+    else:
+        monkeypatch.setattr(
+            habitat_sim,
+            "SensorSpec",
+            lambda: SimpleNamespace(sensor_subtype=object()),
+        )
+
+    with pytest.raises(ValueError, match="sensor (name and type|subtype)"):
+        build_scene_simulator(_bundle(tmp_path))
+
+
+def test_build_scene_simulator_rejects_post_construction_sensor_spec_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from habitat import sims
+
+    closed = []
+    specification = SimpleNamespace(
+        uuid="rgb_000",
+        sensor_type=SimpleNamespace(name="DEPTH"),
+        sensor_subtype=SimpleNamespace(name="PINHOLE"),
+    )
+    simulator = SimpleNamespace(
+        close=lambda: closed.append(True),
+        sim_config=SimpleNamespace(
+            agents=[SimpleNamespace(sensor_specifications=[specification])]
+        ),
+    )
+    monkeypatch.setattr(sims, "make_sim", lambda **_kwargs: simulator)
+
+    with pytest.raises(ValueError, match="simulator sensor type"):
+        build_scene_simulator(_bundle(tmp_path))
+
+    assert closed == [True]
 
 
 class _Category:
@@ -1803,8 +1872,83 @@ def test_collection_input_preserves_same_buffer_cohort_row_hash() -> None:
     ]
 
 
+def test_cohort_hashes_each_accepted_line_without_json_reconstruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1")
+    manifest = (root / "manifest.json").read_bytes()
+    cohort_data = (root / "cohort.jsonl").read_bytes()
+    accepted_lines = cohort_data.splitlines()
+
+    class AcceptedCohort(bytes):
+        def splitlines(self, keepends: bool = False) -> list[bytes]:
+            assert keepends is False
+            return accepted_lines
+
+    cohort = AcceptedCohort(cohort_data)
+    real_dumps = raw_frames.json.dumps
+    real_sha256 = raw_frames.hashlib.sha256
+    calls = 0
+    hashed_buffers = []
+
+    def count_dumps(
+        value: object,
+        *,
+        sort_keys: bool = False,
+        separators: Optional[tuple[str, str]] = None,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        return real_dumps(
+            value,
+            sort_keys=sort_keys,
+            separators=separators,
+        )
+
+    monkeypatch.setattr(raw_frames.json, "dumps", count_dumps)
+    monkeypatch.setattr(
+        raw_frames.hashlib,
+        "sha256",
+        lambda data=b"": (
+            hashed_buffers.append(data),
+            real_sha256(data),
+        )[1],
+    )
+    _, _, hashes = raw_frames._parse_cohort(manifest, cohort)
+
+    assert calls == 50
+    assert len(hashed_buffers) == len(accepted_lines)
+    assert all(
+        actual is accepted
+        for actual, accepted in zip(hashed_buffers, accepted_lines)
+    )
+    assert hashes == tuple(
+        hashlib.sha256(line).hexdigest() for line in cohort.splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "collection_source",
+        "cohort_directory",
+        "evidence_root",
+        "sensor_fixed",
+        "sensor_wrong_type",
+        "sensor_spec",
+        "scene_algorithm",
+        "scene_path",
+        "scene_required",
+        "scene_bundle",
+        "environment_distribution",
+        "environment_type",
+        "replay_fields",
+    ],
+)
 def test_manifest_rejects_nested_schema_and_asset_role_mutations(
-    tmp_path: Path,
+    mutation: str, tmp_path: Path,
 ) -> None:
     rows = _manifest_rows()
     index = canonical_index_bytes(rows)
@@ -1825,7 +1969,56 @@ def test_manifest_rejects_nested_schema_and_asset_role_mutations(
             rows=rows,
         )
     )
-    manifest["environment"]["extra"] = "forbidden"
+    if mutation == "collection_source":
+        manifest["collection"]["collector_source"]["path"] = "wrong.py"
+    elif mutation == "cohort_directory":
+        manifest["cohort"]["directory"] = "wrong"
+    elif mutation == "evidence_root":
+        manifest["evidence"]["root"] = "wrong"
+    elif mutation == "sensor_fixed":
+        manifest["sensor"]["config"]["width"] = 257
+        config = manifest["sensor"]["config"]
+        manifest["sensor"]["config_sha256"] = hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    elif mutation == "sensor_wrong_type":
+        manifest["sensor"]["config"]["width"] = 256.0
+        config = manifest["sensor"]["config"]
+        manifest["sensor"]["config_sha256"] = hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    elif mutation == "sensor_spec":
+        manifest["sensor"]["config"]["resolved_specs"][0]["habitat_sensor_type"] = (
+            "COLOR"
+        )
+        config = manifest["sensor"]["config"]
+        manifest["sensor"]["config_sha256"] = hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    elif mutation == "scene_algorithm":
+        manifest["scene_assets"]["role_classification_algorithm"] = "wrong"
+    elif mutation == "scene_path":
+        manifest["scene_assets"]["scenes"]["scene-00"]["files"]["glb"]["path"] = (
+            "scene-00/wrong.glb"
+        )
+    elif mutation == "scene_required":
+        manifest["scene_assets"]["scenes"]["scene-00"]["files"]["navmesh"][
+            "required"
+        ] = True
+    elif mutation == "scene_bundle":
+        manifest["scene_assets"]["scenes"]["scene-00"]["bundle_sha256"] = "0" * 64
+    elif mutation == "environment_distribution":
+        manifest["environment"]["installed_distributions"][0]["name"] = "Habitat_Lab"
+        distributions = manifest["environment"]["installed_distributions"]
+        manifest["environment"]["installed_distributions_sha256"] = hashlib.sha256(
+            json.dumps(
+                distributions, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+    elif mutation == "environment_type":
+        manifest["environment"]["gpu_name"] = 7
+    elif mutation == "replay_fields":
+        manifest["replay"]["array_equal_fields"].reverse()
     mutated = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
     root = tmp_path / "attempt"
     root.mkdir()
@@ -1833,6 +2026,74 @@ def test_manifest_rejects_nested_schema_and_asset_role_mutations(
 
     with pytest.raises(ValueError, match="manifest"):
         validate_raw_frame_directory(root, expected_manifest=mutated)
+
+
+def test_manifest_accepts_sorted_unique_distribution_name_version_pairs() -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    rows = _manifest_rows()
+    index = canonical_index_bytes(rows)
+    manifest = json.loads(
+        build_manifest(
+            git_commit="a" * 40,
+            sources=_manifest_sources(),
+            scene_assets=_scene_assets(),
+            environment=_environment(),
+            index_bytes=index,
+            rows=rows,
+        )
+    )
+    distributions = manifest["environment"]["installed_distributions"]
+    distributions.append(
+        {
+            "name": distributions[0]["name"],
+            "version": distributions[0]["version"] + ".post1",
+        }
+    )
+    distributions.sort(key=lambda item: (item["name"], item["version"]))
+    manifest["environment"]["installed_distributions_sha256"] = hashlib.sha256(
+        json.dumps(distributions, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    mutated = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+
+    package._parse_manifest_bytes(mutated)
+
+
+def test_validator_accepts_one_complete_structurally_valid_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package as package
+
+    artifact_data = b"accepted-artifact"
+    artifact_record = FileRecord(
+        byte_length=len(artifact_data),
+        sha256=hashlib.sha256(artifact_data).hexdigest(),
+    )
+    rows = tuple(replace(row, npz=artifact_record) for row in _manifest_rows())
+    index = canonical_index_bytes(rows)
+    manifest = build_manifest(
+        git_commit="a" * 40,
+        sources=_manifest_sources(),
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=index,
+        rows=rows,
+    )
+    root = tmp_path / "attempt"
+    root.mkdir()
+    (root / "index.jsonl").write_bytes(index)
+    (root / "manifest.json").write_bytes(manifest)
+    for row in rows:
+        artifact = root / row.artifact
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(artifact_data)
+    monkeypatch.setattr(
+        package,
+        "parse_raw_frame_npz_bytes",
+        lambda *_args, **_kwargs: None,
+    )
+
+    validate_raw_frame_directory(root, expected_manifest=manifest)
 
 
 def _attempt_observations() -> tuple[CollectionObservation, ...]:
@@ -1897,6 +2158,7 @@ def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resum
     ).members
     captures = iter(
         [
+            ("a" * 40, _manifest_sources(), _environment()),
             ("a" * 40, _manifest_sources(), _environment()),
             ("a" * 40, _manifest_sources(), _environment()),
         ]
@@ -2107,6 +2369,53 @@ def test_full_attempt_requires_tracked_asset_roles_before_creating_paths(
     assert not snapshots.exists()
 
 
+def test_collect_attempt_rejects_final_and_smoke_roots_before_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    final = tmp_path / "final"
+    smoke = tmp_path / "smoke"
+    snapshots = tmp_path / "snapshots"
+    monkeypatch.setattr(raw_frames, "FINAL_PACKAGE_ROOT", final)
+    monkeypatch.setattr(raw_frames, "SMOKE_PACKAGE_ROOT", smoke)
+
+    def fail_preflight() -> None:
+        raise AssertionError("forbidden roots must fail before preflight")
+
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_attempt_state",
+        fail_preflight,
+    )
+
+    for root in (final, final / "child", smoke, smoke / "child"):
+        with pytest.raises(ValueError, match="forbidden"):
+            collect_attempt(root, snapshots)
+        assert not root.exists()
+        assert not snapshots.exists()
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    for root in (alias / "final", alias / "smoke"):
+        with pytest.raises(ValueError, match="resolves inside"):
+            collect_attempt(root, snapshots)
+        assert not final.exists()
+        assert not smoke.exists()
+
+    with pytest.raises(ValueError, match="forbidden"):
+        collect_attempt(tmp_path / "attempt", final / "snapshot")
+    with pytest.raises(ValueError, match="overlap"):
+        collect_attempt(tmp_path / "attempt", tmp_path / "attempt" / "snapshot")
+    with pytest.raises(ValueError, match="lexical"):
+        collect_attempt(tmp_path / "safe" / ".." / "attempt", snapshots)
+
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    with pytest.raises(FileExistsError, match="absent"):
+        collect_attempt(existing, snapshots)
+
+
 def test_dynamic_source_reader_uses_one_nofollow_regular_file_buffer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2121,6 +2430,86 @@ def test_dynamic_source_reader_uses_one_nofollow_regular_file_buffer(
     assert record.data == b"source"
     with pytest.raises(ValueError, match="regular"):
         raw_frames._read_source("alias.py")
+
+    Path("real").mkdir()
+    Path("real/nested.py").write_bytes(b"nested")
+    Path("linked").symlink_to("real", target_is_directory=True)
+    with pytest.raises(ValueError, match="stable regular"):
+        raw_frames._read_source("linked/nested.py")
+
+
+def test_dynamic_source_reader_detects_ctime_only_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.chdir(tmp_path)
+    source = Path("source.py")
+    source.write_bytes(b"before")
+    original = source.stat()
+    real_read = raw_frames.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        data = real_read(descriptor, size)
+        if data and not mutated:
+            mutated = True
+            time.sleep(0.01)
+            source.write_bytes(b"after!")
+            os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+        return data
+
+    monkeypatch.setattr(raw_frames.os, "read", mutate_after_read)
+    with pytest.raises(ValueError, match="changed while read"):
+        raw_frames._read_source("source.py")
+
+
+def test_dynamic_source_reader_closes_rejected_leaf_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.chdir(tmp_path)
+    Path("source.py").write_bytes(b"source")
+    real_open = raw_frames.os.open
+    real_close = raw_frames.os.close
+    real_fstat = raw_frames.os.fstat
+    leaf_descriptors = []
+    closed = []
+
+    def track_open(
+        path: Union[str, bytes, os.PathLike[str], os.PathLike[bytes]],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: Optional[int] = None,
+    ) -> int:
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "source.py":
+            leaf_descriptors.append(descriptor)
+        return descriptor
+
+    def non_regular_leaf(descriptor: int) -> os.stat_result:
+        result = real_fstat(descriptor)
+        if descriptor in leaf_descriptors:
+            values = list(result)
+            values[0] = stat.S_IFDIR | 0o700
+            return os.stat_result(values)
+        return result
+
+    def track_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(raw_frames.os, "open", track_open)
+    monkeypatch.setattr(raw_frames.os, "fstat", non_regular_leaf)
+    monkeypatch.setattr(raw_frames.os, "close", track_close)
+
+    with pytest.raises(ValueError, match="changed before read"):
+        raw_frames._read_source("source.py")
+
+    assert leaf_descriptors[0] in closed
 
 
 def test_close_still_rehashes_bundle_when_close_raises(
@@ -2177,6 +2566,209 @@ def test_final_original_asset_rehash_detects_post_scene_mutation(
 
     with pytest.raises(ValueError, match="SHA-256"):
         raw_frames._require_original_asset_commitments({scene: commitment})
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["head", "source", "environment", "gpu", "asset"],
+)
+def test_attempt_drift_matrix_cleans_all_private_state(
+    drift: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    observations = _attempt_observations()
+    scenes = tuple(f"scene-{index:02d}" for index in range(11))
+    attempt = tmp_path / "attempt"
+    snapshots = tmp_path / "snapshots"
+    sources = _manifest_sources()
+    environment = _environment()
+    base = ("a" * 40, sources, environment)
+    changed = {
+        "head": ("b" * 40, sources, environment),
+        "source": (
+            "a" * 40,
+            replace(
+                sources,
+                collector_source=_source(
+                    "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frames.py",
+                    "changed",
+                ),
+            ),
+            environment,
+        ),
+        "environment": (
+            "a" * 40,
+            sources,
+            replace(environment, platform="changed"),
+        ),
+        "gpu": (
+            "a" * 40,
+            sources,
+            replace(environment, gpu_uuid="GPU-changed"),
+        ),
+        "asset": base,
+    }[drift]
+    captures = iter((base, base, changed))
+    closed = []
+    members = _manifest_rows()[0].members
+
+    class Simulator:
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: SimpleNamespace(observations=observations, scenes=scenes),
+    )
+    monkeypatch.setattr(raw_frames, "_capture_attempt_state", lambda: next(captures))
+    monkeypatch.setattr(
+        raw_frames,
+        "snapshot_scene_bundle",
+        lambda scene, root: _bundle_for_scene(root, scene),
+    )
+    monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: Simulator())
+    monkeypatch.setattr(
+        raw_frames, "render_raw_frame_artifact", lambda *_args: object()
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "encode_raw_frame_npz",
+        lambda _arrays: SimpleNamespace(data=b"npz", members=members),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "parse_raw_frame_npz_bytes",
+        lambda *_args, **_kwargs: SimpleNamespace(arrays=object(), members=members),
+    )
+    monkeypatch.setattr(
+        raw_frames, "load_pinned_oracle_after_render", lambda _observation: object()
+    )
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", lambda *_args: None)
+    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+    if drift == "asset":
+        monkeypatch.setattr(
+            raw_frames,
+            "_require_original_asset_commitments",
+            lambda _assets: (_ for _ in ()).throw(ValueError("asset changed")),
+        )
+    else:
+        monkeypatch.setattr(
+            raw_frames, "_require_original_asset_commitments", lambda _assets: None
+        )
+    monkeypatch.setattr(
+        raw_frames, "validate_raw_frame_directory", lambda *_args, **_kwargs: None
+    )
+
+    with pytest.raises(ValueError, match="changed"):
+        collect_attempt(attempt, snapshots)
+
+    assert len(closed) == 11
+    assert not attempt.exists()
+    assert not snapshots.exists()
+
+
+def test_simulator_constructor_failure_rehashes_bundle_and_cleans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    observations = _attempt_observations()
+    scenes = tuple(f"scene-{index:02d}" for index in range(11))
+    rehashed = []
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: SimpleNamespace(observations=observations, scenes=scenes),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_attempt_state",
+        lambda: ("a" * 40, _manifest_sources(), _environment()),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "snapshot_scene_bundle",
+        lambda scene, root: _bundle_for_scene(root, scene),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "build_scene_simulator",
+        lambda _bundle: (_ for _ in ()).throw(RuntimeError("constructor")),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_bundle_unchanged",
+        lambda bundle: rehashed.append(bundle.scene_id),
+    )
+    attempt = tmp_path / "attempt"
+    snapshots = tmp_path / "snapshots"
+
+    with pytest.raises(RuntimeError, match="constructor"):
+        collect_attempt(attempt, snapshots)
+
+    assert rehashed == ["scene-00"]
+    assert not attempt.exists()
+    assert not snapshots.exists()
+
+
+@pytest.mark.parametrize("failure", ["encode", "reload", "parse", "oracle"])
+def test_omission_smoke_propagates_nonclassification_failures(
+    failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    staging = tmp_path / "staging"
+    snapshots = tmp_path / "snapshots"
+    bundle_root = tmp_path / "bundle"
+    staging.mkdir()
+    snapshots.mkdir()
+    bundle_root.mkdir()
+    bundle = _bundle(bundle_root)
+    simulator = _fake_simulator()
+    monkeypatch.setattr(
+        raw_frames, "snapshot_scene_bundle", lambda _scene, _root: bundle
+    )
+    monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: simulator)
+    monkeypatch.setattr(
+        raw_frames, "render_raw_frame_artifact", lambda _sim, _observation: object()
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "encode_raw_frame_npz",
+        lambda _arrays: SimpleNamespace(data=b"raw", members={}),
+    )
+    monkeypatch.setattr(raw_frames, "strict_read_bytes", lambda *_args: b"raw")
+    monkeypatch.setattr(
+        raw_frames,
+        "parse_raw_frame_npz_bytes",
+        lambda *_args, **_kwargs: SimpleNamespace(arrays=object()),
+    )
+    monkeypatch.setattr(
+        raw_frames, "load_pinned_oracle_after_render", lambda _observation: object()
+    )
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", lambda *_args: None)
+    monkeypatch.setattr(raw_frames, "_require_variant_assets", lambda *_args: None)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(failure)
+
+    target = {
+        "encode": "encode_raw_frame_npz",
+        "reload": "strict_read_bytes",
+        "parse": "parse_raw_frame_npz_bytes",
+        "oracle": "load_pinned_oracle_after_render",
+    }[failure]
+    monkeypatch.setattr(raw_frames, target, fail)
+
+    with pytest.raises(RuntimeError, match=failure):
+        raw_frames._run_smoke_variant(
+            _observation(artifact_sha256="0" * 64),
+            staging,
+            snapshots,
+            "navmesh",
+        )
 
 
 def test_first_per_scene_smoke_classifies_55_disposable_variants(
