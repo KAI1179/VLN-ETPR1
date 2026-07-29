@@ -259,6 +259,11 @@ observed masks.
 
 Write exact NumPy `.npy` v1.0 bytes into lexical `<member>.npy` ZIP entries,
 `ZIP_DEFLATED`, level 6, fixed timestamp 1980-01-01, mode 0600, no pickle.
+Freeze `ZipInfo.create_system=3`, empty comment/extra fields, and
+`external_attr=(stat.S_IFREG | 0o600) << 16`; ASCII member names need no
+platform-dependent encoding flag. Whole-NPZ byte determinism is scoped to the
+captured Python/zlib implementation and version. Exact uncompressed NPY and
+logical-array hashes remain the cross-environment commitments.
 For every member hash/size both C-order logical array bytes and exact
 uncompressed `.npy` bytes. The same-buffer parser rejects duplicate/extra/
 missing/encrypted/directory/symlink entries, wrong compression/CRC/NPY
@@ -337,7 +342,7 @@ Fixed version/ID: `1`, `r2r-val-unseen-50-raw-v1`.
   role record has `path`, `required`, `byte_length`, `sha256`. Bundle hash is
   compact sorted JSON of `files`.
 - `environment`: exact `python_version`, `python_implementation`, `platform`,
-  `numpy_version`, `habitat_version`, `habitat_sim_version`,
+  `numpy_version`, `zlib_version`, `habitat_version`, `habitat_sim_version`,
   `cuda_runtime_version`, `nvidia_driver_version`, `gpu_name`, `gpu_uuid`,
   `gpu_device_id`, `installed_distributions`,
   `installed_distributions_sha256`. Distributions are unique PEP-503
