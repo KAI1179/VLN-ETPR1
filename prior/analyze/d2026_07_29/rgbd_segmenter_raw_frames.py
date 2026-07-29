@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import importlib.metadata
 import io
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from itertools import groupby
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import (
@@ -29,15 +35,27 @@ from typing import (
 )
 
 import numpy as np
+import torch
 from tap import Tap
 
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
+    FileRecord,
+    IndexRow,
     RawFrameArrays,
+    SourceRecord,
+    canonical_index_bytes,
     encode_raw_frame_npz,
     parse_raw_frame_npz_bytes,
     strict_read_bytes,
+    tree_aggregate,
+    validate_raw_frame_directory,
 )
-from prior.constants import MAPPED_OBJECT_NAMES, OBJECT_MAPPING, REGION_MAPPING
+from prior.constants import (
+    MAPPED_OBJECT_NAMES,
+    MAPPED_REGION_NAMES,
+    OBJECT_MAPPING,
+    REGION_MAPPING,
+)
 from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import (
     OracleSensorFrame,
     project_oracle_frames,
@@ -91,6 +109,7 @@ class CollectionObservation:
 
     artifact_path: Path
     artifact_sha256: str
+    cohort_row_sha256: str
     example_ids: Tuple[str, ...]
     observation_id: str
     scene_id: str
@@ -136,6 +155,104 @@ class SceneBundle:
 
     scene_id: str
     files: Mapping[str, SnapshotFile]
+
+
+@dataclass(frozen=True, order=True)
+class InstalledDistribution:
+    name: str
+    version: str
+
+
+@dataclass(frozen=True)
+class EnvironmentCapture:
+    python_version: str
+    python_implementation: str
+    platform: str
+    numpy_version: str
+    zlib_version: str
+    habitat_version: str
+    habitat_sim_version: str
+    cuda_runtime_version: str
+    nvidia_driver_version: str
+    gpu_name: str
+    gpu_uuid: str
+    gpu_device_id: int
+    installed_distributions: Tuple[InstalledDistribution, ...]
+
+
+@dataclass(frozen=True)
+class ManifestSources:
+    collector_source: SourceRecord
+    package_source: SourceRecord
+    asset_roles: SourceRecord
+    cohort_manifest: SourceRecord
+    cohort_jsonl: SourceRecord
+    evidence_manifest: SourceRecord
+    evidence_index: SourceRecord
+    raw_split: SourceRecord
+    projector_source: SourceRecord
+    mapping_source: SourceRecord
+
+
+@dataclass(frozen=True)
+class SceneAssetFile:
+    path: str
+    required: bool
+    byte_length: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        path = PurePosixPath(self.path)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "." in path.parts
+            or path.as_posix() != self.path
+        ):
+            raise ValueError("scene asset path is not normalized relative POSIX")
+        if (
+            type(self.required) is not bool
+            or type(self.byte_length) is not int
+            or self.byte_length < 0
+            or _SHA256.fullmatch(self.sha256) is None
+        ):
+            raise ValueError("scene asset metadata is invalid")
+
+
+@dataclass(frozen=True)
+class SceneAssetCommitment:
+    bundle_sha256: str
+    files: Mapping[str, SceneAssetFile]
+
+    @classmethod
+    def from_files(
+        cls, files: Mapping[str, SceneAssetFile]
+    ) -> "SceneAssetCommitment":
+        if set(files) != {"glb", "house", "navmesh", "semantic_ply"}:
+            raise ValueError("scene asset commitment requires exactly four roles")
+        expected_required = {
+            "glb": True,
+            "house": True,
+            "navmesh": False,
+            "semantic_ply": True,
+        }
+        if any(
+            files[role].required is not required
+            for role, required in expected_required.items()
+        ):
+            raise ValueError("scene asset required roles differ from classification")
+        serialized = {
+            role: asdict(files[role])
+            for role in sorted(files)
+        }
+        return cls(
+            bundle_sha256=hashlib.sha256(
+                json.dumps(
+                    serialized, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest(),
+            files=MappingProxyType(dict(files)),
+        )
 
 
 def _json_object(data: bytes, label: str) -> Mapping[str, object]:
@@ -189,7 +306,11 @@ def _finite_vector(value: object, size: int, label: str) -> tuple[float, ...]:
 
 def _parse_cohort(
     manifest_bytes: bytes, cohort_bytes: bytes
-) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+) -> tuple[
+    Mapping[str, object],
+    tuple[Mapping[str, object], ...],
+    tuple[str, ...],
+]:
     manifest = _json_object(manifest_bytes, "cohort manifest")
     _require_keys(
         manifest,
@@ -230,6 +351,7 @@ def _parse_cohort(
     if not cohort_bytes.endswith(b"\n"):
         raise ValueError("cohort JSONL must end with newline")
     rows = []
+    row_hashes = []
     for number, line in enumerate(cohort_bytes.splitlines(), start=1):
         row = _json_object(line, f"cohort row {number}")
         _require_keys(
@@ -271,12 +393,13 @@ def _parse_cohort(
         ):
             raise ValueError(f"cohort row {number} start_rotation is not unit")
         rows.append(row)
+        row_hashes.append(hashlib.sha256(line).hexdigest())
     if len(rows) != 50 or len({cast(str, row["observation_id"]) for row in rows}) != 50:
         raise ValueError("cohort observation population drift")
     scenes = sorted({cast(str, row["scene_id"]) for row in rows})
     if len(scenes) != 11:
         raise ValueError("cohort scene population drift")
-    return manifest, tuple(rows)
+    return manifest, tuple(rows), tuple(row_hashes)
 
 
 def _parse_evidence_metadata(
@@ -370,10 +493,10 @@ def load_collection_inputs() -> CollectionInputs:
         ORACLE_ARTIFACT_ROOT / "index.jsonl", _EVIDENCE_INDEX_SHA256, "evidence index"
     )
     strict_read_bytes(RAW_SPLIT_PATH, _RAW_SPLIT_SHA256, "raw split")
-    cohort = _parse_cohort(cohort_manifest, cohort_rows)[1]
+    _, cohort, cohort_row_hashes = _parse_cohort(cohort_manifest, cohort_rows)
     evidence = _parse_evidence_metadata(evidence_manifest, evidence_index)
     observations = []
-    for row in cohort:
+    for row, cohort_row_sha256 in zip(cohort, cohort_row_hashes):
         aliases = tuple(cast(List[str], row["example_ids"]))
         records = tuple(evidence[alias] for alias in aliases)
         observation_id = cast(str, row["observation_id"])
@@ -390,6 +513,7 @@ def load_collection_inputs() -> CollectionInputs:
             CollectionObservation(
                 artifact_path=Path("observations") / scene_id / f"{observation_id}.npz",
                 artifact_sha256=artifact_sha256,
+                cohort_row_sha256=cohort_row_sha256,
                 example_ids=aliases,
                 observation_id=observation_id,
                 scene_id=scene_id,
@@ -772,6 +896,34 @@ class _Simulator(Protocol):
     def close(self) -> None: ...
 
 
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+class _ResolvedSensorConfig(Protocol):
+    HEIGHT: int
+    HFOV: float
+    MAX_DEPTH: float
+    MIN_DEPTH: float
+    NORMALIZE_DEPTH: bool
+    ORIENTATION: Sequence[float]
+    POSITION: Sequence[float]
+    UUID: str
+    WIDTH: int
+
+
+class _ResolvedAgentConfig(Protocol):
+    SENSORS: Sequence[str]
+
+
+class _ResolvedSimulatorConfig(Protocol):
+    AGENT_0: _ResolvedAgentConfig
+
+
+class _ResolvedHabitatConfig(Protocol):
+    SIMULATOR: _ResolvedSimulatorConfig
+
+
 _SENSOR_YAWS = tuple(range(0, 360, 30))
 _SENSOR_KINDS = ("RGB", "DEPTH", "SEMANTIC")
 _SENSOR_POSITION = np.asarray([0.0, 1.25, 0.0], dtype="<f8")
@@ -798,6 +950,82 @@ def _require_scene_bundle(bundle: SceneBundle) -> None:
         bundle.files[role].path.name != name for role, name in expected.items()
     ):
         raise ValueError("scene snapshot bundle paths are not canonical")
+
+
+def _sensor_config() -> Mapping[str, object]:
+    sensor_types = {
+        "depth": "DEPTH",
+        "rgb": "COLOR",
+        "semantic": "SEMANTIC",
+    }
+    specs = []
+    for kind in ("depth", "rgb", "semantic"):
+        for yaw_degrees in _SENSOR_YAWS:
+            is_depth = kind == "depth"
+            specs.append(
+                {
+                    "habitat_sensor_subtype": "PINHOLE",
+                    "habitat_sensor_type": sensor_types[kind],
+                    "hfov_degrees": 90.0,
+                    "max_depth_m": 10.0 if is_depth else None,
+                    "min_depth_m": 0.0 if is_depth else None,
+                    "modality": kind,
+                    "normalize_depth": False if is_depth else None,
+                    "orientation": [0.0, math.radians(yaw_degrees), 0.0],
+                    "position": [0.0, 1.25, 0.0],
+                    "resolution": [256, 256],
+                    "uuid": _sensor_name(kind, yaw_degrees),
+                }
+            )
+    specs.sort(key=lambda item: cast(str, item["uuid"]))
+    return {
+        "camera_pose_authority": "returned-depth-sensor-state",
+        "depth_units": "metres",
+        "height": 256,
+        "hfov_degrees": 90.0,
+        "max_depth_m": 10.0,
+        "min_depth_m": 0.0,
+        "normalize_depth": False,
+        "orientation_rule": "[0,radians(yaw_degrees),0]",
+        "position": [0.0, 1.25, 0.0],
+        "resolved_specs": specs,
+        "rgb_channel_order": "RGB",
+        "views": 12,
+        "width": 256,
+        "yaw_degrees": list(_SENSOR_YAWS),
+    }
+
+
+def _require_live_sensor_config(config: object) -> None:
+    simulator = cast(_ResolvedHabitatConfig, config).SIMULATOR
+    resolved = []
+    type_names = {
+        "DEPTH": "DEPTH",
+        "RGB": "COLOR",
+        "SEMANTIC": "SEMANTIC",
+    }
+    for name in simulator.AGENT_0.SENSORS:
+        sensor = cast(_ResolvedSensorConfig, getattr(simulator, name))
+        kind = name.split("_", 1)[0]
+        is_depth = kind == "DEPTH"
+        resolved.append(
+            {
+                "habitat_sensor_subtype": "PINHOLE",
+                "habitat_sensor_type": type_names[kind],
+                "hfov_degrees": sensor.HFOV,
+                "max_depth_m": sensor.MAX_DEPTH if is_depth else None,
+                "min_depth_m": sensor.MIN_DEPTH if is_depth else None,
+                "modality": kind.lower(),
+                "normalize_depth": sensor.NORMALIZE_DEPTH if is_depth else None,
+                "orientation": list(sensor.ORIENTATION),
+                "position": list(sensor.POSITION),
+                "resolution": [sensor.HEIGHT, sensor.WIDTH],
+                "uuid": sensor.UUID,
+            }
+        )
+    resolved.sort(key=lambda item: cast(str, item["uuid"]))
+    if resolved != _sensor_config()["resolved_specs"]:
+        raise ValueError("live Habitat sensor configuration differs from commitment")
 
 
 def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
@@ -833,6 +1061,7 @@ def build_scene_simulator(bundle: SceneBundle) -> _Simulator:
             sensor.ORIENTATION = [0.0, math.radians(yaw_degrees), 0.0]
             setattr(config.SIMULATOR, name, sensor)
             config.SIMULATOR.AGENT_0.SENSORS.append(name)
+    _require_live_sensor_config(config)
     config.freeze()
     return cast(
         _Simulator,
@@ -1156,6 +1385,577 @@ def replay_and_require_exact(
         raise ValueError("replayed start_direction differs")
 
 
+_ASSET_ROLE_VALUE = {
+    "algorithm": "single-role-omission-first-row-per-scene-v1",
+    "auxiliary": ["navmesh"],
+    "required": ["glb", "house", "semantic_ply"],
+    "schema_version": 1,
+}
+_ASSET_ROLE_BYTES = (
+    json.dumps(_ASSET_ROLE_VALUE, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+)
+_SOURCE_PATHS = {
+    "collector_source": "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frames.py",
+    "package_source": (
+        "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frame_package.py"
+    ),
+    "asset_roles": (
+        "prior/analyze/d2026_07_29/rgbd_segmenter_asset_roles.json"
+    ),
+    "cohort_manifest": (
+        "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/manifest.json"
+    ),
+    "cohort_jsonl": (
+        "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/cohort.jsonl"
+    ),
+    "evidence_manifest": (
+        "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/manifest.json"
+    ),
+    "evidence_index": (
+        "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/index.jsonl"
+    ),
+    "raw_split": (
+        "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/"
+        "val_unseen.json.gz"
+    ),
+    "projector_source": (
+        "vlnce_baselines/models/etp_llm/llm_grid_oracle_cache.py"
+    ),
+    "mapping_source": "prior/constants.py",
+}
+
+
+def _source_json(source: SourceRecord) -> Mapping[str, object]:
+    return {
+        "path": source.path,
+        "byte_length": source.byte_length,
+        "sha256": source.sha256,
+    }
+
+
+def _distribution_name(name: str) -> str:
+    normalized = re.sub(r"[-_.]+", "-", name).lower()
+    if not normalized:
+        raise ValueError("installed distribution name is empty")
+    return normalized
+
+
+def capture_environment() -> EnvironmentCapture:
+    """Capture the exact software and fixed GPU-0 identity."""
+
+    distributions = tuple(
+        sorted(
+            {
+                InstalledDistribution(
+                    name=_distribution_name(distribution.metadata["Name"]),
+                    version=distribution.version,
+                )
+                for distribution in importlib.metadata.distributions()
+                if distribution.metadata["Name"] is not None
+            }
+        )
+    )
+    cuda_version = torch.version.cuda
+    if cuda_version is None:
+        raise RuntimeError("PyTorch has no CUDA runtime version")
+    completed = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=driver_version,name,uuid",
+            "--format=csv,noheader,nounits",
+            "--id=0",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rows = list(csv.reader(completed.stdout.splitlines()))
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise RuntimeError("nvidia-smi returned an invalid GPU-0 identity")
+    driver, gpu_name, gpu_uuid = (field.strip() for field in rows[0])
+    if not driver or not gpu_name or not gpu_uuid.startswith("GPU-"):
+        raise RuntimeError("nvidia-smi returned an incomplete GPU-0 identity")
+    return EnvironmentCapture(
+        python_version=platform.python_version(),
+        python_implementation=platform.python_implementation(),
+        platform=platform.platform(),
+        numpy_version=np.__version__,
+        zlib_version=zlib.ZLIB_RUNTIME_VERSION,
+        habitat_version=importlib.metadata.version("habitat-lab"),
+        habitat_sim_version=importlib.metadata.version("habitat-sim"),
+        cuda_runtime_version=cuda_version,
+        nvidia_driver_version=driver,
+        gpu_name=gpu_name,
+        gpu_uuid=gpu_uuid,
+        gpu_device_id=0,
+        installed_distributions=distributions,
+    )
+
+
+def _environment_json(environment: EnvironmentCapture) -> Mapping[str, object]:
+    if (
+        environment.gpu_device_id != 0
+        or tuple(sorted(set(environment.installed_distributions)))
+        != environment.installed_distributions
+    ):
+        raise ValueError("environment GPU or distributions have drifted")
+    distributions = [
+        asdict(distribution) for distribution in environment.installed_distributions
+    ]
+    distributions_bytes = json.dumps(
+        distributions, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return {
+        "cuda_runtime_version": environment.cuda_runtime_version,
+        "gpu_device_id": environment.gpu_device_id,
+        "gpu_name": environment.gpu_name,
+        "gpu_uuid": environment.gpu_uuid,
+        "habitat_sim_version": environment.habitat_sim_version,
+        "habitat_version": environment.habitat_version,
+        "installed_distributions": distributions,
+        "installed_distributions_sha256": hashlib.sha256(
+            distributions_bytes
+        ).hexdigest(),
+        "numpy_version": environment.numpy_version,
+        "nvidia_driver_version": environment.nvidia_driver_version,
+        "platform": environment.platform,
+        "python_implementation": environment.python_implementation,
+        "python_version": environment.python_version,
+        "zlib_version": environment.zlib_version,
+    }
+
+
+def _mapping_sha256() -> str:
+    mapping = {
+        "MAPPED_OBJECT_NAMES": MAPPED_OBJECT_NAMES,
+        "MAPPED_REGION_NAMES": MAPPED_REGION_NAMES,
+        "OBJECT_MAPPING": OBJECT_MAPPING,
+        "REGION_MAPPING": REGION_MAPPING,
+    }
+    return hashlib.sha256(
+        json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _require_manifest_sources(sources: ManifestSources) -> None:
+    for name, expected_path in _SOURCE_PATHS.items():
+        source = getattr(sources, name)
+        if source.path != expected_path:
+            raise ValueError(f"{name} path differs from the fixed source")
+    if sources.asset_roles.data != _ASSET_ROLE_BYTES:
+        raise ValueError("asset-role source content differs from frozen classification")
+
+
+def build_manifest(
+    *,
+    git_commit: str,
+    sources: ManifestSources,
+    scene_assets: Mapping[str, SceneAssetCommitment],
+    environment: EnvironmentCapture,
+    index_bytes: bytes,
+    rows: Sequence[IndexRow],
+) -> bytes:
+    """Build canonical manifest bytes from already accepted attempt commitments."""
+
+    if re.fullmatch(r"[0-9a-f]{40}", git_commit) is None:
+        raise ValueError("collection Git commit must be a lowercase full hash")
+    _require_manifest_sources(sources)
+    materialized_rows = tuple(rows)
+    if canonical_index_bytes(materialized_rows) != index_bytes:
+        raise ValueError("index bytes differ from supplied rows")
+    if tuple(sorted(scene_assets)) != tuple(scene_assets) or len(scene_assets) != 11:
+        raise ValueError("scene assets must contain 11 lexical scenes")
+    if tuple(sorted({row.scene_id for row in materialized_rows})) != tuple(
+        scene_assets
+    ):
+        raise ValueError("index scenes differ from scene asset commitments")
+    artifact_records = [(row.artifact, row.npz) for row in materialized_rows]
+    index_record = FileRecord(
+        byte_length=len(index_bytes),
+        sha256=hashlib.sha256(index_bytes).hexdigest(),
+    )
+    artifact_tree = tree_aggregate(artifact_records)
+    payload_tree = tree_aggregate(
+        (*artifact_records, ("index.jsonl", index_record))
+    )
+    sensor_config = _sensor_config()
+    sensor_config_bytes = json.dumps(
+        sensor_config, sort_keys=True, separators=(",", ":")
+    ).encode()
+    scenes = {}
+    for scene_id, commitment in scene_assets.items():
+        if _SCENE_ID.fullmatch(scene_id) is None:
+            raise ValueError("manifest scene ID is invalid")
+        files = {
+            role: asdict(commitment.files[role])
+            for role in sorted(commitment.files)
+        }
+        expected = SceneAssetCommitment.from_files(commitment.files)
+        if commitment.bundle_sha256 != expected.bundle_sha256:
+            raise ValueError("scene bundle hash differs from its files")
+        expected_names = {
+            "glb": f"{scene_id}/{scene_id}.glb",
+            "house": f"{scene_id}/{scene_id}.house",
+            "navmesh": f"{scene_id}/{scene_id}.navmesh",
+            "semantic_ply": f"{scene_id}/{scene_id}_semantic.ply",
+        }
+        if any(
+            commitment.files[role].path != path
+            for role, path in expected_names.items()
+        ):
+            raise ValueError("scene asset source paths differ from canonical names")
+        scenes[scene_id] = {
+            "bundle_sha256": commitment.bundle_sha256,
+            "files": files,
+        }
+    manifest = {
+        "collection": {
+            "asset_roles": _source_json(sources.asset_roles),
+            "collector_source": _source_json(sources.collector_source),
+            "command": (
+                "python -m prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames"
+            ),
+            "git_commit": git_commit,
+            "gpu_device_id": 0,
+            "package_source": _source_json(sources.package_source),
+        },
+        "collection_id": "r2r-val-unseen-50-raw-v1",
+        "cohort": {
+            "cohort_id": "r2r-val-unseen-50-v1",
+            "cohort_jsonl_sha256": _COHORT_SHA256,
+            "directory": COHORT_ROOT.as_posix(),
+            "manifest_sha256": _COHORT_MANIFEST_SHA256,
+            "observation_count": 50,
+            "scene_count": 11,
+            "sealing_git_commit": _SEALING_COMMIT,
+            "selection_sha256": _SELECTION_SHA256,
+        },
+        "environment": _environment_json(environment),
+        "evidence": {
+            "dataset": "R2R",
+            "evidence_key": "oracle-t0-v1",
+            "index": _source_json(sources.evidence_index),
+            "manifest": _source_json(sources.evidence_manifest),
+            "mapping_sha256": _mapping_sha256(),
+            "mapping_source": _source_json(sources.mapping_source),
+            "projector_source": _source_json(sources.projector_source),
+            "raw_split": _source_json(sources.raw_split),
+            "root": ORACLE_ARTIFACT_ROOT.as_posix(),
+            "split": "val_unseen",
+        },
+        "files": {
+            "artifacts": asdict(artifact_tree),
+            "index": {
+                "byte_length": index_record.byte_length,
+                "path": "index.jsonl",
+                "row_count": 50,
+                "sha256": index_record.sha256,
+            },
+            "payload": asdict(payload_tree),
+        },
+        "replay": {
+            "array_equal_fields": [
+                "ego_free_mask",
+                "ego_observed_mask",
+                "ego_semantic_grid",
+                "target_free_mask",
+                "target_observed_mask",
+                "target_semantic_grid",
+            ],
+            "metadata_comparison": (
+                "cast-replayed-values-to-float32-then-array-equal"
+            ),
+            "observation_count": 50,
+            "passed_count": 50,
+            "scene_count": 11,
+        },
+        "scene_assets": {
+            "auxiliary_roles": ["navmesh"],
+            "required_roles": ["glb", "house", "semantic_ply"],
+            "role_classification_algorithm": (
+                "single-role-omission-first-row-per-scene-v1"
+            ),
+            "scenes": scenes,
+            "source_root": SCENE_DATASET_ROOT.as_posix(),
+        },
+        "schema_version": 1,
+        "sensor": {
+            "config": sensor_config,
+            "config_sha256": hashlib.sha256(sensor_config_bytes).hexdigest(),
+        },
+    }
+    return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def _read_source(path: str) -> SourceRecord:
+    source_path = Path(path)
+    try:
+        before = os.stat(source_path, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError(f"source must be a regular file: {path}") from error
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"source must be a regular non-symlink file: {path}")
+    try:
+        descriptor = os.open(
+            source_path,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ValueError(f"source must be a regular file: {path}") from error
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise ValueError(f"source changed before read: {path}")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    try:
+        after = os.stat(source_path, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError(f"source changed after read: {path}") from error
+    if len(data) != opened.st_size or (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise ValueError(f"source changed while read: {path}")
+    return SourceRecord(path=path, data=data)
+
+
+def _capture_sources() -> ManifestSources:
+    asset_role_path = Path(_SOURCE_PATHS["asset_roles"])
+    if not asset_role_path.exists():
+        raise FileNotFoundError(
+            "tracked rgbd_segmenter_asset_roles.json is required for full collection"
+        )
+    sources = ManifestSources(
+        collector_source=_read_source(_SOURCE_PATHS["collector_source"]),
+        package_source=_read_source(_SOURCE_PATHS["package_source"]),
+        asset_roles=_read_source(_SOURCE_PATHS["asset_roles"]),
+        cohort_manifest=SourceRecord(
+            path=_SOURCE_PATHS["cohort_manifest"],
+            data=strict_read_bytes(
+                COHORT_ROOT / "manifest.json",
+                _COHORT_MANIFEST_SHA256,
+                "cohort manifest",
+            ),
+        ),
+        cohort_jsonl=SourceRecord(
+            path=_SOURCE_PATHS["cohort_jsonl"],
+            data=strict_read_bytes(
+                COHORT_ROOT / "cohort.jsonl", _COHORT_SHA256, "cohort JSONL"
+            ),
+        ),
+        evidence_manifest=SourceRecord(
+            path=_SOURCE_PATHS["evidence_manifest"],
+            data=strict_read_bytes(
+                ORACLE_ARTIFACT_ROOT / "manifest.json",
+                _EVIDENCE_MANIFEST_SHA256,
+                "evidence manifest",
+            ),
+        ),
+        evidence_index=SourceRecord(
+            path=_SOURCE_PATHS["evidence_index"],
+            data=strict_read_bytes(
+                ORACLE_ARTIFACT_ROOT / "index.jsonl",
+                _EVIDENCE_INDEX_SHA256,
+                "evidence index",
+            ),
+        ),
+        raw_split=SourceRecord(
+            path=_SOURCE_PATHS["raw_split"],
+            data=strict_read_bytes(RAW_SPLIT_PATH, _RAW_SPLIT_SHA256, "raw split"),
+        ),
+        projector_source=_read_source(_SOURCE_PATHS["projector_source"]),
+        mapping_source=_read_source(_SOURCE_PATHS["mapping_source"]),
+    )
+    _require_manifest_sources(sources)
+    return sources
+
+
+def _git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if re.fullmatch(r"[0-9a-f]{40}", result) is None:
+        raise RuntimeError("Git HEAD is not a full lowercase commit")
+    return result
+
+
+def _capture_attempt_state() -> tuple[str, ManifestSources, EnvironmentCapture]:
+    return _git_head(), _capture_sources(), capture_environment()
+
+
+def _require_bundle_unchanged(bundle: SceneBundle) -> None:
+    names = {
+        "glb": f"{bundle.scene_id}.glb",
+        "house": f"{bundle.scene_id}.house",
+        "navmesh": f"{bundle.scene_id}.navmesh",
+        "semantic_ply": f"{bundle.scene_id}_semantic.ply",
+    }
+    for role, record in bundle.files.items():
+        strict_read_bytes(record.path, record.sha256, f"{role} snapshot")
+        strict_read_bytes(
+            SCENE_DATASET_ROOT / bundle.scene_id / names[role],
+            record.sha256,
+            f"{role} original",
+        )
+
+
+def _close_and_require_bundle_unchanged(
+    simulator: _Closable,
+    bundle: SceneBundle,
+) -> None:
+    try:
+        simulator.close()
+    finally:
+        _require_bundle_unchanged(bundle)
+
+
+def _scene_commitment(bundle: SceneBundle) -> SceneAssetCommitment:
+    required = {"glb", "house", "semantic_ply"}
+    files = {
+        role: SceneAssetFile(
+            path=f"{bundle.scene_id}/{record.path.name}",
+            required=role in required,
+            byte_length=record.byte_length,
+            sha256=record.sha256,
+        )
+        for role, record in bundle.files.items()
+    }
+    return SceneAssetCommitment.from_files(files)
+
+
+def _require_original_asset_commitments(
+    scene_assets: Mapping[str, SceneAssetCommitment],
+) -> None:
+    for scene_id, commitment in scene_assets.items():
+        for role, record in commitment.files.items():
+            relative = PurePosixPath(record.path)
+            if relative.parts[0] != scene_id:
+                raise ValueError("scene asset commitment path differs from scene")
+            accepted = strict_read_bytes(
+                SCENE_DATASET_ROOT / Path(relative),
+                record.sha256,
+                f"{role} committed original",
+            )
+            if len(accepted) != record.byte_length:
+                raise ValueError(f"{role} committed original byte length differs")
+
+
+def collect_attempt(attempt_root: Path, snapshot_root: Path) -> bytes:
+    """Collect all sealed rows into one unpublished private attempt."""
+
+    if attempt_root.exists() or snapshot_root.exists():
+        raise FileExistsError("collection attempt and snapshot roots must be absent")
+    initial_state = _capture_attempt_state()
+    inputs = load_collection_inputs()
+    grouped = [
+        (scene_id, tuple(observations))
+        for scene_id, observations in groupby(
+            inputs.observations, key=lambda item: item.scene_id
+        )
+    ]
+    if tuple(scene for scene, _ in grouped) != inputs.scenes:
+        raise ValueError("sealed observations are not grouped in lexical scene order")
+    rows = []
+    scene_assets = {}
+    try:
+        attempt_root.mkdir(mode=0o700, parents=False)
+        snapshot_root.mkdir(mode=0o700, parents=False)
+        ordinal = 0
+        for scene_id, observations in grouped:
+            bundle = snapshot_scene_bundle(scene_id, snapshot_root)
+            scene_assets[scene_id] = _scene_commitment(bundle)
+            simulator = build_scene_simulator(bundle)
+            try:
+                for observation in observations:
+                    arrays = render_raw_frame_artifact(simulator, observation)
+                    encoded = encode_raw_frame_npz(arrays)
+                    relative = (
+                        Path("observations")
+                        / scene_id
+                        / f"{ordinal:02d}-{observation.observation_id}.npz"
+                    )
+                    artifact = attempt_root / relative
+                    artifact.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    artifact.write_bytes(encoded.data)
+                    npz_record = FileRecord(
+                        byte_length=len(encoded.data),
+                        sha256=hashlib.sha256(encoded.data).hexdigest(),
+                    )
+                    accepted = strict_read_bytes(
+                        artifact, npz_record.sha256, "raw-frame artifact"
+                    )
+                    parsed = parse_raw_frame_npz_bytes(
+                        accepted,
+                        expected_members=encoded.members,
+                        expected_npz=npz_record,
+                    )
+                    oracle = load_pinned_oracle_after_render(observation)
+                    replay_and_require_exact(parsed.arrays, observation, oracle)
+                    rows.append(
+                        IndexRow(
+                            artifact=relative.as_posix(),
+                            cohort_row_sha256=observation.cohort_row_sha256,
+                            members=parsed.members,
+                            npz=npz_record,
+                            observation_id=observation.observation_id,
+                            oracle_artifact_sha256=observation.artifact_sha256,
+                            ordinal=ordinal,
+                            scene_id=scene_id,
+                        )
+                    )
+                    ordinal += 1
+            finally:
+                _close_and_require_bundle_unchanged(simulator, bundle)
+        if len(rows) != 50 or _capture_attempt_state() != initial_state:
+            raise ValueError("collection commit, sources, environment, or GPU changed")
+        _require_original_asset_commitments(scene_assets)
+        shutil.rmtree(snapshot_root)
+        index_bytes = canonical_index_bytes(rows)
+        (attempt_root / "index.jsonl").write_bytes(index_bytes)
+        git_commit, sources, environment = initial_state
+        manifest = build_manifest(
+            git_commit=git_commit,
+            sources=sources,
+            scene_assets=scene_assets,
+            environment=environment,
+            index_bytes=index_bytes,
+            rows=rows,
+        )
+        (attempt_root / "manifest.json").write_bytes(manifest)
+        validate_raw_frame_directory(
+            attempt_root,
+            expected_manifest=manifest,
+        )
+        return manifest
+    except BaseException:
+        if attempt_root.exists():
+            shutil.rmtree(attempt_root)
+        if snapshot_root.exists():
+            shutil.rmtree(snapshot_root)
+        raise
+
+
 def _smoke_report(observation: CollectionObservation) -> bytes:
     return (
         json.dumps(
@@ -1242,6 +2042,149 @@ def run_first_row_smoke() -> bytes:
         _cleanup_smoke_paths(staging, snapshots)
 
 
+def _require_variant_assets(
+    bundle: SceneBundle,
+    omitted_role: str | None,
+) -> None:
+    names = {
+        "glb": f"{bundle.scene_id}.glb",
+        "house": f"{bundle.scene_id}.house",
+        "navmesh": f"{bundle.scene_id}.navmesh",
+        "semantic_ply": f"{bundle.scene_id}_semantic.ply",
+    }
+    for role, record in bundle.files.items():
+        if role == omitted_role:
+            if record.path.exists():
+                raise ValueError("omitted snapshot asset unexpectedly exists")
+        else:
+            strict_read_bytes(record.path, record.sha256, f"{role} smoke snapshot")
+        strict_read_bytes(
+            SCENE_DATASET_ROOT / bundle.scene_id / names[role],
+            record.sha256,
+            f"{role} smoke original",
+        )
+
+
+def _run_smoke_variant(
+    observation: CollectionObservation,
+    staging: Path,
+    snapshots: Path,
+    omitted_role: str | None,
+) -> bool:
+    variant_name = omitted_role if omitted_role is not None else "all"
+    private_assets = snapshots / f"{observation.scene_id}-{variant_name}"
+    private_assets.mkdir(mode=0o700)
+    bundle = snapshot_scene_bundle(observation.scene_id, private_assets)
+    if omitted_role is not None:
+        bundle.files[omitted_role].path.unlink()
+    simulator = None
+    try:
+        simulator = build_scene_simulator(bundle)
+        arrays = render_raw_frame_artifact(simulator, observation)
+        encoded = encode_raw_frame_npz(arrays)
+        artifact = staging / f"{observation.scene_id}-{variant_name}.npz"
+        artifact.write_bytes(encoded.data)
+        record = FileRecord(
+            byte_length=len(encoded.data),
+            sha256=hashlib.sha256(encoded.data).hexdigest(),
+        )
+        accepted = strict_read_bytes(
+            artifact, record.sha256, "first-per-scene smoke artifact"
+        )
+        parsed = parse_raw_frame_npz_bytes(
+            accepted,
+            expected_members=encoded.members,
+            expected_npz=record,
+        )
+        oracle = load_pinned_oracle_after_render(observation)
+        replay_and_require_exact(parsed.arrays, observation, oracle)
+    except Exception:
+        if omitted_role is None:
+            raise
+        return False
+    finally:
+        if simulator is not None:
+            try:
+                simulator.close()
+            finally:
+                _require_variant_assets(bundle, omitted_role)
+        else:
+            _require_variant_assets(bundle, omitted_role)
+    return True
+
+
+def run_first_per_scene_smoke() -> bytes:
+    """Classify scene asset roles through 55 disposable first-row variants."""
+
+    inputs = load_collection_inputs()
+    first_by_scene = {}
+    for observation in inputs.observations:
+        first_by_scene.setdefault(observation.scene_id, observation)
+    if tuple(first_by_scene) != inputs.scenes or len(first_by_scene) != 11:
+        raise ValueError("first-per-scene smoke selection differs from sealed scenes")
+    staging = None
+    snapshots = None
+    try:
+        SMOKE_PACKAGE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f"{os.getpid()}-per-scene-", dir=SMOKE_PACKAGE_ROOT)
+        )
+        staging.chmod(0o700)
+        snapshots = Path(
+            tempfile.mkdtemp(
+                prefix=".r2r-val-unseen-50-raw-v1-role-snapshots-",
+                dir=SMOKE_PACKAGE_ROOT.parent,
+            )
+        )
+        snapshots.chmod(0o700)
+        omission_passes = {
+            role: []
+            for role in ("glb", "house", "navmesh", "semantic_ply")
+        }
+        for observation in first_by_scene.values():
+            if not _run_smoke_variant(observation, staging, snapshots, None):
+                raise ValueError("all-assets control did not pass")
+            for role in omission_passes:
+                omission_passes[role].append(
+                    _run_smoke_variant(
+                        observation,
+                        staging,
+                        snapshots,
+                        role,
+                    )
+                )
+        classification = {
+            "algorithm": "single-role-omission-first-row-per-scene-v1",
+            "auxiliary": sorted(
+                role for role, passes in omission_passes.items() if all(passes)
+            ),
+            "required": sorted(
+                role for role, passes in omission_passes.items() if not all(passes)
+            ),
+            "schema_version": 1,
+        }
+        if classification != _ASSET_ROLE_VALUE:
+            raise ValueError("live scene asset role classification differs from plan")
+        report = (
+            json.dumps(
+                {
+                    "classification": classification,
+                    "control_passed_count": 11,
+                    "scene_count": 11,
+                    "schema_version": 1,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        sys.stdout.buffer.write(report)
+        sys.stdout.buffer.flush()
+        return report
+    finally:
+        _cleanup_smoke_paths(staging, snapshots)
+
+
 class RawFrameArgs(Tap):
     smoke: Literal["none", "first-row", "first-per-scene"] = "none"
 
@@ -1251,7 +2194,7 @@ def main(argv: Sequence[str] | None = None) -> bytes:
     if args.smoke == "first-row":
         return run_first_row_smoke()
     if args.smoke == "first-per-scene":
-        raise ValueError("first-per-scene smoke is not implemented yet")
+        return run_first_per_scene_smoke()
     raise ValueError("full raw-frame collection is not implemented yet")
 
 

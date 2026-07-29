@@ -10,6 +10,7 @@ import zipfile
 import zlib
 from dataclasses import replace
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,11 +23,13 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     FileRecord,
     IndexRow,
     RawFrameArrays,
+    SourceRecord,
     canonical_index_bytes,
     encode_raw_frame_npz,
     parse_index_bytes,
     parse_raw_frame_npz_bytes,
     tree_aggregate,
+    validate_raw_frame_directory,
 )
 
 
@@ -480,3 +483,25 @@ def test_tree_aggregate_is_lexical_and_hashes_exact_lines() -> None:
         tree_aggregate((records[0], records[0]))
     with pytest.raises(ValueError):
         tree_aggregate((("bad\npath", records[0][1]),))
+
+
+def test_source_record_hashes_the_exact_accepted_buffer() -> None:
+    accepted = b"same accepted source buffer"
+    record = SourceRecord(path="prior/source.py", data=accepted)
+
+    assert record.byte_length == len(accepted)
+    assert record.sha256 == hashlib.sha256(accepted).hexdigest()
+    with pytest.raises(ValueError, match="path"):
+        SourceRecord(path="../escape", data=accepted)
+
+
+def test_internal_directory_validator_rejects_manifest_schema_mutation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "attempt"
+    root.mkdir()
+    mutated = b'{"schema_version":2}\n'
+    (root / "manifest.json").write_bytes(mutated)
+
+    with pytest.raises(ValueError, match="manifest"):
+        validate_raw_frame_directory(root, expected_manifest=mutated)

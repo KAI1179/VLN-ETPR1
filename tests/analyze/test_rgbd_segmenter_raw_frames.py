@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import math
 import os
 import shutil
@@ -17,22 +18,35 @@ import pytest
 
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     FileRecord,
+    IndexRow,
     MemberMetadata,
     RawFrameArrays,
+    SourceRecord,
+    canonical_index_bytes,
+    encode_raw_frame_npz,
     strict_read_bytes,
+    validate_raw_frame_directory,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames import (
     ORACLE_ARTIFACT_ROOT,
     SCENE_DATASET_ROOT,
     CollectionObservation,
+    EnvironmentCapture,
+    InstalledDistribution,
+    ManifestSources,
     PinnedOracle,
+    SceneAssetCommitment,
+    SceneAssetFile,
     SceneBundle,
     SnapshotFile,
+    build_manifest,
     build_scene_simulator,
+    collect_attempt,
     load_collection_inputs,
     load_pinned_oracle_after_render,
     render_raw_frame_artifact,
     replay_and_require_exact,
+    run_first_per_scene_smoke,
     run_first_row_smoke,
     snapshot_scene_bundle,
 )
@@ -72,6 +86,7 @@ def _observation(*, artifact_sha256: str) -> CollectionObservation:
     return CollectionObservation(
         artifact_path=Path("observations/scene/0123456789abcdefabcd.npz"),
         artifact_sha256=artifact_sha256,
+        cohort_row_sha256="1" * 64,
         example_ids=("R2R_val_unseen_1",),
         observation_id="0123456789abcdefabcd",
         scene_id="scene",
@@ -1437,3 +1452,788 @@ def test_smoke_cleanup_attempts_snapshot_removal_after_staging_failure(
 
     assert removals == [staging, snapshots]
     assert not snapshots.exists()
+
+
+def _source(path: str, marker: str) -> SourceRecord:
+    return SourceRecord(path=path, data=marker.encode())
+
+
+def _manifest_sources() -> ManifestSources:
+    return ManifestSources(
+        collector_source=_source(
+            "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frames.py", "collector"
+        ),
+        package_source=_source(
+            "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frame_package.py",
+            "package",
+        ),
+        asset_roles=_source(
+            "prior/analyze/d2026_07_29/rgbd_segmenter_asset_roles.json",
+            '{\n'
+            '  "algorithm": "single-role-omission-first-row-per-scene-v1",\n'
+            '  "auxiliary": [\n'
+            '    "navmesh"\n'
+            "  ],\n"
+            '  "required": [\n'
+            '    "glb",\n'
+            '    "house",\n'
+            '    "semantic_ply"\n'
+            "  ],\n"
+            '  "schema_version": 1\n'
+            "}\n",
+        ),
+        cohort_manifest=_source(
+            "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/manifest.json",
+            "cohort manifest",
+        ),
+        cohort_jsonl=_source(
+            "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/cohort.jsonl",
+            "cohort rows",
+        ),
+        evidence_manifest=_source(
+            "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/manifest.json",
+            "evidence manifest",
+        ),
+        evidence_index=_source(
+            "data/llm_grid_oracle_evidence/oracle-t0-v1/r2r/val_unseen/index.jsonl",
+            "evidence index",
+        ),
+        raw_split=_source(
+            "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/"
+            "val_unseen.json.gz",
+            "raw split",
+        ),
+        projector_source=_source(
+            "vlnce_baselines/models/etp_llm/llm_grid_oracle_cache.py",
+            "projector",
+        ),
+        mapping_source=_source("prior/constants.py", "mapping"),
+    )
+
+
+def _environment() -> EnvironmentCapture:
+    return EnvironmentCapture(
+        python_version="3.8.20",
+        python_implementation="CPython",
+        platform="Linux-test",
+        numpy_version="1.24.3",
+        zlib_version="1.2.13",
+        habitat_version="0.1.7",
+        habitat_sim_version="0.1.7",
+        cuda_runtime_version="11.8",
+        nvidia_driver_version="535.0",
+        gpu_name="Fake GPU",
+        gpu_uuid="GPU-00000000-0000-0000-0000-000000000000",
+        gpu_device_id=0,
+        installed_distributions=(
+            InstalledDistribution(name="habitat-lab", version="0.1.7"),
+            InstalledDistribution(name="numpy", version="1.24.3"),
+        ),
+    )
+
+
+def _manifest_rows() -> tuple[IndexRow, ...]:
+    encoded = encode_raw_frame_npz(
+        render_raw_frame_artifact(
+            _fake_simulator(),
+            _observation(artifact_sha256="0" * 64),
+        )
+    )
+    record = FileRecord(
+        byte_length=len(encoded.data),
+        sha256=hashlib.sha256(encoded.data).hexdigest(),
+    )
+    scenes = tuple(
+        scene
+        for scene, count in zip(
+            (f"scene-{index:02d}" for index in range(11)),
+            (5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4),
+        )
+        for _ in range(count)
+    )
+    return tuple(
+        IndexRow(
+            artifact=f"observations/{scenes[ordinal]}/"
+            f"{ordinal:02d}-{ordinal:020x}.npz",
+            cohort_row_sha256=f"{ordinal + 1:064x}",
+            members=encoded.members,
+            npz=record,
+            observation_id=f"{ordinal:020x}",
+            oracle_artifact_sha256=f"{ordinal + 101:064x}",
+            ordinal=ordinal,
+            scene_id=scenes[ordinal],
+        )
+        for ordinal in range(50)
+    )
+
+
+def _scene_assets() -> Mapping[str, SceneAssetCommitment]:
+    result = {}
+    for scene_index in range(11):
+        scene = f"scene-{scene_index:02d}"
+        files = {}
+        for role, suffix, required in (
+            ("glb", ".glb", True),
+            ("house", ".house", True),
+            ("navmesh", ".navmesh", False),
+            ("semantic_ply", "_semantic.ply", True),
+        ):
+            payload = f"{scene}:{role}".encode()
+            files[role] = SceneAssetFile(
+                path=f"{scene}/{scene}{suffix}",
+                required=required,
+                byte_length=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        result[scene] = SceneAssetCommitment.from_files(files)
+    return MappingProxyType(result)
+
+
+def test_manifest_is_canonical_and_binds_every_exact_commitment() -> None:
+    rows = _manifest_rows()
+    index = canonical_index_bytes(rows)
+    manifest_bytes = build_manifest(
+        git_commit="a" * 40,
+        sources=_manifest_sources(),
+        scene_assets=_scene_assets(),
+        environment=_environment(),
+        index_bytes=index,
+        rows=rows,
+    )
+
+    assert manifest_bytes.endswith(b"\n")
+    manifest = json.loads(manifest_bytes)
+    assert manifest_bytes == (
+        json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    )
+    assert set(manifest) == {
+        "schema_version",
+        "collection_id",
+        "collection",
+        "cohort",
+        "evidence",
+        "sensor",
+        "scene_assets",
+        "environment",
+        "replay",
+        "files",
+    }
+    assert manifest["schema_version"] == 1
+    assert manifest["collection_id"] == "r2r-val-unseen-50-raw-v1"
+    assert set(manifest["collection"]) == {
+        "git_commit",
+        "collector_source",
+        "package_source",
+        "asset_roles",
+        "command",
+        "gpu_device_id",
+    }
+    assert manifest["collection"]["command"] == (
+        "python -m prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames"
+    )
+    assert manifest["collection"]["gpu_device_id"] == 0
+    assert manifest["collection"]["collector_source"] == {
+        "path": "prior/analyze/d2026_07_29/rgbd_segmenter_raw_frames.py",
+        "byte_length": 9,
+        "sha256": "0736fd5b7cc7ab7dfe821d3a17f93f2634497770232486155c9c881321c4d22c",
+    }
+    assert manifest["cohort"] == {
+        "cohort_id": "r2r-val-unseen-50-v1",
+        "directory": "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1",
+        "manifest_sha256": (
+            "d71f04f102d80df3799e5fea76162147ad76c060c82ccbca88813d8b14a0b191"
+        ),
+        "cohort_jsonl_sha256": (
+            "89ae70f3e489fa702c66110f9bd9e7666ba0e16a9fbc3ac20aaa91a95adef0ce"
+        ),
+        "selection_sha256": (
+            "32a7adddf32291f059eb1045e63e077a693ca64d6fdf6e7418b54dd5d3644cb2"
+        ),
+        "sealing_git_commit": "80780e5a8a3736dc666b8dd861c00ce55f4685d8",
+        "observation_count": 50,
+        "scene_count": 11,
+    }
+    assert set(manifest["evidence"]) == {
+        "root",
+        "evidence_key",
+        "dataset",
+        "split",
+        "manifest",
+        "index",
+        "raw_split",
+        "projector_source",
+        "mapping_source",
+        "mapping_sha256",
+    }
+    assert manifest["evidence"]["mapping_sha256"] == (
+        "0aedb9a63f9e12d919fa46a0be144b43262d26c9eb50fe7f374f128685a2b47d"
+    )
+    assert set(manifest["sensor"]) == {"config", "config_sha256"}
+    sensor = manifest["sensor"]["config"]
+    assert set(sensor) == {
+        "views",
+        "yaw_degrees",
+        "height",
+        "width",
+        "hfov_degrees",
+        "position",
+        "min_depth_m",
+        "max_depth_m",
+        "normalize_depth",
+        "rgb_channel_order",
+        "depth_units",
+        "orientation_rule",
+        "camera_pose_authority",
+        "resolved_specs",
+    }
+    assert sensor["views"] == 12
+    assert sensor["yaw_degrees"] == list(range(0, 360, 30))
+    assert len(sensor["resolved_specs"]) == 36
+    assert [record["uuid"] for record in sensor["resolved_specs"]] == sorted(
+        record["uuid"] for record in sensor["resolved_specs"]
+    )
+    assert set(sensor["resolved_specs"][0]) == {
+        "uuid",
+        "modality",
+        "habitat_sensor_type",
+        "habitat_sensor_subtype",
+        "resolution",
+        "hfov_degrees",
+        "position",
+        "orientation",
+        "min_depth_m",
+        "max_depth_m",
+        "normalize_depth",
+    }
+    depth = next(
+        record
+        for record in sensor["resolved_specs"]
+        if record["uuid"] == "depth_000"
+    )
+    assert depth == {
+        "uuid": "depth_000",
+        "modality": "depth",
+        "habitat_sensor_type": "DEPTH",
+        "habitat_sensor_subtype": "PINHOLE",
+        "resolution": [256, 256],
+        "hfov_degrees": 90.0,
+        "position": [0.0, 1.25, 0.0],
+        "orientation": [0.0, 0.0, 0.0],
+        "min_depth_m": 0.0,
+        "max_depth_m": 10.0,
+        "normalize_depth": False,
+    }
+    rgb = next(
+        record for record in sensor["resolved_specs"] if record["uuid"] == "rgb_000"
+    )
+    assert rgb["habitat_sensor_type"] == "COLOR"
+    assert (
+        rgb["min_depth_m"],
+        rgb["max_depth_m"],
+        rgb["normalize_depth"],
+    ) == (None, None, None)
+    assert manifest["sensor"]["config_sha256"] == hashlib.sha256(
+        json.dumps(sensor, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert set(manifest["scene_assets"]) == {
+        "source_root",
+        "role_classification_algorithm",
+        "required_roles",
+        "auxiliary_roles",
+        "scenes",
+    }
+    assert manifest["scene_assets"]["required_roles"] == [
+        "glb",
+        "house",
+        "semantic_ply",
+    ]
+    assert manifest["scene_assets"]["auxiliary_roles"] == ["navmesh"]
+    assert len(manifest["scene_assets"]["scenes"]) == 11
+    assert set(manifest["environment"]) == {
+        "python_version",
+        "python_implementation",
+        "platform",
+        "numpy_version",
+        "zlib_version",
+        "habitat_version",
+        "habitat_sim_version",
+        "cuda_runtime_version",
+        "nvidia_driver_version",
+        "gpu_name",
+        "gpu_uuid",
+        "gpu_device_id",
+        "installed_distributions",
+        "installed_distributions_sha256",
+    }
+    assert manifest["replay"] == {
+        "observation_count": 50,
+        "passed_count": 50,
+        "scene_count": 11,
+        "array_equal_fields": [
+            "ego_free_mask",
+            "ego_observed_mask",
+            "ego_semantic_grid",
+            "target_free_mask",
+            "target_observed_mask",
+            "target_semantic_grid",
+        ],
+        "metadata_comparison": (
+            "cast-replayed-values-to-float32-then-array-equal"
+        ),
+    }
+    assert set(manifest["files"]) == {"index", "artifacts", "payload"}
+    assert manifest["files"]["index"] == {
+        "path": "index.jsonl",
+        "byte_length": len(index),
+        "row_count": 50,
+        "sha256": hashlib.sha256(index).hexdigest(),
+    }
+    assert manifest["files"]["artifacts"]["file_count"] == 50
+    assert manifest["files"]["payload"]["file_count"] == 51
+
+
+def test_collection_input_preserves_same_buffer_cohort_row_hash() -> None:
+    inputs = load_collection_inputs()
+    cohort = Path(
+        "data/rgbd_segmenter_benchmark/r2r-val-unseen-50-v1/cohort.jsonl"
+    ).read_bytes()
+
+    assert [item.cohort_row_sha256 for item in inputs.observations] == [
+        hashlib.sha256(line).hexdigest() for line in cohort.splitlines()
+    ]
+
+
+def test_manifest_rejects_nested_schema_and_asset_role_mutations(
+    tmp_path: Path,
+) -> None:
+    rows = _manifest_rows()
+    index = canonical_index_bytes(rows)
+    assets = dict(_scene_assets())
+    first = assets["scene-00"]
+    files = dict(first.files)
+    files["navmesh"] = replace(files["navmesh"], required=True)
+    with pytest.raises(ValueError, match="required"):
+        SceneAssetCommitment.from_files(files)
+
+    manifest = json.loads(
+        build_manifest(
+            git_commit="a" * 40,
+            sources=_manifest_sources(),
+            scene_assets=_scene_assets(),
+            environment=_environment(),
+            index_bytes=index,
+            rows=rows,
+        )
+    )
+    manifest["environment"]["extra"] = "forbidden"
+    mutated = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    root = tmp_path / "attempt"
+    root.mkdir()
+    (root / "manifest.json").write_bytes(mutated)
+
+    with pytest.raises(ValueError, match="manifest"):
+        validate_raw_frame_directory(root, expected_manifest=mutated)
+
+
+def _attempt_observations() -> tuple[CollectionObservation, ...]:
+    counts = (5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4)
+    observations = []
+    ordinal = 0
+    for scene_index, count in enumerate(counts):
+        for _ in range(count):
+            observations.append(
+                CollectionObservation(
+                    artifact_path=Path(
+                        f"observations/scene-{scene_index:02d}/{ordinal:020x}.npz"
+                    ),
+                    artifact_sha256=f"{ordinal + 101:064x}",
+                    cohort_row_sha256=f"{ordinal + 1:064x}",
+                    example_ids=(f"R2R_val_unseen_{ordinal}",),
+                    observation_id=f"{ordinal:020x}",
+                    scene_id=f"scene-{scene_index:02d}",
+                    start_position=(float(ordinal), 0.0, 0.0),
+                    start_rotation=(0.0, 0.0, 0.0, 1.0),
+                )
+            )
+            ordinal += 1
+    return tuple(observations)
+
+
+def _bundle_for_scene(root: Path, scene: str) -> SceneBundle:
+    directory = root / scene
+    directory.mkdir()
+    files = {}
+    for role, suffix in (
+        ("glb", ".glb"),
+        ("house", ".house"),
+        ("navmesh", ".navmesh"),
+        ("semantic_ply", "_semantic.ply"),
+    ):
+        path = directory / f"{scene}{suffix}"
+        path.write_bytes(f"{scene}:{role}".encode())
+        files[role] = SnapshotFile(
+            path=path,
+            byte_length=path.stat().st_size,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+    return SceneBundle(scene_id=scene, files=MappingProxyType(files))
+
+
+def test_collect_attempt_keeps_sealed_order_one_simulator_per_scene_and_no_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    observations = _attempt_observations()
+    scenes = tuple(f"scene-{index:02d}" for index in range(11))
+    attempt = tmp_path / "attempt"
+    snapshots = tmp_path / "snapshots"
+    events: list[tuple[str, object]] = []
+    closed: list[str] = []
+    encoded_members = encode_raw_frame_npz(
+        render_raw_frame_artifact(
+            _fake_simulator(), _observation(artifact_sha256="0" * 64)
+        )
+    ).members
+    captures = iter(
+        [
+            ("a" * 40, _manifest_sources(), _environment()),
+            ("a" * 40, _manifest_sources(), _environment()),
+        ]
+    )
+
+    class FakeSimulator:
+        def __init__(self, scene: str) -> None:
+            self.scene = scene
+
+        def close(self) -> None:
+            closed.append(self.scene)
+
+    def fake_snapshot(scene: str, root: Path) -> SceneBundle:
+        events.append(("snapshot", scene))
+        return _bundle_for_scene(root, scene)
+
+    def fake_render(
+        simulator: FakeSimulator, observation: CollectionObservation
+    ) -> SimpleNamespace:
+        assert simulator.scene == observation.scene_id
+        events.append(("render", observation.observation_id))
+        return SimpleNamespace(observation_id=observation.observation_id)
+
+    def fake_encode(arrays: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=f"npz:{arrays.observation_id}".encode(),
+            members=encoded_members,
+        )
+
+    def fake_parse(data: bytes, **_kwargs: object) -> SimpleNamespace:
+        identifier = data.decode().split(":", 1)[1]
+        events.append(("parse", identifier))
+        return SimpleNamespace(
+            arrays=SimpleNamespace(observation_id=identifier),
+            members=encoded_members,
+        )
+
+    def fake_oracle(observation: CollectionObservation) -> SimpleNamespace:
+        events.append(("oracle", observation.observation_id))
+        return SimpleNamespace()
+
+    def fake_replay(
+        arrays: SimpleNamespace,
+        observation: CollectionObservation,
+        _oracle: object,
+    ) -> None:
+        assert arrays.observation_id == observation.observation_id
+        events.append(("replay", observation.observation_id))
+
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: SimpleNamespace(observations=observations, scenes=scenes),
+    )
+    monkeypatch.setattr(raw_frames, "_capture_attempt_state", lambda: next(captures))
+    monkeypatch.setattr(raw_frames, "snapshot_scene_bundle", fake_snapshot)
+    monkeypatch.setattr(
+        raw_frames,
+        "build_scene_simulator",
+        lambda bundle: FakeSimulator(bundle.scene_id),
+    )
+    monkeypatch.setattr(raw_frames, "render_raw_frame_artifact", fake_render)
+    monkeypatch.setattr(raw_frames, "encode_raw_frame_npz", fake_encode)
+    monkeypatch.setattr(raw_frames, "parse_raw_frame_npz_bytes", fake_parse)
+    monkeypatch.setattr(raw_frames, "load_pinned_oracle_after_render", fake_oracle)
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", fake_replay)
+    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_original_asset_commitments",
+        lambda _assets: None,
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "validate_raw_frame_directory",
+        lambda root, *, expected_manifest: events.append(("validate", root)),
+    )
+
+    manifest = collect_attempt(attempt, snapshots)
+
+    assert [value for name, value in events if name == "render"] == [
+        observation.observation_id for observation in observations
+    ]
+    assert [value for name, value in events if name == "snapshot"] == list(scenes)
+    assert closed == list(scenes)
+    for observation in observations:
+        identifier = observation.observation_id
+        positions = {
+            name: events.index((name, identifier))
+            for name in ("render", "parse", "oracle", "replay")
+        }
+        assert positions["render"] < positions["parse"] < positions["oracle"]
+        assert positions["oracle"] < positions["replay"]
+    assert (attempt / "index.jsonl").read_bytes() == canonical_index_bytes(
+        tuple(
+            IndexRow(
+                artifact=f"observations/{item.scene_id}/"
+                f"{ordinal:02d}-{item.observation_id}.npz",
+                cohort_row_sha256=item.cohort_row_sha256,
+                members=encoded_members,
+                npz=FileRecord(
+                    byte_length=len(f"npz:{item.observation_id}".encode()),
+                    sha256=hashlib.sha256(
+                        f"npz:{item.observation_id}".encode()
+                    ).hexdigest(),
+                ),
+                observation_id=item.observation_id,
+                oracle_artifact_sha256=item.artifact_sha256,
+                ordinal=ordinal,
+                scene_id=item.scene_id,
+            )
+            for ordinal, item in enumerate(observations)
+        )
+    )
+    assert (attempt / "manifest.json").read_bytes() == manifest
+    assert events[-1] == ("validate", attempt)
+    assert not snapshots.exists()
+
+    with pytest.raises(FileExistsError):
+        collect_attempt(attempt, snapshots)
+
+
+def test_collect_attempt_closes_and_removes_partial_index_on_replay_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    observations = _attempt_observations()
+    attempt = tmp_path / "attempt"
+    snapshots = tmp_path / "snapshots"
+    simulator = SimpleNamespace(close=lambda: None)
+    closed = []
+    simulator.close = lambda: closed.append(True)
+    members = encode_raw_frame_npz(
+        render_raw_frame_artifact(
+            _fake_simulator(), _observation(artifact_sha256="0" * 64)
+        )
+    ).members
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: SimpleNamespace(
+            observations=observations,
+            scenes=tuple(f"scene-{index:02d}" for index in range(11)),
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "_capture_attempt_state",
+        lambda: ("a" * 40, _manifest_sources(), _environment()),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "snapshot_scene_bundle",
+        lambda scene, root: _bundle_for_scene(root, scene),
+    )
+    monkeypatch.setattr(raw_frames, "build_scene_simulator", lambda _bundle: simulator)
+    monkeypatch.setattr(
+        raw_frames, "render_raw_frame_artifact", lambda _sim, obs: obs
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "encode_raw_frame_npz",
+        lambda obs: SimpleNamespace(
+            data=f"npz:{obs.observation_id}".encode(), members=members
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames,
+        "parse_raw_frame_npz_bytes",
+        lambda _data, **_kwargs: SimpleNamespace(
+            arrays=SimpleNamespace(), members=members
+        ),
+    )
+    monkeypatch.setattr(
+        raw_frames, "load_pinned_oracle_after_render", lambda _obs: SimpleNamespace()
+    )
+
+    def fail_replay(*_args: object) -> None:
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(raw_frames, "replay_and_require_exact", fail_replay)
+    monkeypatch.setattr(raw_frames, "_require_bundle_unchanged", lambda _bundle: None)
+
+    with pytest.raises(RuntimeError, match="replay failed"):
+        collect_attempt(attempt, snapshots)
+
+    assert closed == [True]
+    assert not attempt.exists()
+    assert not snapshots.exists()
+
+
+def test_full_attempt_requires_tracked_asset_roles_before_creating_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    attempt = tmp_path / "attempt"
+    snapshots = tmp_path / "snapshots"
+    paths = dict(raw_frames._SOURCE_PATHS)
+    paths["asset_roles"] = (tmp_path / "missing-asset-roles.json").as_posix()
+    monkeypatch.setattr(raw_frames, "_SOURCE_PATHS", paths)
+
+    with pytest.raises(FileNotFoundError, match="asset_roles"):
+        collect_attempt(attempt, snapshots)
+
+    assert not attempt.exists()
+    assert not snapshots.exists()
+
+
+def test_dynamic_source_reader_uses_one_nofollow_regular_file_buffer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.chdir(tmp_path)
+    Path("source.py").write_bytes(b"source")
+    Path("alias.py").symlink_to("source.py")
+
+    record = raw_frames._read_source("source.py")
+
+    assert record.data == b"source"
+    with pytest.raises(ValueError, match="regular"):
+        raw_frames._read_source("alias.py")
+
+
+def test_close_still_rehashes_bundle_when_close_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    events = []
+
+    class CloseFailure:
+        def close(self) -> None:
+            events.append("close")
+            raise RuntimeError("x")
+
+    simulator = CloseFailure()
+    monkeypatch.setattr(
+        raw_frames,
+        "_require_bundle_unchanged",
+        lambda _bundle: events.append("rehash"),
+    )
+
+    with pytest.raises(RuntimeError, match="x"):
+        raw_frames._close_and_require_bundle_unchanged(
+            simulator,
+            SceneBundle(scene_id="scene", files=MappingProxyType({})),
+        )
+
+    assert events == ["close", "rehash"]
+
+
+def test_final_original_asset_rehash_detects_post_scene_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    root = tmp_path / "mp3d"
+    scene = "scene-00"
+    source = root / scene
+    source.mkdir(parents=True)
+    commitment = _scene_assets()[scene]
+    for record in commitment.files.values():
+        role = record.path.rsplit("/", 1)[1]
+        payload_role = next(
+            candidate
+            for candidate in ("glb", "house", "navmesh", "semantic_ply")
+            if record.sha256
+            == hashlib.sha256(f"{scene}:{candidate}".encode()).hexdigest()
+        )
+        (source / role).write_bytes(f"{scene}:{payload_role}".encode())
+    monkeypatch.setattr(raw_frames, "SCENE_DATASET_ROOT", root)
+
+    raw_frames._require_original_asset_commitments({scene: commitment})
+    (source / f"{scene}.glb").write_bytes(b"changed")
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        raw_frames._require_original_asset_commitments({scene: commitment})
+
+
+def test_first_per_scene_smoke_classifies_55_disposable_variants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    observations = _attempt_observations()
+    smoke_root = tmp_path / "smoke"
+    final_root = tmp_path / "final"
+    calls = []
+
+    def fake_variant(
+        observation: CollectionObservation,
+        _staging: Path,
+        _snapshots: Path,
+        omitted_role: str | None,
+    ) -> bool:
+        calls.append((observation.scene_id, omitted_role))
+        return omitted_role not in {"glb", "house", "semantic_ply"}
+
+    monkeypatch.setattr(raw_frames, "SMOKE_PACKAGE_ROOT", smoke_root)
+    monkeypatch.setattr(raw_frames, "FINAL_PACKAGE_ROOT", final_root)
+    monkeypatch.setattr(
+        raw_frames,
+        "load_collection_inputs",
+        lambda: SimpleNamespace(
+            observations=observations,
+            scenes=tuple(f"scene-{index:02d}" for index in range(11)),
+        ),
+    )
+    monkeypatch.setattr(raw_frames, "_run_smoke_variant", fake_variant)
+
+    report = run_first_per_scene_smoke()
+
+    expected_calls = [
+        (f"scene-{index:02d}", role)
+        for index in range(11)
+        for role in (None, "glb", "house", "navmesh", "semantic_ply")
+    ]
+    assert calls == expected_calls
+    expected = {
+        "classification": {
+            "algorithm": "single-role-omission-first-row-per-scene-v1",
+            "auxiliary": ["navmesh"],
+            "required": ["glb", "house", "semantic_ply"],
+            "schema_version": 1,
+        },
+        "control_passed_count": 11,
+        "scene_count": 11,
+        "schema_version": 1,
+    }
+    assert report == json.dumps(
+        expected, sort_keys=True, separators=(",", ":")
+    ).encode() + b"\n"
+    assert capsys.readouterr().out.encode() == report
+    assert not smoke_root.exists()
+    assert not final_root.exists()

@@ -103,6 +103,27 @@ class TreeAggregate:
     tree_sha256: str
 
 
+@dataclass(frozen=True)
+class SourceRecord:
+    """One source path bound to the exact accepted byte buffer."""
+
+    path: str
+    data: bytes
+
+    def __post_init__(self) -> None:
+        _validate_relative_path(self.path)
+        if not isinstance(self.data, bytes):
+            raise ValueError("source data must be bytes")
+
+    @property
+    def byte_length(self) -> int:
+        return len(self.data)
+
+    @property
+    def sha256(self) -> str:
+        return _sha256(self.data)
+
+
 _MEMBER_SCHEMA: Mapping[str, Tuple[str, Tuple[int, ...]]] = {
     "depth_m": ("<f4", (12, 256, 256)),
     "ego_free_mask": ("|b1", (50, 50)),
@@ -698,3 +719,389 @@ def tree_aggregate(
         total_byte_length=total,
         tree_sha256=_sha256("".join(lines).encode("utf-8")),
     )
+
+
+_MANIFEST_KEYS = (
+    "schema_version",
+    "collection_id",
+    "collection",
+    "cohort",
+    "evidence",
+    "sensor",
+    "scene_assets",
+    "environment",
+    "replay",
+    "files",
+)
+_SOURCE_RECORD_KEYS = ("path", "byte_length", "sha256")
+_COLLECTION_KEYS = (
+    "git_commit",
+    "collector_source",
+    "package_source",
+    "asset_roles",
+    "command",
+    "gpu_device_id",
+)
+_COHORT_KEYS = (
+    "cohort_id",
+    "directory",
+    "manifest_sha256",
+    "cohort_jsonl_sha256",
+    "selection_sha256",
+    "sealing_git_commit",
+    "observation_count",
+    "scene_count",
+)
+_EVIDENCE_KEYS = (
+    "root",
+    "evidence_key",
+    "dataset",
+    "split",
+    "manifest",
+    "index",
+    "raw_split",
+    "projector_source",
+    "mapping_source",
+    "mapping_sha256",
+)
+_SENSOR_CONFIG_KEYS = (
+    "views",
+    "yaw_degrees",
+    "height",
+    "width",
+    "hfov_degrees",
+    "position",
+    "min_depth_m",
+    "max_depth_m",
+    "normalize_depth",
+    "rgb_channel_order",
+    "depth_units",
+    "orientation_rule",
+    "camera_pose_authority",
+    "resolved_specs",
+)
+_SENSOR_SPEC_KEYS = (
+    "uuid",
+    "modality",
+    "habitat_sensor_type",
+    "habitat_sensor_subtype",
+    "resolution",
+    "hfov_degrees",
+    "position",
+    "orientation",
+    "min_depth_m",
+    "max_depth_m",
+    "normalize_depth",
+)
+_ENVIRONMENT_KEYS = (
+    "python_version",
+    "python_implementation",
+    "platform",
+    "numpy_version",
+    "zlib_version",
+    "habitat_version",
+    "habitat_sim_version",
+    "cuda_runtime_version",
+    "nvidia_driver_version",
+    "gpu_name",
+    "gpu_uuid",
+    "gpu_device_id",
+    "installed_distributions",
+    "installed_distributions_sha256",
+)
+
+
+def _require_source_record(value: object, label: str) -> None:
+    raw = _require_exact_keys(value, _SOURCE_RECORD_KEYS, label)
+    if not isinstance(raw["path"], str):
+        raise ValueError(f"{label}.path must be a string")
+    _validate_relative_path(raw["path"])
+    _require_plain_int(raw["byte_length"], f"{label}.byte_length")
+    _require_hash(raw["sha256"], f"{label}.sha256")
+
+
+def _require_manifest_nested_schema(raw: Mapping[str, object]) -> None:
+    collection = _require_exact_keys(
+        raw["collection"], _COLLECTION_KEYS, "manifest.collection"
+    )
+    for name in ("collector_source", "package_source", "asset_roles"):
+        _require_source_record(collection[name], f"manifest.collection.{name}")
+    if (
+        collection["command"]
+        != "python -m prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames"
+        or collection["gpu_device_id"] != 0
+        or not isinstance(collection["git_commit"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", collection["git_commit"]) is None
+    ):
+        raise ValueError("manifest.collection commitments have drifted")
+
+    cohort = _require_exact_keys(raw["cohort"], _COHORT_KEYS, "manifest.cohort")
+    if (
+        cohort["observation_count"] != 50
+        or cohort["scene_count"] != 11
+        or cohort["cohort_id"] != "r2r-val-unseen-50-v1"
+    ):
+        raise ValueError("manifest.cohort commitments have drifted")
+    for name in (
+        "manifest_sha256",
+        "cohort_jsonl_sha256",
+        "selection_sha256",
+    ):
+        _require_hash(cohort[name], f"manifest.cohort.{name}")
+
+    evidence = _require_exact_keys(
+        raw["evidence"], _EVIDENCE_KEYS, "manifest.evidence"
+    )
+    for name in (
+        "manifest",
+        "index",
+        "raw_split",
+        "projector_source",
+        "mapping_source",
+    ):
+        _require_source_record(evidence[name], f"manifest.evidence.{name}")
+    _require_hash(evidence["mapping_sha256"], "manifest.evidence.mapping_sha256")
+
+    sensor = _require_exact_keys(
+        raw["sensor"], ("config", "config_sha256"), "manifest.sensor"
+    )
+    config = _require_exact_keys(
+        sensor["config"], _SENSOR_CONFIG_KEYS, "manifest.sensor.config"
+    )
+    specs = config["resolved_specs"]
+    if not isinstance(specs, list) or len(specs) != 36:
+        raise ValueError("manifest.sensor resolved specs must contain 36 records")
+    uuids = []
+    for index, spec in enumerate(specs):
+        record = _require_exact_keys(
+            spec, _SENSOR_SPEC_KEYS, f"manifest.sensor.resolved_specs[{index}]"
+        )
+        if not isinstance(record["uuid"], str):
+            raise ValueError("manifest.sensor UUID must be a string")
+        uuids.append(record["uuid"])
+    if uuids != sorted(uuids) or len(set(uuids)) != 36:
+        raise ValueError("manifest.sensor UUID order is not lexical and unique")
+    config_hash = _sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    )
+    if sensor["config_sha256"] != config_hash:
+        raise ValueError("manifest.sensor config hash differs")
+
+    scene_assets = _require_exact_keys(
+        raw["scene_assets"],
+        (
+            "source_root",
+            "role_classification_algorithm",
+            "required_roles",
+            "auxiliary_roles",
+            "scenes",
+        ),
+        "manifest.scene_assets",
+    )
+    scenes = scene_assets["scenes"]
+    if (
+        scene_assets["required_roles"] != ["glb", "house", "semantic_ply"]
+        or scene_assets["auxiliary_roles"] != ["navmesh"]
+        or not isinstance(scenes, dict)
+        or len(scenes) != 11
+        or list(scenes) != sorted(scenes)
+    ):
+        raise ValueError("manifest.scene_assets classification or scenes drifted")
+    for scene_id, scene in scenes.items():
+        scene_record = _require_exact_keys(
+            scene, ("bundle_sha256", "files"), f"manifest.scene_assets.{scene_id}"
+        )
+        _require_hash(
+            scene_record["bundle_sha256"],
+            f"manifest.scene_assets.{scene_id}.bundle_sha256",
+        )
+        role_files = _require_exact_keys(
+            scene_record["files"],
+            ("glb", "house", "navmesh", "semantic_ply"),
+            f"manifest.scene_assets.{scene_id}.files",
+        )
+        for role, value in role_files.items():
+            role_record = _require_exact_keys(
+                value,
+                ("path", "required", "byte_length", "sha256"),
+                f"manifest.scene_assets.{scene_id}.{role}",
+            )
+            if type(role_record["required"]) is not bool:
+                raise ValueError("manifest scene asset required flag must be boolean")
+            _require_plain_int(
+                role_record["byte_length"],
+                f"manifest.scene_assets.{scene_id}.{role}.byte_length",
+            )
+            _require_hash(
+                role_record["sha256"],
+                f"manifest.scene_assets.{scene_id}.{role}.sha256",
+            )
+
+    environment = _require_exact_keys(
+        raw["environment"], _ENVIRONMENT_KEYS, "manifest.environment"
+    )
+    distributions = environment["installed_distributions"]
+    if not isinstance(distributions, list):
+        raise ValueError("manifest.environment distributions must be a list")
+    for index, distribution in enumerate(distributions):
+        _require_exact_keys(
+            distribution,
+            ("name", "version"),
+            f"manifest.environment.distributions[{index}]",
+        )
+    if environment["installed_distributions_sha256"] != _sha256(
+        json.dumps(distributions, sort_keys=True, separators=(",", ":")).encode()
+    ):
+        raise ValueError("manifest.environment distribution hash differs")
+    if environment["gpu_device_id"] != 0:
+        raise ValueError("manifest.environment GPU device differs")
+
+    replay = _require_exact_keys(
+        raw["replay"],
+        (
+            "observation_count",
+            "passed_count",
+            "scene_count",
+            "array_equal_fields",
+            "metadata_comparison",
+        ),
+        "manifest.replay",
+    )
+    if (
+        replay["observation_count"],
+        replay["passed_count"],
+        replay["scene_count"],
+    ) != (50, 50, 11):
+        raise ValueError("manifest.replay counts have drifted")
+
+
+def _parse_manifest_bytes(data: bytes) -> Mapping[str, object]:
+    if not isinstance(data, bytes) or not data.endswith(b"\n"):
+        raise ValueError("manifest must be UTF-8 JSON with a trailing newline")
+    try:
+        manifest = json.loads(data, object_pairs_hook=_no_duplicate_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("manifest must be UTF-8 JSON") from error
+    raw = _require_exact_keys(manifest, _MANIFEST_KEYS, "manifest")
+    if (
+        type(raw["schema_version"]) is not int
+        or raw["schema_version"] != 1
+        or raw["collection_id"] != "r2r-val-unseen-50-raw-v1"
+    ):
+        raise ValueError("manifest identity has drifted")
+    if json.dumps(raw, indent=2, sort_keys=True).encode("utf-8") + b"\n" != data:
+        raise ValueError("manifest is not canonical JSON")
+    _require_manifest_nested_schema(raw)
+    files = _require_exact_keys(
+        raw["files"], ("index", "artifacts", "payload"), "manifest.files"
+    )
+    _require_exact_keys(
+        files["index"],
+        ("path", "byte_length", "row_count", "sha256"),
+        "manifest.files.index",
+    )
+    for name in ("artifacts", "payload"):
+        _require_exact_keys(
+            files[name],
+            ("file_count", "total_byte_length", "tree_sha256"),
+            f"manifest.files.{name}",
+        )
+    return raw
+
+
+def _manifest_file_record(value: object, label: str) -> FileRecord:
+    raw = _require_exact_keys(
+        value, ("path", "byte_length", "row_count", "sha256"), label
+    )
+    if raw["path"] != "index.jsonl" or raw["row_count"] != 50:
+        raise ValueError(f"{label} identity or row count has drifted")
+    return FileRecord(
+        byte_length=_require_plain_int(raw["byte_length"], f"{label}.byte_length"),
+        sha256=_require_hash(raw["sha256"], f"{label}.sha256"),
+    )
+
+
+def _manifest_aggregate(value: object, label: str) -> TreeAggregate:
+    raw = _require_exact_keys(
+        value, ("file_count", "total_byte_length", "tree_sha256"), label
+    )
+    return TreeAggregate(
+        file_count=_require_plain_int(raw["file_count"], f"{label}.file_count"),
+        total_byte_length=_require_plain_int(
+            raw["total_byte_length"], f"{label}.total_byte_length"
+        ),
+        tree_sha256=_require_hash(raw["tree_sha256"], f"{label}.tree_sha256"),
+    )
+
+
+def _regular_tree_paths(root: Path) -> set[str]:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("raw-frame attempt root must be a real directory")
+    paths = set()
+    for directory, names, files in os.walk(root, followlinks=False):
+        directory_path = Path(directory)
+        for name in names:
+            child = directory_path / name
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError("raw-frame attempt contains an unsafe directory")
+        for name in files:
+            child = directory_path / name
+            if child.is_symlink() or not child.is_file():
+                raise ValueError("raw-frame attempt contains a non-regular file")
+            relative = child.relative_to(root).as_posix()
+            _validate_relative_path(relative)
+            paths.add(relative)
+    return paths
+
+
+def validate_raw_frame_directory(
+    root: Path,
+    *,
+    expected_manifest: bytes,
+) -> None:
+    """Validate one private attempt against its supplied internal commitments."""
+
+    if not isinstance(root, Path) or not isinstance(expected_manifest, bytes):
+        raise ValueError("raw-frame validation arguments are invalid")
+    manifest = _parse_manifest_bytes(expected_manifest)
+    accepted_manifest = strict_read_bytes(
+        root / "manifest.json",
+        _sha256(expected_manifest),
+        "raw-frame manifest",
+    )
+    if accepted_manifest != expected_manifest:
+        raise ValueError("raw-frame manifest differs from supplied commitment")
+    files = cast(Mapping[str, object], manifest["files"])
+    index_record = _manifest_file_record(files["index"], "manifest.files.index")
+    index_data = strict_read_bytes(root / "index.jsonl", index_record.sha256, "index")
+    if len(index_data) != index_record.byte_length:
+        raise ValueError("index byte length differs from manifest")
+    rows = parse_index_bytes(index_data)
+    artifact_records = []
+    for row in rows:
+        artifact_data = strict_read_bytes(
+            root / Path(row.artifact), row.npz.sha256, "raw-frame artifact"
+        )
+        if len(artifact_data) != row.npz.byte_length:
+            raise ValueError("artifact byte length differs from index")
+        parse_raw_frame_npz_bytes(
+            artifact_data,
+            expected_members=row.members,
+            expected_npz=row.npz,
+        )
+        artifact_records.append((row.artifact, row.npz))
+    artifacts = tree_aggregate(artifact_records)
+    payload = tree_aggregate(
+        (*artifact_records, ("index.jsonl", index_record))
+    )
+    if artifacts != _manifest_aggregate(
+        files["artifacts"], "manifest.files.artifacts"
+    ) or payload != _manifest_aggregate(files["payload"], "manifest.files.payload"):
+        raise ValueError("payload tree aggregate differs from manifest")
+    expected_paths = {
+        "manifest.json",
+        "index.jsonl",
+        *(row.artifact for row in rows),
+    }
+    if _regular_tree_paths(root) != expected_paths:
+        raise ValueError("raw-frame attempt has missing or extra files")
