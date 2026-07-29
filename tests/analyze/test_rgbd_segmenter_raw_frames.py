@@ -1768,9 +1768,52 @@ def _environment() -> EnvironmentCapture:
         gpu_uuid="GPU-00000000-0000-0000-0000-000000000000",
         gpu_device_id=0,
         installed_distributions=(
-            InstalledDistribution(name="habitat-lab", version="0.1.7"),
+            InstalledDistribution(name="habitat", version="0.1.7"),
+            InstalledDistribution(name="habitat-sim", version="0.1.7"),
             InstalledDistribution(name="numpy", version="1.24.3"),
         ),
+    )
+
+
+def test_environment_capture_queries_installed_habitat_distribution_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_raw_frames as raw_frames
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    distributions = (
+        SimpleNamespace(metadata={"Name": "habitat"}, version="0.1.7"),
+        SimpleNamespace(metadata={"Name": "habitat-sim"}, version="0.1.7"),
+    )
+    versions = {"habitat": "0.1.7", "habitat-sim": "0.1.7"}
+    queries = []
+    monkeypatch.setattr(
+        raw_frames.importlib.metadata,
+        "distributions",
+        lambda: distributions,
+    )
+
+    def version(name: str) -> str:
+        queries.append(name)
+        return versions[name]
+
+    monkeypatch.setattr(raw_frames.importlib.metadata, "version", version)
+    monkeypatch.setattr(
+        raw_frames.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout="535.0, Fake GPU, GPU-00000000\n"
+        ),
+    )
+
+    environment = raw_frames.capture_environment()
+
+    assert queries == ["habitat", "habitat-sim"]
+    assert environment.habitat_version == "0.1.7"
+    assert environment.habitat_sim_version == "0.1.7"
+    assert environment.installed_distributions == (
+        InstalledDistribution(name="habitat", version="0.1.7"),
+        InstalledDistribution(name="habitat-sim", version="0.1.7"),
     )
 
 

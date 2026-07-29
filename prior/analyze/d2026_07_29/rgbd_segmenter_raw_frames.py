@@ -1729,7 +1729,7 @@ def capture_environment() -> EnvironmentCapture:
         platform=platform.platform(),
         numpy_version=np.__version__,
         zlib_version=zlib.ZLIB_RUNTIME_VERSION,
-        habitat_version=importlib.metadata.version("habitat-lab"),
+        habitat_version=importlib.metadata.version("habitat"),
         habitat_sim_version=importlib.metadata.version("habitat-sim"),
         cuda_runtime_version=cuda_version,
         nvidia_driver_version=driver,
