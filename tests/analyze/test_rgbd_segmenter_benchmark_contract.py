@@ -7,11 +7,13 @@ import subprocess
 import sys
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping, Sequence, cast
 
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as functional
 
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     DEFAULT_NYU40_MAPPING_PATH,
@@ -22,32 +24,43 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     RAW_PRODUCER_COMMIT,
     RAW_VALIDATOR_SOURCE_SHA256,
     BenchmarkEnvironmentAttestation,
+    BenchmarkMetricSummary,
     CandidateCommitment,
+    ConfusionCounts,
     DeviceBatch,
     LicenseStatus,
     MappingEntry,
+    MetricEndpoint,
     ObservationFailureCode,
     ObservationResult,
+    ObservationMetrics,
     ObservationStatus,
     MappingKind,
     P53ValidationAttestation,
     P53ValidatorLaunch,
+    PRIMARY_CATEGORY_INDICES,
     SegmenterInput,
     SpatialTransform,
     Prediction,
     PreparedHostBatch,
     ResourceMeasurement,
     TimingSample,
+    aggregate_observation_metrics,
     capture_environment_sha256,
     canonical_json_bytes,
     iter_validated_raw_observations,
     inspect_visible_gpu,
     load_nyu40_mapping,
     map_source_labels,
+    project_mapped_labels,
     run_p53_validation_subprocess,
+    restore_source_labels,
+    score_observation,
     transfer_prepared_host_batch,
     validate_source_logits,
 )
+from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import RawFrameArrays
+from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import OracleSensorFrame
 
 _RAW_INTEGRATION = pytest.mark.skipif(
     os.environ.get("ETP_R1_RUN_RGBD_RAW_INTEGRATION") != "1",
@@ -186,6 +199,587 @@ def test_spatial_transform_requires_exact_symmetric_padding_contract() -> None:
             pad_bottom=0,
             pad_left=30,
             pad_right=33,
+        )
+
+
+def test_logit_restore_unpads_poison_and_resolves_ties_before_mapping() -> None:
+    transform = SpatialTransform.from_sizes(
+        raw_height=256,
+        raw_width=256,
+        model_height=257,
+        model_width=320,
+    )
+    logits = torch.zeros((12, 40, 257, 320), dtype=torch.float32)
+    content = (
+        slice(None),
+        slice(None),
+        slice(transform.pad_top, 257 - transform.pad_bottom),
+        slice(transform.pad_left, 320 - transform.pad_right),
+    )
+    logits[content] = -1
+    logits[:, 13, content[2], content[3]] = 1
+    logits[:, 39, :, : transform.pad_left] = 1_000
+    logits[:, 39, :, 320 - transform.pad_right :] = 1_000
+
+    source = restore_source_labels(
+        logits,
+        spatial_transform=transform,
+        source_class_count=40,
+    )
+    mapped = map_source_labels(source, load_nyu40_mapping())
+
+    assert source.dtype is torch.int16
+    assert mapped.dtype is torch.int16
+    assert tuple(source.shape) == (12, 256, 256)
+    assert bool((source == 13).all())
+    assert bool((mapped == 3).all())
+
+    tied_source = restore_source_labels(
+        torch.zeros((12, 40, 1, 1)),
+        spatial_transform=transform,
+        source_class_count=40,
+    )
+    tied_mapped = map_source_labels(tied_source, load_nyu40_mapping())
+    assert bool((tied_source == 0).all())
+    assert bool((tied_mapped == 15).all())
+
+
+def test_logit_restore_resizes_logits_before_argmax_and_maps_afterward() -> None:
+    transform = SpatialTransform.from_sizes(
+        raw_height=256,
+        raw_width=256,
+        model_height=256,
+        model_width=256,
+    )
+    logits = torch.full((12, 40, 1, 2), -10.0)
+    logits[:, 4, 0, 0] = 2
+    logits[:, 5, 0, 0] = 0
+    logits[:, 4, 0, 1] = 0
+    logits[:, 5, 0, 1] = 1
+
+    source = restore_source_labels(
+        logits,
+        spatial_transform=transform,
+        source_class_count=40,
+    )
+    mapped = map_source_labels(source, load_nyu40_mapping())
+
+    # Hard-label resize crosses at 128, while align_corners=False interpolated
+    # logits cross near 149 (align_corners=True would cross near 170).
+    assert source[0, 128, 140].item() == 4
+    assert source[0, 128, 150].item() == 5
+    assert source[0, 128, 190].item() == 5
+    assert mapped[0, 128, 140].item() == 1
+    assert mapped[0, 128, 190].item() == 5
+
+
+def test_source_argmax_precedes_many_to_one_mapping_without_logit_merging() -> None:
+    transform = SpatialTransform.from_sizes(
+        raw_height=256,
+        raw_width=256,
+        model_height=256,
+        model_width=256,
+    )
+    logits = torch.full((12, 40, 1, 1), -10.0)
+    logits[:, 6] = 4
+    logits[:, 13] = 4
+    logits[:, 2] = 5
+
+    source = restore_source_labels(
+        logits,
+        spatial_transform=transform,
+        source_class_count=40,
+    )
+    mapped = map_source_labels(source, load_nyu40_mapping())
+
+    # Source 6 and 13 both map to table (3), but their logits must not be
+    # summed before source class 2 (cabinet, 19) wins argmax.
+    assert bool((source == 2).all())
+    assert bool((mapped == 19).all())
+
+
+def test_logit_restore_rejects_malformed_transform_and_logits() -> None:
+    valid = SpatialTransform.from_sizes(
+        raw_height=256,
+        raw_width=256,
+        model_height=256,
+        model_width=256,
+    )
+    wrong_raw_size = SpatialTransform.from_sizes(
+        raw_height=128,
+        raw_width=256,
+        model_height=256,
+        model_width=256,
+    )
+    logits = torch.zeros((12, 40, 1, 1))
+
+    with pytest.raises(ValueError, match="shared 256x256"):
+        restore_source_labels(
+            logits,
+            spatial_transform=wrong_raw_size,
+            source_class_count=40,
+        )
+    with pytest.raises(ValueError, match="wrong shape"):
+        restore_source_labels(
+            torch.zeros((11, 40, 1, 1)),
+            spatial_transform=valid,
+            source_class_count=40,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        restore_source_labels(
+            torch.full((12, 40, 1, 1), float("nan")),
+            spatial_transform=valid,
+            source_class_count=40,
+        )
+
+
+def test_spatial_coordinate_markers_survive_forward_and_inverse_round_trip() -> None:
+    transform = SpatialTransform.from_sizes(
+        raw_height=256,
+        raw_width=256,
+        model_height=257,
+        model_width=320,
+    )
+    raw_logits = torch.full((12, 6, 256, 256), -1.0)
+    raw_logits[:, 0] = 0
+    raw_logits[:, 1, 0, 0] = 10
+    raw_logits[:, 2, 0, 255] = 10
+    raw_logits[:, 3, 128, 128] = 10
+    raw_logits[:, 4, 255, 0] = 10
+    raw_logits[:, 5, 255, 255] = 10
+    resized = functional.interpolate(
+        raw_logits,
+        size=(transform.resized_height, transform.resized_width),
+        mode="bilinear",
+        align_corners=False,
+    )
+    padded = functional.pad(
+        resized,
+        (
+            transform.pad_left,
+            transform.pad_right,
+            transform.pad_top,
+            transform.pad_bottom,
+        ),
+        value=-1,
+    )
+
+    source = restore_source_labels(
+        padded,
+        spatial_transform=transform,
+        source_class_count=6,
+    )
+
+    assert source[0, 0, 0].item() == 1
+    assert source[0, 0, 255].item() == 2
+    assert source[0, 128, 128].item() == 3
+    assert source[0, 255, 0].item() == 4
+    assert source[0, 255, 255].item() == 5
+    assert source[0, 64, 64].item() == 0
+
+
+def _projection_arrays() -> RawFrameArrays:
+    depth = np.zeros((12, 256, 256), dtype="<f4")
+    depth[0, 127, 127] = 1
+    depth[1, 127, 127] = 1
+    depth[2, 127, 127] = 10
+    depth[3, 127, 127] = 0
+    return RawFrameArrays(
+        schema_version=np.asarray(1, dtype="<i8"),
+        rgb=np.zeros((12, 256, 256, 3), dtype="|u1"),
+        depth_m=depth,
+        object_categories=np.full((12, 256, 256), -1, dtype="<i2"),
+        region_categories=np.full((12, 256, 256), -1, dtype="<i2"),
+        sensor_positions=np.zeros((12, 3), dtype="<f8"),
+        sensor_rotations_xyzw=np.tile(np.asarray((0, 0, 0, 1), dtype="<f8"), (12, 1)),
+        sensor_yaw_degrees=np.arange(0, 360, 30, dtype="<i2"),
+        sensor_hfov_degrees=np.asarray(90, dtype="<f8"),
+        sensor_position_relative=np.asarray((0, 1.25, 0), dtype="<f8"),
+        start_position=np.zeros(3, dtype="<f8"),
+        start_rotation_xyzw=np.asarray((0, 0, 0, 1), dtype="<f8"),
+        target_origin_xz=np.asarray((-25, -26), dtype="<f8"),
+        ego_observed_mask=np.zeros((50, 50), dtype="|b1"),
+        ego_free_mask=np.zeros((50, 50), dtype="|b1"),
+        target_observed_mask=np.eye(50, dtype="|b1"),
+        target_free_mask=np.fliplr(np.eye(50, dtype="|b1")).copy(),
+    )
+
+
+def test_projection_reuses_all_poses_and_discards_candidate_geometry_masks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    angles = np.deg2rad(np.arange(0, 360, 30, dtype="<f8"))
+    arrays = replace(
+        _projection_arrays(),
+        sensor_positions=np.column_stack((
+            np.arange(12, dtype="<f8"),
+            np.arange(12, dtype="<f8") + 0.25,
+            -np.arange(12, dtype="<f8"),
+        )),
+        sensor_rotations_xyzw=np.column_stack((
+            np.zeros(12, dtype="<f8"),
+            np.sin(angles / 2),
+            np.zeros(12, dtype="<f8"),
+            np.cos(angles / 2),
+        )),
+    )
+    mapped = np.full((12, 256, 256), -1, dtype="<i2")
+    seen: list[OracleSensorFrame] = []
+    call_count = 0
+
+    def projector(
+        frames: Sequence[OracleSensorFrame],
+        *,
+        start_position: Sequence[float],
+        start_rotation: Sequence[float],
+        target_origin_xz: Sequence[float],
+    ) -> SimpleNamespace:
+        nonlocal call_count
+        call_count += 1
+        assert call_count == 1, "projector called more than once"
+        seen.extend(frames)
+        assert tuple(start_position) == tuple(arrays.start_position)
+        assert tuple(start_rotation) == tuple(arrays.start_rotation_xyzw)
+        assert tuple(target_origin_xz) == tuple(arrays.target_origin_xz)
+        semantic = np.zeros((37, 50, 50), dtype="|b1")
+        semantic[1, 0, 0] = True
+        return SimpleNamespace(
+            target_semantic_grid=semantic,
+            target_observed_mask=np.zeros((50, 50), dtype="|b1"),
+            target_free_mask=np.zeros((50, 50), dtype="|b1"),
+        )
+
+    monkeypatch.setattr(contract, "project_oracle_frames", projector)
+    projected = project_mapped_labels(mapped, arrays)
+
+    assert call_count == 1
+    assert len(seen) == 12
+    for index, frame in enumerate(seen):
+        assert np.array_equal(frame.depth_m, arrays.depth_m[index])
+        assert np.shares_memory(frame.depth_m, arrays.depth_m)
+        assert np.array_equal(frame.object_categories, mapped[index])
+        assert np.shares_memory(frame.object_categories, mapped)
+        assert bool((frame.region_categories == -1).all())
+        assert frame.sensor_position == tuple(arrays.sensor_positions[index])
+        assert frame.sensor_rotation == tuple(arrays.sensor_rotations_xyzw[index])
+        assert frame.hfov_degrees == 90
+    assert projected.shape == (27, 50, 50)
+    assert projected[1, 0, 0]
+    assert projected.sum() == 1
+    assert np.array_equal(arrays.target_observed_mask, np.eye(50, dtype="|b1"))
+    assert arrays.target_observed_mask[0, 0]
+    assert not arrays.target_free_mask.all()
+
+
+def test_projection_rejects_label_and_projector_schema_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    arrays = _projection_arrays()
+    valid = np.full((12, 256, 256), -1, dtype="<i2")
+    invalid_values = (
+        valid.astype("<i4"),
+        valid[:, :, :255],
+        np.full((12, 256, 256), 16, dtype="<i2"),
+        np.asfortranarray(valid),
+    )
+    for invalid in invalid_values:
+        with pytest.raises(ValueError, match="schema or range"):
+            project_mapped_labels(invalid, arrays)
+
+    def projector_returning(
+        output: np.ndarray,
+    ) -> object:
+        def projector(
+            frames: Sequence[OracleSensorFrame],
+            *,
+            start_position: Sequence[float],
+            start_rotation: Sequence[float],
+            target_origin_xz: Sequence[float],
+        ) -> SimpleNamespace:
+            del frames, start_position, start_rotation, target_origin_xz
+            return SimpleNamespace(target_semantic_grid=output)
+
+        return projector
+
+    invalid_outputs = (
+        np.zeros((27, 50, 50), dtype="|b1"),
+        np.zeros((37, 50, 50), dtype="<i2"),
+        np.zeros((37, 50, 50), dtype="|b1")[:, :, ::-1],
+    )
+    for invalid_output in invalid_outputs:
+        monkeypatch.setattr(
+            contract,
+            "project_oracle_frames",
+            projector_returning(invalid_output),
+        )
+        with pytest.raises(ValueError, match="projector returned"):
+            project_mapped_labels(valid, arrays)
+
+
+def test_projection_unions_views_and_ignores_zero_and_saturated_semantics() -> None:
+    arrays = _projection_arrays()
+    mapped = np.full((12, 256, 256), -1, dtype="<i2")
+    mapped[0, 127, 127] = 1
+    mapped[1, 127, 127] = 2
+    mapped[2, 127, 127] = 3
+    mapped[3, 127, 127] = 4
+
+    projected = project_mapped_labels(mapped, arrays)
+
+    assert projected[1, 24, 25]
+    assert projected[2, 24, 25]
+    assert not projected[3].any()
+    assert not projected[4].any()
+    assert projected.sum() == 2
+
+
+def _grid(*entries: tuple[int, int, int]) -> np.ndarray:
+    value = np.zeros((27, 50, 50), dtype="|b1")
+    for category, row, column in entries:
+        value[category, row, column] = True
+    return value
+
+
+def test_score_observation_rejects_dtype_shape_and_contiguity_mutations() -> None:
+    target = _grid((1, 0, 0))
+    invalid_predictions = (
+        target.astype("|u1"),
+        target[:, :, :49],
+        target[:, :, ::-1],
+    )
+
+    for prediction in invalid_predictions:
+        with pytest.raises(ValueError, match="C-contiguous bool"):
+            score_observation(
+                ordinal=0,
+                scene_id="scene-a",
+                prediction=prediction,
+                target=target,
+            )
+
+
+def test_observation_metrics_use_exact_primary_channels_and_empty_rules() -> None:
+    assert PRIMARY_CATEGORY_INDICES == (*range(1, 15), *range(18, 27))
+    metrics = score_observation(
+        ordinal=0,
+        scene_id="scene-a",
+        prediction=_grid((1, 0, 0), (15, 1, 1)),
+        target=_grid((1, 0, 0), (2, 0, 1), (15, 1, 1)),
+    )
+
+    assert isinstance(metrics, ObservationMetrics)
+    assert metrics.primary.counts == ConfusionCounts(tp=1, fp=0, fn=1)
+    assert metrics.primary.iou == 0.5
+    assert metrics.primary.f1 == pytest.approx(2 / 3)
+    assert metrics.all_27.counts == ConfusionCounts(tp=2, fp=0, fn=1)
+    assert metrics.per_category[1].counts == ConfusionCounts(tp=1, fp=0, fn=0)
+    assert metrics.per_category[2].counts == ConfusionCounts(tp=0, fp=0, fn=1)
+    assert metrics.per_category[15].counts == ConfusionCounts(tp=1, fp=0, fn=0)
+
+    target_nonempty = score_observation(
+        ordinal=1,
+        scene_id="scene-a",
+        prediction=_grid(),
+        target=_grid((1, 0, 0)),
+    ).primary
+    assert target_nonempty.precision is None
+    assert target_nonempty.recall == 0
+    assert target_nonempty.iou == 0
+    assert target_nonempty.f1 == 0
+    assert target_nonempty.eligible
+
+    both_empty = score_observation(
+        ordinal=2,
+        scene_id="scene-a",
+        prediction=_grid(),
+        target=_grid(),
+    ).primary
+    assert both_empty == MetricEndpoint(
+        counts=ConfusionCounts(0, 0, 0),
+        precision=None,
+        recall=None,
+        iou=None,
+        f1=None,
+        eligible=False,
+    )
+
+    false_positive = score_observation(
+        ordinal=3,
+        scene_id="scene-a",
+        prediction=_grid((1, 0, 0)),
+        target=_grid(),
+    ).primary
+    assert false_positive.precision == 0
+    assert false_positive.recall is None
+    assert false_positive.iou == 0
+    assert false_positive.f1 == 0
+    assert false_positive.eligible
+
+
+def test_primary_flattens_categories_and_all_27_retains_only_diagnostics() -> None:
+    diagnostic = score_observation(
+        ordinal=0,
+        scene_id="scene-a",
+        prediction=_grid((15, 0, 0), (17, 0, 1)),
+        target=_grid((0, 0, 2), (15, 0, 0), (16, 0, 3), (17, 0, 1)),
+    )
+    assert diagnostic.primary.counts == ConfusionCounts(0, 0, 0)
+    assert not diagnostic.primary.eligible
+    assert diagnostic.all_27.counts == ConfusionCounts(2, 0, 2)
+
+    joint = score_observation(
+        ordinal=1,
+        scene_id="scene-a",
+        prediction=_grid((1, 0, 0), (2, 1, 0)),
+        target=_grid((1, 0, 0), (1, 0, 1), (1, 0, 2), (2, 1, 0)),
+    )
+    assert joint.primary.iou == 0.5
+    assert (
+        cast(float, joint.per_category[1].iou) + cast(float, joint.per_category[2].iou)
+    ) / 2 == pytest.approx(2 / 3)
+
+
+def test_mapping_is_post_argmax_and_many_to_one_remains_hard_label_mapping() -> None:
+    labels = torch.zeros((12, 256, 256), dtype=torch.int16)
+    labels[0, 0, :4] = torch.tensor((6, 13, 2, 31), dtype=torch.int16)
+
+    mapped = map_source_labels(labels, load_nyu40_mapping())
+
+    assert mapped[0, 0, :4].tolist() == [3, 3, 19, 19]
+
+
+def test_metric_aggregation_separates_observation_pooled_scene_and_category() -> None:
+    rows = (
+        score_observation(
+            ordinal=0,
+            scene_id="scene-a",
+            prediction=_grid((1, 0, 0)),
+            target=_grid((1, 0, 0), (1, 0, 1)),
+        ),
+        score_observation(
+            ordinal=1,
+            scene_id="scene-a",
+            prediction=_grid(),
+            target=_grid((2, 0, 0)),
+        ),
+        score_observation(
+            ordinal=2,
+            scene_id="scene-b",
+            prediction=_grid((1, 0, 0), (1, 0, 1)),
+            target=_grid((1, 0, 0)),
+        ),
+    )
+
+    summary = aggregate_observation_metrics(
+        rows, expected_scenes=("scene-a", "scene-b")
+    )
+
+    assert isinstance(summary, BenchmarkMetricSummary)
+    assert summary.primary.observation_count == 3
+    assert summary.primary.eligible_observation_count == 3
+    assert summary.primary.empty_both_count == 0
+    assert summary.primary.target_empty_prediction_nonempty_count == 0
+    assert summary.primary.target_nonempty_prediction_empty_count == 1
+    assert summary.primary.mean_iou == pytest.approx(1 / 3)
+    assert summary.primary.mean_f1 == pytest.approx((2 / 3 + 0 + 2 / 3) / 3)
+    assert summary.primary.pooled.counts == ConfusionCounts(tp=2, fp=1, fn=2)
+    assert summary.primary.pooled.iou == pytest.approx(2 / 5)
+    assert summary.primary.scene_macro_iou == pytest.approx(3 / 8)
+    assert summary.per_category[1].pooled.counts == ConfusionCounts(2, 1, 1)
+    assert summary.per_category[2].pooled.counts == ConfusionCounts(0, 0, 1)
+
+
+def test_scene_macro_is_null_when_any_expected_scene_has_no_eligible_row() -> None:
+    rows = (
+        score_observation(
+            ordinal=0,
+            scene_id="scene-a",
+            prediction=_grid((1, 0, 0)),
+            target=_grid((1, 0, 0)),
+        ),
+        score_observation(
+            ordinal=1,
+            scene_id="scene-b",
+            prediction=_grid(),
+            target=_grid(),
+        ),
+    )
+
+    summary = aggregate_observation_metrics(
+        rows, expected_scenes=("scene-a", "scene-b")
+    )
+
+    assert summary.primary.mean_iou == 1
+    assert summary.primary.empty_both_count == 1
+    assert summary.primary.scene_macro_iou is None
+    assert summary.primary.scene_macro_f1 is None
+
+
+def test_metric_aggregate_counts_each_empty_case_separately() -> None:
+    rows = (
+        score_observation(
+            ordinal=0,
+            scene_id="scene-a",
+            prediction=_grid(),
+            target=_grid(),
+        ),
+        score_observation(
+            ordinal=1,
+            scene_id="scene-a",
+            prediction=_grid((1, 0, 0)),
+            target=_grid(),
+        ),
+        score_observation(
+            ordinal=2,
+            scene_id="scene-a",
+            prediction=_grid(),
+            target=_grid((1, 0, 0)),
+        ),
+    )
+
+    aggregate = aggregate_observation_metrics(
+        rows, expected_scenes=("scene-a",)
+    ).primary
+
+    assert aggregate.empty_both_count == 1
+    assert aggregate.target_empty_prediction_nonempty_count == 1
+    assert aggregate.target_nonempty_prediction_empty_count == 1
+
+
+def test_metric_aggregation_rejects_empty_duplicate_and_scene_mutations() -> None:
+    scene_a = score_observation(
+        ordinal=0,
+        scene_id="scene-a",
+        prediction=_grid(),
+        target=_grid(),
+    )
+    scene_b = score_observation(
+        ordinal=1,
+        scene_id="scene-b",
+        prediction=_grid(),
+        target=_grid(),
+    )
+
+    with pytest.raises(ValueError, match="non-empty"):
+        aggregate_observation_metrics((), expected_scenes=("scene-a",))
+    with pytest.raises(ValueError, match="unique ordinals"):
+        aggregate_observation_metrics(
+            (scene_a, replace(scene_b, ordinal=0)),
+            expected_scenes=("scene-a", "scene-b"),
+        )
+    with pytest.raises(ValueError, match="lexical order"):
+        aggregate_observation_metrics(
+            (scene_a, scene_b),
+            expected_scenes=("scene-b", "scene-a"),
+        )
+    with pytest.raises(ValueError, match="exactly match"):
+        aggregate_observation_metrics(
+            (scene_a, scene_b),
+            expected_scenes=("scene-a",),
         )
 
 

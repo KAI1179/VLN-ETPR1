@@ -19,6 +19,7 @@ from typing import Mapping, Optional, Protocol, Sequence, Tuple, cast
 
 import numpy as np
 import torch
+import torch.nn.functional as functional
 
 from prior.analyze.d2026_07_29 import rgbd_segmenter_raw_frame_package
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
@@ -28,6 +29,10 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
     parse_index_bytes,
     parse_raw_frame_npz_bytes,
     validate_raw_frame_directory,
+)
+from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import (
+    OracleSensorFrame,
+    project_oracle_frames,
 )
 
 RAW_FRAME_ROOT = Path("data/rgbd_segmenter_benchmark/r2r-val-unseen-50-raw-v1")
@@ -80,6 +85,7 @@ _CANONICAL_NAMES = (
     "seating",
     "clothes",
 )
+PRIMARY_CATEGORY_INDICES = (*range(1, 15), *range(18, 27))
 _NYU40_SOURCE_NAMES = (
     "wall",
     "floor",
@@ -556,6 +562,195 @@ class Prediction:
             raise ValueError("mapped labels cannot contain canonical other")
 
 
+@dataclass(frozen=True)
+class ConfusionCounts:
+    tp: int
+    fp: int
+    fn: int
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not int or value < 0 for value in (self.tp, self.fp, self.fn)
+        ):
+            raise ValueError("confusion counts must be nonnegative integers")
+
+    def __add__(self, other: "ConfusionCounts") -> "ConfusionCounts":
+        if not isinstance(other, ConfusionCounts):
+            return NotImplemented
+        return ConfusionCounts(
+            tp=self.tp + other.tp,
+            fp=self.fp + other.fp,
+            fn=self.fn + other.fn,
+        )
+
+
+@dataclass(frozen=True)
+class MetricEndpoint:
+    counts: ConfusionCounts
+    precision: Optional[float]
+    recall: Optional[float]
+    iou: Optional[float]
+    f1: Optional[float]
+    eligible: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.counts, ConfusionCounts)
+            or type(self.eligible) is not bool
+        ):
+            raise ValueError("metric endpoint schema is invalid")
+        expected = _endpoint_values(self.counts)
+        if (
+            self.precision,
+            self.recall,
+            self.iou,
+            self.f1,
+            self.eligible,
+        ) != expected:
+            raise ValueError("metric endpoint differs from its integer counts")
+
+    @classmethod
+    def from_counts(cls, counts: ConfusionCounts) -> "MetricEndpoint":
+        precision, recall, iou, f1, eligible = _endpoint_values(counts)
+        return cls(
+            counts=counts,
+            precision=precision,
+            recall=recall,
+            iou=iou,
+            f1=f1,
+            eligible=eligible,
+        )
+
+
+def _endpoint_values(
+    counts: ConfusionCounts,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], bool]:
+    precision_denominator = counts.tp + counts.fp
+    recall_denominator = counts.tp + counts.fn
+    union = counts.tp + counts.fp + counts.fn
+    f1_denominator = 2 * counts.tp + counts.fp + counts.fn
+    return (
+        counts.tp / precision_denominator if precision_denominator else None,
+        counts.tp / recall_denominator if recall_denominator else None,
+        counts.tp / union if union else None,
+        2 * counts.tp / f1_denominator if f1_denominator else None,
+        union > 0,
+    )
+
+
+@dataclass(frozen=True)
+class ObservationMetrics:
+    ordinal: int
+    scene_id: str
+    primary: MetricEndpoint
+    all_27: MetricEndpoint
+    per_category: Tuple[MetricEndpoint, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or not 0 <= self.ordinal < 50:
+            raise ValueError("metric ordinal must be in [0, 49]")
+        if (
+            not isinstance(self.scene_id, str)
+            or not self.scene_id
+            or "\x00" in self.scene_id
+            or not isinstance(self.primary, MetricEndpoint)
+            or not isinstance(self.all_27, MetricEndpoint)
+            or not isinstance(self.per_category, tuple)
+            or len(self.per_category) != 27
+            or any(
+                not isinstance(endpoint, MetricEndpoint)
+                for endpoint in self.per_category
+            )
+        ):
+            raise ValueError("observation metrics schema is invalid")
+        all_counts = ConfusionCounts(0, 0, 0)
+        primary_counts = ConfusionCounts(0, 0, 0)
+        for index, endpoint in enumerate(self.per_category):
+            all_counts += endpoint.counts
+            if index in PRIMARY_CATEGORY_INDICES:
+                primary_counts += endpoint.counts
+        if self.all_27.counts != all_counts or self.primary.counts != primary_counts:
+            raise ValueError("observation aggregate counts differ from categories")
+
+
+@dataclass(frozen=True)
+class MetricAggregate:
+    observation_count: int
+    eligible_observation_count: int
+    empty_both_count: int
+    target_empty_prediction_nonempty_count: int
+    target_nonempty_prediction_empty_count: int
+    mean_iou: Optional[float]
+    mean_f1: Optional[float]
+    pooled: MetricEndpoint
+    scene_macro_iou: Optional[float]
+    scene_macro_f1: Optional[float]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.observation_count) is not int
+            or self.observation_count < 1
+            or type(self.eligible_observation_count) is not int
+            or not 0 <= self.eligible_observation_count <= self.observation_count
+            or type(self.empty_both_count) is not int
+            or self.empty_both_count
+            != self.observation_count - self.eligible_observation_count
+            or type(self.target_empty_prediction_nonempty_count) is not int
+            or not 0
+            <= self.target_empty_prediction_nonempty_count
+            <= self.observation_count
+            or type(self.target_nonempty_prediction_empty_count) is not int
+            or not 0
+            <= self.target_nonempty_prediction_empty_count
+            <= self.observation_count
+            or not isinstance(self.pooled, MetricEndpoint)
+        ):
+            raise ValueError("metric aggregate schema is invalid")
+        if (
+            self.target_empty_prediction_nonempty_count
+            + self.target_nonempty_prediction_empty_count
+            > self.eligible_observation_count
+            or self.pooled.eligible != (self.eligible_observation_count > 0)
+            or (self.mean_iou is None) != (self.eligible_observation_count == 0)
+            or (self.mean_f1 is None) != (self.eligible_observation_count == 0)
+            or (self.scene_macro_iou is None) != (self.scene_macro_f1 is None)
+        ):
+            raise ValueError("metric aggregate eligibility is inconsistent")
+        for value in (
+            self.mean_iou,
+            self.mean_f1,
+            self.scene_macro_iou,
+            self.scene_macro_f1,
+        ):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
+                raise ValueError("aggregate metric must be null or in [0, 1]")
+
+
+@dataclass(frozen=True)
+class BenchmarkMetricSummary:
+    primary: MetricAggregate
+    all_27: MetricAggregate
+    per_category: Tuple[MetricAggregate, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.primary, MetricAggregate)
+            or not isinstance(self.all_27, MetricAggregate)
+            or not isinstance(self.per_category, tuple)
+            or len(self.per_category) != 27
+            or any(
+                not isinstance(aggregate, MetricAggregate)
+                for aggregate in self.per_category
+            )
+        ):
+            raise ValueError("benchmark metric summary schema is invalid")
+
+
 class ObservationStatus(str, Enum):
     PASS = "PASS"
     FAILED = "FAILED"
@@ -733,6 +928,251 @@ def map_source_labels(
         device=labels.device,
     )
     return lookup[labels.to(dtype=torch.int64)]
+
+
+def restore_source_labels(
+    logits: torch.Tensor,
+    *,
+    spatial_transform: SpatialTransform,
+    source_class_count: int,
+) -> torch.Tensor:
+    """Restore source logits to shared pixels before lowest-index argmax."""
+
+    if not isinstance(spatial_transform, SpatialTransform) or (
+        spatial_transform.raw_height,
+        spatial_transform.raw_width,
+    ) != (256, 256):
+        raise ValueError("spatial transform must restore the shared 256x256 grid")
+    validate_source_logits(logits, source_class_count=source_class_count)
+    restored = functional.interpolate(
+        logits,
+        size=(spatial_transform.model_height, spatial_transform.model_width),
+        mode="bilinear",
+        align_corners=False,
+    )
+    restored = restored[
+        :,
+        :,
+        spatial_transform.pad_top : (
+            spatial_transform.model_height - spatial_transform.pad_bottom
+        ),
+        spatial_transform.pad_left : (
+            spatial_transform.model_width - spatial_transform.pad_right
+        ),
+    ]
+    if tuple(restored.shape[2:]) != (
+        spatial_transform.resized_height,
+        spatial_transform.resized_width,
+    ):
+        raise ValueError("spatial unpadding produced the wrong resized shape")
+    restored = functional.interpolate(
+        restored,
+        size=(256, 256),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return torch.argmax(restored, dim=1).to(dtype=torch.int16)
+
+
+def project_mapped_labels(
+    mapped_labels: np.ndarray,
+    arrays: RawFrameArrays,
+) -> np.ndarray:
+    """Project twelve mapped views and return only the 27 object channels."""
+
+    if (
+        not isinstance(mapped_labels, np.ndarray)
+        or mapped_labels.dtype != np.dtype("<i2")
+        or mapped_labels.shape != (12, 256, 256)
+        or not mapped_labels.flags.c_contiguous
+        or np.any(mapped_labels < -1)
+        or np.any(mapped_labels > 26)
+        or np.any(mapped_labels == 16)
+    ):
+        raise ValueError("mapped labels have wrong schema or range")
+    frames = tuple(
+        OracleSensorFrame(
+            depth_m=arrays.depth_m[index],
+            object_categories=mapped_labels[index],
+            region_categories=np.full((256, 256), -1, dtype="<i2"),
+            sensor_position=cast(
+                Tuple[float, float, float],
+                tuple(arrays.sensor_positions[index]),
+            ),
+            sensor_rotation=cast(
+                Tuple[float, float, float, float],
+                tuple(arrays.sensor_rotations_xyzw[index]),
+            ),
+            hfov_degrees=float(arrays.sensor_hfov_degrees.item()),
+        )
+        for index in range(12)
+    )
+    evidence = project_oracle_frames(
+        frames,
+        start_position=tuple(float(value) for value in arrays.start_position),
+        start_rotation=tuple(float(value) for value in arrays.start_rotation_xyzw),
+        target_origin_xz=tuple(float(value) for value in arrays.target_origin_xz),
+    )
+    semantic_grid = evidence.target_semantic_grid
+    if (
+        not isinstance(semantic_grid, np.ndarray)
+        or semantic_grid.dtype != np.dtype(np.bool_)
+        or semantic_grid.shape != (37, 50, 50)
+        or not semantic_grid.flags.c_contiguous
+    ):
+        raise ValueError("projector returned the wrong object-grid schema")
+    return np.ascontiguousarray(semantic_grid[:27])
+
+
+def _confusion_counts(
+    prediction: np.ndarray,
+    target: np.ndarray,
+) -> ConfusionCounts:
+    return ConfusionCounts(
+        tp=int(np.count_nonzero(prediction & target)),
+        fp=int(np.count_nonzero(prediction & ~target)),
+        fn=int(np.count_nonzero(~prediction & target)),
+    )
+
+
+def _require_object_grid(value: object, label: str) -> np.ndarray:
+    if (
+        not isinstance(value, np.ndarray)
+        or value.dtype != np.dtype(np.bool_)
+        or value.shape != (27, 50, 50)
+        or not value.flags.c_contiguous
+    ):
+        raise ValueError(f"{label} must be a C-contiguous bool[27,50,50] grid")
+    return value
+
+
+def score_observation(
+    *,
+    ordinal: int,
+    scene_id: str,
+    prediction: np.ndarray,
+    target: np.ndarray,
+) -> ObservationMetrics:
+    """Compute joint-primary, all-27, and descriptive category counts."""
+
+    predicted = _require_object_grid(prediction, "prediction")
+    expected = _require_object_grid(target, "target")
+    primary_prediction = predicted[np.asarray(PRIMARY_CATEGORY_INDICES)]
+    primary_target = expected[np.asarray(PRIMARY_CATEGORY_INDICES)]
+    return ObservationMetrics(
+        ordinal=ordinal,
+        scene_id=scene_id,
+        primary=MetricEndpoint.from_counts(
+            _confusion_counts(primary_prediction, primary_target)
+        ),
+        all_27=MetricEndpoint.from_counts(_confusion_counts(predicted, expected)),
+        per_category=tuple(
+            MetricEndpoint.from_counts(
+                _confusion_counts(predicted[index], expected[index])
+            )
+            for index in range(27)
+        ),
+    )
+
+
+def _mean(values: Sequence[float]) -> Optional[float]:
+    return sum(values) / len(values) if values else None
+
+
+def _aggregate_endpoints(
+    rows: Sequence[ObservationMetrics],
+    endpoints: Sequence[MetricEndpoint],
+    expected_scenes: Tuple[str, ...],
+) -> MetricAggregate:
+    eligible = tuple(endpoint for endpoint in endpoints if endpoint.eligible)
+    pooled_counts = ConfusionCounts(0, 0, 0)
+    for endpoint in endpoints:
+        pooled_counts += endpoint.counts
+    scene_ious: list[float] = []
+    scene_f1s: list[float] = []
+    complete_scene_macro = True
+    for scene in expected_scenes:
+        scene_endpoints = tuple(
+            endpoint
+            for row, endpoint in zip(rows, endpoints)
+            if row.scene_id == scene and endpoint.eligible
+        )
+        if not scene_endpoints:
+            complete_scene_macro = False
+            continue
+        scene_ious.append(
+            sum(cast(float, endpoint.iou) for endpoint in scene_endpoints)
+            / len(scene_endpoints)
+        )
+        scene_f1s.append(
+            sum(cast(float, endpoint.f1) for endpoint in scene_endpoints)
+            / len(scene_endpoints)
+        )
+    return MetricAggregate(
+        observation_count=len(rows),
+        eligible_observation_count=len(eligible),
+        empty_both_count=len(rows) - len(eligible),
+        target_empty_prediction_nonempty_count=sum(
+            endpoint.counts.tp + endpoint.counts.fn == 0
+            and endpoint.counts.tp + endpoint.counts.fp > 0
+            for endpoint in endpoints
+        ),
+        target_nonempty_prediction_empty_count=sum(
+            endpoint.counts.tp + endpoint.counts.fn > 0
+            and endpoint.counts.tp + endpoint.counts.fp == 0
+            for endpoint in endpoints
+        ),
+        mean_iou=_mean(tuple(cast(float, endpoint.iou) for endpoint in eligible)),
+        mean_f1=_mean(tuple(cast(float, endpoint.f1) for endpoint in eligible)),
+        pooled=MetricEndpoint.from_counts(pooled_counts),
+        scene_macro_iou=_mean(scene_ious) if complete_scene_macro else None,
+        scene_macro_f1=_mean(scene_f1s) if complete_scene_macro else None,
+    )
+
+
+def aggregate_observation_metrics(
+    rows: Sequence[ObservationMetrics],
+    *,
+    expected_scenes: Sequence[str],
+) -> BenchmarkMetricSummary:
+    """Aggregate frozen observation endpoints without dropping empty scenes."""
+
+    observations = tuple(rows)
+    scenes = tuple(expected_scenes)
+    if (
+        not observations
+        or any(not isinstance(row, ObservationMetrics) for row in observations)
+        or len({row.ordinal for row in observations}) != len(observations)
+    ):
+        raise ValueError("metric rows must be non-empty with unique ordinals")
+    if (
+        not scenes
+        or scenes != tuple(sorted(scenes))
+        or len(set(scenes)) != len(scenes)
+        or any(not isinstance(scene, str) or not scene for scene in scenes)
+        or {row.scene_id for row in observations} != set(scenes)
+    ):
+        raise ValueError("expected scenes must exactly match rows in lexical order")
+    return BenchmarkMetricSummary(
+        primary=_aggregate_endpoints(
+            observations,
+            tuple(row.primary for row in observations),
+            scenes,
+        ),
+        all_27=_aggregate_endpoints(
+            observations,
+            tuple(row.all_27 for row in observations),
+            scenes,
+        ),
+        per_category=tuple(
+            _aggregate_endpoints(
+                observations,
+                tuple(row.per_category[index] for row in observations),
+                scenes,
+            )
+            for index in range(27)
+        ),
+    )
 
 
 def _strict_json(data: bytes, label: str) -> object:
