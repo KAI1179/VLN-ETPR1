@@ -6,10 +6,11 @@ import math
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Mapping, Sequence, cast
+from typing import Callable, Iterator, Mapping, Sequence, cast
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     RAW_MANIFEST_SHA256,
     RAW_PRODUCER_COMMIT,
     RAW_VALIDATOR_SOURCE_SHA256,
+    AdapterObservationError,
     BenchmarkEnvironmentAttestation,
     BenchmarkMetricSummary,
     MAX_ABSOLUTE_RESERVED_BYTES,
@@ -34,8 +36,12 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     MIN_SUPPORT_COVERAGE,
     CandidateCommitment,
     CandidateGateResult,
+    ComponentTimings,
     ConfusionCounts,
     ContrastEstimate,
+    CpuTestTimingBackend,
+    CudaDeviceEvidence,
+    DeterministicFakeTimingBackend,
     DeviceBatch,
     EndpointRow,
     GateStatus,
@@ -47,6 +53,8 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ObservationResult,
     ObservationMetrics,
     ObservationStatus,
+    OfficialCudaTimingBackend,
+    OfficialCudaEvidence,
     MappingKind,
     P53ValidationAttestation,
     P53ValidatorLaunch,
@@ -60,7 +68,13 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     ResourceMeasurement,
     StaticCoverage,
     TimingSample,
+    TimingProtocol,
+    TimingStage,
+    TimingStep,
+    TimingStepKind,
     TrustedCohort,
+    TimedBenchmarkInput,
+    TimedBenchmarkRun,
     aggregate_observation_metrics,
     capture_environment_sha256,
     canonical_json_bytes,
@@ -70,15 +84,20 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     iter_validated_raw_observations,
     inspect_visible_gpu,
     linear_quantile,
+    logical_label_sha256,
     load_nyu40_mapping,
     map_source_labels,
     project_mapped_labels,
     run_p53_validation_subprocess,
+    run_timed_benchmark,
     restore_source_labels,
     scene_bootstrap_matrix,
     score_observation,
+    summarize_latency,
     transfer_prepared_host_batch,
     validate_source_logits,
+    benchmark_schedule,
+    BenchmarkCudaOutOfMemory,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import RawFrameArrays
 from vlnce_baselines.models.etp_llm.llm_grid_oracle_cache import OracleSensorFrame
@@ -1121,7 +1140,10 @@ def _evaluate_gates(**overrides: object) -> CandidateGateResult:
             timing_comparable=True,
             unit="seconds",
             sample_count=100,
+            p50_seconds=0.5,
             p95_seconds=1.0,
+            total_seconds=100.0,
+            views_per_second=12.0,
         ),
         "resource": ResourceMeasurement(
             baseline_allocated_bytes=0,
@@ -1163,7 +1185,10 @@ def test_candidate_gates_use_exact_inclusive_thresholds_and_reserved_memory() ->
                 timing_comparable=True,
                 unit="seconds",
                 sample_count=100,
+                p50_seconds=0.5,
                 p95_seconds=np.nextafter(1.0, math.inf),
+                total_seconds=100.0,
+                views_per_second=12.0,
             )
         ).latency
         is GateStatus.FAIL
@@ -1185,7 +1210,10 @@ def test_candidate_gates_use_exact_inclusive_thresholds_and_reserved_memory() ->
                 timing_comparable=False,
                 unit="synthetic-tick",
                 sample_count=0,
+                p50_seconds=None,
                 p95_seconds=None,
+                total_seconds=None,
+                views_per_second=None,
             )
         ).latency
         is GateStatus.FAIL
@@ -1267,15 +1295,1079 @@ def test_gate_boundaries_reject_bool_nonfinite_and_invalid_latency_claims() -> N
     with pytest.raises(ValueError, match="quality"):
         _evaluate_gates(mean_f1=float("nan"))
     with pytest.raises(ValueError, match="comparable latency"):
-        LatencySummary(True, "milliseconds", 100, 1.0)
+        LatencySummary(True, "milliseconds", 100, 0.5, 1.0, 100.0, 12.0)
     with pytest.raises(ValueError, match="comparable latency"):
-        LatencySummary(True, "seconds", 99, 1.0)
+        LatencySummary(True, "seconds", 99, 0.5, 1.0, 100.0, 12.0)
     with pytest.raises(ValueError, match="comparable latency"):
-        LatencySummary(True, "seconds", 100, cast(float, True))
+        LatencySummary(True, "seconds", 100, 0.5, cast(float, True), 100.0, 12.0)
     with pytest.raises(ValueError, match="non-comparable"):
-        LatencySummary(False, "synthetic-tick", 100, 1.0)
+        LatencySummary(False, "synthetic-tick", 100, None, 1.0, None, None)
     with pytest.raises(ValueError, match="provenance"):
         replace(_provenance_checks(), complete_command=cast(bool, 1))
+
+
+class _TimedAdapter:
+    def __init__(
+        self,
+        *,
+        failure: ObservationFailureCode | None = None,
+        invalid_output: bool = False,
+    ) -> None:
+        self.calls = 0
+        self.failure = failure
+        self.invalid_output = invalid_output
+        self.inference_modes: list[bool] = []
+
+    def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+        call = self.calls
+        if self.failure is ObservationFailureCode.PREPROCESS_FAILURE and call in {
+            0,
+            20,
+            70,
+        }:
+            self.calls += 1
+            raise AdapterObservationError(self.failure)
+        return PreparedHostBatch(
+            (value.depth_m,),
+            SpatialTransform.from_sizes(
+                raw_height=256,
+                raw_width=256,
+                model_height=256,
+                model_width=256,
+            ),
+        )
+
+    def infer(self, value: DeviceBatch) -> torch.Tensor:
+        del value
+        call = self.calls
+        self.calls += 1
+        self.inference_modes.append(torch.is_inference_mode_enabled())
+        if self.failure is ObservationFailureCode.INFERENCE_FAILURE and call in {
+            0,
+            20,
+            70,
+        }:
+            raise AdapterObservationError(self.failure)
+        class_count = 2 if self.invalid_output and call in {0, 20, 70} else 1
+        return torch.zeros((12, class_count, 1, 1), dtype=torch.float32)
+
+
+def _timed_inputs() -> tuple[TimedBenchmarkInput, ...]:
+    value = SegmenterInput(
+        rgb=torch.zeros((12, 256, 256, 3), dtype=torch.uint8, pin_memory=True),
+        depth_m=torch.ones((12, 256, 256), dtype=torch.float32, pin_memory=True),
+    )
+    arrays = _projection_arrays()
+    return tuple(
+        TimedBenchmarkInput(
+            ordinal=ordinal,
+            observation_id=f"observation-{ordinal:02d}",
+            scene_id=_STATISTIC_SCENES[ordinal % 11],
+            segmenter_input=value,
+            raw_arrays=arrays,
+        )
+        for ordinal in range(50)
+    )
+
+
+_TIMED_MAPPING = (MappingEntry(0, "only", MappingKind.DIRECT, 1, "chair"),)
+
+
+def _timed_commitment(
+    precision_mode: str = "float32",
+    source_vocabulary: tuple[str, ...] = ("only",),
+) -> CandidateCommitment:
+    return replace(
+        _synthetic_commitment() if precision_mode == "float32" else _real_commitment(),
+        precision_mode=precision_mode,
+        source_vocabulary=source_vocabulary,
+    )
+
+
+def _timed_projector(mapped_labels: np.ndarray, arrays: RawFrameArrays) -> np.ndarray:
+    del mapped_labels, arrays
+    return np.zeros((27, 50, 50), dtype=np.bool_)
+
+
+def test_exact_timing_schedule_fake_trace_warmups_and_pass_authority() -> None:
+    schedule = benchmark_schedule()
+    assert len(schedule) == 120
+    assert schedule == (
+        *(TimingStep(i, TimingStepKind.WARMUP, None, i) for i in range(20)),
+        *(TimingStep(20 + i, TimingStepKind.MEASURED, 1, i) for i in range(50)),
+        *(TimingStep(70 + i, TimingStepKind.MEASURED, 2, i) for i in range(50)),
+    )
+    adapter = _TimedAdapter()
+    backend = DeterministicFakeTimingBackend()
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=adapter,
+        mapping=_TIMED_MAPPING,
+        backend=backend,
+        projector=_timed_projector,
+    )
+
+    assert isinstance(run, TimedBenchmarkRun)
+    assert run.protocol == TimingProtocol("deterministic-fake", "synthetic-tick", False)
+    assert run.latency is None
+    assert run.official_cuda_evidence is None
+    assert set(vars(run)) == {
+        "protocol",
+        "canonical_results",
+        "samples",
+        "latency",
+        "official_cuda_evidence",
+    }
+    assert len(run.canonical_results) == 50
+    assert tuple(sample.sequence_index for sample in run.samples) == tuple(
+        range(20, 120)
+    )
+    assert tuple((sample.pass_index, sample.ordinal) for sample in run.samples) == (
+        *((1, ordinal) for ordinal in range(50)),
+        *((2, ordinal) for ordinal in range(50)),
+    )
+    assert adapter.calls == 120
+    assert all(adapter.inference_modes)
+    assert backend.trace[0] == "setup"
+    assert backend.trace[1:21] == ["synchronize"] * 20
+    assert not any("device-" in item for item in backend.trace[1:21])
+    assert backend.trace[21:38] == [
+        "synchronize",
+        "monotonic",
+        "monotonic",
+        "monotonic",
+        "device-start:h2d",
+        "device-end:h2d",
+        "device-start:inference",
+        "device-end:inference",
+        "device-start:device_postprocess",
+        "device-end:device_postprocess",
+        "device-start:d2h",
+        "device-end:d2h",
+        "synchronize",
+        "monotonic",
+        "monotonic",
+        "synchronize",
+        "monotonic",
+    ]
+    assert backend.trace[-1] == "done"
+    assert run.samples[0].components == ComponentTimings(1, 1, 1, 1, 1, 1)
+    assert run.samples[0].end_to_end == 5
+    assert sum(
+        cast(float, value) for value in vars(run.samples[0].components).values()
+    ) != (run.samples[0].end_to_end)
+
+
+def test_every_warmup_and_measured_step_executes_all_six_pipeline_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    trace: list[str] = []
+    original_transfer = contract.transfer_prepared_host_batch
+    original_restore = contract._restore_and_map_source
+    original_d2h = contract._device_to_host
+
+    class SpyAdapter(_TimedAdapter):
+        def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+            trace.append("preprocess")
+            return super().preprocess_host(value)
+
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            trace.append("inference")
+            return super().infer(value)
+
+    def transfer(
+        batch: PreparedHostBatch,
+        *,
+        device: torch.device,
+        non_blocking: bool,
+    ) -> DeviceBatch:
+        trace.append("h2d")
+        return original_transfer(batch, device=device, non_blocking=non_blocking)
+
+    def restore(
+        logits: torch.Tensor,
+        spatial_transform: SpatialTransform,
+        mapping: tuple[MappingEntry, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        trace.append("device_postprocess")
+        return original_restore(logits, spatial_transform, mapping)
+
+    def d2h(
+        source: torch.Tensor, mapped: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        trace.append("d2h")
+        return original_d2h(source, mapped)
+
+    def project(mapped: np.ndarray, arrays: RawFrameArrays) -> np.ndarray:
+        trace.append("projection")
+        return _timed_projector(mapped, arrays)
+
+    monkeypatch.setattr(contract, "transfer_prepared_host_batch", transfer)
+    monkeypatch.setattr(contract, "_restore_and_map_source", restore)
+    monkeypatch.setattr(contract, "_device_to_host", d2h)
+    run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=SpyAdapter(),
+        mapping=_TIMED_MAPPING,
+        backend=DeterministicFakeTimingBackend(),
+        projector=project,
+    )
+    cycle = [
+        "preprocess",
+        "h2d",
+        "inference",
+        "device_postprocess",
+        "d2h",
+        "projection",
+    ]
+    assert trace[: 20 * 6] == cycle * 20
+    assert trace == cycle * 120
+
+
+def test_cpu_backend_uses_injected_clock_and_remains_nonpublishable() -> None:
+    ticks = iter((2.0, 2.25))
+    backend = CpuTestTimingBackend(monotonic=lambda: next(ticks))
+    assert backend.protocol == TimingProtocol("cpu-test", "seconds", False)
+    result, duration = backend.measure_device(TimingStage.INFERENCE, lambda: "result")
+    assert (result, duration) == ("result", 0.25)
+
+
+def test_comparable_protocol_cannot_be_spoofed_by_arbitrary_cpu_backend() -> None:
+    class SpoofedBackend(DeterministicFakeTimingBackend):
+        protocol = TimingProtocol("official-cuda", "seconds", True)
+        device = torch.device("cpu")
+
+    backend = SpoofedBackend()
+    with pytest.raises(ValueError, match="sealed official"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=backend,
+            projector=_timed_projector,
+        )
+    assert backend.trace == []
+
+
+def test_cpu_full_run_has_no_latency_or_other_publishable_claim_fields() -> None:
+    tick = 0.0
+
+    def monotonic() -> float:
+        nonlocal tick
+        tick += 0.01
+        return tick
+
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=_TimedAdapter(),
+        mapping=_TIMED_MAPPING,
+        backend=CpuTestTimingBackend(monotonic),
+        projector=_timed_projector,
+    )
+    assert run.latency is None
+    assert run.official_cuda_evidence is None
+    assert set(vars(run)) == {
+        "protocol",
+        "canonical_results",
+        "samples",
+        "latency",
+        "official_cuda_evidence",
+    }
+
+
+def test_float32_precision_uses_no_autocast_and_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        torch,
+        "autocast",
+        lambda **_: (_ for _ in ()).throw(AssertionError("no autocast")),
+    )
+    run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=_TimedAdapter(),
+        mapping=_TIMED_MAPPING,
+        backend=DeterministicFakeTimingBackend(),
+        projector=_timed_projector,
+    )
+    assert not torch.is_inference_mode_enabled()
+
+
+def test_fp16_precision_is_runner_owned_cuda_autocast_with_no_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    trace: list[object] = []
+
+    @contextmanager
+    def autocast(**kwargs: object) -> Iterator[None]:
+        trace.append(("enter", kwargs))
+        try:
+            yield
+        finally:
+            trace.append("exit")
+
+    original_transfer = contract.transfer_prepared_host_batch
+    monkeypatch.setattr(torch, "autocast", autocast)
+    monkeypatch.setattr(
+        contract,
+        "transfer_prepared_host_batch",
+        lambda batch, **_: original_transfer(
+            batch, device=torch.device("cpu"), non_blocking=False
+        ),
+    )
+    snapshots = iter((_cuda_snapshot(), _cuda_snapshot(temperature_celsius=46)))
+    backend = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-test",
+        snapshot_inspector=lambda: next(snapshots),
+        runtime=_FakeCudaRuntime(),
+    )
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment("fp16-autocast"),
+        adapter=_TimedAdapter(),
+        mapping=_TIMED_MAPPING,
+        backend=backend,
+        projector=_timed_projector,
+    )
+    assert run.latency is not None
+    assert isinstance(run.official_cuda_evidence, OfficialCudaEvidence)
+    assert trace == [
+        item
+        for _ in range(120)
+        for item in (
+            ("enter", {"device_type": "cuda", "dtype": torch.float16}),
+            "exit",
+        )
+    ]
+    assert not torch.is_inference_mode_enabled()
+
+
+def test_precision_mode_and_backend_mismatches_reject_before_setup() -> None:
+    with pytest.raises(ValueError, match="precision"):
+        replace(_timed_commitment(), precision_mode="bf16")
+    with pytest.raises(ValueError, match="all be N/A"):
+        replace(_timed_commitment(), precision_mode="fp16-autocast")
+    backend = DeterministicFakeTimingBackend()
+    with pytest.raises(ValueError, match="fp16-autocast"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment("fp16-autocast"),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=backend,
+            projector=_timed_projector,
+        )
+    assert backend.trace == []
+
+
+def test_injected_projector_must_return_exact_grid_schema() -> None:
+    with pytest.raises(ValueError, match="projector"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=lambda *_: np.zeros((27, 50, 49), dtype=np.bool_),
+        )
+
+
+class _FakeCudaEvent:
+    def __init__(self, trace: list[object]) -> None:
+        self.trace = trace
+
+    def record(self, stream: object) -> None:
+        self.trace.append(("record", stream))
+
+    def synchronize(self) -> None:
+        self.trace.append("event-synchronize")
+
+    def elapsed_time(self, end_event: object) -> float:
+        self.trace.append(("elapsed", end_event))
+        return 250.0
+
+
+class _FakeCudaRuntime:
+    def __init__(self, device_count: int = 1) -> None:
+        self.trace: list[object] = []
+        self.stream = object()
+        self.count = device_count
+
+    def device_count(self) -> int:
+        return self.count
+
+    def current_stream(self, device: torch.device) -> object:
+        assert device == torch.device("cuda:0")
+        return self.stream
+
+    def event(self) -> _FakeCudaEvent:
+        return _FakeCudaEvent(self.trace)
+
+    def synchronize(self, device: torch.device) -> None:
+        self.trace.append(("device-synchronize", device))
+
+
+def _cuda_snapshot(**overrides: object) -> CudaDeviceEvidence:
+    return replace(
+        CudaDeviceEvidence(
+            gpu_name="NVIDIA GeForce RTX 3090",
+            gpu_uuid="GPU-test",
+            driver_version="999.1",
+            clock_policy="default",
+            persistence_mode="disabled",
+            power_limit_watts=350.0,
+            temperature_celsius=45.0,
+            compute_pids=(os.getpid(),),
+        ),
+        **overrides,
+    )
+
+
+def _cuda_evidence(**after_overrides: object) -> OfficialCudaEvidence:
+    before = _cuda_snapshot()
+    after = replace(before, temperature_celsius=46.0, **after_overrides)
+    return OfficialCudaEvidence(before, after, os.getpid(), None)
+
+
+def test_official_cuda_backend_requires_evidence_and_converts_event_ms() -> None:
+    runtime = _FakeCudaRuntime()
+    snapshots = iter((_cuda_snapshot(), _cuda_snapshot(temperature_celsius=46.0)))
+    backend = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-test",
+        snapshot_inspector=lambda: next(snapshots),
+        runtime=runtime,
+    )
+    backend.begin()
+
+    def operation() -> str:
+        runtime.trace.append("operation")
+        return "output"
+
+    result, seconds = backend.measure_device(TimingStage.INFERENCE, operation)
+    assert result == "output"
+    assert seconds == 0.25
+    assert runtime.trace[:4] == [
+        ("record", runtime.stream),
+        "operation",
+        ("record", runtime.stream),
+        "event-synchronize",
+    ]
+    evidence = backend.finish()
+    assert isinstance(evidence, OfficialCudaEvidence)
+    assert evidence.after.temperature_celsius == 46
+    wrong_count = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-test",
+        snapshot_inspector=_cuda_snapshot,
+        runtime=_FakeCudaRuntime(device_count=2),
+    )
+    with pytest.raises(ValueError, match="one visible"):
+        wrong_count.begin()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("gpu_uuid", "GPU-drift"),
+        ("driver_version", "other"),
+        ("clock_policy", "boosted"),
+        ("persistence_mode", "enabled"),
+        ("power_limit_watts", 349.0),
+    ),
+)
+def test_official_cuda_evidence_rejects_device_policy_drift(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match="drifted"):
+        _cuda_evidence(**{field: value})
+    with pytest.raises(ValueError, match="evidence"):
+        OfficialCudaEvidence(
+            _cuda_evidence().before,
+            _cuda_evidence().after,
+            os.getpid(),
+            "max_split_size_mb:64",
+        )
+
+
+def test_official_cuda_evidence_rejects_temperature_pid_allocator_and_gpu_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _cuda_snapshot()
+    with pytest.raises(ValueError, match="evidence"):
+        replace(base, temperature_celsius=29.9)
+    with pytest.raises(ValueError, match="evidence"):
+        OfficialCudaEvidence(
+            base,
+            replace(base, temperature_celsius=46, compute_pids=(os.getpid() + 1,)),
+            os.getpid(),
+            None,
+        )
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:64")
+    allocator = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-test",
+        snapshot_inspector=_cuda_snapshot,
+        runtime=_FakeCudaRuntime(),
+    )
+    with pytest.raises(ValueError, match="allocator"):
+        allocator.begin()
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF")
+    wrong_gpu = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-other",
+        snapshot_inspector=_cuda_snapshot,
+        runtime=_FakeCudaRuntime(),
+    )
+    with pytest.raises(ValueError, match="RTX 3090"):
+        wrong_gpu.begin()
+
+
+def test_official_cuda_postflight_rejects_after_only_drift_and_unrelated_pid() -> None:
+    for after in (
+        _cuda_snapshot(driver_version="changed"),
+        _cuda_snapshot(compute_pids=(os.getpid(), os.getpid() + 1)),
+    ):
+        snapshots = iter((_cuda_snapshot(), after))
+        backend = OfficialCudaTimingBackend(
+            expected_gpu_uuid="GPU-test",
+            snapshot_inspector=lambda: next(snapshots),
+            runtime=_FakeCudaRuntime(),
+        )
+        backend.begin()
+        with pytest.raises(ValueError, match="evidence|drifted"):
+            backend.finish()
+        assert backend.evidence is None
+
+
+def test_runner_captures_postflight_only_after_work_and_rejects_changed_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    original_transfer = contract.transfer_prepared_host_batch
+    monkeypatch.setattr(
+        contract,
+        "transfer_prepared_host_batch",
+        lambda batch, **_: original_transfer(
+            batch, device=torch.device("cpu"), non_blocking=False
+        ),
+    )
+    adapter = _TimedAdapter()
+    snapshot_call_adapter_counts: list[int] = []
+
+    def inspect_snapshot() -> CudaDeviceEvidence:
+        snapshot_call_adapter_counts.append(adapter.calls)
+        return (
+            _cuda_snapshot()
+            if len(snapshot_call_adapter_counts) == 1
+            else _cuda_snapshot(driver_version="changed")
+        )
+
+    backend = OfficialCudaTimingBackend(
+        expected_gpu_uuid="GPU-test",
+        snapshot_inspector=inspect_snapshot,
+        runtime=_FakeCudaRuntime(),
+    )
+    with pytest.raises(ValueError, match="drifted"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=adapter,
+            mapping=_TIMED_MAPPING,
+            backend=backend,
+            projector=_timed_projector,
+        )
+    assert adapter.calls == 120
+    assert snapshot_call_adapter_counts == [0, 120]
+    assert backend.evidence is None
+
+
+@pytest.mark.parametrize("stage", tuple(TimingStage))
+def test_cuda_oom_is_fatal_at_exact_warmup_stage_without_retry(
+    stage: TimingStage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    calls = 0
+    projector = _timed_projector
+
+    def oom() -> None:
+        nonlocal calls
+        calls += 1
+        raise torch.cuda.OutOfMemoryError("oom")
+
+    class OomAdapter(_TimedAdapter):
+        def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+            if stage is TimingStage.PREPROCESS:
+                return cast(PreparedHostBatch, oom())
+            return super().preprocess_host(value)
+
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            if stage is TimingStage.INFERENCE:
+                return cast(torch.Tensor, oom())
+            return super().infer(value)
+
+    class OomBackend(DeterministicFakeTimingBackend):
+        def synchronize(self) -> None:
+            if stage is TimingStage.D2H:
+                oom()
+            super().synchronize()
+
+    adapter = OomAdapter()
+    backend = OomBackend()
+    if stage is TimingStage.H2D:
+        monkeypatch.setattr(
+            contract, "transfer_prepared_host_batch", lambda *_, **__: oom()
+        )
+    elif stage is TimingStage.DEVICE_POSTPROCESS:
+        monkeypatch.setattr(contract, "restore_source_labels", lambda *_, **__: oom())
+    elif stage is TimingStage.PROJECTION:
+
+        def oom_projector(_mapped: np.ndarray, _arrays: RawFrameArrays) -> np.ndarray:
+            return cast(np.ndarray, oom())
+
+        projector = oom_projector
+
+    with pytest.raises(BenchmarkCudaOutOfMemory) as error:
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=adapter,
+            mapping=_TIMED_MAPPING,
+            backend=backend,
+            projector=projector,
+        )
+    assert error.value.stage is stage
+    assert calls == 1
+    assert backend.trace[0] == "setup"
+    assert "done" not in backend.trace
+
+
+def test_measured_stage_oom_aborts_before_any_timing_row_or_continuation() -> None:
+    class MeasuredOomBackend(DeterministicFakeTimingBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.measure_calls = 0
+
+        def measure_device(
+            self, stage: TimingStage, operation: Callable[[], object]
+        ) -> tuple[object, float]:
+            del operation
+            self.measure_calls += 1
+            raise torch.cuda.OutOfMemoryError(stage.value)
+
+    adapter = _TimedAdapter()
+    backend = MeasuredOomBackend()
+    with pytest.raises(BenchmarkCudaOutOfMemory) as error:
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=adapter,
+            mapping=_TIMED_MAPPING,
+            backend=backend,
+            projector=_timed_projector,
+        )
+    assert error.value.stage is TimingStage.H2D
+    assert backend.measure_calls == 1
+    assert adapter.calls == 20
+    assert backend.trace[0] == "setup"
+    assert "done" not in backend.trace
+
+
+def test_second_pass_output_drift_aborts_instead_of_replacing_pass_one() -> None:
+    class DriftingAdapter(_TimedAdapter):
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            del value
+            call = self.calls
+            self.calls += 1
+            logits = torch.zeros((12, 2, 1, 1), dtype=torch.float32)
+            logits[:, 1 if call >= 70 else 0] = 1
+            return logits
+
+    mapping = (
+        MappingEntry(0, "first", MappingKind.DIRECT, 1, "chair"),
+        MappingEntry(1, "second", MappingKind.DIRECT, 2, "door"),
+    )
+    with pytest.raises(ValueError, match="canonical pass one"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(source_vocabulary=("first", "second")),
+            adapter=DriftingAdapter(),
+            mapping=mapping,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+
+def test_second_pass_source_only_and_mapped_only_drift_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    class SourceDrift(_TimedAdapter):
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            del value
+            call = self.calls
+            self.calls += 1
+            logits = torch.zeros((12, 2, 1, 1), dtype=torch.float32)
+            logits[:, 1 if call >= 70 else 0] = 1
+            return logits
+
+    same_mapping = (
+        MappingEntry(0, "first", MappingKind.DIRECT, 1, "chair"),
+        MappingEntry(1, "second", MappingKind.DIRECT, 1, "chair"),
+    )
+    with pytest.raises(ValueError, match="canonical pass one"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(source_vocabulary=("first", "second")),
+            adapter=SourceDrift(),
+            mapping=same_mapping,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+    map_calls = 0
+
+    def mapped_drift(
+        labels: torch.Tensor, mapping: Sequence[MappingEntry]
+    ) -> torch.Tensor:
+        nonlocal map_calls
+        del mapping
+        map_calls += 1
+        canonical = 2 if map_calls > 70 else 1
+        return torch.full_like(labels, canonical, dtype=torch.int16)
+
+    monkeypatch.setattr(contract, "map_source_labels", mapped_drift)
+    with pytest.raises(ValueError, match="canonical pass one"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+
+def test_second_pass_status_only_and_failure_code_only_drift_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    empty = np.full((12, 256, 256), -1, dtype="<i2")
+    calls = 0
+
+    def status_drift(
+        *_: object, **__: object
+    ) -> tuple[
+        Prediction,
+        ObservationStatus,
+        ObservationFailureCode | None,
+        ComponentTimings,
+    ]:
+        nonlocal calls
+        call = calls
+        calls += 1
+        if call >= 70:
+            return (
+                Prediction(empty.copy(), empty.copy()),
+                ObservationStatus.PASS,
+                None,
+                ComponentTimings(1, 1, 1, 1, 1, 1),
+            )
+        return (
+            Prediction(empty.copy(), empty.copy()),
+            ObservationStatus.FAILED,
+            ObservationFailureCode.PREPROCESS_FAILURE,
+            ComponentTimings(None, None, None, None, None, None),
+        )
+
+    monkeypatch.setattr(contract, "_execute_timing_step", status_drift)
+    with pytest.raises(ValueError, match="canonical pass one"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+    class FailureCodeDrift(_TimedAdapter):
+        def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+            if self.calls == 20:
+                self.calls += 1
+                raise AdapterObservationError(ObservationFailureCode.PREPROCESS_FAILURE)
+            return super().preprocess_host(value)
+
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            if self.calls == 70:
+                self.calls += 1
+                raise AdapterObservationError(ObservationFailureCode.INFERENCE_FAILURE)
+            return super().infer(value)
+
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="canonical pass one"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=FailureCodeDrift(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+
+def test_unauthorized_typed_failures_and_backend_exceptions_abort() -> None:
+    class WrongPreprocess(_TimedAdapter):
+        def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+            del value
+            raise AdapterObservationError(ObservationFailureCode.INFERENCE_FAILURE)
+
+    class WrongInference(_TimedAdapter):
+        def infer(self, value: DeviceBatch) -> torch.Tensor:
+            del value
+            raise AdapterObservationError(ObservationFailureCode.PREPROCESS_FAILURE)
+
+    class BrokenBackend(DeterministicFakeTimingBackend):
+        def measure_device(
+            self, stage: TimingStage, operation: Callable[[], object]
+        ) -> tuple[object, float]:
+            del stage, operation
+            raise RuntimeError("backend")
+
+    for adapter in (WrongPreprocess(), WrongInference()):
+        with pytest.raises(ValueError, match="unauthorized"):
+            run_timed_benchmark(
+                _timed_inputs(),
+                trusted_cohort=_TRUSTED_COHORT,
+                commitment=_timed_commitment(),
+                adapter=adapter,
+                mapping=_TIMED_MAPPING,
+                backend=DeterministicFakeTimingBackend(),
+                projector=_timed_projector,
+            )
+    with pytest.raises(RuntimeError, match="backend"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=BrokenBackend(),
+            projector=_timed_projector,
+        )
+
+
+def test_timing_protocol_and_sample_reject_every_authority_drift() -> None:
+    with pytest.raises(ValueError, match="protocol"):
+        TimingProtocol("official-cuda", "synthetic-tick", True)
+    valid = TimingSample(
+        sequence_index=20,
+        pass_index=1,
+        ordinal=0,
+        end_to_end=1.0,
+        components=ComponentTimings(1, 1, 1, 1, 1, 1),
+        source_labels_sha256="a" * 64,
+        mapped_labels_sha256="b" * 64,
+        status=ObservationStatus.PASS,
+        failure_code=None,
+    )
+    for changes in (
+        {"sequence_index": 21},
+        {"pass_index": 2},
+        {"ordinal": 1},
+        {"end_to_end": float("nan")},
+        {"source_labels_sha256": "x"},
+        {"mapped_labels_sha256": "x"},
+        {"components": ComponentTimings(1, 1, None, None, None, None)},
+        {
+            "status": ObservationStatus.FAILED,
+            "failure_code": ObservationFailureCode.PREPROCESS_FAILURE,
+        },
+    ):
+        with pytest.raises(ValueError):
+            replace(valid, **changes)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        (
+            ObservationFailureCode.PREPROCESS_FAILURE,
+            ComponentTimings(None, None, None, None, None, None),
+        ),
+        (
+            ObservationFailureCode.INFERENCE_FAILURE,
+            ComponentTimings(1, 1, None, None, None, None),
+        ),
+    ),
+)
+def test_typed_failure_component_nullability_and_minus_one_hashes(
+    failure: ObservationFailureCode, expected: ComponentTimings
+) -> None:
+    backend = DeterministicFakeTimingBackend()
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=_TimedAdapter(failure=failure),
+        mapping=_TIMED_MAPPING,
+        backend=backend,
+        projector=_timed_projector,
+    )
+    sample = run.samples[0]
+    empty = np.full((12, 256, 256), -1, dtype="<i2")
+    assert sample.status is ObservationStatus.FAILED
+    assert sample.failure_code is failure
+    assert sample.components == expected
+    assert sample.source_labels_sha256 == logical_label_sha256(empty)
+    assert sample.mapped_labels_sha256 == logical_label_sha256(empty)
+    assert backend.trace[-3:] == ["synchronize", "monotonic", "done"]
+
+
+def test_invalid_logits_are_typed_output_schema_failure() -> None:
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=_TimedAdapter(invalid_output=True),
+        mapping=_TIMED_MAPPING,
+        backend=DeterministicFakeTimingBackend(),
+        projector=_timed_projector,
+    )
+    assert run.samples[0].failure_code is ObservationFailureCode.OUTPUT_SCHEMA_FAILURE
+    assert run.samples[0].components == ComponentTimings(1, 1, 1, None, None, None)
+
+
+def test_restoration_schema_failure_is_typed_but_mapping_failure_aborts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract as contract
+
+    monkeypatch.setattr(
+        contract,
+        "restore_source_labels",
+        lambda *_, **__: (_ for _ in ()).throw(ValueError("bad restore")),
+    )
+    run = run_timed_benchmark(
+        _timed_inputs(),
+        trusted_cohort=_TRUSTED_COHORT,
+        commitment=_timed_commitment(),
+        adapter=_TimedAdapter(),
+        mapping=_TIMED_MAPPING,
+        backend=DeterministicFakeTimingBackend(),
+        projector=_timed_projector,
+    )
+    assert run.samples[0].failure_code is ObservationFailureCode.OUTPUT_SCHEMA_FAILURE
+
+    monkeypatch.setattr(
+        contract,
+        "restore_source_labels",
+        lambda *_, **__: torch.zeros((12, 256, 256), dtype=torch.int16),
+    )
+    monkeypatch.setattr(
+        contract,
+        "map_source_labels",
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError("mapping")),
+    )
+    with pytest.raises(RuntimeError, match="mapping"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+
+
+def test_unexpected_adapter_and_projector_exceptions_propagate() -> None:
+    class Unexpected(_TimedAdapter):
+        def preprocess_host(self, value: SegmenterInput) -> PreparedHostBatch:
+            del value
+            raise RuntimeError("unexpected")
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=Unexpected(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=_timed_projector,
+        )
+    with pytest.raises(RuntimeError, match="projection"):
+        run_timed_benchmark(
+            _timed_inputs(),
+            trusted_cohort=_TRUSTED_COHORT,
+            commitment=_timed_commitment(),
+            adapter=_TimedAdapter(),
+            mapping=_TIMED_MAPPING,
+            backend=DeterministicFakeTimingBackend(),
+            projector=lambda *_: (_ for _ in ()).throw(RuntimeError("projection")),
+        )
+
+
+def test_logical_label_hash_is_exact_little_endian_int16_c_order() -> None:
+    labels = np.arange(12 * 256 * 256, dtype="<i2").reshape(12, 256, 256)
+    assert (
+        logical_label_sha256(labels)
+        == hashlib.sha256(
+            labels.astype("<i2", copy=False).tobytes(order="C")
+        ).hexdigest()
+    )
+    with pytest.raises(ValueError, match="little-endian"):
+        logical_label_sha256(labels[:, :, ::-1])
+    with pytest.raises(ValueError, match="little-endian"):
+        logical_label_sha256(labels.astype("<i4"))
+
+
+def test_latency_recomputes_quantiles_total_and_views_per_second() -> None:
+    samples = tuple(
+        TimingSample(
+            sequence_index=20 + index,
+            pass_index=1 if index < 50 else 2,
+            ordinal=index % 50,
+            end_to_end=float(index + 1),
+            components=ComponentTimings(1, 1, 1, 1, 1, 1),
+            source_labels_sha256="a" * 64,
+            mapped_labels_sha256="b" * 64,
+            status=ObservationStatus.PASS,
+            failure_code=None,
+        )
+        for index in range(100)
+    )
+    summary = summarize_latency(samples)
+    assert summary.p50_seconds == 50.5
+    assert summary.p95_seconds == pytest.approx(95.05)
+    assert summary.total_seconds == 5050
+    assert summary.views_per_second == 1200 / 5050
 
 
 def test_runner_is_the_only_device_batch_producer_and_cpu_is_supported() -> None:
@@ -1388,7 +2480,7 @@ def test_candidate_commitment_has_coherent_license_source_env_and_batch_fields()
         ("invalid_depth_policy", "NOT_APPLICABLE", "real candidate"),
         ("rgb_padding_value", "NOT_APPLICABLE", "real candidate"),
         ("depth_padding_value", "NOT_APPLICABLE", "real candidate"),
-        ("precision_mode", "NOT_APPLICABLE", "real candidate"),
+        ("precision_mode", "NOT_APPLICABLE", "precision"),
         ("code_license_status", LicenseStatus.NOT_APPLICABLE, "real candidate"),
         ("weight_license_status", LicenseStatus.NOT_APPLICABLE, "real candidate"),
     ],
@@ -1685,9 +2777,11 @@ def test_result_timing_and_resource_schemas_reject_inconsistent_state() -> None:
         prediction=prediction,
     )
     TimingSample(
+        sequence_index=119,
         pass_index=2,
         ordinal=49,
         end_to_end=0.0,
+        components=ComponentTimings(0, 0, 0, 0, 0, 0),
         source_labels_sha256="a" * 64,
         mapped_labels_sha256="b" * 64,
         status=ObservationStatus.PASS,
@@ -1712,9 +2806,11 @@ def test_result_timing_and_resource_schemas_reject_inconsistent_state() -> None:
         ResourceMeasurement(3, 2, 3, 2)
     with pytest.raises(ValueError, match="pass"):
         TimingSample(
+            sequence_index=20,
             pass_index=cast(int, True),
             ordinal=0,
             end_to_end=0.0,
+            components=ComponentTimings(0, 0, 0, 0, 0, 0),
             source_labels_sha256="a" * 64,
             mapped_labels_sha256="b" * 64,
             status=ObservationStatus.PASS,

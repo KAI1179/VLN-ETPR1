@@ -11,11 +11,22 @@ import re
 import stat
 import subprocess
 import sys
+import time
+from contextlib import AbstractContextManager, nullcontext
 from importlib import metadata
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping, Optional, Protocol, Sequence, Tuple, cast
+from typing import (
+    Callable,
+    Iterable,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 import numpy as np
 import torch
@@ -475,8 +486,9 @@ class CandidateCommitment:
         if (
             self.rgb_units != "uint8[0,255]"
             or self.depth_units != "float32-metres[0,10]"
+            or self.precision_mode not in {"float32", "fp16-autocast"}
         ):
-            raise ValueError("candidate input units differ from the benchmark")
+            raise ValueError("candidate input units or precision differ from benchmark")
         if (
             not isinstance(self.source_vocabulary, tuple)
             or len(self.source_vocabulary) < 1
@@ -512,9 +524,13 @@ class CandidateCommitment:
                 self.checkpoint_sha256,
                 self.source_dataset,
             )
-            if any(value != "NOT_APPLICABLE" for value in not_applicable) or (
-                self.code_license_status is not LicenseStatus.NOT_APPLICABLE
-                or self.weight_license_status is not LicenseStatus.NOT_APPLICABLE
+            if (
+                any(value != "NOT_APPLICABLE" for value in not_applicable)
+                or self.precision_mode != "float32"
+                or (
+                    self.code_license_status is not LicenseStatus.NOT_APPLICABLE
+                    or self.weight_license_status is not LicenseStatus.NOT_APPLICABLE
+                )
             ):
                 raise ValueError("synthetic source and license fields must all be N/A")
         else:
@@ -782,6 +798,103 @@ class AdapterObservationError(RuntimeError):
         self.code = code
 
 
+class TimingStage(str, Enum):
+    PREPROCESS = "preprocess"
+    H2D = "h2d"
+    INFERENCE = "inference"
+    DEVICE_POSTPROCESS = "device_postprocess"
+    D2H = "d2h"
+    PROJECTION = "projection"
+
+
+@dataclass(frozen=True)
+class TimingProtocol:
+    backend: str
+    unit: str
+    comparable: bool
+
+    def __post_init__(self) -> None:
+        if type(self.comparable) is not bool or (
+            self.backend,
+            self.unit,
+            self.comparable,
+        ) not in {
+            ("deterministic-fake", "synthetic-tick", False),
+            ("cpu-test", "seconds", False),
+            ("official-cuda", "seconds", True),
+        }:
+            raise ValueError("timing protocol is invalid")
+
+
+@dataclass(frozen=True)
+class ComponentTimings:
+    preprocess: Optional[float]
+    h2d: Optional[float]
+    inference: Optional[float]
+    device_postprocess: Optional[float]
+    d2h: Optional[float]
+    projection: Optional[float]
+
+    def __post_init__(self) -> None:
+        values = tuple(vars(self).values())
+        if any(
+            value is not None
+            and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            )
+            for value in values
+        ):
+            raise ValueError("component timings must be null or nonnegative seconds")
+        reached = tuple(value is not None for value in values)
+        if reached != tuple(sorted(reached, reverse=True)):
+            raise ValueError("component timing nullability is not a prefix")
+
+
+class TimingStepKind(str, Enum):
+    WARMUP = "warmup"
+    MEASURED = "measured"
+
+
+@dataclass(frozen=True)
+class TimingStep:
+    sequence_index: int
+    kind: TimingStepKind
+    pass_index: Optional[int]
+    ordinal: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.sequence_index) is not int
+            or not 0 <= self.sequence_index < 120
+            or not isinstance(self.kind, TimingStepKind)
+            or type(self.ordinal) is not int
+            or not 0 <= self.ordinal < 50
+        ):
+            raise ValueError("timing step schema is invalid")
+        if self.kind is TimingStepKind.WARMUP:
+            if self.pass_index is not None or self.ordinal >= 20:
+                raise ValueError("warmup timing step is invalid")
+        elif type(self.pass_index) is not int or self.pass_index not in {1, 2}:
+            raise ValueError("measured timing step is invalid")
+
+
+def benchmark_schedule() -> Tuple[TimingStep, ...]:
+    return (
+        *(TimingStep(index, TimingStepKind.WARMUP, None, index) for index in range(20)),
+        *(
+            TimingStep(20 + ordinal, TimingStepKind.MEASURED, 1, ordinal)
+            for ordinal in range(50)
+        ),
+        *(
+            TimingStep(70 + ordinal, TimingStepKind.MEASURED, 2, ordinal)
+            for ordinal in range(50)
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ObservationResult:
     ordinal: int
@@ -802,9 +915,11 @@ class ObservationResult:
 
 @dataclass(frozen=True)
 class TimingSample:
+    sequence_index: int
     pass_index: int
     ordinal: int
     end_to_end: float
+    components: ComponentTimings
     source_labels_sha256: str
     mapped_labels_sha256: str
     status: ObservationStatus
@@ -812,7 +927,9 @@ class TimingSample:
 
     def __post_init__(self) -> None:
         if (
-            type(self.pass_index) is not int
+            type(self.sequence_index) is not int
+            or not 20 <= self.sequence_index < 120
+            or type(self.pass_index) is not int
             or self.pass_index not in {1, 2}
             or type(self.ordinal) is not int
             or not (0 <= self.ordinal < 50)
@@ -823,8 +940,12 @@ class TimingSample:
             or not isinstance(self.end_to_end, (int, float))
             or not math.isfinite(self.end_to_end)
             or self.end_to_end < 0
+            or not isinstance(self.components, ComponentTimings)
         ):
             raise ValueError("timing sample must be finite and nonnegative")
+        expected_sequence = 20 + (self.pass_index - 1) * 50 + self.ordinal
+        if self.sequence_index != expected_sequence:
+            raise ValueError("timing sample differs from benchmark schedule")
         if (
             not isinstance(self.source_labels_sha256, str)
             or not isinstance(self.mapped_labels_sha256, str)
@@ -833,6 +954,17 @@ class TimingSample:
         ):
             raise ValueError("timing output hash is invalid")
         _require_outcome(self.status, self.failure_code)
+        component_count = sum(
+            value is not None for value in vars(self.components).values()
+        )
+        expected_count = {
+            ObservationStatus.PASS: 6,
+            ObservationFailureCode.PREPROCESS_FAILURE: 0,
+            ObservationFailureCode.INFERENCE_FAILURE: 2,
+            ObservationFailureCode.OUTPUT_SCHEMA_FAILURE: 3,
+        }[self.status if self.failure_code is None else self.failure_code]
+        if component_count != expected_count:
+            raise ValueError("timing components differ from observation outcome")
 
 
 @dataclass(frozen=True)
@@ -858,6 +990,338 @@ class ResourceMeasurement:
             or self.peak_allocated_bytes > self.peak_reserved_bytes
         ):
             raise ValueError("resource measurements are internally inconsistent")
+
+
+class BenchmarkCudaOutOfMemory(RuntimeError):
+    def __init__(self, stage: TimingStage) -> None:
+        if not isinstance(stage, TimingStage):
+            raise ValueError("OOM stage is invalid")
+        super().__init__(f"CUDA_OUT_OF_MEMORY:{stage.value}")
+        self.stage = stage
+
+
+class TimingBackend(Protocol):
+    protocol: TimingProtocol
+    device: torch.device
+
+    def begin(self) -> None: ...
+
+    def finish(self) -> Optional["OfficialCudaEvidence"]: ...
+
+    def synchronize(self) -> None: ...
+
+    def monotonic(self) -> float: ...
+
+    def measure_device(
+        self, stage: TimingStage, operation: Callable[[], object]
+    ) -> Tuple[object, float]: ...
+
+
+class DeterministicFakeTimingBackend:
+    protocol = TimingProtocol("deterministic-fake", "synthetic-tick", False)
+    device = torch.device("cpu")
+
+    def __init__(self) -> None:
+        self.trace: list[str] = []
+        self._tick = 0.0
+        self._running = False
+
+    def begin(self) -> None:
+        if self._running:
+            raise ValueError("fake timing backend lifecycle is invalid")
+        self._running = True
+        self.trace.append("setup")
+
+    def finish(self) -> Optional["OfficialCudaEvidence"]:
+        if not self._running:
+            raise ValueError("fake timing backend lifecycle is invalid")
+        self._running = False
+        self.trace.append("done")
+        return None
+
+    def synchronize(self) -> None:
+        self.trace.append("synchronize")
+
+    def monotonic(self) -> float:
+        self.trace.append("monotonic")
+        value = self._tick
+        self._tick += 1.0
+        return value
+
+    def measure_device(
+        self, stage: TimingStage, operation: Callable[[], object]
+    ) -> Tuple[object, float]:
+        if stage not in {
+            TimingStage.H2D,
+            TimingStage.INFERENCE,
+            TimingStage.DEVICE_POSTPROCESS,
+            TimingStage.D2H,
+        }:
+            raise ValueError("fake device timer received a host stage")
+        self.trace.append(f"device-start:{stage.value}")
+        result = operation()
+        self.trace.append(f"device-end:{stage.value}")
+        return result, 1.0
+
+
+class CpuTestTimingBackend:
+    protocol = TimingProtocol("cpu-test", "seconds", False)
+    device = torch.device("cpu")
+
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:
+        if not callable(monotonic):
+            raise ValueError("CPU test clock must be callable")
+        self._monotonic = monotonic
+        self._running = False
+
+    def begin(self) -> None:
+        if self._running:
+            raise ValueError("CPU timing backend lifecycle is invalid")
+        self._running = True
+
+    def finish(self) -> Optional["OfficialCudaEvidence"]:
+        if not self._running:
+            raise ValueError("CPU timing backend lifecycle is invalid")
+        self._running = False
+        return None
+
+    def synchronize(self) -> None:
+        return None
+
+    def monotonic(self) -> float:
+        return self._monotonic()
+
+    def measure_device(
+        self, stage: TimingStage, operation: Callable[[], object]
+    ) -> Tuple[object, float]:
+        if stage not in {
+            TimingStage.H2D,
+            TimingStage.INFERENCE,
+            TimingStage.DEVICE_POSTPROCESS,
+            TimingStage.D2H,
+        }:
+            raise ValueError("CPU device timer received a host stage")
+        start = self._monotonic()
+        result = operation()
+        return result, self._monotonic() - start
+
+
+class CudaEvent(Protocol):
+    def record(self, stream: object) -> None: ...
+
+    def synchronize(self) -> None: ...
+
+    def elapsed_time(self, end_event: "CudaEvent") -> float: ...
+
+
+class CudaRuntime(Protocol):
+    def device_count(self) -> int: ...
+
+    def current_stream(self, device: torch.device) -> object: ...
+
+    def event(self) -> CudaEvent: ...
+
+    def synchronize(self, device: torch.device) -> None: ...
+
+
+class _TorchCudaRuntime:
+    def device_count(self) -> int:
+        return torch.cuda.device_count()
+
+    def current_stream(self, device: torch.device) -> object:
+        return torch.cuda.current_stream(device)
+
+    def event(self) -> CudaEvent:
+        return cast(CudaEvent, torch.cuda.Event(enable_timing=True))
+
+    def synchronize(self, device: torch.device) -> None:
+        torch.cuda.synchronize(device)
+
+
+@dataclass(frozen=True)
+class CudaDeviceEvidence:
+    gpu_name: str
+    gpu_uuid: str
+    driver_version: str
+    clock_policy: str
+    persistence_mode: str
+    power_limit_watts: float
+    temperature_celsius: float
+    compute_pids: Tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.gpu_name != "NVIDIA GeForce RTX 3090"
+            or not isinstance(self.gpu_uuid, str)
+            or not self.gpu_uuid.startswith("GPU-")
+            or any(
+                not isinstance(value, str) or not value
+                for value in (
+                    self.driver_version,
+                    self.clock_policy,
+                    self.persistence_mode,
+                )
+            )
+            or isinstance(self.power_limit_watts, bool)
+            or not isinstance(self.power_limit_watts, (int, float))
+            or not math.isfinite(self.power_limit_watts)
+            or self.power_limit_watts <= 0
+            or isinstance(self.temperature_celsius, bool)
+            or not isinstance(self.temperature_celsius, (int, float))
+            or not math.isfinite(self.temperature_celsius)
+            or not 30 <= self.temperature_celsius <= 80
+            or type(self.compute_pids) is not tuple
+            or any(type(pid) is not int or pid < 1 for pid in self.compute_pids)
+            or len(set(self.compute_pids)) != len(self.compute_pids)
+        ):
+            raise ValueError("CUDA device evidence is invalid")
+
+
+@dataclass(frozen=True)
+class OfficialCudaEvidence:
+    before: CudaDeviceEvidence
+    after: CudaDeviceEvidence
+    current_pid: int
+    pytorch_cuda_alloc_conf: Optional[str]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.before, CudaDeviceEvidence)
+            or not isinstance(self.after, CudaDeviceEvidence)
+            or type(self.current_pid) is not int
+            or self.current_pid != os.getpid()
+            or self.pytorch_cuda_alloc_conf is not None
+            or (
+                self.before.gpu_name,
+                self.before.gpu_uuid,
+                self.before.driver_version,
+                self.before.clock_policy,
+                self.before.persistence_mode,
+                self.before.power_limit_watts,
+            )
+            != (
+                self.after.gpu_name,
+                self.after.gpu_uuid,
+                self.after.driver_version,
+                self.after.clock_policy,
+                self.after.persistence_mode,
+                self.after.power_limit_watts,
+            )
+            or any(
+                set(snapshot.compute_pids) - {self.current_pid}
+                for snapshot in (self.before, self.after)
+            )
+        ):
+            raise ValueError("official CUDA evidence is invalid or drifted")
+
+
+class OfficialCudaTimingBackend:
+    protocol = TimingProtocol("official-cuda", "seconds", True)
+    _AUTHORITY_TOKEN = object()
+
+    def __init__(
+        self,
+        *,
+        expected_gpu_uuid: str,
+        snapshot_inspector: Callable[[], CudaDeviceEvidence],
+        runtime: Optional[CudaRuntime] = None,
+    ) -> None:
+        if (
+            not isinstance(expected_gpu_uuid, str)
+            or not expected_gpu_uuid.startswith("GPU-")
+            or not callable(snapshot_inspector)
+        ):
+            raise ValueError("official CUDA preflight arguments are invalid")
+        cuda = _TorchCudaRuntime() if runtime is None else runtime
+        self.device = torch.device("cuda:0")
+        self._runtime = cuda
+        self._expected_gpu_uuid = expected_gpu_uuid
+        self._snapshot_inspector = snapshot_inspector
+        self._stream: Optional[object] = None
+        self._before: Optional[CudaDeviceEvidence] = None
+        self._evidence: Optional[OfficialCudaEvidence] = None
+        self._authority_token = self._AUTHORITY_TOKEN
+
+    @property
+    def evidence(self) -> Optional[OfficialCudaEvidence]:
+        return self._evidence
+
+    def begin(self) -> None:
+        if self._before is not None or self._evidence is not None:
+            raise ValueError("official CUDA timing lifecycle is invalid")
+        if self._runtime.device_count() != 1:
+            raise ValueError("official CUDA timing requires one visible CUDA device")
+        if os.environ.get("PYTORCH_CUDA_ALLOC_CONF") is not None:
+            raise ValueError("official CUDA timing requires absent allocator override")
+        before = self._snapshot_inspector()
+        if (
+            not isinstance(before, CudaDeviceEvidence)
+            or before.gpu_uuid != self._expected_gpu_uuid
+            or set(before.compute_pids) - {os.getpid()}
+        ):
+            raise ValueError(
+                "official CUDA preflight differs from the recorded RTX 3090"
+            )
+        self._before = before
+        self._stream = self._runtime.current_stream(self.device)
+
+    def finish(self) -> Optional[OfficialCudaEvidence]:
+        if self._before is None or self._evidence is not None:
+            raise ValueError("official CUDA timing lifecycle is invalid")
+        after = self._snapshot_inspector()
+        evidence = OfficialCudaEvidence(
+            before=self._before,
+            after=after,
+            current_pid=os.getpid(),
+            pytorch_cuda_alloc_conf=os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
+        )
+        self._evidence = evidence
+        return evidence
+
+    def synchronize(self) -> None:
+        self._runtime.synchronize(self.device)
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def measure_device(
+        self, stage: TimingStage, operation: Callable[[], object]
+    ) -> Tuple[object, float]:
+        if stage not in {
+            TimingStage.H2D,
+            TimingStage.INFERENCE,
+            TimingStage.DEVICE_POSTPROCESS,
+            TimingStage.D2H,
+        }:
+            raise ValueError("CUDA event timer received a host stage")
+        if self._before is None or self._evidence is not None or self._stream is None:
+            raise ValueError("official CUDA backend is outside its active lifecycle")
+        start = self._runtime.event()
+        end = self._runtime.event()
+        start.record(self._stream)
+        result = operation()
+        end.record(self._stream)
+        end.synchronize()
+        milliseconds = start.elapsed_time(end)
+        if (
+            isinstance(milliseconds, bool)
+            or not isinstance(milliseconds, (int, float))
+            or not math.isfinite(milliseconds)
+            or milliseconds < 0
+        ):
+            raise ValueError("CUDA event duration is invalid")
+        return result, milliseconds / 1000.0
+
+
+def logical_label_sha256(labels: np.ndarray) -> str:
+    if (
+        not isinstance(labels, np.ndarray)
+        or labels.dtype != np.dtype("<i2")
+        or labels.shape != (12, 256, 256)
+        or not labels.flags.c_contiguous
+    ):
+        raise ValueError("logical label array must be little-endian int16 C-order")
+    return hashlib.sha256(labels.tobytes(order="C")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -922,6 +1386,86 @@ class EndpointRow:
         ):
             raise ValueError("endpoint must be null or finite in [0, 1]")
         _require_outcome(self.status, self.failure_code)
+
+
+@dataclass(frozen=True)
+class TimedBenchmarkInput:
+    ordinal: int
+    observation_id: str
+    scene_id: str
+    segmenter_input: SegmenterInput
+    raw_arrays: RawFrameArrays
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.ordinal) is not int
+            or not 0 <= self.ordinal < 50
+            or not isinstance(self.observation_id, str)
+            or not self.observation_id
+            or not isinstance(self.scene_id, str)
+            or not self.scene_id
+            or not isinstance(self.segmenter_input, SegmenterInput)
+            or not isinstance(self.raw_arrays, RawFrameArrays)
+        ):
+            raise ValueError("timed benchmark input is invalid")
+
+
+@dataclass(frozen=True)
+class TimedBenchmarkRun:
+    protocol: TimingProtocol
+    canonical_results: Tuple[ObservationResult, ...]
+    samples: Tuple[TimingSample, ...]
+    latency: Optional["LatencySummary"]
+    official_cuda_evidence: Optional[OfficialCudaEvidence]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.protocol, TimingProtocol)
+            or type(self.canonical_results) is not tuple
+            or len(self.canonical_results) != 50
+            or any(
+                not isinstance(result, ObservationResult)
+                for result in self.canonical_results
+            )
+            or tuple(result.ordinal for result in self.canonical_results)
+            != tuple(range(50))
+            or type(self.samples) is not tuple
+            or len(self.samples) != 100
+            or any(not isinstance(sample, TimingSample) for sample in self.samples)
+            or tuple(sample.sequence_index for sample in self.samples)
+            != tuple(range(20, 120))
+        ):
+            raise ValueError("timed benchmark run differs from the exact schedule")
+        if self.protocol.comparable != isinstance(
+            self.official_cuda_evidence, OfficialCudaEvidence
+        ):
+            raise ValueError("timed benchmark run has invalid CUDA evidence authority")
+        for ordinal, result in enumerate(self.canonical_results):
+            first = self.samples[ordinal]
+            second = self.samples[50 + ordinal]
+            expected = (
+                logical_label_sha256(result.prediction.source_labels),
+                logical_label_sha256(result.prediction.mapped_labels),
+                result.status,
+                result.failure_code,
+            )
+            if (
+                first.source_labels_sha256,
+                first.mapped_labels_sha256,
+                first.status,
+                first.failure_code,
+            ) != expected or (
+                second.source_labels_sha256,
+                second.mapped_labels_sha256,
+                second.status,
+                second.failure_code,
+            ) != expected:
+                raise ValueError("timing passes differ from canonical results")
+        expected_latency = (
+            summarize_latency(self.samples) if self.protocol.comparable else None
+        )
+        if self.latency != expected_latency:
+            raise ValueError("latency differs from authoritative end-to-end samples")
 
 
 @dataclass(frozen=True)
@@ -1080,7 +1624,10 @@ class LatencySummary:
     timing_comparable: bool
     unit: str
     sample_count: int
+    p50_seconds: Optional[float]
     p95_seconds: Optional[float]
+    total_seconds: Optional[float]
+    views_per_second: Optional[float]
 
     def __post_init__(self) -> None:
         if (
@@ -1095,14 +1642,37 @@ class LatencySummary:
             if (
                 self.unit != "seconds"
                 or self.sample_count != 100
-                or isinstance(self.p95_seconds, bool)
-                or not isinstance(self.p95_seconds, (int, float))
-                or not math.isfinite(self.p95_seconds)
-                or self.p95_seconds < 0
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value <= 0
+                    for value in (
+                        self.p50_seconds,
+                        self.p95_seconds,
+                        self.total_seconds,
+                        self.views_per_second,
+                    )
+                )
+                or cast(float, self.p50_seconds) > cast(float, self.p95_seconds)
+                or not math.isclose(
+                    cast(float, self.views_per_second),
+                    12 * self.sample_count / cast(float, self.total_seconds),
+                    rel_tol=0,
+                    abs_tol=0,
+                )
             ):
                 raise ValueError("comparable latency summary is invalid")
-        elif self.p95_seconds is not None:
-            raise ValueError("non-comparable latency cannot claim a P95")
+        elif any(
+            value is not None
+            for value in (
+                self.p50_seconds,
+                self.p95_seconds,
+                self.total_seconds,
+                self.views_per_second,
+            )
+        ):
+            raise ValueError("non-comparable latency cannot claim latency fields")
 
 
 def _require_outcome(
@@ -1456,6 +2026,29 @@ def linear_quantile(values: Iterable[float], probability: float) -> float:
     upper = math.ceil(position)
     fraction = position - lower
     return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def summarize_latency(samples: Sequence[TimingSample]) -> LatencySummary:
+    values = tuple(samples)
+    if (
+        len(values) != 100
+        or any(not isinstance(sample, TimingSample) for sample in values)
+        or tuple(sample.sequence_index for sample in values) != tuple(range(20, 120))
+    ):
+        raise ValueError("latency requires the exact 100 measured samples")
+    durations = tuple(sample.end_to_end for sample in values)
+    total = math.fsum(durations)
+    if total <= 0:
+        raise ValueError("authoritative total latency must be positive")
+    return LatencySummary(
+        timing_comparable=True,
+        unit="seconds",
+        sample_count=100,
+        p50_seconds=linear_quantile(durations, 0.5),
+        p95_seconds=linear_quantile(durations, 0.95),
+        total_seconds=total,
+        views_per_second=1200 / total,
+    )
 
 
 def scene_bootstrap_matrix() -> np.ndarray:
@@ -2490,3 +3083,350 @@ def iter_validated_raw_observations(
     finally:
         os.close(root_descriptor)
         os.close(parent)
+
+
+def run_timed_benchmark(
+    inputs: Sequence[TimedBenchmarkInput],
+    *,
+    trusted_cohort: TrustedCohort,
+    commitment: CandidateCommitment,
+    adapter: SegmenterAdapter,
+    mapping: Sequence[MappingEntry],
+    backend: TimingBackend,
+    projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray] = (
+        project_mapped_labels
+    ),
+) -> TimedBenchmarkRun:
+    """Execute the exact untimed-warmup/two-pass experiment protocol."""
+
+    observations = tuple(inputs)
+    if (
+        not isinstance(trusted_cohort, TrustedCohort)
+        or len(observations) != 50
+        or any(
+            not isinstance(observation, TimedBenchmarkInput)
+            for observation in observations
+        )
+        or tuple(
+            (value.ordinal, value.observation_id, value.scene_id)
+            for value in observations
+        )
+        != trusted_cohort.identities
+        or not isinstance(commitment, CandidateCommitment)
+        or not isinstance(backend.protocol, TimingProtocol)
+        or not isinstance(backend.device, torch.device)
+        or not callable(projector)
+    ):
+        raise ValueError("timed benchmark inputs differ from the frozen contract")
+    frozen_mapping = tuple(mapping)
+    if (
+        not frozen_mapping
+        or any(not isinstance(entry, MappingEntry) for entry in frozen_mapping)
+        or tuple(entry.source_index for entry in frozen_mapping)
+        != tuple(range(len(frozen_mapping)))
+        or len(frozen_mapping) != len(commitment.source_vocabulary)
+    ):
+        raise ValueError("timed benchmark mapping is invalid")
+    if backend.protocol.comparable and (
+        type(backend) is not OfficialCudaTimingBackend
+        or getattr(backend, "_authority_token", None)
+        is not OfficialCudaTimingBackend._AUTHORITY_TOKEN
+        or backend.device.type != "cuda"
+    ):
+        raise ValueError("comparable timing requires sealed official CUDA authority")
+    _precision_context(commitment, backend)
+
+    canonical: list[ObservationResult] = []
+    samples: list[TimingSample] = []
+    backend.begin()
+    for step in benchmark_schedule():
+        observation = observations[step.ordinal]
+        measured = step.kind is TimingStepKind.MEASURED
+        if measured:
+            _synchronize_at(backend, TimingStage.PREPROCESS)
+            boundary_start = backend.monotonic()
+        prediction, status, failure_code, components = _execute_timing_step(
+            observation,
+            adapter=adapter,
+            mapping=frozen_mapping,
+            backend=backend,
+            commitment=commitment,
+            projector=projector,
+            measured=measured,
+        )
+        if not measured:
+            continue
+        _synchronize_at(backend, TimingStage.PROJECTION)
+        end_to_end = backend.monotonic() - boundary_start
+        sample = TimingSample(
+            sequence_index=step.sequence_index,
+            pass_index=cast(int, step.pass_index),
+            ordinal=step.ordinal,
+            end_to_end=end_to_end,
+            components=components,
+            source_labels_sha256=logical_label_sha256(prediction.source_labels),
+            mapped_labels_sha256=logical_label_sha256(prediction.mapped_labels),
+            status=status,
+            failure_code=failure_code,
+        )
+        if step.pass_index == 1:
+            canonical.append(
+                ObservationResult(
+                    ordinal=step.ordinal,
+                    status=status,
+                    failure_code=failure_code,
+                    prediction=prediction,
+                )
+            )
+        else:
+            authority = canonical[step.ordinal]
+            if (
+                sample.source_labels_sha256,
+                sample.mapped_labels_sha256,
+                sample.status,
+                sample.failure_code,
+            ) != (
+                logical_label_sha256(authority.prediction.source_labels),
+                logical_label_sha256(authority.prediction.mapped_labels),
+                authority.status,
+                authority.failure_code,
+            ):
+                raise ValueError("second measured pass differs from canonical pass one")
+        samples.append(sample)
+    values = tuple(samples)
+    official_evidence = backend.finish()
+    return TimedBenchmarkRun(
+        protocol=backend.protocol,
+        canonical_results=tuple(canonical),
+        samples=values,
+        latency=summarize_latency(values) if backend.protocol.comparable else None,
+        official_cuda_evidence=official_evidence,
+    )
+
+
+def _execute_timing_step(
+    observation: TimedBenchmarkInput,
+    *,
+    adapter: SegmenterAdapter,
+    mapping: Tuple[MappingEntry, ...],
+    backend: TimingBackend,
+    commitment: CandidateCommitment,
+    projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray],
+    measured: bool,
+) -> Tuple[
+    Prediction,
+    ObservationStatus,
+    Optional[ObservationFailureCode],
+    ComponentTimings,
+]:
+    durations: list[Optional[float]] = [None] * 6
+    try:
+        prepared, durations[0] = _measure_stage(
+            backend,
+            TimingStage.PREPROCESS,
+            lambda: adapter.preprocess_host(observation.segmenter_input),
+            measured=measured,
+            device_stage=False,
+        )
+    except AdapterObservationError as error:
+        if error.code is not ObservationFailureCode.PREPROCESS_FAILURE:
+            raise ValueError(
+                "adapter used an unauthorized preprocess failure"
+            ) from error
+        return _failed_timing_step(durations)
+    if not isinstance(prepared, PreparedHostBatch):
+        raise ValueError("adapter preprocessing returned the wrong type")
+
+    device_batch, durations[1] = _measure_stage(
+        backend,
+        TimingStage.H2D,
+        lambda: transfer_prepared_host_batch(
+            prepared,
+            device=backend.device,
+            non_blocking=backend.device.type == "cuda",
+        ),
+        measured=measured,
+        device_stage=True,
+    )
+    device_batch = cast(DeviceBatch, device_batch)
+    try:
+        logits, durations[2] = _measure_stage(
+            backend,
+            TimingStage.INFERENCE,
+            lambda: _infer(adapter, device_batch, commitment, backend),
+            measured=measured,
+            device_stage=True,
+        )
+    except AdapterObservationError as error:
+        if error.code is not ObservationFailureCode.INFERENCE_FAILURE:
+            raise ValueError(
+                "adapter used an unauthorized inference failure"
+            ) from error
+        return _failed_timing_step(durations, ObservationFailureCode.INFERENCE_FAILURE)
+
+    try:
+        source_labels, durations[3] = _measure_stage(
+            backend,
+            TimingStage.DEVICE_POSTPROCESS,
+            lambda: _restore_and_map_source(
+                cast(torch.Tensor, logits),
+                prepared.spatial_transform,
+                mapping,
+            ),
+            measured=measured,
+            device_stage=True,
+        )
+    except _OutputSchemaError:
+        return _failed_timing_step(
+            durations, ObservationFailureCode.OUTPUT_SCHEMA_FAILURE
+        )
+    source_device, mapped_device = cast(
+        Tuple[torch.Tensor, torch.Tensor], source_labels
+    )
+    host_tensors, durations[4] = _measure_stage(
+        backend,
+        TimingStage.D2H,
+        lambda: _device_to_host(source_device, mapped_device),
+        measured=measured,
+        device_stage=True,
+    )
+    _synchronize_at(backend, TimingStage.D2H)
+    source_host, mapped_host = cast(Tuple[torch.Tensor, torch.Tensor], host_tensors)
+    prediction = Prediction(
+        source_labels=np.ascontiguousarray(source_host.numpy(), dtype="<i2"),
+        mapped_labels=np.ascontiguousarray(mapped_host.numpy(), dtype="<i2"),
+    )
+    _, durations[5] = _measure_stage(
+        backend,
+        TimingStage.PROJECTION,
+        lambda: _project_checked(
+            projector, prediction.mapped_labels, observation.raw_arrays
+        ),
+        measured=measured,
+        device_stage=False,
+    )
+    return (
+        prediction,
+        ObservationStatus.PASS,
+        None,
+        ComponentTimings(*durations),
+    )
+
+
+class _OutputSchemaError(RuntimeError):
+    pass
+
+
+def _device_to_host(
+    source: torch.Tensor, mapped: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return (
+        source.detach().to(device="cpu"),
+        mapped.detach().to(device="cpu"),
+    )
+
+
+def _project_checked(
+    projector: Callable[[np.ndarray, RawFrameArrays], np.ndarray],
+    mapped_labels: np.ndarray,
+    arrays: RawFrameArrays,
+) -> np.ndarray:
+    grid = projector(mapped_labels, arrays)
+    if (
+        not isinstance(grid, np.ndarray)
+        or grid.dtype != np.dtype(np.bool_)
+        or grid.shape != (27, 50, 50)
+        or not grid.flags.c_contiguous
+    ):
+        raise ValueError("projector returned the wrong benchmark grid schema")
+    return grid
+
+
+def _restore_and_map_source(
+    logits: torch.Tensor,
+    spatial_transform: SpatialTransform,
+    mapping: Tuple[MappingEntry, ...],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    try:
+        source = restore_source_labels(
+            logits,
+            spatial_transform=spatial_transform,
+            source_class_count=len(mapping),
+        )
+    except ValueError as error:
+        raise _OutputSchemaError from error
+    return source, map_source_labels(source, mapping)
+
+
+def _infer(
+    adapter: SegmenterAdapter,
+    device_batch: DeviceBatch,
+    commitment: CandidateCommitment,
+    backend: TimingBackend,
+) -> torch.Tensor:
+    context = _precision_context(commitment, backend)
+    with torch.inference_mode(), context:
+        return adapter.infer(device_batch)
+
+
+def _precision_context(
+    commitment: CandidateCommitment,
+    backend: TimingBackend,
+) -> AbstractContextManager[None]:
+    if commitment.precision_mode == "float32":
+        return nullcontext()
+    if (
+        commitment.precision_mode != "fp16-autocast"
+        or type(backend) is not OfficialCudaTimingBackend
+        or backend.device.type != "cuda"
+    ):
+        raise ValueError("fp16-autocast requires sealed official CUDA timing")
+    return torch.autocast(device_type="cuda", dtype=torch.float16)
+
+
+def _measure_stage(
+    backend: TimingBackend,
+    stage: TimingStage,
+    operation: Callable[[], object],
+    *,
+    measured: bool,
+    device_stage: bool,
+) -> Tuple[object, Optional[float]]:
+    try:
+        if not measured:
+            return operation(), None
+        if device_stage:
+            return backend.measure_device(stage, operation)
+        start = backend.monotonic()
+        result = operation()
+        duration = backend.monotonic() - start
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("host component timer is invalid")
+        return result, duration
+    except torch.cuda.OutOfMemoryError as error:
+        raise BenchmarkCudaOutOfMemory(stage) from error
+
+
+def _synchronize_at(backend: TimingBackend, stage: TimingStage) -> None:
+    try:
+        backend.synchronize()
+    except torch.cuda.OutOfMemoryError as error:
+        raise BenchmarkCudaOutOfMemory(stage) from error
+
+
+def _failed_timing_step(
+    durations: Sequence[Optional[float]],
+    failure_code: ObservationFailureCode = ObservationFailureCode.PREPROCESS_FAILURE,
+) -> Tuple[
+    Prediction,
+    ObservationStatus,
+    ObservationFailureCode,
+    ComponentTimings,
+]:
+    empty = np.full((12, 256, 256), -1, dtype="<i2")
+    return (
+        Prediction(empty.copy(), empty.copy()),
+        ObservationStatus.FAILED,
+        failure_code,
+        ComponentTimings(*durations),
+    )
