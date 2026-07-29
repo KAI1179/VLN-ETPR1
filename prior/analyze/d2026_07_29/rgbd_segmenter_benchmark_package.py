@@ -145,6 +145,12 @@ _GIT_INSPECTION_TIMEOUT_SECONDS = 10.0
 _MAX_LOCAL_GIT_CONFIG_BYTES = 1024 * 1024
 _MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
 _MAX_GIT_IGNORE_BYTES = 16 * 1024 * 1024
+_MAX_GIT_IGNORE_INPUT_BYTES = 16 * 1024 * 1024
+_MAX_GIT_IGNORE_PATHS = 100_000
+_MAX_GIT_IGNORE_PATHS_PER_CALL = 4_096
+_MAX_GIT_IGNORE_INPUT_BYTES_PER_CALL = 1024 * 1024
+_MAX_GIT_IGNORE_CALLS = 8_192
+_MAX_GIT_WORKTREE_ENTRIES = 100_000
 _MAX_GIT_METADATA_FILE_BYTES = 1024 * 1024
 _TRUSTED_GIT_PATH = "/usr/bin/git"
 _RAW_PACKAGE_SOURCE_PATH = (
@@ -2812,6 +2818,25 @@ def _relative_path(value: str) -> None:
         raise ValueError("package path must be normalized printable relative POSIX")
 
 
+def _git_relative_path(value: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError("Git path must be a string")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("Git path must have valid UTF-8 encoding") from error
+    path = PurePosixPath(value)
+    if (
+        not value
+        or "\x00" in value
+        or path.is_absolute()
+        or not path.parts
+        or str(path) != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError("Git path must be normalized relative POSIX")
+
+
 def _absolute_authority_root(value: Path, label: str) -> None:
     if (
         not isinstance(value, Path)
@@ -3311,7 +3336,7 @@ def _parse_git_tree(data: bytes) -> Mapping[str, _GitTreeEntry]:
             path = raw_path.decode("utf-8")
         except (UnicodeDecodeError, ValueError) as error:
             raise ValueError("Git tree entry is invalid") from error
-        _relative_path(path)
+        _git_relative_path(path)
         if path == ".git" or path.startswith(".git/") or path in parsed:
             raise ValueError("Git tree path is unsafe or duplicated")
         if any(
@@ -3340,6 +3365,7 @@ class _GitWorktreeCapture:
     root: _Fingerprint
     entries: Mapping[str, _GitTreeEntry]
     directories: Mapping[str, _Fingerprint]
+    pruned_directories: Mapping[str, Tuple[_Fingerprint, str, str]]
     bindings: Mapping[str, _Fingerprint]
     extra_paths: Tuple[str, ...]
 
@@ -3348,18 +3374,36 @@ def _capture_git_worktree(
     root_descriptor: int,
     *,
     git_directory_fingerprint: _Fingerprint,
+    tracked_tree: Mapping[str, _GitTreeEntry],
+    classify_ignored: Callable[[Tuple[str, ...]], Mapping[str, Tuple[str, str]]],
 ) -> _GitWorktreeCapture:
     captured: dict[str, _GitTreeEntry] = {}
     directories: dict[str, _Fingerprint] = {}
+    pruned_directories: dict[str, Tuple[_Fingerprint, str, str]] = {}
     bindings: dict[str, _Fingerprint] = {}
     extra_paths: list[str] = []
+    observed_entries = [0]
     root_before = _fingerprint(os.fstat(root_descriptor))
+    protected_directories = set(tracked_tree)
+    for tracked_path in tracked_tree:
+        parent = PurePosixPath(tracked_path).parent
+        while parent.parts:
+            protected_directories.add(str(parent))
+            parent = parent.parent
 
     def walk(descriptor: int, relative: str) -> None:
         try:
-            names = sorted(os.listdir(descriptor))
+            with os.scandir(descriptor) as iterator:
+                names = []
+                for entry in iterator:
+                    observed_entries[0] += 1
+                    if observed_entries[0] > _MAX_GIT_WORKTREE_ENTRIES:
+                        raise ValueError("Git worktree entry budget exceeded")
+                    names.append(entry.name)
+                names.sort()
         except OSError as error:
             raise ValueError("Git worktree directory cannot be listed") from error
+        observed: list[Tuple[str, str, os.stat_result, _Fingerprint]] = []
         for name in names:
             if relative == "" and name == ".git":
                 if (
@@ -3371,7 +3415,7 @@ def _capture_git_worktree(
                     raise ValueError("Git metadata directory binding changed")
                 continue
             path = f"{relative}/{name}" if relative else name
-            _relative_path(path)
+            _git_relative_path(path)
             try:
                 metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             except OSError as error:
@@ -3379,8 +3423,36 @@ def _capture_git_worktree(
                     f"Git worktree path cannot be inspected: {path}"
                 ) from error
             before = _fingerprint(metadata)
+            observed.append((name, path, metadata, before))
+        candidate_directories = tuple(
+            path
+            for _, path, metadata, _ in observed
+            if stat.S_ISDIR(metadata.st_mode) and path not in protected_directories
+        )
+        ignored_directories = (
+            classify_ignored(candidate_directories)
+            if candidate_directories
+            else _FrozenMapping(())
+        )
+        for name, path, metadata, before in observed:
             if stat.S_ISDIR(metadata.st_mode):
                 directories[path] = before
+                if path in ignored_directories:
+                    try:
+                        recaptured = os.stat(
+                            name,
+                            dir_fd=descriptor,
+                            follow_symlinks=False,
+                        )
+                    except OSError as error:
+                        raise ValueError(
+                            f"Git worktree directory cannot be inspected: {path}"
+                        ) from error
+                    if _fingerprint(recaptured) != before:
+                        raise ValueError(f"Git worktree directory changed: {path}")
+                    source, pattern = ignored_directories[path]
+                    pruned_directories[path] = (before, source, pattern)
+                    continue
                 try:
                     child = os.open(
                         name,
@@ -3409,6 +3481,26 @@ def _capture_git_worktree(
                         raise ValueError(f"Git worktree directory changed: {path}")
                 finally:
                     os.close(child)
+                continue
+            if path not in tracked_tree:
+                if not (
+                    stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+                ):
+                    raise ValueError(f"Git worktree entry type is unsupported: {path}")
+                try:
+                    recaptured = os.stat(
+                        name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    raise ValueError(
+                        f"Git worktree path cannot be inspected: {path}"
+                    ) from error
+                if _fingerprint(recaptured) != before:
+                    raise ValueError(f"Git worktree path changed: {path}")
+                bindings[path] = before
+                extra_paths.append(path)
                 continue
             if stat.S_ISREG(metadata.st_mode):
                 if (
@@ -3485,7 +3577,6 @@ def _capture_git_worktree(
                 raise ValueError(f"Git worktree entry type is unsupported: {path}")
             captured[path] = _GitTreeEntry(mode=mode, object_id=object_id)
             bindings[path] = before
-            extra_paths.append(path)
 
     walk(root_descriptor, "")
     if _fingerprint(os.fstat(root_descriptor)) != root_before:
@@ -3494,6 +3585,7 @@ def _capture_git_worktree(
         root=root_before,
         entries=_FrozenMapping(tuple(sorted(captured.items()))),
         directories=_FrozenMapping(tuple(sorted(directories.items()))),
+        pruned_directories=_FrozenMapping(tuple(sorted(pruned_directories.items()))),
         bindings=_FrozenMapping(tuple(sorted(bindings.items()))),
         extra_paths=tuple(sorted(extra_paths)),
     )
@@ -3518,17 +3610,206 @@ def _parse_git_check_ignore(data: bytes) -> Mapping[str, Tuple[str, str]]:
             path = fields[index + 3].decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError("Git check-ignore output has invalid encoding") from error
-        _relative_path(source)
-        _relative_path(path)
+        _git_relative_path(source)
+        _git_relative_path(path)
         if (
             not line_number.isdigit()
             or int(line_number) < 1
             or not pattern
-            or pattern.startswith("!")
             or path in matches
         ):
             raise ValueError("Git check-ignore output is ambiguous")
         matches[path] = (source, pattern)
+    return _FrozenMapping(tuple(sorted(matches.items())))
+
+
+@dataclass
+class _GitIgnoreBudget:
+    calls: int = 0
+    input_bytes: int = 0
+    output_bytes: int = 0
+    paths: int = 0
+
+
+def _terminate_git_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_bounded_git_check_ignore(
+    command: Tuple[str, ...],
+    *,
+    input_bytes: bytes,
+    environment: Mapping[str, str],
+    passed_descriptors: Tuple[int, ...],
+    output_limit: int,
+) -> subprocess.CompletedProcess[bytes]:
+    if output_limit < 0:
+        raise ValueError("Git check-ignore output budget exceeded")
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(environment),
+        pass_fds=passed_descriptors,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        _terminate_git_process(process)
+        raise RuntimeError("Git check-ignore pipes are unavailable")
+    streams = (process.stdin, process.stdout, process.stderr)
+    streams_by_descriptor = {stream.fileno(): stream for stream in streams}
+    selector = selectors.DefaultSelector()
+    output = bytearray()
+    input_view = memoryview(input_bytes)
+    deadline = time.monotonic() + _GIT_INSPECTION_TIMEOUT_SECONDS
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("Git check-ignore timed out")
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _ in events:
+                descriptor = key.fd
+                stream = streams_by_descriptor[descriptor]
+                if key.data == "stdin":
+                    try:
+                        written = os.write(descriptor, input_view)
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except BrokenPipeError:
+                        written = 0
+                    if written:
+                        input_view = input_view[written:]
+                    if not input_view or written == 0:
+                        selector.unregister(stream)
+                        stream.close()
+                    continue
+                capacity = output_limit - len(output)
+                try:
+                    chunk = os.read(
+                        descriptor,
+                        min(_READ_CHUNK_BYTES, capacity + 1)
+                        if key.data == "stdout"
+                        else 1,
+                    )
+                except (BlockingIOError, InterruptedError):
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if key.data == "stderr":
+                    raise ValueError("Git inspection emitted unexpected stderr")
+                if len(chunk) > capacity:
+                    raise ValueError("Git check-ignore output budget exceeded")
+                output.extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("Git check-ignore timed out")
+        returncode = process.wait(timeout=remaining)
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            bytes(output),
+            b"",
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Git check-ignore timed out") from error
+    finally:
+        selector.close()
+        for stream in streams:
+            if not stream.closed:
+                stream.close()
+        _terminate_git_process(process)
+
+
+def _classify_git_ignored_paths(
+    paths: Tuple[str, ...],
+    *,
+    git_prefix: Tuple[str, ...],
+    git_environment: Mapping[str, str],
+    passed_descriptors: Tuple[int, ...],
+    budget: _GitIgnoreBudget,
+) -> Mapping[str, Tuple[str, str]]:
+    if not paths:
+        return _FrozenMapping(())
+    if len(paths) + budget.paths > _MAX_GIT_IGNORE_PATHS:
+        raise ValueError("Git check-ignore path budget exceeded")
+    encoded_paths: list[Tuple[str, bytes]] = []
+    for path in paths:
+        _git_relative_path(path)
+        encoded = os.fsencode(path) + b"\x00"
+        if len(encoded) > _MAX_GIT_IGNORE_INPUT_BYTES_PER_CALL:
+            raise ValueError("Git check-ignore path is too long")
+        encoded_paths.append((path, encoded))
+    batches: list[list[Tuple[str, bytes]]] = []
+    current: list[Tuple[str, bytes]] = []
+    current_bytes = 0
+    for item in encoded_paths:
+        if current and (
+            len(current) >= _MAX_GIT_IGNORE_PATHS_PER_CALL
+            or current_bytes + len(item[1]) > _MAX_GIT_IGNORE_INPUT_BYTES_PER_CALL
+        ):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(item)
+        current_bytes += len(item[1])
+    if current:
+        batches.append(current)
+
+    matches: dict[str, Tuple[str, str]] = {}
+    for batch in batches:
+        input_bytes = b"".join(encoded for _, encoded in batch)
+        if (
+            budget.calls + 1 > _MAX_GIT_IGNORE_CALLS
+            or budget.input_bytes + len(input_bytes) > _MAX_GIT_IGNORE_INPUT_BYTES
+        ):
+            raise ValueError("Git check-ignore inspection budget exceeded")
+        result = _run_bounded_git_check_ignore(
+            git_prefix
+            + (
+                "check-ignore",
+                "--no-index",
+                "-v",
+                "-z",
+                "--stdin",
+            ),
+            input_bytes=input_bytes,
+            environment=git_environment,
+            passed_descriptors=passed_descriptors,
+            output_limit=_MAX_GIT_IGNORE_BYTES - budget.output_bytes,
+        )
+        budget.calls += 1
+        budget.input_bytes += len(input_bytes)
+        budget.output_bytes += len(result.stdout)
+        budget.paths += len(batch)
+        if budget.output_bytes > _MAX_GIT_IGNORE_BYTES:
+            raise ValueError("Git check-ignore output budget exceeded")
+        if result.returncode not in {0, 1}:
+            raise ValueError("Git check-ignore failed")
+        parsed = _parse_git_check_ignore(result.stdout)
+        batch_paths = {path for path, _ in batch}
+        if any(path not in batch_paths for path in parsed):
+            raise ValueError("Git check-ignore returned an unexpected path")
+        for path, decision in parsed.items():
+            if path in matches:
+                raise ValueError("Git check-ignore output is duplicated")
+            matches[path] = decision
     return _FrozenMapping(tuple(sorted(matches.items())))
 
 
@@ -3762,10 +4043,8 @@ def _inspect_git_repository(root: Path) -> GitRepositoryState:
                 timeout=_GIT_INSPECTION_TIMEOUT_SECONDS,
             )
             tree = _parse_git_tree(tree_result.stdout)
-            worktree = _capture_git_worktree(
-                root_descriptor,
-                git_directory_fingerprint=git_directory_before,
-            )
+            if tree_result.stderr:
+                raise ValueError("Git inspection emitted unexpected stderr")
             tracked_ignore_paths: set[str] = set()
             for ignore_path, entry in tree.items():
                 if PurePosixPath(ignore_path).name != ".gitignore":
@@ -3791,50 +4070,48 @@ def _inspect_git_repository(root: Path) -> GitRepositoryState:
                 ):
                     raise ValueError("tracked .gitignore differs from Git tree")
                 tracked_ignore_paths.add(ignore_path)
-            extra_paths = tuple(
-                path for path in worktree.extra_paths if path not in tree
+            ignore_budget = _GitIgnoreBudget()
+
+            def classify_ignored(
+                paths: Tuple[str, ...],
+            ) -> Mapping[str, Tuple[str, str]]:
+                decisions = _classify_git_ignored_paths(
+                    paths,
+                    git_prefix=git_prefix,
+                    git_environment=git_environment,
+                    passed_descriptors=passed_descriptors,
+                    budget=ignore_budget,
+                )
+                return _FrozenMapping(
+                    tuple(
+                        (path, decision)
+                        for path, decision in decisions.items()
+                        if (
+                            decision[0] in tracked_ignore_paths
+                            and not decision[1].startswith("!")
+                        )
+                    )
+                )
+
+            worktree = _capture_git_worktree(
+                root_descriptor,
+                git_directory_fingerprint=git_directory_before,
+                tracked_tree=tree,
+                classify_ignored=classify_ignored,
             )
-            ignore_result = subprocess.run(
-                git_prefix
-                + (
-                    "check-ignore",
-                    "--no-index",
-                    "-v",
-                    "-z",
-                    "--stdin",
-                ),
-                check=False,
-                capture_output=True,
-                env=git_environment,
-                input=b"".join(os.fsencode(path) + b"\x00" for path in extra_paths),
-                pass_fds=passed_descriptors,
-                timeout=_GIT_INSPECTION_TIMEOUT_SECONDS,
+            extra_paths = worktree.extra_paths
+            ignored = classify_ignored(extra_paths)
+            final_worktree = _capture_git_worktree(
+                root_descriptor,
+                git_directory_fingerprint=git_directory_before,
+                tracked_tree=tree,
+                classify_ignored=classify_ignored,
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise ValueError("Git repository inspection failed") from error
-        if any(
-            result.stderr
-            for result in (
-                tree_result,
-                ignore_result,
-            )
-        ):
-            raise ValueError("Git inspection emitted unexpected stderr")
-        if ignore_result.returncode not in {0, 1}:
-            raise ValueError("Git check-ignore failed")
-        final_worktree = _capture_git_worktree(
-            root_descriptor,
-            git_directory_fingerprint=git_directory_before,
-        )
         if final_worktree != worktree:
             raise ValueError("Git worktree changed during inspection")
-        ignored = _parse_git_check_ignore(ignore_result.stdout)
-        if set(ignored) != set(extra_paths) or any(
-            source not in tracked_ignore_paths for source, _ in ignored.values()
-        ):
-            extras_clean = False
-        else:
-            extras_clean = True
+        extras_clean = set(ignored) == set(extra_paths)
         tracked_clean = all(
             worktree.entries.get(path) == entry for path, entry in tree.items()
         )

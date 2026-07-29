@@ -2391,6 +2391,21 @@ def _write_fake_git_metadata(root: Path, revision: str = _COMMIT) -> None:
     (git_directory / "info" / "exclude").write_text("")
 
 
+def _initialize_real_git_repository(root: Path) -> None:
+    root.mkdir()
+    subprocess.run(("/usr/bin/git", "init", "-q"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "config", "user.email", "validator@example.invalid"),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "config", "user.name", "Validator"),
+        cwd=root,
+        check=True,
+    )
+
+
 def _git_blob_id(data: bytes) -> str:
     digest = hashlib.new("sha1", usedforsecurity=False)
     digest.update(f"blob {len(data)}\0".encode())
@@ -2458,7 +2473,7 @@ def test_git_inspection_anchors_repo_fd_and_ignores_process_poisoning(
         True,
         "https://example.invalid/repository",
     )
-    assert len(calls) == 3
+    assert len(calls) == 2
     base_environment_keys = {
         "GIT_ATTR_NOSYSTEM",
         "GIT_CONFIG_GLOBAL",
@@ -2500,7 +2515,7 @@ def test_git_inspection_anchors_repo_fd_and_ignores_process_poisoning(
         next(name for name in ("config", "ls-tree", "check-ignore") if name in args)
         for args, _, _, _ in calls
     ]
-    assert commands == ["config", "ls-tree", "check-ignore"]
+    assert commands == ["config", "ls-tree"]
     assert all("GIT_INDEX_FILE" not in environment for _, environment, _, _ in calls)
     assert all(
         poisoned_index not in environment.values() for _, environment, _, _ in calls
@@ -2530,6 +2545,7 @@ def test_git_inspection_anchors_repo_fd_and_ignores_process_poisoning(
         ("untracked-file", False),
         ("missing-file", False),
         ("ignored-file", True),
+        ("ignored-spaced-file", True),
         ("nested-ignored-file", True),
         ("info-excluded-file", False),
         ("extra-empty-directory", True),
@@ -2564,7 +2580,7 @@ def test_git_inspection_uses_no_filter_real_worktree_check(
     original = b"original"
     (root / "tracked.txt").write_bytes(original)
     os.symlink("tracked.txt", root / "link")
-    (root / ".gitignore").write_text("ignored.txt\n")
+    (root / ".gitignore").write_text("ignored.txt\npotted plant.pt\n")
     (root / "nested").mkdir()
     (root / "nested" / ".gitignore").write_text("nested-ignored.txt\n")
     subprocess.run(
@@ -2595,6 +2611,8 @@ def test_git_inspection_uses_no_filter_real_worktree_check(
         (root / "tracked.txt").unlink()
     elif fault == "ignored-file":
         (root / "ignored.txt").write_text("ignored")
+    elif fault == "ignored-spaced-file":
+        (root / "potted plant.pt").write_text("ignored")
     elif fault == "nested-ignored-file":
         (root / "nested" / "nested-ignored.txt").write_text("ignored")
     elif fault == "info-excluded-file":
@@ -2609,6 +2627,363 @@ def test_git_inspection_uses_no_filter_real_worktree_check(
         return
     state = package._inspect_git_repository(root)  # noqa: SLF001
     assert state.clean is expected_clean
+
+
+@pytest.mark.parametrize(
+    ("ignored", "hardlinked", "expected_clean"),
+    [
+        (True, False, True),
+        (True, True, True),
+        (False, False, False),
+    ],
+)
+def test_git_inspection_does_not_read_oversized_untracked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ignored: bool,
+    hardlinked: bool,
+    expected_clean: bool,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    (root / ".gitignore").write_text("ignored-*.bin\n")
+    subprocess.run(("/usr/bin/git", "add", ".gitignore"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+
+    filename = "ignored-large.bin" if ignored else "unignored-large.bin"
+    target = root / filename
+    with target.open("wb") as stream:
+        stream.truncate(package._MAX_TRUSTED_ARTIFACT_BYTES + 1)  # noqa: SLF001
+    guarded_names = {filename}
+    if hardlinked:
+        alias = root / "ignored-large-alias.bin"
+        os.link(target, alias)
+        guarded_names.add(alias.name)
+
+    real_open = os.open
+
+    def guarded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if os.fsdecode(path) in guarded_names:
+            raise AssertionError("untracked file must not be opened")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(package.os, "open", guarded_open)
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert state.clean is expected_clean
+
+
+def test_git_inspection_rejects_oversized_tracked_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    tracked = root / "tracked.txt"
+    tracked.write_bytes(b"tracked")
+    subprocess.run(("/usr/bin/git", "add", "tracked.txt"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    monkeypatch.setattr(
+        package,
+        "_MAX_TRUSTED_ARTIFACT_BYTES",
+        tracked.stat().st_size - 1,
+    )
+
+    with pytest.raises(ValueError, match="Git worktree file is unsafe: tracked.txt"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+
+
+def test_git_inspection_prunes_trusted_ignored_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    (root / ".gitignore").write_text("ignored-dir/\n")
+    subprocess.run(("/usr/bin/git", "add", ".gitignore"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    ignored = root / "ignored-dir"
+    ignored.mkdir()
+    with (ignored / "huge.bin").open("wb") as stream:
+        stream.truncate(package._MAX_TRUSTED_ARTIFACT_BYTES + 1)  # noqa: SLF001
+    os.mkfifo(ignored / "pipe")
+    unreadable = ignored / "unreadable"
+    unreadable.mkdir()
+    unreadable.chmod(0)
+
+    real_open = os.open
+    real_listdir = os.listdir
+
+    def guarded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if os.fsdecode(path) == ignored.name:
+            raise AssertionError("trusted ignored directory must not be opened")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    def guarded_listdir(descriptor: int) -> list[str]:
+        if Path(f"/proc/self/fd/{descriptor}").resolve() == ignored:
+            raise AssertionError("trusted ignored directory must not be listed")
+        return real_listdir(descriptor)
+
+    monkeypatch.setattr(package.os, "open", guarded_open)
+    monkeypatch.setattr(package.os, "listdir", guarded_listdir)
+    try:
+        state = package._inspect_git_repository(root)  # noqa: SLF001
+    finally:
+        unreadable.chmod(0o700)
+    assert state.clean
+
+
+def test_git_inspection_never_prunes_directory_with_tracked_descendant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    (root / ".gitignore").write_text("ignored-dir/\n")
+    tracked = root / "ignored-dir" / "tracked.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("original")
+    subprocess.run(
+        ("/usr/bin/git", "add", ".gitignore"),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "add", "-f", "ignored-dir/tracked.txt"),
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    tracked.write_text("mutated")
+    opened_tracked = False
+    real_open = os.open
+
+    def recording_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal opened_tracked
+        if os.fsdecode(path) == tracked.name:
+            opened_tracked = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(package.os, "open", recording_open)
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert not state.clean
+    assert opened_tracked
+
+
+def test_git_inspection_descends_into_unignored_directory(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "--allow-empty", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    visible = root / "visible"
+    visible.mkdir()
+    (visible / "extra.txt").write_text("extra")
+
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert not state.clean
+
+
+def test_git_inspection_does_not_trust_untracked_ignore_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "--allow-empty", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    (root / ".gitignore").write_text("ignored-dir/\n")
+    ignored = root / "ignored-dir"
+    ignored.mkdir()
+    (ignored / "payload.txt").write_text("payload")
+    opened_ignored = False
+    real_open = os.open
+
+    def recording_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal opened_ignored
+        if os.fsdecode(path) == ignored.name:
+            opened_ignored = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(package.os, "open", recording_open)
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert not state.clean
+    assert opened_ignored
+
+
+def test_git_inspection_treats_negated_paths_as_unignored(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    (root / ".gitignore").write_text("ignored-dir/*\n!ignored-dir/keep.txt\n")
+    subprocess.run(("/usr/bin/git", "add", ".gitignore"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    ignored = root / "ignored-dir"
+    ignored.mkdir()
+    (ignored / "hidden.txt").write_text("ignored")
+    (ignored / "keep.txt").write_text("unignored")
+
+    state = package._inspect_git_repository(root)  # noqa: SLF001
+    assert not state.clean
+
+
+def test_git_inspection_rejects_pruned_directory_fingerprint_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    _initialize_real_git_repository(root)
+    (root / ".gitignore").write_text("ignored-dir/\n")
+    subprocess.run(("/usr/bin/git", "add", ".gitignore"), cwd=root, check=True)
+    subprocess.run(
+        ("/usr/bin/git", "commit", "-q", "-m", "fixture"),
+        cwd=root,
+        check=True,
+    )
+    ignored = root / "ignored-dir"
+    ignored.mkdir()
+    real_check_ignore = package._run_bounded_git_check_ignore  # noqa: SLF001
+    directory_queries = 0
+
+    def mutating_check_ignore(
+        command: tuple[str, ...],
+        *,
+        input_bytes: bytes,
+        environment: Mapping[str, str],
+        passed_descriptors: Tuple[int, ...],
+        output_limit: int,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal directory_queries
+        if input_bytes == b"ignored-dir\x00":
+            directory_queries += 1
+            if directory_queries == 2:
+                (ignored / "late.txt").write_text("late")
+        return real_check_ignore(
+            command,
+            input_bytes=input_bytes,
+            environment=environment,
+            passed_descriptors=passed_descriptors,
+            output_limit=output_limit,
+        )
+
+    monkeypatch.setattr(
+        package,
+        "_run_bounded_git_check_ignore",
+        mutating_check_ignore,
+    )
+    with pytest.raises(ValueError, match="directory changed|worktree changed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert directory_queries == 2
+
+
+def test_git_check_ignore_output_budget_remains_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = b".gitignore\x001\x00ignored\x00ignored\x00"
+
+    def completed(
+        command: tuple[str, ...],
+        *,
+        input_bytes: bytes,
+        environment: Mapping[str, str],
+        passed_descriptors: Tuple[int, ...],
+        output_limit: int,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del input_bytes, environment, passed_descriptors, output_limit
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr(package, "_run_bounded_git_check_ignore", completed)
+    monkeypatch.setattr(package, "_MAX_GIT_IGNORE_BYTES", len(output) - 1)
+    with pytest.raises(ValueError, match="output budget"):
+        package._classify_git_ignored_paths(  # noqa: SLF001
+            ("ignored",),
+            git_prefix=("/usr/bin/git",),
+            git_environment={},
+            passed_descriptors=(),
+            budget=package._GitIgnoreBudget(),  # noqa: SLF001
+        )
+
+
+def test_git_check_ignore_streaming_output_cap() -> None:
+    command = (
+        sys.executable,
+        "-c",
+        "import sys;sys.stdin.buffer.read();sys.stdout.buffer.write(b'x'*1024)",
+    )
+    with pytest.raises(ValueError, match="output budget"):
+        package._run_bounded_git_check_ignore(  # noqa: SLF001
+            command,
+            input_bytes=b"path\x00",
+            environment={},
+            passed_descriptors=(),
+            output_limit=10,
+        )
+
+
+def test_git_check_ignore_rejects_path_budget_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("path budget must fail before subprocess")
+
+    monkeypatch.setattr(package, "_MAX_GIT_IGNORE_PATHS", 1)
+    monkeypatch.setattr(package, "_run_bounded_git_check_ignore", forbidden)
+    with pytest.raises(ValueError, match="path budget"):
+        package._classify_git_ignored_paths(  # noqa: SLF001
+            ("one", "two"),
+            git_prefix=("/usr/bin/git",),
+            git_environment={},
+            passed_descriptors=(),
+            budget=package._GitIgnoreBudget(),  # noqa: SLF001
+        )
 
 
 def test_git_inspection_does_not_reopen_mutated_filter_config(
@@ -2641,7 +3016,7 @@ def test_git_inspection_does_not_reopen_mutated_filter_config(
     monkeypatch.setattr(package.subprocess, "run", completed)
     with pytest.raises(ValueError, match="metadata file changed"):
         package._inspect_git_repository(root)  # noqa: SLF001
-    assert commands == ["config", "ls-tree", "check-ignore"]
+    assert commands == ["config", "ls-tree"]
     assert all(
         command not in commands for command in ("diff", "checkout", "hash-object")
     )
@@ -2664,24 +3039,73 @@ def test_git_inspection_recaptures_tracked_gitignore_after_decision(
         args: tuple[str, ...],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        nonlocal mutations
         del kwargs
         if "config" in args:
             stdout = b""
-        elif "ls-tree" in args:
-            stdout = tree
         else:
-            mutations += 1
-            (root / ".gitignore").write_bytes(b"ignored.bin\n")
-            time.sleep(0.01)
-            (root / ".gitignore").write_bytes(ignore_bytes)
-            stdout = b".gitignore\x001\x00ignored.txt\x00ignored.txt\x00"
+            stdout = tree
         return subprocess.CompletedProcess(args, 0, stdout, b"")
 
+    def check_ignore(
+        command: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal mutations
+        del kwargs
+        mutations += 1
+        (root / ".gitignore").write_bytes(b"ignored.bin\n")
+        time.sleep(0.01)
+        (root / ".gitignore").write_bytes(ignore_bytes)
+        stdout = b".gitignore\x001\x00ignored.txt\x00ignored.txt\x00"
+        return subprocess.CompletedProcess(command, 0, stdout, b"")
+
     monkeypatch.setattr(package.subprocess, "run", completed)
+    monkeypatch.setattr(package, "_run_bounded_git_check_ignore", check_ignore)
     with pytest.raises(ValueError, match="worktree changed"):
         package._inspect_git_repository(root)  # noqa: SLF001
     assert mutations == 1
+
+
+def test_git_inspection_rejects_pruned_ignore_decision_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    _write_fake_git_metadata(root)
+    ignore_bytes = b"ignored-dir/\n"
+    (root / ".gitignore").write_bytes(ignore_bytes)
+    (root / "ignored-dir").mkdir()
+    tree = _git_tree_bytes({".gitignore": ("100644", ignore_bytes)})
+    decisions = 0
+
+    def completed(
+        args: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        if "config" in args:
+            stdout = b""
+        else:
+            stdout = tree
+        return subprocess.CompletedProcess(args, 0, stdout, b"")
+
+    def check_ignore(
+        command: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal decisions
+        del kwargs
+        decisions += 1
+        pattern = b"ignored-dir/" if decisions == 1 else b"ignored*/"
+        stdout = b".gitignore\x001\x00" + pattern + b"\x00ignored-dir\x00"
+        return subprocess.CompletedProcess(command, 0, stdout, b"")
+
+    monkeypatch.setattr(package.subprocess, "run", completed)
+    monkeypatch.setattr(package, "_run_bounded_git_check_ignore", check_ignore)
+    with pytest.raises(ValueError, match="worktree changed"):
+        package._inspect_git_repository(root)  # noqa: SLF001
+    assert decisions == 2
 
 
 def test_git_inspection_recaptures_tracked_gitignore_ancestor_aba(
@@ -2703,28 +3127,35 @@ def test_git_inspection_recaptures_tracked_gitignore_ancestor_aba(
         args: tuple[str, ...],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        nonlocal mutations
         del kwargs
         if "config" in args:
             stdout = b""
-        elif "ls-tree" in args:
-            stdout = tree
         else:
-            mutations += 1
-            saved = tmp_path / "saved-nested"
-            replacement = tmp_path / "replacement-nested"
-            nested.rename(saved)
-            replacement.mkdir()
-            replacement.rename(nested)
-            nested.rename(replacement)
-            saved.rename(nested)
-            nested.chmod(0o700)
-            time.sleep(0.01)
-            nested.chmod(0o755)
-            stdout = b"nested/.gitignore\x001\x00ignored.txt\x00nested/ignored.txt\x00"
+            stdout = tree
         return subprocess.CompletedProcess(args, 0, stdout, b"")
 
+    def check_ignore(
+        command: tuple[str, ...],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal mutations
+        del kwargs
+        mutations += 1
+        saved = tmp_path / "saved-nested"
+        replacement = tmp_path / "replacement-nested"
+        nested.rename(saved)
+        replacement.mkdir()
+        replacement.rename(nested)
+        nested.rename(replacement)
+        saved.rename(nested)
+        nested.chmod(0o700)
+        time.sleep(0.01)
+        nested.chmod(0o755)
+        stdout = b"nested/.gitignore\x001\x00ignored.txt\x00nested/ignored.txt\x00"
+        return subprocess.CompletedProcess(command, 0, stdout, b"")
+
     monkeypatch.setattr(package.subprocess, "run", completed)
+    monkeypatch.setattr(package, "_run_bounded_git_check_ignore", check_ignore)
     with pytest.raises(
         ValueError, match="worktree changed|directory changed|root changed"
     ):
@@ -2735,7 +3166,6 @@ def test_git_inspection_recaptures_tracked_gitignore_ancestor_aba(
 @pytest.mark.parametrize(
     "output",
     [
-        b".gitignore\x001\x00!ignored.txt\x00ignored.txt\x00",
         (
             b".gitignore\x001\x00ignored.txt\x00ignored.txt\x00"
             b".gitignore\x002\x00ignored.txt\x00ignored.txt\x00"
@@ -2746,6 +3176,20 @@ def test_git_inspection_recaptures_tracked_gitignore_ancestor_aba(
 def test_git_check_ignore_rejects_malformed_or_unsafe_decisions(output: bytes) -> None:
     with pytest.raises(ValueError):
         package._parse_git_check_ignore(output)  # noqa: SLF001
+
+
+def test_git_check_ignore_accepts_exact_spaced_paths() -> None:
+    output = b".gitignore\x002\x00potted plant.pt\x00data/reference/potted plant.pt\x00"
+    assert package._parse_git_check_ignore(output) == {  # noqa: SLF001
+        "data/reference/potted plant.pt": (".gitignore", "potted plant.pt")
+    }
+
+
+def test_git_check_ignore_preserves_negated_decision() -> None:
+    output = b".gitignore\x002\x00!keep.txt\x00keep.txt\x00"
+    assert package._parse_git_check_ignore(output) == {  # noqa: SLF001
+        "keep.txt": (".gitignore", "!keep.txt")
+    }
 
 
 def test_git_inspection_rejects_head_drift(
@@ -2762,7 +3206,7 @@ def test_git_inspection_rejects_head_drift(
         **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        if "check-ignore" in args:
+        if "ls-tree" in args:
             (root / ".git" / "HEAD").write_text(f"{other_commit}\n")
         stdout = b""
         return subprocess.CompletedProcess(args, 0, stdout, b"")
@@ -2776,6 +3220,66 @@ def test_git_tree_rejects_submodules() -> None:
     submodule = f"160000 commit {_COMMIT}\tdependency\x00".encode()
     with pytest.raises(ValueError, match="submodules"):
         package._parse_git_tree(submodule)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "potted plant.pt",
+        " leading.pt",
+        "trailing.pt ",
+        "unicode-雪.pt",
+        "back\\slash.pt",
+        "line\nbreak.pt",
+        "tab\tfile.pt",
+        "control-\x01.pt",
+    ],
+)
+def test_git_tree_accepts_nul_delimited_posix_names(path: str) -> None:
+    tree = package._parse_git_tree(  # noqa: SLF001
+        _git_tree_bytes({path: ("100644", b"content")})
+    )
+    assert tuple(tree) == (path,)
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        b"",
+        b".",
+        b"/absolute",
+        b"../outside",
+        b"nested/../outside",
+        b"nested/./file",
+        b"nested//file",
+        b"nested/file/",
+        b"\xff",
+    ],
+)
+def test_git_tree_rejects_unsafe_or_invalid_paths(raw_path: bytes) -> None:
+    prefix = f"100644 blob {_git_blob_id(b'content')}\t".encode()
+    with pytest.raises(ValueError):
+        package._parse_git_tree(prefix + raw_path + b"\x00")  # noqa: SLF001
+
+
+@pytest.mark.parametrize("path", ["contains\x00nul", "\udcff"])
+def test_git_path_rejects_unrepresentable_names(path: str) -> None:
+    with pytest.raises(ValueError):
+        package._git_relative_path(path)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        b"../.gitignore\x001\x00ignored\x00ignored\x00",
+        b".gitignore\x001\x00ignored\x00../outside\x00",
+        b".gitignore\x001\x00ignored\x00nested//file\x00",
+        b".gitignore\x001\x00ignored\x00invalid-\xff\x00",
+    ],
+)
+def test_git_check_ignore_rejects_unsafe_or_invalid_paths(output: bytes) -> None:
+    with pytest.raises(ValueError):
+        package._parse_git_check_ignore(output)  # noqa: SLF001
 
 
 def test_git_inspection_rejects_root_path_aba(
