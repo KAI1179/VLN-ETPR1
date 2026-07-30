@@ -571,9 +571,15 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
     monkeypatch.setattr(benchmark, "_benchmark_attestation", lambda _hash: environment)
     launch = SimpleNamespace(raw_root=tmp_path / "raw")
     monkeypatch.setattr(benchmark, "_p53_launch", lambda _root: launch)
-    monkeypatch.setattr(benchmark, "run_p53_validation_subprocess", lambda _launch: p53)
     monkeypatch.setattr(
-        benchmark, "iter_validated_raw_observations", lambda *_a, **_k: ()
+        benchmark,
+        "run_p53_validation_subprocess",
+        lambda _launch: events.append("p53") or p53,
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "iter_validated_raw_observations",
+        lambda *_a, **_k: events.append("raw") or (),
     )
     monkeypatch.setattr(
         benchmark, "_activate_source", lambda _paths: events.append("src")
@@ -617,10 +623,12 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
     assert events == [
         "venv",
         "audit",
+        "p53",
+        "gpu",
+        "raw",
         "src",
         "preprocess",
         "origins",
-        "gpu",
         "run",
         "origins",
         "audit",

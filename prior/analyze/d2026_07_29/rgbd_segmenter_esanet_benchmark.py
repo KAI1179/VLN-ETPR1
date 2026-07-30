@@ -1049,6 +1049,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     benchmark = _benchmark_attestation(environment_sha256)
     launch = _p53_launch(root)
     p53 = run_p53_validation_subprocess(launch)
+    snapshot_inspector = _CudaSnapshotInspector(visible)
     observations = iter_validated_raw_observations(
         launch.raw_root,
         p53_attestation=p53,
@@ -1060,7 +1061,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     verify_upstream_preprocessing()
     _require_loaded_source_origins(paths)
     commitment = _commitment(root)
-    snapshot_inspector = _CudaSnapshotInspector(visible)
     artifacts, _ = _build_artifacts(
         root=root,
         paths=paths,
