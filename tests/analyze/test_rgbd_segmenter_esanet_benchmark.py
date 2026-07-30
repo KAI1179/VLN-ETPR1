@@ -196,6 +196,7 @@ def test_loaded_source_origins_reject_competing_module(
 ) -> None:
     expected = tmp_path / "checkout"
     (expected / "src").mkdir(parents=True)
+    (expected / "src/models").mkdir()
     good = expected / "src/model.py"
     good.touch()
     bad = tmp_path / "other/model.py"
@@ -207,10 +208,39 @@ def test_loaded_source_origins_reject_competing_module(
         "src",
         SimpleNamespace(__file__=None, __path__=[str(expected / "src")]),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "src.models",
+        SimpleNamespace(__file__=None, __path__=[str(expected / "src/models")]),
+    )
     monkeypatch.setitem(sys.modules, "src.model", SimpleNamespace(__file__=str(good)))
     benchmark._require_loaded_source_origins(paths)
     monkeypatch.setitem(sys.modules, "src.model", SimpleNamespace(__file__=str(bad)))
     with pytest.raises(ValueError, match="origin differs"):
+        benchmark._require_loaded_source_origins(paths)
+
+    monkeypatch.setitem(sys.modules, "src.model", SimpleNamespace(__file__=str(good)))
+    monkeypatch.setitem(
+        sys.modules,
+        "src.models",
+        SimpleNamespace(__file__=None, __path__=[str(expected / "src")]),
+    )
+    with pytest.raises(ValueError, match="namespace origin differs"):
+        benchmark._require_loaded_source_origins(paths)
+
+    (tmp_path / "other/models").mkdir()
+    monkeypatch.setitem(
+        sys.modules,
+        "src.models",
+        SimpleNamespace(
+            __file__=None,
+            __path__=[
+                str(expected / "src/models"),
+                str(tmp_path / "other/models"),
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="namespace origin differs"):
         benchmark._require_loaded_source_origins(paths)
 
 

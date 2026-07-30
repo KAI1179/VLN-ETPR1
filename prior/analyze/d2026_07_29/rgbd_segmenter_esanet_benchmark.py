@@ -384,7 +384,8 @@ def _require_loaded_source_origins(paths: ESANetPaths) -> None:
         resolved_paths = tuple(
             Path(value).resolve(strict=True) for value in namespace_paths
         )
-        if resolved_paths != (expected_package,):
+        expected_namespace = expected_package.joinpath(*name.split(".")[1:])
+        if resolved_paths != (expected_namespace,):
             raise ValueError(f"loaded upstream namespace origin differs: {name}")
     if not loaded:
         raise ValueError("no upstream ESANet source modules were loaded")
