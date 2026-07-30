@@ -112,8 +112,9 @@ Primary sources:
 - checkpoint: `DFormerv2_Small_NYU.pth`;
 - official host:
   <https://huggingface.co/bbynku/DFormerv2/blob/main/DFormerv2/NYU/DFormerv2_Small_NYU.pth>;
-- advertised size: 107 MB;
-- checkpoint SHA-256: pending;
+- exact downloaded size: 107,037,174 bytes;
+- checkpoint SHA-256:
+  `2efc0267818ea358f795c253924464695742d60812a5f489b9fc8ea5441f47e2`;
 - official reported NYUv2 mIoU: `56.0`;
 - reported model cost: 26.7M parameters and 33.9 GFLOPs per `480×640`
   view.
@@ -128,8 +129,9 @@ case.
 
 The repository `LICENSE` file is MIT, but the repository README separately says
 the code is for non-commercial use only. The Hugging Face model card declares
-no checkpoint license. This benchmark will not infer with the checkpoint until
-the applicable internal-research permission is made unambiguous and recorded.
+no checkpoint license. On 2026-07-30 the user explicitly authorized internal
+analysis with the exact DFormerv2-S artifact; the narrow exception is recorded
+in `docs/superpowers/specs/2026-07-30-dformerv2-weight-risk-exception.md`.
 No weight is redistributed.
 
 The official data recipe converts depth arrays to grayscale PNG through
