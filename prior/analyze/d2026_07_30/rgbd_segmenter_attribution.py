@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from enum import Enum, IntEnum
+from pathlib import Path
 from typing import Optional, Sequence, Tuple, cast
 
 import numpy as np
@@ -15,10 +16,13 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_contract import (
     PRIMARY_CATEGORY_INDICES,
     RAW_INDEX_SHA256,
     ObservationStatus,
+    TrustedCohort,
     _require_projection_labels,
     run_p53_validation_subprocess,
+    score_observation,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
+    AcceptedCandidatePackage,
     accept_candidate_package,
 )
 from prior.analyze.d2026_07_29.rgbd_segmenter_raw_frame_package import (
@@ -58,10 +62,12 @@ __all__ = (
     "CategoryCellRow",
     "CategoryCellStatus",
     "DepthBin",
+    "ContributorConservationReport",
     "GeometryLeakageReport",
     "PixelContributorLedger",
     "SemanticProjectionGeometry",
     "main",
+    "run_contributor_conservation",
     "run_geometry_leakage_proof",
 )
 
@@ -123,6 +129,35 @@ class GeometryLeakageReport:
     comparison_count: int
     output_count: int
     output_tree_sha256: str
+
+    def canonical_bytes(self) -> bytes:
+        return (
+            json.dumps(
+                asdict(self),
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class ContributorConservationReport:
+    schema_version: int
+    observation_count: int
+    view_count: int
+    published_metric_match_count: int
+    primary_tp_cell_count: int
+    primary_fp_cell_count: int
+    primary_fn_cell_count: int
+    clean_tp_cell_count: int
+    rescued_tp_cell_count: int
+    amplified_fp_cell_count: int
+    fn_unanimous_abstention_cell_count: int
+    fn_unanimous_wrong_class_cell_count: int
+    fn_mixed_cell_count: int
+    grid_and_cell_tree_sha256: str
 
     def canonical_bytes(self) -> bytes:
         return (
@@ -550,27 +585,62 @@ class PixelContributorLedger:
         _require_exact_grid(target, target, label="target grid")
         _require_exact_grid(prediction, prediction, label="prediction grid")
         rows: list[CategoryCellRow] = []
-        cell_rows = self.target_cell_rc[..., 0]
-        cell_columns = self.target_cell_rc[..., 1]
-        projectable = self.endpoint_valid & self.in_bounds
+        flat_projectable = (self.endpoint_valid & self.in_bounds).ravel()
+        flat_cells = (
+            self.target_cell_rc[..., 0].ravel().astype(np.int64) * GRID_SIZE
+            + self.target_cell_rc[..., 1].ravel()
+        )
+        flat_gt = self.gt_labels.ravel()
+        flat_mapped = self.mapped_labels.ravel()
+        primary_lookup = np.zeros(_GRID_SHAPE[0], dtype=np.bool_)
+        primary_lookup[np.asarray(PRIMARY_CATEGORY_INDICES)] = True
+
+        def grouped_contributors(
+            labels: np.ndarray,
+        ) -> Tuple[np.ndarray, np.ndarray]:
+            selected = flat_projectable & (labels > 0)
+            selected &= primary_lookup[np.maximum(labels, 0)]
+            indices = np.flatnonzero(selected)
+            keys = labels[indices].astype(np.int64) * GRID_SIZE**2
+            keys += flat_cells[indices]
+            order = np.argsort(keys, kind="stable")
+            return keys[order], indices[order]
+
+        gt_keys, gt_indices = grouped_contributors(flat_gt)
+        predicted_keys, predicted_indices = grouped_contributors(flat_mapped)
+
+        def contributors_for(
+            keys: np.ndarray,
+            indices: np.ndarray,
+            key: int,
+        ) -> np.ndarray:
+            lower = int(np.searchsorted(keys, key, side="left"))
+            upper = int(np.searchsorted(keys, key, side="right"))
+            return indices[lower:upper]
+
         for category in PRIMARY_CATEGORY_INDICES:
             union = target[category] | prediction[category]
             for row, column in np.argwhere(union):
-                at_cell = (
-                    projectable & (cell_rows == row) & (cell_columns == column)
+                key = (
+                    int(category) * GRID_SIZE**2
+                    + int(row) * GRID_SIZE
+                    + int(column)
                 )
-                gt = at_cell & (self.gt_labels == category)
-                predicted = at_cell & (self.mapped_labels == category)
-                correct = gt & predicted
+                gt = contributors_for(gt_keys, gt_indices, key)
+                predicted = contributors_for(
+                    predicted_keys,
+                    predicted_indices,
+                    key,
+                )
+                correct = np.intersect1d(gt, predicted, assume_unique=True)
                 target_present = bool(target[category, row, column])
                 prediction_present = bool(prediction[category, row, column])
                 if target_present and prediction_present:
                     status = CategoryCellStatus.TP
-                    missed = gt & (self.mapped_labels != category)
-                    wrong = predicted & (self.gt_labels != category)
                     effect = (
                         CategoryCellEffect.RESCUED_TP
-                        if np.any(missed) or np.any(wrong)
+                        if np.any(flat_mapped[gt] != category)
+                        or np.any(flat_gt[predicted] != category)
                         else CategoryCellEffect.CLEAN_TP
                     )
                 elif prediction_present:
@@ -578,7 +648,7 @@ class PixelContributorLedger:
                     effect = CategoryCellEffect.AMPLIFIED_FP
                 else:
                     status = CategoryCellStatus.FN
-                    mapped_on_gt = self.mapped_labels[gt]
+                    mapped_on_gt = flat_mapped[gt]
                     if mapped_on_gt.size == 0:
                         raise ValueError("FN cell has no GT contributor")
                     if np.all(mapped_on_gt == -1):
@@ -598,12 +668,14 @@ class PixelContributorLedger:
                         column=int(column),
                         status=status,
                         effect=effect,
-                        gt_pixel_support=int(np.count_nonzero(gt)),
-                        predicted_pixel_support=int(np.count_nonzero(predicted)),
-                        correct_pixel_support=int(np.count_nonzero(correct)),
-                        gt_view_support=int(np.count_nonzero(np.any(gt, axis=(1, 2)))),
+                        gt_pixel_support=int(gt.size),
+                        predicted_pixel_support=int(predicted.size),
+                        correct_pixel_support=int(correct.size),
+                        gt_view_support=int(
+                            np.unique(gt // (256 * 256)).size
+                        ),
                         predicted_view_support=int(
-                            np.count_nonzero(np.any(predicted, axis=(1, 2)))
+                            np.unique(predicted // (256 * 256)).size
                         ),
                     )
                 )
@@ -729,16 +801,13 @@ def _observation_leakage_lines(
     return tuple(lines)
 
 
-def run_geometry_leakage_proof() -> GeometryLeakageReport:
-    """Run the frozen four-route GT-erasure proof over all accepted predictions."""
-
-    root = _repository_root()
-    strict_read_bytes(
-        root / _P6_REPORT,
-        _P6_REPORT_SHA256,
-        "sealed P6.1 projector report",
-    )
-    p53_attestation = run_p53_validation_subprocess(_p53_launch(root))
+def _load_accepted_inputs(
+    root: Path,
+) -> Tuple[
+    Tuple[RawFrameArrays, ...],
+    TrustedCohort,
+    AcceptedCandidatePackage,
+]:
     raw_values, cohort = _load_raw_observations(root)
     accepted = accept_candidate_package(
         root / _CANDIDATE_ROOT,
@@ -746,10 +815,12 @@ def run_geometry_leakage_proof() -> GeometryLeakageReport:
         trusted_cohort=cohort,
         mapping_authority=_mapping_authority(root),
     )
-    if len(raw_values) != 50 or len(accepted.predictions) != 50:
-        raise ValueError("P7.1 requires exactly 50 aligned accepted observations")
-    if accepted.manifest.summary.p53_attestation != p53_attestation:
-        raise ValueError("P7.0 fresh P5.3 attestation differs from candidate evidence")
+    if (
+        len(raw_values) != 50
+        or len(accepted.observations) != 50
+        or len(accepted.predictions) != 50
+    ):
+        raise ValueError("P7 requires exactly 50 aligned accepted observations")
     for identity, observation in zip(cohort.identities, accepted.observations):
         if (
             identity
@@ -761,7 +832,23 @@ def run_geometry_leakage_proof() -> GeometryLeakageReport:
             or observation.status is not ObservationStatus.PASS
             or observation.failure_code is not None
         ):
-            raise ValueError("P7.0 raw and accepted candidate identities differ")
+            raise ValueError("P7 raw and accepted candidate identities differ")
+    return raw_values, cohort, accepted
+
+
+def run_geometry_leakage_proof() -> GeometryLeakageReport:
+    """Run the frozen four-route GT-erasure proof over all accepted predictions."""
+
+    root = _repository_root()
+    strict_read_bytes(
+        root / _P6_REPORT,
+        _P6_REPORT_SHA256,
+        "sealed P6.1 projector report",
+    )
+    p53_attestation = run_p53_validation_subprocess(_p53_launch(root))
+    raw_values, _, accepted = _load_accepted_inputs(root)
+    if accepted.manifest.summary.p53_attestation != p53_attestation:
+        raise ValueError("P7.0 fresh P5.3 attestation differs from candidate evidence")
 
     lines = tuple(
         line
@@ -792,6 +879,128 @@ def run_geometry_leakage_proof() -> GeometryLeakageReport:
         comparison_count=750,
         output_count=output_count,
         output_tree_sha256=hashlib.sha256(b"".join(lines)).hexdigest(),
+    )
+
+
+def run_contributor_conservation() -> ContributorConservationReport:
+    """Rebuild every grid from per-pixel contributors and conserve published counts."""
+
+    root = _repository_root()
+    raw_values, _, accepted = _load_accepted_inputs(root)
+    tree_lines: list[bytes] = []
+    rows_by_status = {status: 0 for status in CategoryCellStatus}
+    rows_by_effect = {effect: 0 for effect in CategoryCellEffect}
+    for arrays, observation, accepted_prediction in zip(
+        raw_values,
+        accepted.observations,
+        accepted.predictions,
+    ):
+        geometry = SemanticProjectionGeometry.from_raw_frame_arrays(arrays)
+        ledger = PixelContributorLedger.build(
+            ordinal=observation.ordinal,
+            observation_id=observation.observation_id,
+            scene_id=observation.scene_id,
+            sensor_yaw_degrees=arrays.sensor_yaw_degrees,
+            geometry=geometry,
+            gt_labels=arrays.object_categories,
+            source_labels=accepted_prediction.prediction.source_labels,
+            mapped_labels=accepted_prediction.prediction.mapped_labels,
+        )
+        target, prediction = ledger.rebuild_grids()
+        _require_exact_grid(
+            project_mapped_labels_semantic_only(
+                accepted_prediction.prediction.mapped_labels,
+                arrays,
+            ),
+            prediction,
+            label=f"observation {observation.ordinal} prediction contributors",
+        )
+        _require_exact_grid(
+            geometry.project_oracle_labels(arrays.object_categories),
+            target,
+            label=f"observation {observation.ordinal} target contributors",
+        )
+        metrics = score_observation(
+            ordinal=observation.ordinal,
+            scene_id=observation.scene_id,
+            prediction=prediction,
+            target=target,
+        )
+        if metrics != observation.metrics:
+            raise ValueError(
+                f"observation {observation.ordinal} contributor metrics differ"
+            )
+        tree_lines.append(
+            (
+                f"{observation.ordinal:02d} grids "
+                f"{hashlib.sha256(target.tobytes(order='C')).hexdigest()} "
+                f"{hashlib.sha256(prediction.tobytes(order='C')).hexdigest()}\n"
+            ).encode("ascii")
+        )
+        category_cells = ledger.category_cells(
+            target=target,
+            prediction=prediction,
+        )
+        status_counts = {
+            status: sum(row.status is status for row in category_cells)
+            for status in CategoryCellStatus
+        }
+        if (
+            status_counts[CategoryCellStatus.TP] != metrics.primary.counts.tp
+            or status_counts[CategoryCellStatus.FP] != metrics.primary.counts.fp
+            or status_counts[CategoryCellStatus.FN] != metrics.primary.counts.fn
+        ):
+            raise ValueError(
+                f"observation {observation.ordinal} category cells do not conserve"
+            )
+        for row in category_cells:
+            rows_by_status[row.status] += 1
+            rows_by_effect[row.effect] += 1
+            tree_lines.append(
+                (
+                    f"{observation.ordinal:02d} cell {row.category:02d} "
+                    f"{row.row:02d} {row.column:02d} {row.status.value} "
+                    f"{row.effect.value} {row.gt_pixel_support} "
+                    f"{row.predicted_pixel_support} {row.correct_pixel_support} "
+                    f"{row.gt_view_support} {row.predicted_view_support}\n"
+                ).encode("ascii")
+            )
+
+    tp = rows_by_status[CategoryCellStatus.TP]
+    fp = rows_by_status[CategoryCellStatus.FP]
+    fn = rows_by_status[CategoryCellStatus.FN]
+    if (tp, fp, fn) != (1222, 3961, 4898):
+        raise ValueError("P7.2 pooled primary counts differ from the published result")
+    if (
+        rows_by_effect[CategoryCellEffect.CLEAN_TP]
+        + rows_by_effect[CategoryCellEffect.RESCUED_TP]
+        != tp
+        or rows_by_effect[CategoryCellEffect.AMPLIFIED_FP] != fp
+        or rows_by_effect[CategoryCellEffect.FN_UNANIMOUS_ABSTENTION]
+        + rows_by_effect[CategoryCellEffect.FN_UNANIMOUS_WRONG_CLASS]
+        + rows_by_effect[CategoryCellEffect.FN_MIXED]
+        != fn
+    ):
+        raise ValueError("P7.2 category-cell effects do not partition published counts")
+    return ContributorConservationReport(
+        schema_version=1,
+        observation_count=50,
+        view_count=600,
+        published_metric_match_count=50,
+        primary_tp_cell_count=tp,
+        primary_fp_cell_count=fp,
+        primary_fn_cell_count=fn,
+        clean_tp_cell_count=rows_by_effect[CategoryCellEffect.CLEAN_TP],
+        rescued_tp_cell_count=rows_by_effect[CategoryCellEffect.RESCUED_TP],
+        amplified_fp_cell_count=rows_by_effect[CategoryCellEffect.AMPLIFIED_FP],
+        fn_unanimous_abstention_cell_count=rows_by_effect[
+            CategoryCellEffect.FN_UNANIMOUS_ABSTENTION
+        ],
+        fn_unanimous_wrong_class_cell_count=rows_by_effect[
+            CategoryCellEffect.FN_UNANIMOUS_WRONG_CLASS
+        ],
+        fn_mixed_cell_count=rows_by_effect[CategoryCellEffect.FN_MIXED],
+        grid_and_cell_tree_sha256=hashlib.sha256(b"".join(tree_lines)).hexdigest(),
     )
 
 
