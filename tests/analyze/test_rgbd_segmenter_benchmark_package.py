@@ -4685,6 +4685,32 @@ def test_publication_authority_canonical_json_codec_round_trips(
     assert decoded == authority
 
 
+def test_publication_authority_rejects_site_packages_fingerprint_drift(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    encoded = cast(
+        Dict[str, object],
+        json.loads(
+            canonical_json_bytes(
+                package._publication_authority_json(authority)  # noqa: SLF001
+            )
+        ),
+    )
+    runtime = cast(Dict[str, object], encoded["runtime_loader"])
+    runtime["site_packages_inode"] = cast(int, runtime["site_packages_inode"]) + 1
+
+    with pytest.raises(
+        ValueError,
+        match="runtime loader differs from interpreter authority",
+    ):
+        package._publication_authority_from_json(encoded)  # noqa: SLF001
+
+
 @pytest.mark.parametrize(
     "loader_path",
     [
@@ -4778,11 +4804,13 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
         actual_loader,
         interpreter_descriptor,
         loader_descriptor,
+        site_packages_descriptor,
     ) = package._open_runtime_loader(  # noqa: SLF001
         Path(authority.benchmark_attestation.python_executable)
     )
     assert actual_loader == runtime_loader
     loader_metadata = os.fstat(loader_descriptor)
+    site_packages_metadata = os.fstat(site_packages_descriptor)
     nested_script = (
         "import os,sys\n"
         "loader_path=os.environ['LD_LIBRARY_PATH']\n"
@@ -4791,12 +4819,22 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
         "metadata=os.stat(loader_path)\n"
         f"assert (metadata.st_dev,metadata.st_ino)=="
         f"({loader_metadata.st_dev},{loader_metadata.st_ino})\n"
+        "site_path=os.environ['PYTHONPATH'].split(os.pathsep)[0]\n"
+        f"expected_site=f'/proc/{{os.getppid()}}/fd/{site_packages_descriptor}'\n"
+        "assert site_path == expected_site, (site_path,expected_site)\n"
+        "site_metadata=os.stat(site_path)\n"
+        f"assert (site_metadata.st_dev,site_metadata.st_ino)=="
+        f"({site_packages_metadata.st_dev},{site_packages_metadata.st_ino})\n"
         "sys.stdout.write(loader_path)\n"
     )
     child_script = (
         "import contextlib,os,stat,subprocess,sys\n"
         + package._publication_loader_bootstrap(  # noqa: SLF001
             loader_descriptor
+        )
+        + package._publication_site_packages_bootstrap(  # noqa: SLF001
+            site_packages_descriptor,
+            authority.benchmark_repository_root,
         )
         + "with open(os.devnull,'w') as import_errors:\n"
         "    with contextlib.redirect_stderr(import_errors):\n"
@@ -4824,7 +4862,10 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
                 "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
                 "PATH": "/usr/bin:/bin",
                 "PYTHONNOUSERSITE": "1",
-                "PYTHONPATH": str(authority.benchmark_repository_root),
+                "PYTHONPATH": (
+                    f"/proc/self/fd/{site_packages_descriptor}"
+                    f"{os.pathsep}{authority.benchmark_repository_root}"
+                ),
                 "PYTHONWARNINGS": "ignore",
             },
             timeout_seconds=60.0,
@@ -4832,11 +4873,16 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
             inherited_descriptors=(
                 interpreter_descriptor,
                 loader_descriptor,
+                site_packages_descriptor,
             ),
         )
     finally:
         package._close_descriptors(  # noqa: SLF001
-            (interpreter_descriptor, loader_descriptor)
+            (
+                interpreter_descriptor,
+                loader_descriptor,
+                site_packages_descriptor,
+            )
         )
 
     assert result.returncode == 0
@@ -4903,15 +4949,18 @@ def test_fresh_publication_child_uses_canonical_request_and_minimal_exec(
     assert canonical_json_bytes(json.loads(request)) == request
     assert json.loads(request)["root"] == str(staging)
     assert environment["PYTHONNOUSERSITE"] == "1"
-    assert environment["PYTHONPATH"] == str(authority.benchmark_repository_root)
     inherited_descriptors = cast(
         Tuple[int, ...],
         captured["inherited_descriptors"],
     )
-    assert len(inherited_descriptors) == 2
+    assert len(inherited_descriptors) == 3
     assert command[0] == f"/proc/self/fd/{inherited_descriptors[0]}"
     assert environment["LD_LIBRARY_PATH"] == (
         f"/proc/self/fd/{inherited_descriptors[1]}"
+    )
+    assert environment["PYTHONPATH"] == (
+        f"/proc/self/fd/{inherited_descriptors[2]}"
+        f"{os.pathsep}{authority.benchmark_repository_root}"
     )
     assert environment["LD_LIBRARY_PATH"] != "/hostile/loader"
     assert not {
@@ -4938,6 +4987,7 @@ def test_runtime_loader_supports_real_fresh_child_from_poisoned_parent_cwd(
         actual_loader,
         interpreter_descriptor,
         loader_descriptor,
+        site_packages_descriptor,
     ) = package._open_runtime_loader(  # noqa: SLF001
         Path(authority.benchmark_attestation.python_executable)
     )
@@ -4976,7 +5026,10 @@ def test_runtime_loader_supports_real_fresh_child_from_poisoned_parent_cwd(
                 "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
                 "PATH": "/usr/bin:/bin",
                 "PYTHONNOUSERSITE": "1",
-                "PYTHONPATH": str(authority.benchmark_repository_root),
+                "PYTHONPATH": (
+                    f"/proc/self/fd/{site_packages_descriptor}"
+                    f"{os.pathsep}{authority.benchmark_repository_root}"
+                ),
                 "PYTHONWARNINGS": "ignore",
             },
             timeout_seconds=60.0,
@@ -4984,16 +5037,108 @@ def test_runtime_loader_supports_real_fresh_child_from_poisoned_parent_cwd(
             inherited_descriptors=(
                 interpreter_descriptor,
                 loader_descriptor,
+                site_packages_descriptor,
             ),
         )
     finally:
         package._close_descriptors(  # noqa: SLF001
-            (interpreter_descriptor, loader_descriptor)
+            (
+                interpreter_descriptor,
+                loader_descriptor,
+                site_packages_descriptor,
+            )
         )
 
     assert result.returncode == 0
     assert result.stderr == b""
     assert result.stdout.endswith(runtime_loader.library.sha256.encode("ascii"))
+
+
+def test_held_interpreter_binds_virtualenv_site_packages(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    runtime_loader = authority.runtime_loader
+    assert runtime_loader is not None
+    with tempfile.TemporaryDirectory(
+        prefix=".held-venv-",
+        dir=authority.benchmark_repository_root,
+    ) as temporary:
+        interpreter, site_packages = _copy_runtime_prefix(
+            Path(temporary),
+            runtime_loader,
+        )
+        (interpreter.parent.parent / "pyvenv.cfg").write_text(
+            f"home = {Path(sys.base_prefix) / 'bin'}\n"
+            "include-system-site-packages = true\n"
+            f"version = {sys.version.split()[0]}\n"
+        )
+        distribution = site_packages / "held_fd_probe-1.0.dist-info"
+        distribution.mkdir()
+        (distribution / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: held-fd-probe\nVersion: 1.0\n"
+        )
+        script = (
+            "from prior.analyze.d2026_07_29."
+            "rgbd_segmenter_benchmark_contract import capture_environment_sha256\n"
+            "print(capture_environment_sha256())\n"
+        )
+        normal_environment = dict(os.environ)
+        normal_environment["LD_LIBRARY_PATH"] = str(interpreter.parent.parent / "lib")
+        normal_environment["PYTHONNOUSERSITE"] = "1"
+        normal_environment["PYTHONPATH"] = str(authority.benchmark_repository_root)
+        normal = subprocess.run(
+            (str(interpreter), "-c", script),
+            capture_output=True,
+            check=True,
+            env=normal_environment,
+            cwd=authority.benchmark_repository_root,
+            timeout=60,
+        )
+        (
+            _,
+            interpreter_descriptor,
+            loader_descriptor,
+            site_packages_descriptor,
+        ) = package._open_runtime_loader(interpreter)  # noqa: SLF001
+        try:
+            held = package._run_bounded_publication_process(  # noqa: SLF001
+                (f"/proc/self/fd/{interpreter_descriptor}", "-c", script),
+                request=b"",
+                environment={
+                    **normal_environment,
+                    "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
+                    "PYTHONPATH": (
+                        f"/proc/self/fd/{site_packages_descriptor}"
+                        f"{os.pathsep}{authority.benchmark_repository_root}"
+                    ),
+                },
+                timeout_seconds=60,
+                working_directory=authority.benchmark_repository_root,
+                inherited_descriptors=(
+                    interpreter_descriptor,
+                    loader_descriptor,
+                    site_packages_descriptor,
+                ),
+            )
+        finally:
+            package._close_descriptors(  # noqa: SLF001
+                (
+                    interpreter_descriptor,
+                    loader_descriptor,
+                    site_packages_descriptor,
+                )
+            )
+
+        assert held.returncode == 0
+        assert held.stdout == normal.stdout
+        assert held.stdout.strip().decode("ascii") != (
+            rgbd_segmenter_benchmark_contract.capture_environment_sha256()
+        )
 
 
 @pytest.mark.parametrize("directory_name", [".published.staging", "published"])
@@ -5058,9 +5203,57 @@ def test_runtime_loader_rejects_symlinked_interpreter(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "runtime" / "bin").mkdir(parents=True)
-    (tmp_path / "runtime" / "lib").mkdir()
+    (
+        tmp_path
+        / "runtime"
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    ).mkdir(parents=True)
     interpreter = tmp_path / "runtime" / "bin" / "python"
     interpreter.symlink_to(Path(sys.executable).resolve(strict=True))
+
+    with pytest.raises(ValueError, match="attestation failed"):
+        package._open_runtime_loader(interpreter)  # noqa: SLF001
+
+
+def _copy_runtime_prefix(
+    prefix: Path,
+    runtime_loader: package.RuntimeLoaderAttestation,
+) -> tuple[Path, Path]:
+    (prefix / "bin").mkdir(parents=True)
+    site_packages = prefix / "lib" / runtime_loader.python_directory / "site-packages"
+    site_packages.mkdir(parents=True)
+    interpreter = prefix / "bin" / "python"
+    interpreter.write_bytes(Path(sys.executable).resolve(strict=True).read_bytes())
+    interpreter.chmod(0o755)
+    library_target = runtime_loader.library_target
+    (prefix / "lib" / library_target).write_bytes(
+        (runtime_loader.path / library_target).read_bytes()
+    )
+    (prefix / "lib" / library_target).chmod(0o755)
+    (prefix / "lib" / "libstdc++.so.6").symlink_to(library_target)
+    return interpreter, site_packages
+
+
+def test_runtime_loader_rejects_symlinked_site_packages(
+    tmp_path: Path,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    runtime_loader = authority.runtime_loader
+    assert runtime_loader is not None
+    interpreter, site_packages = _copy_runtime_prefix(
+        tmp_path / "runtime",
+        runtime_loader,
+    )
+    outside = tmp_path / "outside"
+    site_packages.rmdir()
+    outside.mkdir()
+    site_packages.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="attestation failed"):
         package._open_runtime_loader(interpreter)  # noqa: SLF001
@@ -5073,6 +5266,11 @@ def test_runtime_loader_rejects_world_writable_path(
     (prefix / "bin").mkdir(parents=True)
     loader = prefix / "lib"
     loader.mkdir()
+    (
+        loader
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    ).mkdir(parents=True)
     interpreter = prefix / "bin" / "python"
     interpreter.write_bytes(Path(sys.executable).resolve(strict=True).read_bytes())
     interpreter.chmod(0o755)
@@ -5098,14 +5296,18 @@ def test_fresh_publication_child_rejects_runtime_loader_drift(
 
     def drifted(
         interpreter: Path,
-    ) -> tuple[package.RuntimeLoaderAttestation, int, int]:
-        attestation, interpreter_descriptor, loader_descriptor = original_open(
-            interpreter
-        )
+    ) -> tuple[package.RuntimeLoaderAttestation, int, int, int]:
+        (
+            attestation,
+            interpreter_descriptor,
+            loader_descriptor,
+            site_packages_descriptor,
+        ) = original_open(interpreter)
         return (
             replace(attestation, inode=attestation.inode + 1),
             interpreter_descriptor,
             loader_descriptor,
+            site_packages_descriptor,
         )
 
     monkeypatch.setattr(package, "_open_runtime_loader", drifted)
@@ -5118,6 +5320,63 @@ def test_fresh_publication_child_rejects_runtime_loader_drift(
             )
     finally:
         os.close(staging_descriptor)
+
+
+def test_fresh_publication_child_rejects_final_site_packages_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_science_package: package.AcceptedCandidatePackage,
+) -> None:
+    _, authority, _ = _public_validation_fixture(
+        tmp_path,
+        accepted_science_package,
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    staging_descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    original_open = package._open_runtime_loader  # noqa: SLF001
+    calls = 0
+
+    def drifted(
+        interpreter: Path,
+    ) -> tuple[package.RuntimeLoaderAttestation, int, int, int]:
+        nonlocal calls
+        calls += 1
+        attestation, interpreter_fd, loader_fd, site_packages_fd = original_open(
+            interpreter
+        )
+        if calls == 2:
+            attestation = replace(
+                attestation,
+                site_packages_inode=attestation.site_packages_inode + 1,
+            )
+        return attestation, interpreter_fd, loader_fd, site_packages_fd
+
+    monkeypatch.setattr(package, "_open_runtime_loader", drifted)
+    monkeypatch.setattr(
+        package,
+        "_run_bounded_publication_process",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            b"validated",
+            b"",
+        ),
+    )
+    try:
+        with pytest.raises(
+            ValueError,
+            match="publication runtime authority drifted",
+        ):
+            package._run_publication_child(  # noqa: SLF001
+                "successful",
+                staging_descriptor,
+                authority,
+            )
+    finally:
+        os.close(staging_descriptor)
+
+    assert calls == 2
 
 
 def test_fresh_publication_child_executes_held_interpreter_and_rejects_path_swap(
@@ -5139,6 +5398,12 @@ def test_fresh_publication_child_executes_held_interpreter_and_rejects_path_swap
         prefix = Path(temporary)
         (prefix / "bin").mkdir()
         (prefix / "lib").mkdir()
+        (
+            prefix
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+        ).mkdir(parents=True)
         interpreter = prefix / "bin" / "python"
         interpreter.write_bytes(
             Path(authority.benchmark_attestation.python_executable).read_bytes()
@@ -5180,7 +5445,7 @@ def test_fresh_publication_child_executes_held_interpreter_and_rejects_path_swap
         ) -> subprocess.CompletedProcess[bytes]:
             del request, environment, timeout_seconds
             assert working_directory == benchmark_root
-            assert len(inherited_descriptors) == 2
+            assert len(inherited_descriptors) == 3
             held_interpreter = inherited_descriptors[0]
             assert command[0] == f"/proc/self/fd/{held_interpreter}"
             assert os.fstat(held_interpreter).st_ino == (

@@ -15,6 +15,7 @@ import selectors
 import stat
 import struct
 import subprocess
+import sys
 import time
 import zipfile
 from collections.abc import Iterator
@@ -348,6 +349,14 @@ class RuntimeLoaderAttestation:
     library_modified_ns: int
     library_changed_ns: int
     library: FileRecord
+    python_directory: str
+    site_packages_device: int
+    site_packages_inode: int
+    site_packages_mode: int
+    site_packages_user: int
+    site_packages_group: int
+    site_packages_modified_ns: int
+    site_packages_changed_ns: int
 
     def __post_init__(self) -> None:
         _absolute_authority_root(self.path, "runtime loader path")
@@ -377,6 +386,13 @@ class RuntimeLoaderAttestation:
                     self.library_group,
                     self.library_modified_ns,
                     self.library_changed_ns,
+                    self.site_packages_device,
+                    self.site_packages_inode,
+                    self.site_packages_mode,
+                    self.site_packages_user,
+                    self.site_packages_group,
+                    self.site_packages_modified_ns,
+                    self.site_packages_changed_ns,
                 )
             )
             or not stat.S_ISDIR(self.directory_mode)
@@ -390,6 +406,10 @@ class RuntimeLoaderAttestation:
             or not stat.S_ISREG(self.library_mode)
             or self.library_mode & (stat.S_IWGRP | stat.S_IWOTH)
             or not isinstance(self.library, FileRecord)
+            or self.python_directory
+            != f"python{sys.version_info.major}.{sys.version_info.minor}"
+            or not stat.S_ISDIR(self.site_packages_mode)
+            or self.site_packages_mode & stat.S_IWOTH
         ):
             raise ValueError("runtime loader attestation is invalid")
 
@@ -505,9 +525,12 @@ class CandidateValidationAuthority:
             )
         ):
             raise ValueError("candidate authorities differ from commitment")
-        runtime_loader, interpreter_descriptor, loader_descriptor = (
-            _open_runtime_loader(Path(self.benchmark_attestation.python_executable))
-        )
+        (
+            runtime_loader,
+            interpreter_descriptor,
+            loader_descriptor,
+            site_packages_descriptor,
+        ) = _open_runtime_loader(Path(self.benchmark_attestation.python_executable))
         primary: Optional[BaseException] = None
         try:
             if self.runtime_loader is None:
@@ -519,7 +542,11 @@ class CandidateValidationAuthority:
             raise
         finally:
             try:
-                _close_descriptors((interpreter_descriptor, loader_descriptor))
+                _close_descriptors((
+                    interpreter_descriptor,
+                    loader_descriptor,
+                    site_packages_descriptor,
+                ))
             except BaseException as cleanup:
                 if primary is None:
                     raise
@@ -2921,7 +2948,7 @@ def _attest_runtime_file(
 
 def _open_runtime_loader(
     interpreter: Path,
-) -> Tuple[RuntimeLoaderAttestation, int, int]:
+) -> Tuple[RuntimeLoaderAttestation, int, int, int]:
     configured = interpreter
     _absolute_authority_root(configured, "publication interpreter")
     prefix = configured.parent.parent
@@ -2935,6 +2962,8 @@ def _open_runtime_loader(
     bin_descriptor: Optional[int] = None
     interpreter_descriptor: Optional[int] = None
     loader_descriptor: Optional[int] = None
+    python_descriptor: Optional[int] = None
+    site_packages_descriptor: Optional[int] = None
     library_descriptor: Optional[int] = None
     retained = False
     primary: Optional[BaseException] = None
@@ -2949,6 +2978,17 @@ def _open_runtime_loader(
             os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
             dir_fd=prefix_descriptor,
         )
+        python_directory = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        python_descriptor = os.open(
+            python_directory,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=loader_descriptor,
+        )
+        site_packages_descriptor = os.open(
+            "site-packages",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=python_descriptor,
+        )
         interpreter_descriptor = os.open(
             configured.name,
             os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -2956,11 +2996,19 @@ def _open_runtime_loader(
         )
         if any(
             os.fstat(descriptor).st_mode & stat.S_IWOTH
-            for descriptor in (*descriptors, bin_descriptor, loader_descriptor)
+            for descriptor in (
+                *descriptors,
+                bin_descriptor,
+                loader_descriptor,
+                python_descriptor,
+                site_packages_descriptor,
+            )
         ):
             raise ValueError("runtime prefix path is world-writable")
         bin_before = _fingerprint(os.fstat(bin_descriptor))
         directory_before = _fingerprint(os.fstat(loader_descriptor))
+        python_before = _fingerprint(os.fstat(python_descriptor))
+        site_packages_before = _fingerprint(os.fstat(site_packages_descriptor))
         interpreter_before, interpreter_record = _attest_runtime_file(
             interpreter_descriptor,
             "publication interpreter",
@@ -3013,6 +3061,22 @@ def _open_runtime_loader(
                 )
             )
             != directory_before
+            or _fingerprint(
+                os.stat(
+                    python_directory,
+                    dir_fd=loader_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != python_before
+            or _fingerprint(
+                os.stat(
+                    "site-packages",
+                    dir_fd=python_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+            != site_packages_before
             or os.readlink("libstdc++.so.6", dir_fd=loader_descriptor) != library_target
             or _fingerprint(
                 os.stat(
@@ -3052,9 +3116,22 @@ def _open_runtime_loader(
             library_modified_ns=library_before.modified_ns,
             library_changed_ns=library_before.changed_ns,
             library=library_record,
+            python_directory=python_directory,
+            site_packages_device=site_packages_before.device,
+            site_packages_inode=site_packages_before.inode,
+            site_packages_mode=site_packages_before.mode,
+            site_packages_user=site_packages_before.user,
+            site_packages_group=site_packages_before.group,
+            site_packages_modified_ns=site_packages_before.modified_ns,
+            site_packages_changed_ns=site_packages_before.changed_ns,
         )
         retained = True
-        return attestation, interpreter_descriptor, loader_descriptor
+        return (
+            attestation,
+            interpreter_descriptor,
+            loader_descriptor,
+            site_packages_descriptor,
+        )
     except OSError as error:
         primary = ValueError("runtime authority attestation failed")
         raise primary from error
@@ -3068,12 +3145,19 @@ def _open_runtime_loader(
                 library_descriptor,
                 interpreter_descriptor,
                 loader_descriptor,
+                site_packages_descriptor,
+                python_descriptor,
                 bin_descriptor,
             )
             if descriptor is not None
             and (
                 not retained
-                or descriptor not in {interpreter_descriptor, loader_descriptor}
+                or descriptor
+                not in {
+                    interpreter_descriptor,
+                    loader_descriptor,
+                    site_packages_descriptor,
+                }
             )
         )
         closed = opened + tuple(reversed(descriptors))
@@ -5524,6 +5608,14 @@ def _publication_authority_json(
             "library_target": runtime_loader.library_target,
             "library_user": runtime_loader.library_user,
             "path": str(runtime_loader.path),
+            "python_directory": runtime_loader.python_directory,
+            "site_packages_changed_ns": runtime_loader.site_packages_changed_ns,
+            "site_packages_device": runtime_loader.site_packages_device,
+            "site_packages_group": runtime_loader.site_packages_group,
+            "site_packages_inode": runtime_loader.site_packages_inode,
+            "site_packages_mode": runtime_loader.site_packages_mode,
+            "site_packages_modified_ns": runtime_loader.site_packages_modified_ns,
+            "site_packages_user": runtime_loader.site_packages_user,
         },
     }
 
@@ -5721,6 +5813,14 @@ def _publication_authority_from_json(value: object) -> CandidateValidationAuthor
             "library_target",
             "library_user",
             "path",
+            "python_directory",
+            "site_packages_changed_ns",
+            "site_packages_device",
+            "site_packages_group",
+            "site_packages_inode",
+            "site_packages_mode",
+            "site_packages_modified_ns",
+            "site_packages_user",
         ),
         "publication runtime loader",
     )
@@ -5831,6 +5931,38 @@ def _publication_authority_from_json(value: object) -> CandidateValidationAuthor
                 runtime_loader_raw["library"],
                 "publication runtime loader library",
             ),
+            python_directory=cast(
+                str,
+                runtime_loader_raw["python_directory"],
+            ),
+            site_packages_device=cast(
+                int,
+                runtime_loader_raw["site_packages_device"],
+            ),
+            site_packages_inode=cast(
+                int,
+                runtime_loader_raw["site_packages_inode"],
+            ),
+            site_packages_mode=cast(
+                int,
+                runtime_loader_raw["site_packages_mode"],
+            ),
+            site_packages_user=cast(
+                int,
+                runtime_loader_raw["site_packages_user"],
+            ),
+            site_packages_group=cast(
+                int,
+                runtime_loader_raw["site_packages_group"],
+            ),
+            site_packages_modified_ns=cast(
+                int,
+                runtime_loader_raw["site_packages_modified_ns"],
+            ),
+            site_packages_changed_ns=cast(
+                int,
+                runtime_loader_raw["site_packages_changed_ns"],
+            ),
         ),
     )
 
@@ -5872,6 +6004,33 @@ def _publication_loader_bootstrap(descriptor: int) -> str:
         "'publication loader descriptor is not a directory')\n"
         "_bound_loader=f'/proc/{os.getpid()}/fd/{_loader_descriptor}'\n"
         "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+    )
+
+
+def _publication_site_packages_bootstrap(
+    descriptor: int,
+    repository_root: Path,
+) -> str:
+    if isinstance(descriptor, bool) or descriptor < 0:
+        raise ValueError("publication site-packages descriptor is invalid")
+    _absolute_authority_root(repository_root, "publication repository root")
+    expected = f"/proc/self/fd/{descriptor}{os.pathsep}{repository_root}"
+    return (
+        f"_site_packages_descriptor={descriptor}\n"
+        f"if os.environ.get('PYTHONPATH') != {expected!r}:\n"
+        "    raise ValueError('publication site-packages environment is invalid')\n"
+        "try:\n"
+        "    _site_packages_metadata=os.fstat(_site_packages_descriptor)\n"
+        "except OSError as error:\n"
+        "    raise ValueError("
+        "'publication site-packages descriptor is unavailable') from error\n"
+        "if not stat.S_ISDIR(_site_packages_metadata.st_mode):\n"
+        "    raise ValueError("
+        "'publication site-packages descriptor is not a directory')\n"
+        "_bound_site_packages="
+        "f'/proc/{os.getpid()}/fd/{_site_packages_descriptor}'\n"
+        f"os.environ['PYTHONPATH']="
+        f"_bound_site_packages+{os.pathsep!r}+{str(repository_root)!r}\n"
     )
 
 
@@ -6009,21 +6168,32 @@ def _run_publication_child(
     expected_loader = authority.runtime_loader
     if expected_loader is None:
         raise ValueError("publication runtime loader authority is unavailable")
-    actual_loader, interpreter_descriptor, loader_descriptor = _open_runtime_loader(
-        interpreter
-    )
+    (
+        actual_loader,
+        interpreter_descriptor,
+        loader_descriptor,
+        site_packages_descriptor,
+    ) = _open_runtime_loader(interpreter)
     if actual_loader != expected_loader:
         mismatch = ValueError("publication runtime loader differs from authority")
         try:
             raise mismatch
         finally:
             try:
-                _close_descriptors((interpreter_descriptor, loader_descriptor))
+                _close_descriptors((
+                    interpreter_descriptor,
+                    loader_descriptor,
+                    site_packages_descriptor,
+                ))
             except BaseException as cleanup:
                 raise PublicationCleanupError(mismatch, cleanup) from mismatch
     script = (
         "import contextlib,os,stat,sys\n"
         + _publication_loader_bootstrap(loader_descriptor)
+        + _publication_site_packages_bootstrap(
+            site_packages_descriptor,
+            authority.benchmark_repository_root,
+        )
         + "with open(os.devnull,'w') as import_errors:\n"
         "    with contextlib.redirect_stderr(import_errors):\n"
         "        from prior.analyze.d2026_07_29."
@@ -6039,7 +6209,10 @@ def _run_publication_child(
         "LD_LIBRARY_PATH": f"/proc/self/fd/{loader_descriptor}",
         "PATH": "/usr/bin:/bin",
         "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": str(authority.benchmark_repository_root),
+        "PYTHONPATH": (
+            f"/proc/self/fd/{site_packages_descriptor}"
+            f"{os.pathsep}{authority.benchmark_repository_root}"
+        ),
         "PYTHONWARNINGS": "ignore",
     }
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -6056,32 +6229,56 @@ def _run_publication_child(
             inherited_descriptors=(
                 interpreter_descriptor,
                 loader_descriptor,
+                site_packages_descriptor,
             ),
         )
         held_loader = _fingerprint(os.fstat(loader_descriptor))
-        held_runtime_drifted = _fingerprint(
-            os.fstat(interpreter_descriptor)
-        ) != expected_loader.interpreter_fingerprint() or (
-            held_loader.device,
-            held_loader.inode,
-            held_loader.mode,
-            held_loader.user,
-            held_loader.group,
-            held_loader.modified_ns,
-            held_loader.changed_ns,
-        ) != (
-            expected_loader.device,
-            expected_loader.inode,
-            expected_loader.directory_mode,
-            expected_loader.directory_user,
-            expected_loader.directory_group,
-            expected_loader.directory_modified_ns,
-            expected_loader.directory_changed_ns,
+        held_site_packages = _fingerprint(os.fstat(site_packages_descriptor))
+        held_runtime_drifted = (
+            _fingerprint(os.fstat(interpreter_descriptor))
+            != expected_loader.interpreter_fingerprint()
+            or (
+                held_loader.device,
+                held_loader.inode,
+                held_loader.mode,
+                held_loader.user,
+                held_loader.group,
+                held_loader.modified_ns,
+                held_loader.changed_ns,
+            )
+            != (
+                expected_loader.device,
+                expected_loader.inode,
+                expected_loader.directory_mode,
+                expected_loader.directory_user,
+                expected_loader.directory_group,
+                expected_loader.directory_modified_ns,
+                expected_loader.directory_changed_ns,
+            )
+            or (
+                held_site_packages.device,
+                held_site_packages.inode,
+                held_site_packages.mode,
+                held_site_packages.user,
+                held_site_packages.group,
+                held_site_packages.modified_ns,
+                held_site_packages.changed_ns,
+            )
+            != (
+                expected_loader.site_packages_device,
+                expected_loader.site_packages_inode,
+                expected_loader.site_packages_mode,
+                expected_loader.site_packages_user,
+                expected_loader.site_packages_group,
+                expected_loader.site_packages_modified_ns,
+                expected_loader.site_packages_changed_ns,
+            )
         )
         (
             final_loader,
             final_interpreter_descriptor,
             final_loader_descriptor,
+            final_site_packages_descriptor,
         ) = _open_runtime_loader(interpreter)
         final_primary: Optional[BaseException] = None
         try:
@@ -6095,6 +6292,7 @@ def _run_publication_child(
                 _close_descriptors((
                     final_interpreter_descriptor,
                     final_loader_descriptor,
+                    final_site_packages_descriptor,
                 ))
             except BaseException as cleanup:
                 if final_primary is None:
@@ -6108,7 +6306,11 @@ def _run_publication_child(
         raise
     finally:
         try:
-            _close_descriptors((interpreter_descriptor, loader_descriptor))
+            _close_descriptors((
+                interpreter_descriptor,
+                loader_descriptor,
+                site_packages_descriptor,
+            ))
         except BaseException as cleanup:
             if primary is None:
                 raise
