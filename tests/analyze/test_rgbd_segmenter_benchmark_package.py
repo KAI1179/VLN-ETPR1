@@ -4810,7 +4810,6 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
     )
     assert actual_loader == runtime_loader
     loader_metadata = os.fstat(loader_descriptor)
-    site_packages_metadata = os.fstat(site_packages_descriptor)
     nested_script = (
         "import os,sys\n"
         "loader_path=os.environ['LD_LIBRARY_PATH']\n"
@@ -4819,12 +4818,8 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
         "metadata=os.stat(loader_path)\n"
         f"assert (metadata.st_dev,metadata.st_ino)=="
         f"({loader_metadata.st_dev},{loader_metadata.st_ino})\n"
-        "site_path=os.environ['PYTHONPATH'].split(os.pathsep)[0]\n"
-        f"expected_site=f'/proc/{{os.getppid()}}/fd/{site_packages_descriptor}'\n"
-        "assert site_path == expected_site, (site_path,expected_site)\n"
-        "site_metadata=os.stat(site_path)\n"
-        f"assert (site_metadata.st_dev,site_metadata.st_ino)=="
-        f"({site_packages_metadata.st_dev},{site_packages_metadata.st_ino})\n"
+        f"assert os.environ['PYTHONPATH']=="
+        f"{str(authority.benchmark_repository_root)!r}\n"
         "sys.stdout.write(loader_path)\n"
     )
     child_script = (
@@ -4841,6 +4836,7 @@ def test_publication_child_rebinds_loader_authority_for_nested_subprocess(
         "        import prior.analyze.d2026_07_29."
         "rgbd_segmenter_benchmark_package\n"
         "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+        f"os.environ['PYTHONPATH']={str(authority.benchmark_repository_root)!r}\n"
         "result=subprocess.run("
         f"({authority.benchmark_attestation.python_executable!r},'-c',"
         f"{nested_script!r}),"

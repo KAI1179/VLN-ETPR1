@@ -6199,6 +6199,7 @@ def _run_publication_child(
         "        from prior.analyze.d2026_07_29."
         "rgbd_segmenter_benchmark_package import _publication_child_request\n"
         "os.environ['LD_LIBRARY_PATH']=_bound_loader\n"
+        f"os.environ['PYTHONPATH']={str(authority.benchmark_repository_root)!r}\n"
         "sys.stdout.buffer.write("
         "_publication_child_request(sys.stdin.buffer.read()))\n"
     )
