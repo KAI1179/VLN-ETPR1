@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,7 +40,6 @@ from prior.analyze.d2026_07_29.rgbd_segmenter_benchmark_package import (
 from prior.analyze.d2026_07_30.rgbd_semantic_projector import (
     EquivalenceReport,
     project_mapped_labels_semantic_only,
-    run_exact_equivalence,
 )
 
 _EXPERIMENT_ID = "esanet-r34-nbt1d-scenenet-semantic-projector-timing-v1"
@@ -251,6 +251,40 @@ def _require_frozen_equivalence(report: EquivalenceReport) -> None:
         or report.pair_tree_sha256 != _EQUIVALENCE_PAIR_TREE_SHA256
     ):
         raise ValueError("P6.0 exact-equivalence evidence differs from the frozen gate")
+
+
+def _run_frozen_equivalence_subprocess(python_executable: Path) -> None:
+    expected = EquivalenceReport(
+        schema_version=1,
+        mapped_grid_count=50,
+        oracle_grid_count=50,
+        comparison_count=100,
+        pair_tree_sha256=_EQUIVALENCE_PAIR_TREE_SHA256,
+    )
+    _require_frozen_equivalence(expected)
+    environment = os.environ.copy()
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "PYTHONPATH",
+        "PYTORCH_CUDA_ALLOC_CONF",
+    ):
+        environment.pop(name, None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        (
+            str(python_executable.resolve(strict=True)),
+            "-m",
+            "prior.analyze.d2026_07_30.rgbd_semantic_projector",
+        ),
+        cwd=_repository_root(),
+        env=environment,
+        capture_output=True,
+        check=True,
+        timeout=300.0,
+    )
+    if completed.stdout != expected.canonical_bytes():
+        raise ValueError("P6.0 subprocess output differs from the frozen gate")
 
 
 def _require_post_run_state(
@@ -489,6 +523,7 @@ def main(argv: Optional[Sequence[str]] = None) -> TimingReport:
     benchmark = official._benchmark_attestation(environment_sha256)
     launch = official._p53_launch(root)
     p53 = run_p53_validation_subprocess(launch)
+    _run_frozen_equivalence_subprocess(launch.python_executable)
     snapshot_inspector = official._CudaSnapshotInspector(visible)
     raw_observations = iter_validated_raw_observations(
         launch.raw_root,
@@ -509,8 +544,6 @@ def main(argv: Optional[Sequence[str]] = None) -> TimingReport:
     official._require_loaded_source_origins(paths)
     commitment = official._commitment(root)
     adapter, _ = official._load_model(paths)
-    equivalence = run_exact_equivalence()
-    _require_frozen_equivalence(equivalence)
     run = run_timed_benchmark(
         inputs,
         trusted_cohort=cohort,

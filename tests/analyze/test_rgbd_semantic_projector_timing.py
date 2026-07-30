@@ -5,7 +5,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Dict, cast
 
 import numpy as np
 import pytest
@@ -169,6 +169,39 @@ def test_frozen_equivalence_rejects_any_gate_drift() -> None:
         timing._require_frozen_equivalence(
             replace(accepted, oracle_grid_count=49)
         )
+
+
+def test_equivalence_subprocess_removes_cuda_timing_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "python"
+    executable.write_bytes(b"python")
+    captured: dict[str, object] = {}
+
+    def run(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured["args"] = args
+        captured["environment"] = kwargs["env"]
+        expected = EquivalenceReport(
+            schema_version=1,
+            mapped_grid_count=50,
+            oracle_grid_count=50,
+            comparison_count=100,
+            pair_tree_sha256=timing._EQUIVALENCE_PAIR_TREE_SHA256,
+        )
+        return SimpleNamespace(stdout=expected.canonical_bytes())
+
+    monkeypatch.setattr(timing.subprocess, "run", run)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-test")
+    monkeypatch.setenv("PYTHONPATH", "test")
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "test")
+    timing._run_frozen_equivalence_subprocess(executable)
+    environment = cast(Dict[str, str], captured["environment"])
+    assert "CUDA_VISIBLE_DEVICES" not in environment
+    assert "PYTHONPATH" not in environment
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in environment
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_post_run_state_rejects_projector_drift(
