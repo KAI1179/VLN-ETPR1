@@ -260,6 +260,113 @@ def test_cuda_snapshot_rejects_failed_or_malformed_policy_query(
         benchmark._cuda_snapshot("GPU-test")
 
 
+def test_cuda_snapshot_inspector_binds_namespace_pid_and_rejects_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def snapshot(
+        pids: tuple[int, ...],
+        *,
+        temperature: float = 45.0,
+    ) -> CudaDeviceEvidence:
+        return CudaDeviceEvidence(
+            "NVIDIA GeForce RTX 3090",
+            "GPU-test",
+            "550.1",
+            "graphics=1695;memory=9751",
+            "Disabled",
+            350.0,
+            temperature,
+            pids,
+        )
+
+    raw = iter((
+        snapshot(()),
+        snapshot(()),
+        snapshot((3_281_897,), temperature=45.5),
+        snapshot((3_281_897,), temperature=46.0),
+        snapshot((3_281_897,), temperature=46.5),
+        snapshot((3_281_897,), temperature=47.0),
+    ))
+    monkeypatch.setattr(benchmark, "_cuda_snapshot", lambda _uuid: next(raw))
+    inspector = benchmark._CudaSnapshotInspector("GPU-test")
+    first = inspector()
+    second = inspector()
+    assert first.compute_pids == (os.getpid(),)
+    assert second.compute_pids == (os.getpid(),)
+    assert first.temperature_celsius == 46.0
+    assert second.temperature_celsius == 47.0
+    with pytest.raises(ValueError, match="exactly two calls"):
+        inspector()
+
+    preexisting = iter((snapshot(()), snapshot((99,))))
+    monkeypatch.setattr(
+        benchmark,
+        "_cuda_snapshot",
+        lambda _uuid: next(preexisting),
+    )
+    with pytest.raises(ValueError, match="pre-existing"):
+        benchmark._CudaSnapshotInspector("GPU-test")
+
+
+@pytest.mark.parametrize(
+    ("call_snapshots", "message"),
+    (
+        (((7,), ()), "exactly one"),
+        (((7,), (7, 8)), "exactly one"),
+        (((7,), (7,), (8,), (8,)), "process drifted"),
+    ),
+)
+def test_cuda_snapshot_inspector_rejects_empty_extra_and_pid_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    call_snapshots: tuple[tuple[int, ...], ...],
+    message: str,
+) -> None:
+    def snapshot(pids: tuple[int, ...]) -> CudaDeviceEvidence:
+        return CudaDeviceEvidence(
+            "NVIDIA GeForce RTX 3090",
+            "GPU-test",
+            "550.1",
+            "graphics=1695;memory=9751",
+            "Disabled",
+            350.0,
+            45.0,
+            pids,
+        )
+
+    raw = iter((
+        snapshot(()),
+        snapshot(()),
+        *(snapshot(pids) for pids in call_snapshots),
+    ))
+    monkeypatch.setattr(benchmark, "_cuda_snapshot", lambda _uuid: next(raw))
+    inspector = benchmark._CudaSnapshotInspector("GPU-test")
+    if len(call_snapshots) == 4:
+        inspector()
+    with pytest.raises(ValueError, match=message):
+        inspector()
+
+
+def test_cuda_snapshot_inspector_rejects_fork(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = CudaDeviceEvidence(
+        "NVIDIA GeForce RTX 3090",
+        "GPU-test",
+        "550.1",
+        "graphics=1695;memory=9751",
+        "Disabled",
+        350.0,
+        45.0,
+        (),
+    )
+    monkeypatch.setattr(benchmark, "_cuda_snapshot", lambda _uuid: snapshot)
+    inspector = benchmark._CudaSnapshotInspector("GPU-test")
+    creator_pid = os.getpid()
+    monkeypatch.setattr(benchmark.os, "getpid", lambda: creator_pid + 1)
+    with pytest.raises(ValueError, match="process boundary"):
+        inspector()
+
+
 def test_cuda_json_converts_live_evidence_to_archival_schema() -> None:
     before = CudaDeviceEvidence(
         "NVIDIA GeForce RTX 3090",
@@ -402,6 +509,14 @@ def test_main_rejects_existing_destination_before_candidate_work(
     destination.parent.mkdir(parents=True)
     destination.mkdir()
     monkeypatch.setattr(benchmark, "_repository_root", lambda: tmp_path)
+    gpu_queried = False
+
+    def inspect_gpu(_uuid: str) -> object:
+        nonlocal gpu_queried
+        gpu_queried = True
+        return object()
+
+    monkeypatch.setattr(benchmark, "_CudaSnapshotInspector", inspect_gpu)
     monkeypatch.setattr(benchmark, "_require_dedicated_interpreter", lambda _root: None)
     called = False
 
@@ -413,6 +528,7 @@ def test_main_rejects_existing_destination_before_candidate_work(
     with pytest.raises(FileExistsError, match="already exists"):
         benchmark.main(())
     assert called is False
+    assert gpu_queried is False
 
 
 def test_main_publishes_once_then_fresh_validates_before_stdout(
@@ -437,6 +553,11 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
     events: list[str] = []
 
     monkeypatch.setattr(benchmark, "_repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        benchmark,
+        "_CudaSnapshotInspector",
+        lambda _uuid: events.append("gpu") or object(),
+    )
     monkeypatch.setattr(
         benchmark, "_require_dedicated_interpreter", lambda _root: events.append("venv")
     )
@@ -499,6 +620,7 @@ def test_main_publishes_once_then_fresh_validates_before_stdout(
         "src",
         "preprocess",
         "origins",
+        "gpu",
         "run",
         "origins",
         "audit",

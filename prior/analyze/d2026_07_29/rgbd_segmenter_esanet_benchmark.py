@@ -568,6 +568,68 @@ def _cuda_snapshot(expected_uuid: str) -> CudaDeviceEvidence:
         raise ValueError("CUDA device evidence contains invalid values") from error
 
 
+class _CudaSnapshotInspector:
+    def __init__(self, expected_uuid: str) -> None:
+        first = _cuda_snapshot(expected_uuid)
+        if first.gpu_uuid != expected_uuid:
+            raise ValueError("benchmark GPU UUID differs from the visible device")
+        self._expected_uuid = expected_uuid
+        self._policy = self._policy_fields(first)
+        second = self._raw_snapshot()
+        if first.compute_pids or second.compute_pids:
+            raise ValueError("benchmark GPU has a pre-existing compute process")
+        self._creator_pid = os.getpid()
+        self._raw_pid: Optional[int] = None
+        self._calls = 0
+
+    @staticmethod
+    def _policy_fields(value: CudaDeviceEvidence) -> Tuple[object, ...]:
+        return (
+            value.gpu_name,
+            value.gpu_uuid,
+            value.driver_version,
+            value.clock_policy,
+            value.persistence_mode,
+            value.power_limit_watts,
+        )
+
+    def _raw_snapshot(self) -> CudaDeviceEvidence:
+        raw = _cuda_snapshot(self._expected_uuid)
+        if self._policy_fields(raw) != self._policy:
+            raise ValueError("benchmark GPU policy drifted")
+        return raw
+
+    def __call__(self) -> CudaDeviceEvidence:
+        if os.getpid() != self._creator_pid:
+            raise ValueError("CUDA snapshot inspector cannot cross a process boundary")
+        if self._calls >= 2:
+            raise ValueError("CUDA snapshot inspector permits exactly two calls")
+        first = self._raw_snapshot()
+        second = self._raw_snapshot()
+        if (
+            len(first.compute_pids) != 1
+            or len(second.compute_pids) != 1
+            or first.compute_pids != second.compute_pids
+        ):
+            raise ValueError("benchmark GPU must have exactly one compute process")
+        raw_pid = second.compute_pids[0]
+        if self._raw_pid is None:
+            self._raw_pid = raw_pid
+        elif raw_pid != self._raw_pid:
+            raise ValueError("benchmark GPU compute process drifted")
+        self._calls += 1
+        return CudaDeviceEvidence(
+            gpu_name=second.gpu_name,
+            gpu_uuid=second.gpu_uuid,
+            driver_version=second.driver_version,
+            clock_policy=second.clock_policy,
+            persistence_mode=second.persistence_mode,
+            power_limit_watts=second.power_limit_watts,
+            temperature_celsius=second.temperature_celsius,
+            compute_pids=(os.getpid(),),
+        )
+
+
 def _attestation_envelope(data: bytes) -> Mapping[str, object]:
     value = json.loads(data)
     if not isinstance(value, dict):
@@ -998,6 +1060,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     verify_upstream_preprocessing()
     _require_loaded_source_origins(paths)
     commitment = _commitment(root)
+    snapshot_inspector = _CudaSnapshotInspector(visible)
     artifacts, _ = _build_artifacts(
         root=root,
         paths=paths,
@@ -1006,7 +1069,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         commitment=commitment,
         commit=commit,
         raw_observations=observations,
-        snapshot_inspector=lambda: _cuda_snapshot(benchmark.gpu_uuid),
+        snapshot_inspector=snapshot_inspector,
     )
     _require_loaded_source_origins(paths)
     audit_candidate_assets(paths)
