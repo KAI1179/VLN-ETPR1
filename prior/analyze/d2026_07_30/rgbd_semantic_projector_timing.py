@@ -489,6 +489,7 @@ def main(argv: Optional[Sequence[str]] = None) -> TimingReport:
     benchmark = official._benchmark_attestation(environment_sha256)
     launch = official._p53_launch(root)
     p53 = run_p53_validation_subprocess(launch)
+    snapshot_inspector = official._CudaSnapshotInspector(visible)
     raw_observations = iter_validated_raw_observations(
         launch.raw_root,
         p53_attestation=p53,
@@ -503,7 +504,6 @@ def main(argv: Optional[Sequence[str]] = None) -> TimingReport:
         trusted_cohort=cohort,
         mapping_authority=official._mapping_authority(root),
     )
-    snapshot_inspector = official._CudaSnapshotInspector(visible)
     official._activate_source(paths)
     official.verify_upstream_preprocessing()
     official._require_loaded_source_origins(paths)
