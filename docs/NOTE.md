@@ -126,7 +126,7 @@
 - LLM-Grid 1，Try 5 架构
 - LLM-Boxes 1，Try 10 架构
 - LLM-Grid 2: R2R + RxR-EN, dagger 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`; grpo `249f142`
-- LLM-Grid 2 (GRPO-map-adpt): GRPO 允许训练 graph_map_attention (branch `exp/grpo-map-adaptation-ablation`, commit `0f542ba`)
+- LLM-Grid 2 (GRPO-map-adpt): LLM-Grid Try5 GRPO 默认训练 `graph_map_attention`；完整实验记录见 branch `exp/grpo-map-adaptation-ablation` commit `c3046b7`
 
 # 讨论与结果
 
