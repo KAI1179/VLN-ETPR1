@@ -88,7 +88,7 @@ GRPO:
   max_grad_norm: 1.0
   update_epochs: 4
   dropout_rate: 0.1
-  train_all: False
+  trainable_profile: nav4
   enable_amp: False
   enable_all_dropouts: False
   dropout_in_sampling: False
@@ -121,4 +121,3 @@ MODEL:
     bidirectional: True
     sensor_uuid: rxr_instruction
     embedding_size: 768
-

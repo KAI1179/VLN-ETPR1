@@ -62,7 +62,8 @@ _C.GRPO.is_requeue = False
 _C.GRPO.grpo_beta = 0.01
 _C.GRPO.grpo_epsilon = 0.2
 _C.GRPO.max_grad_norm = 1.0
-_C.GRPO.train_all = False
+_C.GRPO.trainable_profile = "nav4"
+_C.GRPO.require_complete_checkpoint = False
 # -----------------------------------------------------------------------------
 # IMITATION LEARNING CONFIG
 # -----------------------------------------------------------------------------

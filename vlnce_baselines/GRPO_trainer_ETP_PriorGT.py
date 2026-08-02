@@ -293,21 +293,116 @@ class RLTrainer(BaseVLNCETrainer):
         )
 
     def setup_training_parts(self):
-        self.policy.eval()
-        for param in self.policy.parameters():
+        policy = self.policy
+        if policy is None:
+            raise RuntimeError("GRPO policy must be initialized before profile setup")
+
+        policy.eval()
+        for param in policy.parameters():
             param.requires_grad = False
 
-        if not self.trainable_parts:
-            print("Warning: No specific parts designated as trainable.")
-            return
-
-        print("Setting up specific parts for training...")
+        selected_parameters = []
         for module_to_train in self.trainable_parts:
+            if not isinstance(module_to_train, torch.nn.Module):
+                raise TypeError(
+                    "GRPO trainable profile entries must be torch.nn.Module instances"
+                )
+            module_parameters = list(module_to_train.parameters())
+            if not module_parameters:
+                raise RuntimeError(
+                    "GRPO trainable profile selected a module without parameters"
+                )
             module_to_train.train()
-            print(f"  Module {type(module_to_train).__name__} set to TRAIN mode.")
-            for param in module_to_train.parameters():
+            for param in module_parameters:
                 param.requires_grad = True
-            print(f"    Parameters for {type(module_to_train).__name__} UNFROZEN.")
+                selected_parameters.append(param)
+
+        selected_ids = [id(param) for param in selected_parameters]
+        if len(selected_ids) != len(set(selected_ids)):
+            raise RuntimeError(
+                "GRPO trainable profile selects overlapping module parameters"
+            )
+
+        trainable_parameters = [
+            (name, param)
+            for name, param in policy.named_parameters()
+            if param.requires_grad
+        ]
+        trainable_ids = {id(param) for _, param in trainable_parameters}
+        if trainable_ids != set(selected_ids):
+            raise RuntimeError(
+                "GRPO requires_grad parameters do not match the selected profile"
+            )
+        if not trainable_parameters:
+            raise RuntimeError("GRPO trainable profile selected no parameters")
+
+        trainable_names = sorted(name for name, _ in trainable_parameters)
+        trainable_scalar_count = sum(
+            param.numel() for _, param in trainable_parameters
+        )
+        logger.info(
+            "GRPO trainable profile %s: %d tensors, %d scalars\n%s",
+            self.config.GRPO.trainable_profile,
+            len(trainable_parameters),
+            trainable_scalar_count,
+            "\n".join(trainable_names),
+        )
+
+    def _select_trainable_parts(self):
+        policy = self.policy
+        if policy is None:
+            raise RuntimeError("GRPO policy must be initialized before profile selection")
+
+        profile = self.config.GRPO.trainable_profile
+        vln_bert = policy.net.vln_bert
+        nav4 = (
+            vln_bert.global_encoder,
+            vln_bert.graph_query_text,
+            vln_bert.graph_attentioned_txt_embeds_transform,
+            vln_bert.global_sap_head,
+        )
+
+        if profile == "nav4":
+            return nav4
+        if profile == "nav4-fusion":
+            map_cfg = self.config.MODEL.MAP_ENCODER
+            if not map_cfg.enabled or map_cfg.architecture != "try5":
+                raise ValueError(
+                    "GRPO trainable profile 'nav4-fusion' requires an enabled "
+                    "Try5 cognitive map"
+                )
+            return (*nav4, vln_bert.graph_map_attention)
+        raise ValueError(
+            f"Unknown GRPO trainable profile {profile!r}; "
+            "expected 'nav4' or 'nav4-fusion'"
+        )
+
+    @staticmethod
+    def _validate_optimizer_membership(policy, optimizer):
+        trainable_ids = {
+            id(param) for param in policy.parameters() if param.requires_grad
+        }
+        optimizer_ids = [
+            id(param)
+            for group in optimizer.param_groups
+            for param in group["params"]
+        ]
+        if len(optimizer_ids) != len(set(optimizer_ids)):
+            raise RuntimeError("GRPO optimizer contains duplicate parameters")
+        if set(optimizer_ids) != trainable_ids:
+            raise RuntimeError(
+                "GRPO optimizer parameters do not match requires_grad parameters"
+            )
+
+    def _validate_checkpoint_compatibility(self, incompatible_keys):
+        if not self.config.GRPO.require_complete_checkpoint:
+            return
+        if incompatible_keys.missing_keys or incompatible_keys.unexpected_keys:
+            raise RuntimeError(
+                "GRPO checkpoint must exactly match the policy; "
+                f"missing={sorted(incompatible_keys.missing_keys)}, "
+                f"unexpected={sorted(incompatible_keys.unexpected_keys)}"
+            )
 
     def set_policy_mode(self, mode):
         if not self.enable_all_dropouts:
@@ -368,21 +463,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.waypoint_predictor.to(self.device)
         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
 
-        try:
-            vln_bert_module = self.policy.net.vln_bert
-            self.trainable_parts = [
-                vln_bert_module.global_encoder,
-                vln_bert_module.graph_query_text,
-                vln_bert_module.graph_attentioned_txt_embeds_transform,
-                vln_bert_module.global_sap_head,
-            ]
-            for part in self.trainable_parts:
-                if not isinstance(part, torch.nn.Module):
-                    raise TypeError(f"Part {part} is not an nn.Module")
-        except AttributeError as e:
-            print(f"Error accessing specified submodules: {e}")
-            print("Please ensure the paths to trainable submodules are correct.")
-            self.trainable_parts = []
+        self.trainable_parts = self._select_trainable_parts()
         self.setup_training_parts()
 
         if self.config.GPU_NUMBERS > 1:
@@ -421,19 +502,15 @@ class RLTrainer(BaseVLNCETrainer):
                 "weight_decay": 0.0,
             },
         ]
-        if trainable_parameters:
-            self.optimizer = torch.optim.AdamW(
-                optimizer_grouped_parameters, lr=self.config.GRPO.lr
-            )
-            print(
-                f"Optimizer configured with {len(trainable_parameters)} trainable parameters."
-            )
-            print(f"Remaining {len(not_trainable_parameters)} untrainable parameters.")
-        else:
-            self.optimizer = None
-            print(
-                "Warning: No parameters were set to trainable. Optimizer not configured."
-            )
+        self.optimizer = torch.optim.AdamW(
+            optimizer_grouped_parameters, lr=self.config.GRPO.lr
+        )
+        self._validate_optimizer_membership(self.policy, self.optimizer)
+        logger.info(
+            "Optimizer configured with %d trainable tensors; %d tensors frozen",
+            len(trainable_parameters),
+            len(not_trainable_parameters),
+        )
 
         num_warmup_steps = self.config.GRPO.warmup_iters
         num_training_steps = self.config.GRPO.iters
@@ -499,6 +576,7 @@ class RLTrainer(BaseVLNCETrainer):
                 incompatible_keys = self.policy.load_state_dict(
                     ckpt_dict["state_dict"], strict=False
                 )
+            self._validate_checkpoint_compatibility(incompatible_keys)
 
             print("\n" + "=" * 25 + " Weight loading mismatch report " + "=" * 25)
             if incompatible_keys.missing_keys:
@@ -571,17 +649,6 @@ class RLTrainer(BaseVLNCETrainer):
                 self.ref_policy.load_state_dict(self.policy.state_dict())
         else:
             logger.info("BETA == 0, Skip create ref_policy!")
-
-        # Probe mode: freeze everything except the map encoder so a short run
-        # is enough to verify whether cognitive maps help.
-        map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
-        if map_cfg is not None and getattr(map_cfg, "freeze_base", False):
-            for name, param in self.policy.named_parameters():
-                if "map_encoder" not in name:
-                    param.requires_grad_(False)
-            logger.info(
-                "[PriorGT probe] Base model frozen — only map_encoder params are trainable."
-            )
 
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
@@ -1095,11 +1162,49 @@ class RLTrainer(BaseVLNCETrainer):
                 trainable_params = [
                     p for p in self.policy.parameters() if p.requires_grad
                 ]
+                if self.config.GRPO.trainable_profile == "nav4-fusion":
+                    fusion_squared_grad_norm = torch.zeros(
+                        (),
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                    for param in self.trainable_parts[-1].parameters():
+                        if param.grad is not None:
+                            fusion_squared_grad_norm += (
+                                param.grad.detach().float().norm(2).square()
+                            )
+                    fusion_grad_norm = fusion_squared_grad_norm.sqrt()
+                    if not torch.isfinite(fusion_grad_norm):
+                        raise RuntimeError(
+                            "Non-finite graph_map_attention gradient norm"
+                        )
+                    if fusion_grad_norm.item() == 0.0:
+                        raise RuntimeError(
+                            "graph_map_attention received a zero GRPO gradient"
+                        )
+                    self.logs["fusion_grad_norm"].append(fusion_grad_norm.item())
+
                 if trainable_params:
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         trainable_params, self.max_grad_norm
                     )
+                    if not torch.isfinite(grad_norm):
+                        raise RuntimeError(
+                            f"Non-finite GRPO gradient norm: {grad_norm.item()}"
+                        )
                     self.logs["grad_norm"].append(grad_norm.item())
+
+                policy_net = (
+                    self.policy.net.module
+                    if self.world_size > 1
+                    else self.policy.net
+                )
+                if policy_net.map_encoder_enabled and any(
+                    param.grad is not None for param in policy_net.map_encoder.parameters()
+                ):
+                    raise RuntimeError(
+                        "Frozen map_encoder unexpectedly received a GRPO gradient"
+                    )
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
