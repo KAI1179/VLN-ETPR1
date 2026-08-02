@@ -104,6 +104,8 @@
 | Baseline (GRPO)            | 0.6536     | 0.7151     | 0.5582     |         |
 | LLM-Grid 2 (Dagger)        | 0.6542     | 0.7058     | 0.5525     | 28000   |
 | LLM-Grid 2 (GRPO)          | 0.6525     | 0.7200     | 0.5454     | 450     |
+| LLM-Grid 2 (GRPO-map-adpt) | 0.6541     | 0.7128     | 0.5538     | 500     |
+| LLM-Grid 2 (GRPO-map-adpt) | 0.6514     | 0.7101     | 0.5550     | 450     |
 
 - Smoke: LLM-derived cognitive-map cache + Try 7 navigation checkpoint
     - Script: `scripts/tries/smoke-llm-map-try7.sh`
@@ -124,6 +126,7 @@
 - LLM-Grid 1，Try 5 架构
 - LLM-Boxes 1，Try 10 架构
 - LLM-Grid 2: R2R + RxR-EN, dagger 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`; grpo `249f142`
+- LLM-Grid 2 (GRPO-map-adpt): GRPO 允许训练 graph_map_attention (branch `exp/grpo-map-adaptation-ablation`, commit `0f542ba`)
 
 # 讨论与结果
 
