@@ -53,7 +53,7 @@ LLM_BOXES_CURRENT_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_boxes_current
 LLM_GRID_TRY5_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
 LLM_GRID_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt"
 LLM_GRID_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_dagger/store/ckpt.iter28000.pth"
-LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter500.pth"
+LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter450.pth"
 
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
@@ -179,6 +179,8 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
       MODEL.MAP_ENCODER.architecture try5
       MODEL.MAP_ENCODER.source llm_grid
       MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
+      GRPO.trainable_profile nav4-fusion
+      GRPO.require_complete_checkpoint True
       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
 launch() {
