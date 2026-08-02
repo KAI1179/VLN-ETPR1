@@ -848,7 +848,7 @@ Drop Rate By `max_new_tokens`:
 - `val_unseen` matched F1/IoU 为 0.3175/0.1954，within-scene 为 0.1993/0.1205，global 为 0.0952/0.0549，null 为 0。Matched 相对 within-scene 的 paired scene-cluster bootstrap delta 为 F1 +0.1182 `[0.0863, 0.1473]`、IoU +0.0749 `[0.0565, 0.0911]`。
 - Unobserved F1/IoU matched 为 0.1243/0.0663，仍高于 within-scene 的 0.0947/0.0497；但 matched recall 0.1336 低于 within-scene 0.1690，增益由 precision 主导，不能声称恢复了更多未知 cells。现有 bootstrap 不覆盖 pooled unobserved/union metrics。
 - 当前 single-seed causal screen 方向性通过，但完整结论仍需至少三个 paired training seeds、unobserved/union CI，以及对 legacy-union contract 的澄清；在此之前不启动 Try5 navigation。
-- RGB-D perception 表示决策不变：efficient RGB-D segmentation 为主路径，instance masks 为 latency fallback，raw boxes 只作 ablation；DFormer/DFormerv2、ESANet、YOLOE 与 YOLO-World 的具体选择待 paired benchmark。
+- RGB-D perception 的两条已测路径均 NO-GO：ESANet quality 明显不足；YOLOE-mask 的性能、资源与 provenance 通过，但 observation-mean IoU/F1 以很窄差距未过预注册 quality gate，且主要受 recall 与类别边界不一致限制。region channels 未计入 primary score。结果与 artifact hashes 见 [07/31 详细记录](daily/2026-07-31.md#p84official-benchmark-与最终决策)；DFormerv2 仍受 depth provenance blocker 约束。
 
 ## 07/26（R2R-only 与 R2R+RxR-EN checkpoint 对照）
 

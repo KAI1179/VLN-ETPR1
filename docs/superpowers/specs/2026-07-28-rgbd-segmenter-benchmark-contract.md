@@ -337,6 +337,10 @@ license, provenance, and complete-row gates. If YOLOE also fails, P5 returns
 and cannot rescue the deployable decision or replace a passing mask or dense
 candidate merely by being faster.
 
+The date-scoped YOLOE implementation checklist, frozen mask protocol, package
+security work, and execution status are maintained in
+[`docs/daily/2026-07-31.md`](../../daily/2026-07-31.md).
+
 Technical smokes may eliminate only schema-invalid, non-runnable, OOM, or
 latency-infeasible integrations. Smoke semantic quality is never inspected for
 adaptive candidate elimination.
