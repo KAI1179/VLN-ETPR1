@@ -128,7 +128,7 @@
 - LLM-Boxes 1，Try 10 架构
 - LLM-Grid 2: R2R + RxR-EN, dagger 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`; grpo `249f142`
 - LLM-Grid 2 (GRPO, train attention): LLM-Grid Try5 GRPO 默认训练 `graph_map_attention`；完整实验记录见 branch `exp/grpo-map-adaptation-ablation` commit `c3046b7`
-- LLM-Grid-Oracle-t0 (No-PT, Dagger): 从 LLM-Grid 2 检查点开始 DAgger 微调 `abb9726`, branch `exp/llm-grid-oracle-t0-navigation`
+- LLM-Grid-Oracle-t0 (No-PT, Dagger): 从 LLM-Grid 2 预训练检查点开始 DAgger 微调 `abb9726`, branch `exp/llm-grid-oracle-t0-navigation`
 
 # 讨论与结果
 
