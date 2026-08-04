@@ -8,6 +8,7 @@ from prior.analyze.d2026_08_04.llm_grid_rotation_visualizations import (
     OracleSelectionRow,
     category_error_codes,
     embed_warp,
+    require_support_conservation,
     select_crossfit_rows,
     select_oracle_rows,
 )
@@ -101,3 +102,12 @@ def test_embed_rejects_clipping_bounds() -> None:
     )
     with pytest.raises(ValueError, match="outside"):
         embed_warp(warp, SpatialBounds(0, 50, 0, 50))
+
+
+def test_support_conservation_rejects_lost_or_duplicated_cells() -> None:
+    grid = np.ones((1, 1, 1), dtype=np.bool_)
+    valid = WarpedGrid(grid, SpatialBounds(0, 1, 0, 1), input_support=1)
+    invalid = WarpedGrid(grid, SpatialBounds(0, 1, 0, 1), input_support=2)
+    require_support_conservation((valid,))
+    with pytest.raises(ValueError, match="changed predicted support"):
+        require_support_conservation((invalid,))

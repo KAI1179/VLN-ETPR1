@@ -31,6 +31,7 @@ from prior.analyze.d2026_07_28.llm_grid_transform_crossfit import (
     score_angle_families,
 )
 from prior.analyze.llm_grid_registration import (
+    RasterScore,
     SpatialBounds,
     WarpedGrid,
     score_warped_grid,
@@ -321,6 +322,19 @@ def embed_warp(warp: WarpedGrid, bounds: SpatialBounds) -> NDArray[np.bool_]:
     return result
 
 
+def require_support_conservation(warps: Sequence[WarpedGrid]) -> None:
+    """Reject any warp that loses or duplicates category-cell support."""
+
+    if not warps:
+        raise ValueError("support conservation requires at least one warp")
+    expected = warps[0].input_support
+    if any(
+        warp.input_support != expected or warp.total_support != expected
+        for warp in warps
+    ):
+        raise ValueError("rotation changed predicted support")
+
+
 def _embed_target(
     target: NDArray[np.bool_], bounds: SpatialBounds
 ) -> NDArray[np.bool_]:
@@ -424,6 +438,7 @@ def _oracle_figure(
         warp_grid_about_pivot(case.predicted_grid, case.true_start_pivot, angle)
         for angle in _ANGLES
     )
+    require_support_conservation(warps)
     scores = tuple(score_warped_grid(warp, case.target_grid) for warp in warps)
     recomputed = tuple(score.iou for score in scores)
     sealed = tuple(iou for _, iou in row.angle_ious)
@@ -431,8 +446,6 @@ def _oracle_figure(
         raise ValueError(f"sealed oracle scores do not replay for {row.example_id}")
     selected_index = _ANGLES.index(row.best_angle_degrees)
     identity, selected = warps[0], warps[selected_index]
-    if identity.total_support != selected.total_support:
-        raise ValueError("rotation changed predicted support")
     bounds = _common_bounds((identity, selected))
     target = _embed_target(case.target_grid, bounds)
     original = embed_warp(identity, bounds)
@@ -446,21 +459,22 @@ def _oracle_figure(
             target[start:stop],
             bounds,
             case.true_start_pivot,
-            f"GT {label}",
+            f"GT {label} spatial support (categories collapsed)",
         )
         _draw_support(
             axes[axis_row, 1],
             original[start:stop],
             bounds,
             case.true_start_pivot,
-            f"Original {label} (0 deg)",
+            f"Original {label} spatial support (0 deg; categories collapsed)",
         )
         _draw_support(
             axes[axis_row, 2],
             rotated[start:stop],
             bounds,
             case.true_start_pivot,
-            f"Oracle-rotated {label} ({int(row.best_angle_degrees)} deg)",
+            f"Oracle-rotated {label} spatial support "
+            f"({int(row.best_angle_degrees)} deg; categories collapsed)",
         )
     _draw_errors(
         axes[2, 0],
@@ -541,6 +555,7 @@ def _crossfit_figure(
         warp_grid_about_pivot(case.predicted_grid, case.true_start_pivot, angle)
         for angle in _ANGLES
     )
+    require_support_conservation(warps)
     selected_index = _ANGLES.index(row.selected_angle_degrees)
     bounds = _common_bounds((warps[0], warps[selected_index]))
     target = _embed_target(case.target_grid, bounds)
@@ -619,13 +634,37 @@ def _crossfit_figure(
     figure.suptitle(
         f"{row.scene_id} / {row.example_id}: {selector_label} select {int(row.selected_angle_degrees)} deg; "
         f"held-out {heldout_label} {row.heldout_identity_iou:.4f}->{row.heldout_selected_iou:.4f}\n"
-        "Representative among positive-transfer strict winners; GT-assisted diagnostic only",
+        "Representative among positive-score, positive-transfer strict winners; "
+        "GT-assisted diagnostic only",
         fontsize=12,
     )
     figure.tight_layout(rect=(0, 0.02, 1, 0.92))
     figure.savefig(path, dpi=160, metadata={"Date": None})
     plt.close(figure)
-    return {"kind": "cross_family", **asdict(row), "common_bounds": asdict(bounds)}
+
+    def serialize_family_score(raster: RasterScore) -> dict[str, object]:
+        return {
+            "intersection": raster.intersection,
+            "union": raster.union,
+            "predicted_support": raster.predicted_support,
+            "target_support": raster.target_support,
+            "in_frame_support": raster.in_frame_support,
+            "out_of_frame_support": raster.out_of_frame_support,
+            "iou": raster.iou,
+        }
+
+    return {
+        "kind": "cross_family",
+        **asdict(row),
+        "common_bounds": asdict(bounds),
+        "angles": list(_ANGLES),
+        "object_scores": [
+            serialize_family_score(score.object_score) for score in family_scores
+        ],
+        "region_scores": [
+            serialize_family_score(score.region_score) for score in family_scores
+        ],
+    }
 
 
 def _git_commit() -> str:
@@ -692,7 +731,8 @@ def run_visualization(args: RotationVisualizationArgs) -> dict[str, object]:
                 "Angles use ground-truth raster cells; figures are diagnostic and not deployable performance."
             ),
             "crossfit_selection_limitation": (
-                "Cross-family examples are median representatives among positive-transfer strict winners, not all episodes."
+                "Cross-family examples are median representatives among positive-score, "
+                "positive-transfer strict winners, not all episodes."
             ),
             "source_sha256": {
                 str(path): digest for path, digest in _SOURCE_HASHES.items()
@@ -701,7 +741,8 @@ def run_visualization(args: RotationVisualizationArgs) -> dict[str, object]:
             "prediction_manifest_sha256": _sha256(prediction_manifest_path),
             "selection": {
                 "oracle": "strict support-bearing winner; 0 deg median identity IoU, nonzero median delta IoU; lexical tie",
-                "crossfit": "true-start positive-transfer strict winner; median held-out delta IoU; lexical tie",
+                "crossfit": "true-start positive-score, positive-transfer strict winner; "
+                "median held-out delta IoU; lexical tie",
             },
             "error_codes": {
                 "0": "background",
