@@ -459,22 +459,21 @@ def _oracle_figure(
             target[start:stop],
             bounds,
             case.true_start_pivot,
-            f"GT {label} spatial support (categories collapsed)",
+            f"GT {label} spatial support",
         )
         _draw_support(
             axes[axis_row, 1],
             original[start:stop],
             bounds,
             case.true_start_pivot,
-            f"Original {label} spatial support (0 deg; categories collapsed)",
+            f"Original {label} (0 deg)",
         )
         _draw_support(
             axes[axis_row, 2],
             rotated[start:stop],
             bounds,
             case.true_start_pivot,
-            f"Oracle-rotated {label} spatial support "
-            f"({int(row.best_angle_degrees)} deg; categories collapsed)",
+            f"Oracle-rotated {label} ({int(row.best_angle_degrees)} deg)",
         )
     _draw_errors(
         axes[2, 0],
@@ -506,7 +505,8 @@ def _oracle_figure(
     figure.text(
         0.5,
         0.015,
-        "Error colors: green clean TP; red FP without FN; blue FN without FP; purple has both FP and FN. "
+        "Blue support masks collapse category channels. Error colors: green clean TP; "
+        "red FP without FN; blue FN without FP; purple has both FP and FN. "
         f"Intersection {scores[0].intersection}->{scores[selected_index].intersection}; "
         f"prediction support {scores[0].predicted_support}->{scores[selected_index].predicted_support}; "
         f"out-of-frame {scores[selected_index].out_of_frame_support}.",
