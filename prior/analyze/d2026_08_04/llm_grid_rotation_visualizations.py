@@ -505,15 +505,16 @@ def _oracle_figure(
     figure.text(
         0.5,
         0.015,
-        "Blue support masks collapse category channels. Error colors: green clean TP; "
-        "red FP without FN; blue FN without FP; purple has both FP and FN. "
+        "Blue support masks collapse category channels.\n"
+        "Error colors: green clean TP; red FP without FN; blue FN without FP; "
+        "purple has both FP and FN.\n"
         f"Intersection {scores[0].intersection}->{scores[selected_index].intersection}; "
         f"prediction support {scores[0].predicted_support}->{scores[selected_index].predicted_support}; "
         f"out-of-frame {scores[selected_index].out_of_frame_support}.",
         ha="center",
-        fontsize=9,
+        fontsize=8,
     )
-    figure.tight_layout(rect=(0, 0.04, 1, 0.94))
+    figure.tight_layout(rect=(0, 0.075, 1, 0.94))
     figure.savefig(path, dpi=160, metadata={"Date": None})
     plt.close(figure)
     return {
