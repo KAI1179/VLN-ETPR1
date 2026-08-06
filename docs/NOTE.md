@@ -865,3 +865,11 @@ Drop Rate By `max_new_tokens`:
 - Predict-every-category baseline 的 unseen combined episode-macro F1 已达 0.5482；R2R-only epoch 1/2/5/10 为 0.6642/0.6643/0.6151/0.6598。Category F1 可诊断“有什么”，但与 spatial IoU 几乎不相关，不能作为主要质量指标。
 - 固定 17 个 unseen identities 的 136-panel paired sheets 保留了 2 个显式 invalid placeholder；逐图与完整分布均显示 mixed 没有稳定的 unseen layout improvement。
 - 两条 training line 的 prompt、effective batch、sequence budget、optimizer steps 与 RNG 控制不同，结论是观察性的；不能把全部差值因果归因于 RxR。
+
+## 08/06（暂停 YOLOE matched 链并转向 MP3D-tested segmenter screen）
+
+- [详细记录：候选、暂停状态与观测表示边界](daily/2026-08-06.md#暂停-yoloe-下游链并扩大-mp3d-segmenter-搜索空间)
+- 发现此前从通用 segmenter 向 MP3D 过滤的 search-space bias；结合 YOLOE P8 NO-GO，已暂停其 fresh LoRA、matched navigation cache 与 navigation pretraining，但保留已完成 evidence 作为 open-vocabulary baseline。
+- 第一候选为已有 Matterport3D RGB-D checkpoint 的 SFSS-MMSI；360BEV/360Mapper 保留为第二候选。论文原任务 mIoU 不替代本项目同 observation、同 label mapping、同 evidence contract 的 bounded comparison。
+- 表示层暂定保留 calibrated 12-view RGB-D 作为 canonical raw observation，以显式 adapter 派生带 validity mask 的 equirectangular 输入；现有 yaw-only 12 views 不构成完整球面，扩大 pitch/polar coverage 必须作为独立 acquisition ablation。
+- 新实验分支为 `exp/llm-grid-mp3d-semantic-evidence`；当前只记录决策，尚未实现或启动候选。
