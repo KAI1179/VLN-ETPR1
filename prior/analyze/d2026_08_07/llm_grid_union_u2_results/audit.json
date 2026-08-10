@@ -1,0 +1,283 @@
+{
+  "artifacts": {
+    "audit_json": "outputs/llm_grid_union_u2_accepted_c6a4e74/audit.json",
+    "manifest": "outputs/llm_grid_union_u2_accepted_c6a4e74/cohort_manifest.jsonl",
+    "manifest_sha256": "e93b225c27cad035e94022fe2d34cffdfd7de7791a1d5bc1dd5f59fd9e11d5b6"
+  },
+  "budgets": {
+    "completion": 3072,
+    "prompt": 1152,
+    "sequence": 4096
+  },
+  "contract_checks": {
+    "direction_zero_vector_convention": "Only nonzero target vectors contribute to support; target-zero padding is excluded. A predicted zero vector for a supported target scores cosine -1 and 180-degree angular error.",
+    "evaluator_route_alignment": "local route ID, never list position",
+    "exact_roundtrips": 14070,
+    "invalid_schema_scores_zero": true,
+    "manifest_replay_serialization": "sorted-key compact UTF-8 JSONL with canonical member order",
+    "mentioned_by_any_source": "deterministic instruction extractor only",
+    "mentioned_generated": false,
+    "source_route_ids_or_dataset_tags_rendered": false
+  },
+  "decision": "go",
+  "direct_cpu_evaluator": {
+    "best_single": {
+      "category_f1_mean": 0.9382543170717935,
+      "raster_f1_mean": 0.8452327028377276,
+      "raster_iou_mean": 0.7530503127111526
+    },
+    "direction": {
+      "angular_error_degrees": 0.0,
+      "cosine": 1.0,
+      "support": 99757.0
+    },
+    "object_categories": {
+      "f1": 1.0,
+      "fn": 0.0,
+      "fp": 0.0,
+      "tp": 191277.0
+    },
+    "raster": {
+      "episode_iou_mean": 0.9829424307036247,
+      "f1": 1.0,
+      "fn": 0.0,
+      "fp": 0.0,
+      "iou": 1.0,
+      "tp": 5684142.0
+    },
+    "region_categories": {
+      "f1": 1.0,
+      "fn": 0.0,
+      "fp": 0.0,
+      "tp": 65263.0
+    },
+    "schema": {
+      "total": 14070.0,
+      "valid": 14070.0
+    },
+    "unique_contribution": {
+      "recall": 1.0,
+      "recalled": 4370989.0,
+      "support": 4370989.0
+    }
+  },
+  "gates": {
+    "compact_and_both_k1_retention_at_least_95_percent": true,
+    "exact_row_run_roundtrip": true,
+    "full_audit": true,
+    "no_example_reuse": true,
+    "same_level_purity": true,
+    "unambiguous_local_route_ids": true
+  },
+  "population": {
+    "audited_covered_members": 28140,
+    "audited_member_coverage": 0.9154196486662329,
+    "audited_pairs": 14070,
+    "cached_english_examples": 30740,
+    "eligible_target_free_pairs": 14070,
+    "full_eligible_covered_members": 28140,
+    "overall_member_coverage": 0.9154196486662329
+  },
+  "provenance": {
+    "audit_code_sha256": "fbc58e17dd1fb0d533d8bd126100bcffe9063df6655b27b471f7001bd4588397",
+    "audit_code_version": "u2-compact-audit-v2",
+    "cognitive_map_namespace": "gt.legacy.r1p5.direction5.v1",
+    "model": {
+      "config_path": "data/models/Llama-3.1-8B-Instruct/config.json",
+      "config_sha256": "29e4c210b0d6ac178b16b2a255a568bdb23b581e50ca1ef6a6d071dd85704e6e",
+      "fingerprint_sha256": "763b9896030edb57f562dce89449633dbaf3366a794603b755124bc9dc7a2bba",
+      "name_or_path": "data/models/Llama-3.1-8B-Instruct"
+    },
+    "population_input_sha256": "b2081284b378dbf69d08ae2ba55067d99b55ec2506aa9ec6e42a3e415c3e36e0",
+    "prompt_sha256": {
+      "base": "3c7173b77753528ce6dc4c9e2c56d66d9289214537edf73068456f758a336de2",
+      "cells_with_routes": "3f15331ae9fb2ae6511ec020d547c4324809f58c4754f326578d802a01347cf5",
+      "cells_without_routes": "e4f7c0a468368c600ea4842f9fbdb5ddfa91fb60ed54f8de23877071a3fa7378",
+      "row_runs_with_routes": "828a00d457812c6156fca8d5e905c4bd1421e47b8a00a4069bddd909aba7746a",
+      "row_runs_without_routes": "48ae3e34a51576f891e681ad7b27559584aaa0d1f891ccedf67e056b3d2b1c06"
+    },
+    "tokenizer": {
+      "backend_tokenizer_sha256": "86099636e3238f26a12bb00de8544154d81430b7c36047edcf8ef5b1413a9b2e",
+      "chat_template_sha256": "e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65",
+      "class": "PreTrainedTokenizerFast",
+      "fingerprint_sha256": "ca9830454a021555f527b78b39636ce9ea58f0be556ced6734afc57f39699d95",
+      "name_or_path": "data/models/Llama-3.1-8B-Instruct",
+      "requested_model_name_or_path": "data/models/Llama-3.1-8B-Instruct",
+      "special_tokens_sha256": "2b1e2c67e141c68c223a7f31b310bf8234683bec9a499f1067970d2a41cfeb16",
+      "vocab_sha256": "eb58f0e94d29822ac1c2055c2f72e0cdb162119e0db3bc23729e6d2bf4174edf",
+      "vocab_size": 128256
+    },
+    "union_schema_version": "union-grid-v1"
+  },
+  "representatives": {
+    "densest": {
+      "member_example_ids": [
+        "RxR_train_25712",
+        "RxR_train_31352"
+      ],
+      "pair_id": "f95878d3aeef042aa631d327e1ecec66bc1a86971c2f58568f3932e7e72e6523",
+      "selection_score": 1436.0,
+      "visualization": "outputs/llm_grid_union_u2_accepted_c6a4e74/visualizations/densest.png"
+    },
+    "longest": {
+      "member_example_ids": [
+        "RxR_train_25704",
+        "RxR_train_31351"
+      ],
+      "pair_id": "82bfc82c918a2c8d01cb27cc56111299dbc3838ad5c0630d9648caa10e683c68",
+      "selection_score": 3851.0,
+      "visualization": "outputs/llm_grid_union_u2_accepted_c6a4e74/visualizations/longest.png"
+    },
+    "random": {
+      "member_example_ids": [
+        "R2R_train_3674",
+        "R2R_train_8542"
+      ],
+      "pair_id": "1df9c11998178537b61c106eabc40e538f9cf8d3493f72e36873f00a06d877ae",
+      "selection_score": -2988911558403417.0,
+      "visualization": "outputs/llm_grid_union_u2_accepted_c6a4e74/visualizations/random.png"
+    }
+  },
+  "retention_gate": {
+    "both_k1_constituents_retained": 13785,
+    "compact_u2_and_both_k1_retained": 13777,
+    "denominator_audited_pairs": 14070,
+    "fraction": 0.9791755508173419,
+    "full_eligible_target_free_pairs": 14070,
+    "threshold": 0.95
+  },
+  "schema_version": 2,
+  "scope": "full",
+  "selector": {
+    "fields": [
+      "dataset",
+      "scene_id",
+      "start_height_mm"
+    ],
+    "pairing": "stable SHA-256 order without replacement",
+    "trajectory_constraint": "distinct source trajectory IDs",
+    "uses_level_grid_category_or_path_similarity": false
+  },
+  "sidecar_level_audit": {
+    "mixed_level_pairs": 0,
+    "purity": 1.0,
+    "same_level_pairs": 14070,
+    "used_for_selection": false
+  },
+  "task": "union-grid-v1",
+  "training_implemented": false,
+  "variants": {
+    "cells_with_routes": {
+      "pairs": 14070,
+      "retained_fraction": 0.9141435678749111,
+      "retained_pairs": 12862,
+      "token_counts": {
+        "completion": {
+          "max": 6139.0,
+          "mean": 1881.0901208244493,
+          "p50": 1751.0,
+          "p95": 3432.0,
+          "p99": 4322.0
+        },
+        "prompt": {
+          "max": 1389.0,
+          "mean": 650.7616915422885,
+          "p50": 640.5,
+          "p95": 844.0,
+          "p99": 973.0
+        },
+        "sequence": {
+          "max": 7137.0,
+          "mean": 2531.8518123667377,
+          "p50": 2377.0,
+          "p95": 4200.549999999999,
+          "p99": 5155.9299999999985
+        }
+      }
+    },
+    "cells_without_routes": {
+      "pairs": 14070,
+      "retained_fraction": 0.9353944562899786,
+      "retained_pairs": 13161,
+      "token_counts": {
+        "completion": {
+          "max": 5937.0,
+          "mean": 1713.066027007818,
+          "p50": 1588.0,
+          "p95": 3237.0,
+          "p99": 4130.0
+        },
+        "prompt": {
+          "max": 1324.0,
+          "mean": 585.7616915422885,
+          "p50": 575.5,
+          "p95": 779.0,
+          "p99": 908.0
+        },
+        "sequence": {
+          "max": 6870.0,
+          "mean": 2298.8277185501065,
+          "p50": 2150.0,
+          "p95": 3948.5499999999993,
+          "p99": 4893.549999999997
+        }
+      }
+    },
+    "row_runs_with_routes": {
+      "pairs": 14070,
+      "retained_fraction": 0.9992892679459844,
+      "retained_pairs": 14060,
+      "token_counts": {
+        "completion": {
+          "max": 2837.0,
+          "mean": 1013.6278606965174,
+          "p50": 971.0,
+          "p95": 1688.5499999999993,
+          "p99": 2032.3099999999995
+        },
+        "prompt": {
+          "max": 1405.0,
+          "mean": 666.7616915422885,
+          "p50": 656.5,
+          "p95": 860.0,
+          "p99": 989.0
+        },
+        "sequence": {
+          "max": 3851.0,
+          "mean": 1680.389552238806,
+          "p50": 1619.0,
+          "p95": 2490.5499999999993,
+          "p99": 2867.3099999999995
+        }
+      }
+    },
+    "row_runs_without_routes": {
+      "pairs": 14070,
+      "retained_fraction": 0.9997867803837953,
+      "retained_pairs": 14067,
+      "token_counts": {
+        "completion": {
+          "max": 2635.0,
+          "mean": 845.6037668798863,
+          "p50": 804.0,
+          "p95": 1493.0,
+          "p99": 1849.3099999999995
+        },
+        "prompt": {
+          "max": 1340.0,
+          "mean": 601.7616915422885,
+          "p50": 591.5,
+          "p95": 795.0,
+          "p99": 924.0
+        },
+        "sequence": {
+          "max": 3584.0,
+          "mean": 1447.365458422175,
+          "p50": 1387.0,
+          "p95": 2231.0,
+          "p99": 2613.619999999999
+        }
+      }
+    }
+  }
+}

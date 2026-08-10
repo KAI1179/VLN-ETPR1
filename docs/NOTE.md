@@ -258,9 +258,11 @@ In GRPO (GRPO-ETP-PriorGT), current code follows the author GRPO setup: it freez
 navigation modules vlnce_baselines/GRPO_trainer_ETP_PriorGT.py:219 vlnce_baselines/GRPO_trainer_ETP_PriorGT.py:286. That means our map_encoder is not
 trained during normal PriorGT GRPO. It is used to produce map_embeds, but its weights stay fixed from the loaded DAgger checkpoint.
 
-One important caveat: GRPO-ETP-PriorGT has a freeze_base probe block, but it runs after the optimizer was already built and after
-setup_training_parts() froze the map encoder. As written, freeze_base=True in GRPO does not actually make map_encoder trainable. The DAgger probe path
-is correct; the GRPO probe path would need a small fix if we want “train map encoder only” during GRPO too.
+Current GRPO uses explicit `nav4` / `nav4-fusion` trainable profiles. `nav4-fusion`
+adds `graph_map_attention`, while `map_encoder` remains frozen. More importantly,
+GRPO replay stores detached map tokens; training `map_encoder` therefore requires a
+differentiable replay redesign rather than another freeze flag. See the
+[2026-08-07 contract diagnosis](daily/2026-08-07.md#grpo-与认知地图契约诊断).
 
 ## 05/13
 
@@ -879,3 +881,48 @@ Drop Rate By `max_new_tokens`:
 - 第一候选为已有 Matterport3D RGB-D checkpoint 的 SFSS-MMSI；360BEV/360Mapper 保留为第二候选。论文原任务 mIoU 不替代本项目同 observation、同 label mapping、同 evidence contract 的 bounded comparison。
 - 表示层暂定保留 calibrated 12-view RGB-D 作为 canonical raw observation，以显式 adapter 派生带 validity mask 的 equirectangular 输入；现有 yaw-only 12 views 不构成完整球面，扩大 pitch/polar coverage 必须作为独立 acquisition ablation。
 - 新实验分支为 `exp/llm-grid-mp3d-semantic-evidence`；当前只记录决策，尚未实现或启动候选。
+
+## 08/07（LLM-Grid 后处理审计）
+
+- [详细记录：冻结算子、开发门槛与 no-code 结论](daily/2026-08-07.md)
+- Exact duplicate 已由 parser 二值化：contract-v2 epoch 2 的 778 个 `val_seen` 输出中，185,082 条可解析 cell record 仅 7 条同 category/坐标重复。输出 contract 没有 category/cell confidence，不能定义可信 threshold。
+- Mentioned-only、singleton category 与同 channel 邻域过滤均未通过冻结的 `val_seen` 多指标门槛；最大 pooled IoU 增益仅 +0.001165，且 recall 和 episode-macro IoU 同时下降。因此停止 sweep，不实现 postprocessor/harness。
+- Matched common cohort 上，`prediction ∪ evidence` 的 pooled IoU/F1 在 seen 为 0.3317/0.4982→0.2296/0.3734，在 unseen 为 0.1796/0.3045→0.1579/0.2727；union 虽提高 recall，但 precision 损失更大。保留为诊断指标，不接入 cache。
+## 08/07（SFSS blocked；360BEV static NO-GO）
+
+- [详细记录：artifact、contract、runtime checklist 与本轮决策](daily/2026-08-07.md)
+- SFSS 的四个官方 MP3D checkpoint 链接均失效，且没有 authoritative mirror、digest、完整 label/depth contract 或独立 weight permission；按冻结的 artifact-readiness 硬门槛记为 BLOCKED，未实现 adapter 或 runtime。
+- 360BEV 的官方权重链接仍可解析，但 exact 21-logit vocabulary 只能保守覆盖 11/23 primary targets，低于预注册的 `>=14/23` static gate；`furniture/objects` 是混合类别，不能拆分或复制来虚增 coverage。
+- 360BEV released inference 还要求与 BEV labels 同 HDF5 打包的 `indices/mask/map_heights`，仓库没有当前 schema 的完整 depth-derived recipe；full-sphere ERP、agent-local 2 cm BEV 与 canonical yaw-band/target-origin grid 也不一致。因此记为 STATIC NO-GO，未安装 legacy dependencies、未运行 inference、未暴露 scientific cohort 输出。
+- accepted YOLOE projected grids 与 oracle ceiling 保持不变；下一候选必须先通过 artifact provenance、至少 14/23 exact mapping 与 observation-bounded geometry 三个静态门槛，之后才讨论实现。
+- 扩展静态搜索得到三个 conditional survivors：OOOPS 的动态 text classifier 可直接使用 exact 23 prompts，并可逐个处理 canonical 12 views；OpenScene 与 Mosaic3D 的 MP40 fixed vocabulary 均可验证地保守覆盖 18/23，并可用 12-view RGB-D 构造 observation-only point cloud，作为 3D fallback。两者名义上的 open-vocabulary prompt 能力仍需 contract audit；它们都尚未成为 scientific GO。
+- OOOPS 排第一，但只在 COCO-Stuff 训练、在完整 MP3D panorama zero-shot evaluation；官方 pickle checkpoint 还需隔离安全检查。OpenScene/Mosaic3D 则都有 complete-scene training 到 t=0 partial shell 的 domain shift，且 runtime 更重。
+- PanoSAMic 因固定 vocabulary 仅覆盖 11/23 且要求完整 ERP 被拒绝；Geometric Exploitation 无官方 artifact，Semantic MapNet/HoHoNet/FreDSNet/PanoFormer/PanelNet 也未同时通过 artifact 与 mapping gates。
+- 下一步提议先做 OOOPS artifact/runtime contract audit；通过后才实现 exact-23、per-view、复用现有 depth projector 的 minimal adapter 和 technical smoke。当前没有下载权重、创建环境、实现代码或运行 inference，仍等待实现授权。
+- 获得三候选执行授权后，OpenScene 与 Mosaic3D 均在 checkpoint permission 硬门槛停止：两者 source code 为 Apache-2.0，但官方 weight hosts 没有 checkpoint-specific license/permission，不能把 code license 外推到 Matterport-derived weights。两份下载均已停止，`/tmp` 只保留带 `.aria2` 的 incomplete sparse partial，未 load/unpickle；未创建 runtime 或运行 inference。
+- Mosaic3D 还有 released eval 强制读取 GT `segment`、没有 no-GT entry point、direct 23-way argmax 无 abstain，以及未锁定 sparse-CUDA stack 等 secondary blockers。OpenScene 的 observation-only XYZ contract 较清楚，但 legacy Minkowski runtime 未越过 permission gate。当前只继续 OOOPS。
+- OOOPS artifact 完整性与 permission 通过：官方 `OOOPS_without_REPR.pt` 的 648,072,299 bytes / SHA-256 `7234ea20…140f2f5` 与 pinned LFS metadata 一致，source/HF 均声明 Apache-2.0；exact-23 text vocabulary 与逐 canonical pinhole view contract 也可闭合。
+- 但原始 checkpoint 的 pickle 含 `getattr`、MMEngine/numpy object reconstruction 和大量 executable `REDUCE/BUILD`；只完成静态 ZIP/pickle inventory，未调用任何 loader。当前本机无可用 container/network namespace，不能安全完成 pickle→safetensors conversion，因此 OOOPS 记为 BLOCKED，不以自制 allowlist unpickler 或 unrestricted load 绕过。
+- login node 只读检查显示 user/network namespace 可用，但无现成 container runtime/torch。若要在那里建立 disposable quarantine、传输 checkpoint 并导出 tensor-only safetensors，需要用户另行授权 remote write；在此之前不创建 runtime、实现 adapter 或运行 inference。
+- 用户授权 remote quarantine 后，已在 network/mount/PID/IPC/UTS-isolated tmpfs chroot 中完成唯一一次原始 checkpoint load，导出 496-tensor safetensors；本地 data-only artifact 为 634,616,060 bytes，SHA-256 `c2f1919c…edc60d7`，metadata/key schema 均由 `safe_open` 复验。完整 converter、environment freeze、manifest 与 asset lock 已跟踪。
+- remote quarantine（原始 checkpoint、conversion venv、output）已全部删除并确认路径不存在；本地实验只会读取 ignored candidate-local safetensors。OOOPS 的 pickle safety blocker 已解除，下一步在本机构建 isolated runtime、严格验证 model state-dict keys/shapes 后才 technical smoke。
+- OOOPS 本地 technical gate 已通过：496/496 strict load、exact-23 preprocessing parity、single-view
+  repeatability 与一条 sealed 12-view finite forward 均通过，peak reserved 为 4.93 GB；未读取 quality
+  endpoint。OpenScene/Mosaic3D 因 checkpoint-specific permission 缺失在 load/runtime 前 NO-GO。
+- scientific publisher preflight 已闭合 P5.3 历史 producer Git-blob provenance、50/50 completeness、
+  converted-checkpoint provenance、互斥 cold-start timing 与 accepted YOLOE baseline 预验证。下一步只在
+  clean commit 上本地运行一次 frozen 50-observation screen；前五次 launch 均未发布或输出 endpoint，最新
+  修复把 runtime attestation 绑定到 candidate venv 内 regular `python-official`，并在 inference 前用同一
+  `-S`/site-packages 边界执行 fresh import preflight。之后一次 launch 因 idle GPU 仅 `29°C` 在 inference 前
+  fail closed；另一次在 publication 前发现 validator 混淆固定 NYU40 canonical source 与 exact-23 logical
+  mapping，现已拆开验证并加入同一 pre-inference check。所有失败均无 stdout/package endpoint；结果前不调
+  mapping、threshold 或 cohort。
+- OOOPS frozen 50-observation screen 最终完成：50/50 observations、100/100 timings、23/23 categories、
+  6,120/6,120 support 均通过；primary mean IoU/F1 `0.15662/0.26788`，P95 `0.4355 s`，peak reserved
+  `4.93 GB`，因此 candidate-only package status 为 PASS。
+- 最终 composite decision 仍为 **FAIL / BOUNDED NO-GO**：OOOPS−YOLOE IoU/F1 point estimate 虽为
+  `+0.00786/+0.02305`，但 paired 11-scene bootstrap 95% lower bounds 为 `-0.02157/-0.01845`，均未严格
+  大于 zero。endpoint 暴露后不重跑、不调参、不启动 full evidence/matched navigation。
+- OpenScene 与 Mosaic3D 均已在 checkpoint-specific permission gate 于 load/runtime 前 NO-GO；获授权的
+  三个候选至此全部完成。OOOPS validated manifest SHA-256 为 `3d2fce62…779c3`，完整 package tree
+  SHA-256 为 `c76c576c…8238`。
