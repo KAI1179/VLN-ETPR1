@@ -98,15 +98,18 @@
 
 ### 基于 LLM 的 pipeline
 
-| Method                             | SR         | OSR        | SPL        | ckpt    |
-| ---------------------------------- | ---------- | ---------- | ---------- | ------- |
-| Baseline (Dagger)                  | 0.6313     | 0.6852     | 0.5423     |         |
-| Baseline (GRPO)                    | 0.6536     | 0.7151     | 0.5582     |         |
-| LLM-Grid 2 (Dagger)                | 0.6542     | 0.7058     | 0.5525     | 28000   |
-| LLM-Grid 2 (GRPO)                  | 0.6525     | 0.7200     | 0.5454     | 450     |
-| LLM-Grid 2 (GRPO, train attention) | 0.6541     | 0.7128     | 0.5538     | 500     |
-| LLM-Grid 2 (GRPO, train attention) | 0.6514     | 0.7101     | 0.5550     | 450     |
-| LLM-Grid-Oracle-t0 (No-PT, Dagger) | 0.6427     | 0.6933     | 0.5470     | 27000   |
+| Method                                      | SR         | OSR        | SPL        | ckpt    |
+| ------------------------------------------- | ---------- | ---------- | ---------- | ------- |
+| Baseline (Dagger)                           | 0.6313     | 0.6852     | 0.5423     |         |
+| Baseline (GRPO)                             | 0.6536     | 0.7151     | 0.5582     |         |
+| LLM-Grid 2 (Dagger)                         | 0.6542     | 0.7058     | 0.5525     | 28000   |
+| LLM-Grid 2 (GRPO, historical unmatched)     | 0.6525     | 0.7200     | 0.5454     | 450     |
+| LLM-Grid 2 (GRPO, matched nav4)             | 0.6650     | 0.7330     | 0.5531     | 500     |
+| LLM-Grid 2 (GRPO, matched nav4-fusion)      | 0.6542     | 0.7129     | 0.5538     | 500     |
+| LLM-Grid 2 (GRPO, nav4-fusion selected)     | 0.6514     | 0.7102     | 0.5550     | 450     |
+| LLM-Grid 2 (GRPO, geodesic RTG)             | 0.6531     | 0.7227     | 0.5462     | 500     |
+| LLM-Grid 2 (GRPO, geodesic RTG selected)    | 0.6493     | 0.7254     | 0.5412     | 450     |
+| LLM-Grid-Oracle-t0 (No-PT, Dagger)          | 0.6427     | 0.6933     | 0.5470     | 27000   |
 
 - Smoke: LLM-derived cognitive-map cache + Try 7 navigation checkpoint
     - Script: `scripts/tries/smoke-llm-map-try7.sh`
@@ -126,8 +129,10 @@
     - 未完整运行 - 中断，运行 try5-r1p5
 - LLM-Grid 1，Try 5 架构
 - LLM-Boxes 1，Try 10 架构
-- LLM-Grid 2: R2R + RxR-EN, dagger 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`; grpo `249f142`
-- LLM-Grid 2 (GRPO, train attention): LLM-Grid Try5 GRPO 默认训练 `graph_map_attention`；完整实验记录见 branch `exp/grpo-map-adaptation-ablation` commit `c3046b7`
+- LLM-Grid 2: R2R + RxR-EN, dagger 训练结束于 `d97e8a6`, eval 结束于 `2740c2c`; historical unmatched GRPO 为 `249f142`。
+- `LLM-Grid 2 (GRPO, matched nav4)` 是 seed 100、G=8、4 ranks × 4 envs、冻结 1,068 条有序训练 population 的 matched control；fixed 与 training-SPL-selected endpoint 都是 iteration 500。相对同 population 的 DAgger aggregate，SR/OSR 分别约提高 1.09/2.72 percentage points，但 SPL 只提高 0.06 point：它提高了进入/完成目标半径的概率，却没有相应提高路径效率。它也是后续 fusion 与 return-to-go 的唯一 causal control；不能与 historical unmatched 行互换使用。
+- `nav4-fusion` 额外训练 Try5 的单向 `graph_map_attention`，不是双向 map-token fusion。fixed 500 相对 matched nav4 的 SR/OSR/SPL 为 `-0.0109/-0.0201/+0.0007`，未过 gate，当前 profile 已退役。
+- geodesic return-to-go 保持原 trajectory reward、sampler 与 β=0.04，只重分配 trajectory 内 credit；fixed 500 相对 matched nav4 的 SR/OSR/SPL 为 `-0.0120/-0.0103/-0.0069`，四项 gate 全部失败，selected 450 更差。因此不再继续该 GRPO 变体。完整 matched identity、机制审计、CI/LOSO 与解释边界见 [2026-08-10 记录](daily/2026-08-10.md)。
 - LLM-Grid-Oracle-t0 (No-PT, Dagger): 从 LLM-Grid 2 预训练检查点开始 DAgger 微调 `abb9726`, branch `exp/llm-grid-oracle-t0-navigation`
 
 # 讨论与结果

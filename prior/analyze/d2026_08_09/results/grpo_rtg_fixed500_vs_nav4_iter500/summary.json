@@ -1,0 +1,324 @@
+{
+  "checkpoint_iteration": 500,
+  "endpoint_role": "primary-fixed500",
+  "fixed500_is_primary": true,
+  "gate_passed": false,
+  "gates": {
+    "osr": {
+      "comparison": "at_least",
+      "metric": "oracle_success",
+      "observed_delta": -0.010331702011963095,
+      "passed": false,
+      "threshold": 0.0
+    },
+    "spl": {
+      "comparison": "at_least",
+      "metric": "spl",
+      "observed_delta": -0.006908597753254919,
+      "passed": false,
+      "threshold": 0.005
+    },
+    "sr": {
+      "comparison": "at_least",
+      "metric": "success",
+      "observed_delta": -0.011963023382272953,
+      "passed": false,
+      "threshold": 0.0
+    },
+    "stop_error": {
+      "comparison": "at_most",
+      "metric": "stop_error",
+      "observed_delta": 0.0016313213703099405,
+      "passed": false,
+      "threshold": 0.0
+    }
+  },
+  "loso": [
+    {
+      "deltas": {
+        "collisions": 0.001622309978437457,
+        "distance_to_goal": 0.14713158899074316,
+        "ndtw": -0.000738091102240597,
+        "oracle_success": -0.010081915563957152,
+        "path_length": -0.30855856876217047,
+        "sdtw": -0.008016521186655074,
+        "spl": -0.009110417621164083,
+        "steps_taken": -1.7328292375551355,
+        "stop_error": 0.003780718336483932,
+        "success": -0.013862633900441084
+      },
+      "omitted_scene": "mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "remaining_episodes": 1587
+    },
+    {
+      "deltas": {
+        "collisions": -0.0018370598519653369,
+        "distance_to_goal": 0.11949995054552952,
+        "ndtw": 0.0007832145032786435,
+        "oracle_success": -0.01,
+        "path_length": -0.4156600639555189,
+        "sdtw": -0.0067617823411849284,
+        "spl": -0.007409290051041376,
+        "steps_taken": -2.6066666666666665,
+        "stop_error": 0.0011111111111111111,
+        "success": -0.011111111111111112
+      },
+      "omitted_scene": "mp3d/8194nk5LbLH/8194nk5LbLH.glb",
+      "remaining_episodes": 1800
+    },
+    {
+      "deltas": {
+        "collisions": -0.0032714583900162885,
+        "distance_to_goal": 0.13356260845779186,
+        "ndtw": 0.0008322488575961815,
+        "oracle_success": -0.009373169302870533,
+        "path_length": -0.3573120854092259,
+        "sdtw": -0.006097998903210731,
+        "spl": -0.007566416960139261,
+        "steps_taken": -2.30697129466901,
+        "stop_error": 0.0029291154071470417,
+        "success": -0.012302284710017574
+      },
+      "omitted_scene": "mp3d/EU6Fwq7SyZv/EU6Fwq7SyZv.glb",
+      "remaining_episodes": 1707
+    },
+    {
+      "deltas": {
+        "collisions": -0.0017472024436687899,
+        "distance_to_goal": 0.11138173168750876,
+        "ndtw": -7.516670340414395e-05,
+        "oracle_success": -0.005681818181818182,
+        "path_length": -0.4300790143133414,
+        "sdtw": -0.0052356116667512664,
+        "spl": -0.006250695186449092,
+        "steps_taken": -2.601641414141414,
+        "stop_error": 0.003787878787878788,
+        "success": -0.00946969696969697
+      },
+      "omitted_scene": "mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "remaining_episodes": 1584
+    },
+    {
+      "deltas": {
+        "collisions": -0.0024820856402126184,
+        "distance_to_goal": 0.16550562257804569,
+        "ndtw": 0.0008125081379919653,
+        "oracle_success": -0.011428571428571429,
+        "path_length": -0.5379396886674185,
+        "sdtw": -0.008635030204207498,
+        "spl": -0.008461922964809153,
+        "steps_taken": -3.726984126984127,
+        "stop_error": 0.0038095238095238095,
+        "success": -0.015238095238095238
+      },
+      "omitted_scene": "mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "remaining_episodes": 1575
+    },
+    {
+      "deltas": {
+        "collisions": -0.00039156944850761763,
+        "distance_to_goal": 0.1414581323689721,
+        "ndtw": 0.002899665087576982,
+        "oracle_success": -0.011189634864546525,
+        "path_length": -0.5466115047850233,
+        "sdtw": -0.0071139370452304625,
+        "spl": -0.006852245202028927,
+        "steps_taken": -3.2149587750294466,
+        "stop_error": 0.0017667844522968198,
+        "success": -0.012956419316843345
+      },
+      "omitted_scene": "mp3d/X7HyMhZNoso/X7HyMhZNoso.glb",
+      "remaining_episodes": 1698
+    },
+    {
+      "deltas": {
+        "collisions": -0.0018153411872603876,
+        "distance_to_goal": 0.11693210970566031,
+        "ndtw": 0.0014816246572018374,
+        "oracle_success": -0.01011904761904762,
+        "path_length": -0.32244987062045505,
+        "sdtw": -0.006294390375838145,
+        "spl": -0.006988161212324432,
+        "steps_taken": -2.156547619047619,
+        "stop_error": 0.0017857142857142857,
+        "success": -0.011904761904761904
+      },
+      "omitted_scene": "mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "remaining_episodes": 1680
+    },
+    {
+      "deltas": {
+        "collisions": -0.0038860382304632293,
+        "distance_to_goal": 0.1439100729411403,
+        "ndtw": 0.0017658426560959164,
+        "oracle_success": -0.009626955475330927,
+        "path_length": -0.4764644732400685,
+        "sdtw": -0.006032135657067358,
+        "spl": -0.006509562427520231,
+        "steps_taken": -3.0734055354993983,
+        "stop_error": 0.0012033694344163659,
+        "success": -0.010830324909747292
+      },
+      "omitted_scene": "mp3d/oLBMNvg9in8/oLBMNvg9in8.glb",
+      "remaining_episodes": 1662
+    },
+    {
+      "deltas": {
+        "collisions": -0.002241451459030467,
+        "distance_to_goal": 0.1364701533672706,
+        "ndtw": 0.0008048687206481557,
+        "oracle_success": -0.009884678747940691,
+        "path_length": -0.43439708628018175,
+        "sdtw": -0.006383616129338508,
+        "spl": -0.006785936131180641,
+        "steps_taken": -2.7122460186710597,
+        "stop_error": 0.001098297638660077,
+        "success": -0.010982976386600769
+      },
+      "omitted_scene": "mp3d/pLe4wQe7qrG/pLe4wQe7qrG.glb",
+      "remaining_episodes": 1821
+    },
+    {
+      "deltas": {
+        "collisions": -0.001981511763651332,
+        "distance_to_goal": 0.13948693524919575,
+        "ndtw": 0.0018196628333847227,
+        "oracle_success": -0.013816925734024179,
+        "path_length": -0.47182558045417466,
+        "sdtw": -0.006319633334264265,
+        "spl": -0.006367148123485891,
+        "steps_taken": -2.9671848013816926,
+        "stop_error": -0.002302820955670697,
+        "success": -0.011514104778353483
+      },
+      "omitted_scene": "mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "remaining_episodes": 1737
+    },
+    {
+      "deltas": {
+        "collisions": -0.0023206721844059924,
+        "distance_to_goal": 0.16333081429464774,
+        "ndtw": 0.0031802736054578487,
+        "oracle_success": -0.012345679012345678,
+        "path_length": -0.6106054686818362,
+        "sdtw": -0.003509981292771663,
+        "spl": -0.003572847498482738,
+        "steps_taken": -4.032488628979857,
+        "stop_error": -0.000649772579597141,
+        "success": -0.011695906432748537
+      },
+      "omitted_scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "remaining_episodes": 1539
+    }
+  ],
+  "paired": {
+    "baseline": {
+      "cache_missing_count": 6,
+      "cache_missing_rate": 0.0032626427406199023,
+      "episodes": 1839,
+      "metrics": {
+        "collisions": 0.10290545140223005,
+        "distance_to_goal": 3.8526615362660985,
+        "ndtw": 0.6448528169328026,
+        "oracle_success": 0.7330070690592714,
+        "path_length": 13.151089629250547,
+        "sdtw": 0.5386830443255204,
+        "spl": 0.5531351176283706,
+        "steps_taken": 92.66612289287656,
+        "stop_error": 0.06797172376291463,
+        "success": 0.6650353452963567
+      }
+    },
+    "baseline_label": "nav4-iter500",
+    "bootstrap": {
+      "collisions": {
+        "lower_95": -0.00989579455104858,
+        "point_delta": -0.0018630599245770714,
+        "upper_95": 0.006042286671756728
+      },
+      "distance_to_goal": {
+        "lower_95": 0.056942757604910334,
+        "point_delta": 0.13766593840165653,
+        "upper_95": 0.24738112920365496
+      },
+      "ndtw": {
+        "lower_95": -0.005101991791542273,
+        "point_delta": 0.0012337233922584555,
+        "upper_95": 0.0075383565068077255
+      },
+      "oracle_success": {
+        "lower_95": -0.02167648490031851,
+        "point_delta": -0.010331702011963024,
+        "upper_95": 0.001199094778231468
+      },
+      "path_length": {
+        "lower_95": -1.0093204018560111,
+        "point_delta": -0.4452620161947444,
+        "upper_95": 0.04558948110393202
+      },
+      "sdtw": {
+        "lower_95": -0.01317588974728187,
+        "point_delta": -0.006409960445669897,
+        "upper_95": 0.0004185739080223352
+      },
+      "spl": {
+        "lower_95": -0.014328664020538541,
+        "point_delta": -0.006908597753254923,
+        "upper_95": 0.00016318711583001167
+      },
+      "steps_taken": {
+        "lower_95": -6.6974995836975975,
+        "point_delta": -2.820010875475802,
+        "upper_95": 0.5323386746136699
+      },
+      "stop_error": {
+        "lower_95": -0.007656967840735069,
+        "point_delta": 0.0016313213703099511,
+        "upper_95": 0.014947683109118086
+      },
+      "success": {
+        "lower_95": -0.021191547363180456,
+        "point_delta": -0.011963023382272975,
+        "upper_95": -0.00410784579270495
+      }
+    },
+    "bootstrap_repetitions": 10000,
+    "bootstrap_seed": 42,
+    "candidate": {
+      "cache_missing_count": 6,
+      "cache_missing_rate": 0.0032626427406199023,
+      "episodes": 1839,
+      "metrics": {
+        "collisions": 0.10104239147765295,
+        "distance_to_goal": 3.990327474667755,
+        "ndtw": 0.6460865403250611,
+        "oracle_success": 0.7226753670473083,
+        "path_length": 12.705827613055803,
+        "sdtw": 0.5322730838798505,
+        "spl": 0.5462265198751157,
+        "steps_taken": 89.84611201740076,
+        "stop_error": 0.06960304513322457,
+        "success": 0.6530723219140837
+      }
+    },
+    "candidate_label": "rtg-iter500",
+    "contrast": "rtg-iter500 - nav4-iter500",
+    "deltas": {
+      "collisions": -0.0018630599245770957,
+      "distance_to_goal": 0.13766593840165653,
+      "ndtw": 0.0012337233922584678,
+      "oracle_success": -0.010331702011963095,
+      "path_length": -0.4452620161947447,
+      "sdtw": -0.006409960445669882,
+      "spl": -0.006908597753254919,
+      "steps_taken": -2.820010875475802,
+      "stop_error": 0.0016313213703099405,
+      "success": -0.011963023382272953
+    },
+    "expected_episodes": 1839,
+    "scenes": 11,
+    "schema_version": 1
+  },
+  "schema_version": "grpo-nav4-rtg-endpoint-v1",
+  "selected_endpoint_is_secondary_only": true
+}
