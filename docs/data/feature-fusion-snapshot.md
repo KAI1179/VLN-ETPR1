@@ -39,9 +39,9 @@ fusion work.
 
 ## Snapshot contents
 
-The transfer script copies the previously transferred checkpoint bundle from
-the old remote directory after verifying all three canonical checkpoint
-SHA-256 identities. It then packages these complete cache namespaces,
+The transfer script first verifies all three canonical checkpoint SHA-256
+identities under `/data/xukai/etp-r1-snapshot/checkpoints/`. It then packages
+these complete cache namespaces,
 including boxes, rasters, predictions, status records, and pretraining entries:
 
 ```text

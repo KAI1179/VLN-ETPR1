@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_root="${REPO_ROOT:-${HOME}/ETP-R1}"
 destination_host="${DESTINATION_HOST:-VIPL-xukai}"
-old_destination="/data/xukai/etp-r1-prior/dagger-files"
 destination="/data/xukai/etp-r1-snapshot"
 stage_dir="${STAGE_DIR:-${repo_root}/.transfer-staging/feature-fusion-snapshot}"
 archive_name="cognitive-map-caches.full.tar"
@@ -58,11 +57,11 @@ for path in "${required_paths[@]}"; do
   }
 done
 
-ssh "${destination_host}" "test -d '${old_destination}'" || {
-  echo "missing completed checkpoint bundle: ${destination_host}:${old_destination}" >&2
+ssh "${destination_host}" "test -d '${destination}/checkpoints'" || {
+  echo "missing checkpoint bundle: ${destination_host}:${destination}/checkpoints" >&2
   exit 1
 }
-verify_remote_checkpoints "${old_destination}"
+verify_remote_checkpoints "${destination}/checkpoints"
 
 mkdir -p "${stage_dir}"
 if test -f "${archive}" && test -f "${checksums}"; then
@@ -83,18 +82,7 @@ else
   )
 fi
 
-ssh "${destination_host}" \
-  "mkdir -p '${destination}/artifacts' && rsync -a --checksum --partial --append-verify '${old_destination}/' '${destination}/'"
-verify_remote_checkpoints "${destination}"
-copy_changes="$(
-  ssh "${destination_host}" \
-    "rsync -a --checksum --dry-run --itemize-changes '${old_destination}/' '${destination}/'"
-)"
-if test -n "${copy_changes}"; then
-  echo "checkpoint bundle differs after server-side copy:" >&2
-  echo "${copy_changes}" >&2
-  exit 1
-fi
+ssh "${destination_host}" "mkdir -p '${destination}/artifacts'"
 
 rsync -ah --partial --append-verify --info=progress2 \
   "${readme}" "${destination_host}:${destination}/CHECKOUTS.md"
