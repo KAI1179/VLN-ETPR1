@@ -293,7 +293,7 @@ def _forward(
 
 
 def main() -> None:
-    args = Arguments().parse_args()
+    args = Arguments(underscores_to_dashes=True).parse_args()
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     state = _validate_checkpoint(args)
