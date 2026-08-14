@@ -22,6 +22,7 @@ class OnlineFusionLocalLauncherTest(unittest.TestCase):
         )
         self.assertIn("--navigation-architecture online_fusion", pretrain)
         self.assertIn("--optimizer-profile online_fusion", pretrain)
+        self.assertIn("--online-recovery-loss-weight 0.1", pretrain)
         self.assertIn("--cognitive-map-target-namespace", pretrain)
         self.assertIn("llm_grid_online_fusion_dagger", dagger)
         self.assertIn("PRETRAINED_CHECKPOINT EXP_NAME", dagger)
@@ -43,6 +44,10 @@ class OnlineFusionLocalLauncherTest(unittest.TestCase):
         )
         self.assertIn(
             "MODEL.MAP_ENCODER.online_visual_loss_weight 0.0",
+            script,
+        )
+        self.assertIn(
+            "MODEL.MAP_ENCODER.online_recovery_loss_weight 0.1",
             script,
         )
 

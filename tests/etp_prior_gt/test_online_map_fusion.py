@@ -27,6 +27,7 @@ def _inputs():
     torch.manual_seed(7)
     return {
         "gmap_embeds": torch.randn(1, 4, HIDDEN_SIZE),
+        "visual_node_embeds": torch.randn(1, 4, HIDDEN_SIZE),
         "gmap_masks": torch.ones(1, 4, dtype=torch.bool),
         "gmap_visited_masks": torch.tensor([[False, True, False, False]]),
         "new_evidence_mask": torch.tensor([[False, True, False, False]]),
@@ -70,6 +71,53 @@ class OnlineMapGraphFusionTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(updated_graph, inputs["gmap_embeds"]))
         self.assertTrue(torch.equal(updated_map, inputs["map_tokens"]))
+
+    def test_visual_node_embeds_are_required_and_exclusive_visual_head_input(self):
+        fusion = _fusion()
+        inputs = _inputs()
+
+        without_visual = dict(inputs)
+        without_visual.pop("visual_node_embeds")
+        with self.assertRaisesRegex(ValueError, "visual_node_embeds is required"):
+            fusion(**without_visual)
+
+        output = fusion(**inputs)
+        expected_logits = fusion.visual_evidence_head(inputs["visual_node_embeds"])
+        torch.testing.assert_close(
+            output.visual_logits, expected_logits, rtol=0.0, atol=0.0
+        )
+
+        changed_navigation = dict(inputs)
+        changed_navigation["gmap_embeds"] = inputs["gmap_embeds"] + 1000.0
+        changed_output = fusion(**changed_navigation)
+        torch.testing.assert_close(
+            changed_output.visual_logits,
+            output.visual_logits,
+            rtol=0.0,
+            atol=0.0,
+        )
+
+    def test_graph_residual_updates_only_ghost_nodes(self):
+        fusion = _fusion()
+        inputs = _inputs()
+        with torch.no_grad():
+            fusion.graph_residual_projection.weight.zero_()
+            fusion.graph_residual_projection.bias.fill_(1.0)
+
+        output = fusion(**inputs)
+
+        torch.testing.assert_close(
+            output.updated_gmap_embeds[:, :2],
+            inputs["gmap_embeds"][:, :2],
+            rtol=0.0,
+            atol=0.0,
+        )
+        torch.testing.assert_close(
+            output.updated_gmap_embeds[:, 2:],
+            inputs["gmap_embeds"][:, 2:] + 1.0,
+            rtol=0.0,
+            atol=0.0,
+        )
 
     def test_rich_output_shapes_masks_and_optional_dense_decoder(self):
         fusion = _fusion()
@@ -217,6 +265,7 @@ class OnlineMapGraphFusionTest(unittest.TestCase):
         _enable_residual_paths(fusion)
         inputs = _inputs()
         inputs["gmap_embeds"].requires_grad_()
+        inputs["visual_node_embeds"].requires_grad_()
         inputs["map_tokens"].requires_grad_()
 
         output = fusion(**inputs, decode_dense_grid=True)
@@ -231,6 +280,7 @@ class OnlineMapGraphFusionTest(unittest.TestCase):
         loss.backward()
 
         self.assertIsNotNone(inputs["gmap_embeds"].grad)
+        self.assertIsNotNone(inputs["visual_node_embeds"].grad)
         self.assertIsNotNone(inputs["map_tokens"].grad)
         self.assertIsNotNone(fusion.map_from_graph_attention.in_proj_weight.grad)
         self.assertIsNotNone(fusion.graph_from_map_attention.in_proj_weight.grad)

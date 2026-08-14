@@ -1,5 +1,6 @@
 import unittest
 
+import torch
 from torch import nn
 
 from vlnce_baselines.models.optimizer_profiles import (
@@ -16,6 +17,8 @@ class _OnlineFusion(nn.Module):
         self.visual_evidence_head = nn.Linear(2, 2)
         self.visual_category_projection = nn.Linear(2, 2)
         self.map_updater = nn.Linear(2, 2)
+        self.norm = nn.LayerNorm(2)
+        self.scale = nn.Parameter(torch.ones(2))
 
 
 class _PretrainModel(nn.Module):
@@ -129,6 +132,28 @@ class OptimizerProfileTest(unittest.TestCase):
         summary = optimizer_profile_summary(scales, model.named_parameters())
         self.assertIn("parameters=", summary)
         self.assertIn("map_encoder.weight (4)", summary)
+
+    def test_layer_norm_and_all_one_dimensional_parameters_have_no_decay(self):
+        model = _PretrainModel()
+        scales = configure_pretrain_optimizer_profile(model, "online_fusion")
+        groups = build_lr_parameter_groups(
+            model.named_parameters(),
+            scales,
+            learning_rate=1e-4,
+            weight_decay=0.01,
+        )
+        decay_by_name = {
+            name: group["weight_decay"]
+            for group in groups
+            for name in group["profile_names"]
+        }
+
+        prefix = "bert.global_encoder.graph_map_attention."
+        self.assertEqual(decay_by_name[prefix + "map_updater.weight"], 0.01)
+        self.assertEqual(decay_by_name[prefix + "map_updater.bias"], 0.0)
+        self.assertEqual(decay_by_name[prefix + "norm.weight"], 0.0)
+        self.assertEqual(decay_by_name[prefix + "norm.bias"], 0.0)
+        self.assertEqual(decay_by_name[prefix + "scale"], 0.0)
 
     def test_unknown_optimizer_profile_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown optimizer profile"):
