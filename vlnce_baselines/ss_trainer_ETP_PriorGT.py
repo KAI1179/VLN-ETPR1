@@ -149,26 +149,17 @@ class RLTrainer(BaseVLNCETrainer):
                 resize_config.append((camera_template.lower(), resizer_size))
                 crop_config.append((camera_template.lower(), cropper_size))
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
-        use_online_visual_targets = (
+        online_visual_targets_requested = (
             map_cfg is not None
             and getattr(map_cfg, "enabled", False)
             and getattr(map_cfg, "architecture", "") == "online_fusion"
             and getattr(map_cfg, "online_visual_loss_weight", 0.0) > 0
         )
-        if use_online_visual_targets:
-            semantic_template = deepcopy(task_config.SIMULATOR.SEMANTIC_SENSOR)
-            depth_template = task_config.SIMULATOR.DEPTH_SENSOR
-            for field in ("WIDTH", "HEIGHT", "HFOV", "POSITION"):
-                setattr(semantic_template, field, deepcopy(getattr(depth_template, field)))
-            semantic_orientations = {"0": [0.0, 0.0, 0.0]}
-            semantic_orientations.update(camera_orientations)
-            for action, orient in semantic_orientations.items():
-                camera_template = f"SEMANTIC_{action}"
-                camera_config = deepcopy(semantic_template)
-                camera_config.ORIENTATION = orient
-                camera_config.UUID = camera_template.lower()
-                setattr(task_config.SIMULATOR, camera_template, camera_config)
-                task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
+        if online_visual_targets_requested:
+            raise ValueError(
+                "OnlineFusion runtime freezes the pretrained VisualEvidenceHead; "
+                "MODEL.MAP_ENCODER.online_visual_loss_weight must be 0"
+            )
         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
             crop_config
@@ -337,6 +328,11 @@ class RLTrainer(BaseVLNCETrainer):
             online_weights = self._online_fusion_loss_weights(map_cfg)
             if not any(online_weights.__dict__.values()):
                 raise ValueError("At least one OnlineFusion loss must be enabled")
+            if online_weights.visual:
+                raise ValueError(
+                    "OnlineFusion DAgger keeps the pretrained VisualEvidenceHead "
+                    "frozen; MODEL.MAP_ENCODER.online_visual_loss_weight must be 0"
+                )
 
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
@@ -1213,7 +1209,7 @@ class RLTrainer(BaseVLNCETrainer):
         return OnlineFusionLossWeights(
             grid=getattr(map_cfg, "online_grid_loss_weight", 0.3),
             state=getattr(map_cfg, "online_state_loss_weight", 0.05),
-            visual=getattr(map_cfg, "online_visual_loss_weight", 0.2),
+            visual=getattr(map_cfg, "online_visual_loss_weight", 0.0),
             progress=getattr(map_cfg, "online_progress_loss_weight", 0.1),
             ghost=getattr(map_cfg, "online_ghost_loss_weight", 0.1),
         )

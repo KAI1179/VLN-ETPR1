@@ -133,7 +133,7 @@ The navigation architecture with one-way graph queries over fixed map tokens, `d
 _Avoid_: Try5-like when the implementation satisfies this complete contract
 
 **Online-fusion architecture**:
-The navigation architecture that recurrently updates the complete cognitive-map token state from visited graph nodes without graph-to-grid coordinate alignment, then lets every ghost query the updated map. It uses `direction5` metadata and dense cognitive-map, visual-evidence, progress, recovery, and ghost-ranking supervision during training.
+The navigation architecture that recurrently updates the complete cognitive-map token state from visited graph nodes without graph-to-grid coordinate alignment, then lets every ghost query the updated map. It uses `direction5` metadata and dense cognitive-map, progress, recovery, and ghost-ranking supervision during training. Visual-evidence supervision is pretraining-only; DAgger freezes the pretrained visual-evidence head and does not enable semantic sensors.
 _Avoid_: Try5 when map tokens are updated, online LLM when the LLM is not in the rollout
 
 **Cognitive-map source**:

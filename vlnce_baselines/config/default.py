@@ -218,7 +218,7 @@ _C.MODEL.MAP_ENCODER.target_namespace = ""
 _C.MODEL.MAP_ENCODER.require_complete_pretrained_modules = False
 _C.MODEL.MAP_ENCODER.online_grid_loss_weight = 0.3
 _C.MODEL.MAP_ENCODER.online_state_loss_weight = 0.05
-_C.MODEL.MAP_ENCODER.online_visual_loss_weight = 0.2
+_C.MODEL.MAP_ENCODER.online_visual_loss_weight = 0.0
 _C.MODEL.MAP_ENCODER.online_progress_loss_weight = 0.1
 _C.MODEL.MAP_ENCODER.online_ghost_loss_weight = 0.1
 

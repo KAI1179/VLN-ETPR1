@@ -30,6 +30,9 @@ _DAGGER_ONE_X_PARTS = (
     ".vln_bert.graph_map_attention.",
     ".online_fusion.",
 )
+_DAGGER_FROZEN_PARTS = (
+    ".graph_map_attention.visual_evidence_head.",
+)
 _DAGGER_POINT_ONE_X_PARTS = (
     ".map_encoder.",
     ".vln_bert.global_encoder.",
@@ -64,14 +67,28 @@ def configure_dagger_optimizer_profile(
 ) -> Dict[str, float]:
     """Set DAgger ``requires_grad`` and return the LR scale per tensor."""
 
-    return _configure_profile(
+    scales = _configure_profile(
         policy,
         profile,
-        one_x_match=lambda name: any(part in f".{name}" for part in _DAGGER_ONE_X_PARTS),
-        point_one_x_match=lambda name: any(
-            part in f".{name}" for part in _DAGGER_POINT_ONE_X_PARTS
+        one_x_match=lambda name: (
+            not _matches_any_part(name, _DAGGER_FROZEN_PARTS)
+            and _matches_any_part(name, _DAGGER_ONE_X_PARTS)
+        ),
+        point_one_x_match=lambda name: (
+            not _matches_any_part(name, _DAGGER_FROZEN_PARTS)
+            and _matches_any_part(name, _DAGGER_POINT_ONE_X_PARTS)
         ),
     )
+    for name, parameter in policy.named_parameters():
+        if _matches_any_part(name, _DAGGER_FROZEN_PARTS):
+            parameter.requires_grad_(False)
+            scales.pop(name, None)
+    return scales
+
+
+def _matches_any_part(name: str, parts: Tuple[str, ...]) -> bool:
+    normalized_name = f".{_without_distributed_prefix(name)}"
+    return any(part in normalized_name for part in parts)
 
 
 def _configure_profile(model, profile, one_x_match, point_one_x_match):

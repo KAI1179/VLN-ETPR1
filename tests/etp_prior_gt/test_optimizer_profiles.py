@@ -10,6 +10,14 @@ from vlnce_baselines.models.optimizer_profiles import (
 )
 
 
+class _OnlineFusion(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.visual_evidence_head = nn.Linear(2, 2)
+        self.visual_category_projection = nn.Linear(2, 2)
+        self.map_updater = nn.Linear(2, 2)
+
+
 class _PretrainModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -18,7 +26,7 @@ class _PretrainModel(nn.Module):
         self.bert.img_embeddings = nn.Linear(2, 2)
         self.bert.global_encoder = nn.Module()
         self.bert.global_encoder.encoder = nn.Linear(2, 2)
-        self.bert.global_encoder.graph_map_attention = nn.Linear(2, 2)
+        self.bert.global_encoder.graph_map_attention = _OnlineFusion()
         self.map_encoder = nn.Linear(2, 2)
         self.graph_query_text = nn.Linear(2, 2)
         self.global_sap_head = nn.Linear(2, 2)
@@ -34,7 +42,7 @@ class _RuntimePolicy(nn.Module):
         self.net.vln_bert.lang_encoder = nn.Linear(2, 2)
         self.net.vln_bert.img_embeddings = nn.Linear(2, 2)
         self.net.vln_bert.global_encoder = nn.Linear(2, 2)
-        self.net.vln_bert.graph_map_attention = nn.Linear(2, 2)
+        self.net.vln_bert.graph_map_attention = _OnlineFusion()
         self.net.vln_bert.graph_query_text = nn.Linear(2, 2)
         self.net.vln_bert.graph_attentioned_txt_embeds_transform = nn.Linear(2, 2)
         self.net.vln_bert.global_sap_head = nn.Linear(2, 2)
@@ -47,7 +55,13 @@ class OptimizerProfileTest(unittest.TestCase):
 
         self.assertEqual(scales["map_encoder.weight"], 1.0)
         self.assertEqual(
-            scales["bert.global_encoder.graph_map_attention.weight"], 1.0
+            scales[
+                "bert.global_encoder.graph_map_attention.visual_evidence_head.weight"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            scales["bert.global_encoder.graph_map_attention.map_updater.weight"], 1.0
         )
         self.assertEqual(scales["bert.global_encoder.encoder.weight"], 0.1)
         self.assertEqual(scales["global_sap_head.weight"], 0.1)
@@ -59,12 +73,40 @@ class OptimizerProfileTest(unittest.TestCase):
         scales = configure_dagger_optimizer_profile(policy, "online_fusion")
 
         self.assertEqual(
-            scales["net.vln_bert.graph_map_attention.weight"], 1.0
+            scales["net.vln_bert.graph_map_attention.map_updater.weight"], 1.0
+        )
+        self.assertEqual(
+            scales[
+                "net.vln_bert.graph_map_attention.visual_category_projection.weight"
+            ],
+            1.0,
+        )
+        self.assertNotIn(
+            "net.vln_bert.graph_map_attention.visual_evidence_head.weight",
+            scales,
+        )
+        self.assertFalse(
+            policy.net.vln_bert.graph_map_attention.visual_evidence_head.weight.requires_grad
         )
         self.assertEqual(scales["net.map_encoder.weight"], 0.1)
         self.assertEqual(scales["net.vln_bert.global_encoder.weight"], 0.1)
         self.assertFalse(policy.net.vln_bert.lang_encoder.weight.requires_grad)
         self.assertFalse(policy.net.vln_bert.img_embeddings.weight.requires_grad)
+
+    def test_dagger_full_profile_also_freezes_visual_evidence_head(self):
+        policy = _RuntimePolicy()
+        scales = configure_dagger_optimizer_profile(policy, "full")
+
+        self.assertNotIn(
+            "net.vln_bert.graph_map_attention.visual_evidence_head.weight",
+            scales,
+        )
+        self.assertFalse(
+            policy.net.vln_bert.graph_map_attention.visual_evidence_head.weight.requires_grad
+        )
+        self.assertTrue(
+            policy.net.vln_bert.graph_map_attention.map_updater.weight.requires_grad
+        )
 
     def test_lr_groups_preserve_scale_and_cover_trainable_parameters(self):
         model = _PretrainModel()

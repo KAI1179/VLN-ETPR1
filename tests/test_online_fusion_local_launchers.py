@@ -41,6 +41,10 @@ class OnlineFusionLocalLauncherTest(unittest.TestCase):
             "MODEL.MAP_ENCODER.require_complete_pretrained_modules True",
             script,
         )
+        self.assertIn(
+            "MODEL.MAP_ENCODER.online_visual_loss_weight 0.0",
+            script,
+        )
 
 
 if __name__ == "__main__":

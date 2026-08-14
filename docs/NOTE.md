@@ -931,6 +931,7 @@ Drop Rate By `max_new_tokens`:
 
 - [详细记录：方案与实现状态](daily/2026-08-13.md)
 - [监督核对：视觉语义缓存、损失与进度标签](../upload_files/06_视觉语义缓存与损失监督核对.md)
+- [辅助损失说明：状态、进度与 Ghost](../upload_files/07_状态进度与Ghost损失说明.md)
 - 已按 05 方案接通 `online_fusion` 的预训练和 DAgger：视觉拓扑图全局更新认知
   地图，更新地图为全部 ghost 提供长时程价值，并联合训练地图、视觉证据、进度、
   偏航恢复和动作目标；前端 encoder 不变且固定。

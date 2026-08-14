@@ -15,9 +15,10 @@ Navigation candidates are identified by two independent dimensions:
 
 The architecture derives the required metadata and supervision contract. `current`
 uses `path5` metadata and requires box targets. `try5` uses `direction5` metadata
-and requires only the raster cache. `online_fusion` uses `direction5` metadata;
-training additionally requires dense cognitive-map targets and visual semantic
-evidence, while evaluation and inference use neither target. Cache namespaces
+and requires only the raster cache. `online_fusion` uses `direction5` metadata.
+Pretraining additionally requires dense cognitive-map targets and visual semantic
+evidence. DAgger freezes the pretrained visual-evidence head and does not request
+semantic sensors; evaluation and inference likewise use no semantic target. Cache namespaces
 and LLM model keys identify artifacts; they do not select model architecture.
 
 Only supported architecture/source pairs are accepted. Launchers, pretraining,
