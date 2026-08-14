@@ -1631,6 +1631,8 @@ class RLTrainer(BaseVLNCETrainer):
             self._online_fusion_loss_weights(map_cfg) if online_fusion else None
         )
         online_map_state = None
+        online_initial_map_tokens = None
+        online_map_token_masks = None
         consumed_views = [set() for _ in range(self.envs.num_envs)]
         route_progress = [0 for _ in range(self.envs.num_envs)]
         if self._should_load_cognitive_maps(mode, map_cfg):
@@ -1736,15 +1738,23 @@ class RLTrainer(BaseVLNCETrainer):
                     mode == "train" and online_weights.grid > 0
                 )
 
-            map_aux_loss = self._prepare_map_inputs(
-                nav_inputs,
-                txt_embeds,
-                txt_masks,
-                cognitive_maps,
-                map_cfg,
-                mode,
-                stepk,
-            )
+            if online_fusion and online_initial_map_tokens is not None:
+                nav_inputs["map_tokens"] = online_initial_map_tokens
+                nav_inputs["map_token_masks"] = online_map_token_masks
+                map_aux_loss = None
+            else:
+                map_aux_loss = self._prepare_map_inputs(
+                    nav_inputs,
+                    txt_embeds,
+                    txt_masks,
+                    cognitive_maps,
+                    map_cfg,
+                    mode,
+                    stepk,
+                )
+                if online_fusion:
+                    online_initial_map_tokens = nav_inputs["map_tokens"]
+                    online_map_token_masks = nav_inputs["map_token_masks"]
 
             nav_outs = self.policy.net(**nav_inputs)
             if online_fusion:
@@ -1981,6 +1991,21 @@ class RLTrainer(BaseVLNCETrainer):
                                 (
                                     online_map_state[:i],
                                     online_map_state[i + 1 :],
+                                ),
+                                dim=0,
+                            )
+                        if online_initial_map_tokens is not None:
+                            online_initial_map_tokens = torch.cat(
+                                (
+                                    online_initial_map_tokens[:i],
+                                    online_initial_map_tokens[i + 1 :],
+                                ),
+                                dim=0,
+                            )
+                            online_map_token_masks = torch.cat(
+                                (
+                                    online_map_token_masks[:i],
+                                    online_map_token_masks[i + 1 :],
                                 ),
                                 dim=0,
                             )
