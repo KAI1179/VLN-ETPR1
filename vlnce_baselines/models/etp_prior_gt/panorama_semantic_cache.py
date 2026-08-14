@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 import h5py
+import numpy as np
 from prior import MP3D_DIR
 from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
 from vlnce_baselines.models.etp_prior_gt.semantic_panorama import (
@@ -33,6 +34,18 @@ class PanoramaSemanticCacheArgs:
             raise FileNotFoundError(self.connectivity_dir)
         if self.output_file.exists():
             raise FileExistsError(self.output_file)
+
+
+def _agent_pose_from_connectivity(
+    pose: Sequence[float],
+) -> Tuple[np.ndarray, np.ndarray]:
+    if len(pose) < 12:
+        raise ValueError(f"Connectivity pose must contain at least 12 values: {pose}")
+    position = np.asarray((pose[3], pose[7], pose[11]), dtype=np.float32)
+    if not np.isfinite(position).all():
+        raise ValueError(f"Connectivity pose has a non-finite position: {pose}")
+    rotation = np.asarray((0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+    return position, rotation
 
 
 def _parse_args(argv: Optional[Sequence[str]]) -> PanoramaSemanticCacheArgs:
@@ -114,9 +127,10 @@ def generate_panorama_semantic_cache(args: PanoramaSemanticCacheArgs) -> int:
                         if not viewpoint.get("included", False):
                             continue
                         pose = viewpoint["pose"]
+                        position, rotation = _agent_pose_from_connectivity(pose)
                         observations = simulator.get_observations_at(
-                            position=[pose[3], pose[7], pose[11]],
-                            rotation=[0.0, 0.0, 0.0, 1.0],
+                            position=position,
+                            rotation=rotation,
                             keep_agent_at_new_pose=True,
                         )
                         if observations is None:
