@@ -24,6 +24,8 @@ class OnlineFusionLocalLauncherTest(unittest.TestCase):
         self.assertIn("--optimizer-profile online_fusion", pretrain)
         self.assertIn("--cognitive-map-target-namespace", pretrain)
         self.assertIn("llm_grid_online_fusion_dagger", dagger)
+        self.assertIn("PRETRAINED_CHECKPOINT EXP_NAME", dagger)
+        self.assertIn("LLM_GRID_ONLINE_FUSION_EXP_NAME", dagger)
 
     def test_main_server_uses_torch_1_13_compatible_process_flag(self):
         script = (ROOT / "run_r2r/main_server.bash").read_text()

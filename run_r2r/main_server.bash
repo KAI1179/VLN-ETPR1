@@ -58,6 +58,7 @@ LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/st
 LLM_GRID_ONLINE_FUSION_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
 LLM_GRID_ONLINE_FUSION_TARGET_NAMESPACE="gt.legacy.r1p5.direction5.v1"
 LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT="${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT:-}"
+LLM_GRID_ONLINE_FUSION_EXP_NAME="${LLM_GRID_ONLINE_FUSION_EXP_NAME:-release_r2r_llm_grid_online_fusion_dagger}"
 
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
@@ -302,7 +303,7 @@ case $mode in
       llm_grid_online_fusion_dagger)
       echo "###### LLM-Grid OnlineFusion DAgger ######"
       require_checkpoint "${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT}"
-      launch "--exp_name release_r2r_llm_grid_online_fusion_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_ONLINE_FUSION_MODEL_ARGS} ${DAGGER_ARGS} IL.optimizer_profile online_fusion"
+      launch "--exp_name ${LLM_GRID_ONLINE_FUSION_EXP_NAME} --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_ONLINE_FUSION_MODEL_ARGS} ${DAGGER_ARGS} IL.optimizer_profile online_fusion"
       ;;
       llm_grid_try5_eval_dagger)
       echo "###### LLM-Grid Try5 DAgger eval ######"
@@ -339,4 +340,4 @@ esac
 # bash run_r2r/main_server.bash imagined_eval_grpo
 # bash run_r2r/main_server.bash llm_boxes_current_dagger
 # bash run_r2r/main_server.bash llm_grid_try5_dagger
-# LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT=<checkpoint> bash run_r2r/main_server.bash llm_grid_online_fusion_dagger
+# LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT=<checkpoint> LLM_GRID_ONLINE_FUSION_EXP_NAME=<name> bash run_r2r/main_server.bash llm_grid_online_fusion_dagger
