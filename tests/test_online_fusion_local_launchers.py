@@ -27,9 +27,14 @@ class OnlineFusionLocalLauncherTest(unittest.TestCase):
 
     def test_main_server_uses_torch_1_13_compatible_process_flag(self):
         script = (ROOT / "run_r2r/main_server.bash").read_text()
+        pretrain_script = (
+            ROOT / "pretrain_src/run_pt/run_mix_server.bash"
+        ).read_text()
 
         self.assertIn('--nproc_per_node="${NPROC_PER_NODE}"', script)
         self.assertNotIn("--nproc-per-node", script)
+        self.assertIn('--nproc_per_node="${NUM_GPUS}"', pretrain_script)
+        self.assertNotIn("--nproc-per-node", pretrain_script)
         self.assertIn(
             "MODEL.MAP_ENCODER.require_complete_pretrained_modules True",
             script,
