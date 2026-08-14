@@ -231,6 +231,9 @@ class OnlineMapGraphFusion(nn.Module):
         self.graph_from_map_attention = nn.MultiheadAttention(
             hidden_size, num_heads, dropout=dropout, batch_first=True
         )
+        self.graph_text_query_projection = nn.Linear(hidden_size, hidden_size)
+        self.graph_progress_query_projection = nn.Linear(hidden_size, hidden_size)
+        self.graph_query_norm = nn.LayerNorm(hidden_size)
 
         self.visual_evidence_head = nn.Sequential(
             nn.LayerNorm(hidden_size),
@@ -337,6 +340,7 @@ class OnlineMapGraphFusion(nn.Module):
     def _validate_inputs(
         self,
         gmap_embeds: torch.Tensor,
+        visual_node_embeds: Optional[torch.Tensor],
         gmap_masks: Optional[torch.Tensor],
         map_tokens: torch.Tensor,
         map_token_masks: Optional[torch.Tensor],
@@ -385,7 +389,14 @@ class OnlineMapGraphFusion(nn.Module):
                 "gmap_embeds and map_tokens must have the same dtype, "
                 f"got {gmap_embeds.dtype} and {map_tokens.dtype}"
             )
-
+        if visual_node_embeds is None:
+            raise ValueError("visual_node_embeds is required for online_fusion")
+        if tuple(visual_node_embeds.shape) != tuple(gmap_embeds.shape):
+            raise ValueError(
+                "visual_node_embeds must have the same shape as gmap_embeds, "
+                f"got {tuple(visual_node_embeds.shape)} and "
+                f"{tuple(gmap_embeds.shape)}"
+            )
         graph_shape = (batch_size, graph_size)
         gmap_masks = self._validate_mask(
             "gmap_masks",
@@ -558,6 +569,7 @@ class OnlineMapGraphFusion(nn.Module):
         map_tokens: Optional[torch.Tensor],
         map_token_masks: Optional[torch.Tensor],
         *,
+        visual_node_embeds: Optional[torch.Tensor] = None,
         gmap_visited_masks: Optional[torch.Tensor] = None,
         gmap_step_ids: Optional[torch.Tensor] = None,
         txt_embeds: Optional[torch.Tensor] = None,
@@ -603,6 +615,7 @@ class OnlineMapGraphFusion(nn.Module):
             new_evidence_mask,
         ) = self._validate_inputs(
             gmap_embeds,
+            visual_node_embeds,
             gmap_masks,
             map_tokens,
             map_token_masks,
@@ -643,7 +656,9 @@ class OnlineMapGraphFusion(nn.Module):
             text_context = text_context * has_valid_text
             text_pool = self._masked_mean(txt_embeds, txt_masks)
 
-        visual_logits = self.visual_evidence_head(gmap_embeds)
+        # Keep graph step/task/global-position embeddings out of the semantic
+        # auxiliary head; it reads the existing panorama node representation.
+        visual_logits = self.visual_evidence_head(visual_node_embeds)
         visual_context = self.visual_category_projection(torch.sigmoid(visual_logits))
         normalized_steps = torch.log1p(
             gmap_step_ids.to(dtype=gmap_embeds.dtype)
@@ -747,25 +762,39 @@ class OnlineMapGraphFusion(nn.Module):
             dim=1,
         )
 
+        map_pool = self._masked_mean(updated_spatial_tokens, spatial_masks)
+        progress_hidden = self.progress_encoder(
+            torch.cat([visited_pool, map_pool, current_pool, text_pool], dim=-1)
+        )
+        graph_queries = self.graph_query_norm(
+            gmap_embeds
+            + self.graph_text_query_projection(text_pool).unsqueeze(1)
+            + self.graph_progress_query_projection(progress_hidden).unsqueeze(1)
+        )
         graph_context, _ = self.graph_from_map_attention(
-            gmap_embeds,
+            graph_queries,
             updated_spatial_tokens,
             updated_spatial_tokens,
             key_padding_mask=spatial_key_padding_mask,
             need_weights=False,
         )
-        graph_write_mask = gmap_masks.unsqueeze(-1)
         has_valid_map = spatial_masks.any(dim=1, keepdim=True).unsqueeze(-1)
+        graph_context = graph_context * has_valid_map
+        graph_indices = torch.arange(
+            gmap_embeds.shape[1], device=gmap_embeds.device
+        ).unsqueeze(0)
+        ghost_masks = gmap_masks & valid_visited.logical_not() & (graph_indices > 0)
+        stop_masks = gmap_masks & (graph_indices == 0)
+        # Only actionable frontier entries receive the map-conditioned graph
+        # residual. Visited nodes and padding remain on the established ETP-R1
+        # path; STOP is adjusted separately by its dedicated residual head.
+        graph_write_mask = ghost_masks.unsqueeze(-1)
         updated_gmap_embeds = gmap_embeds + (
             graph_write_mask
             * has_valid_map
             * self.graph_residual_projection(graph_context)
         )
 
-        map_pool = self._masked_mean(updated_spatial_tokens, spatial_masks)
-        progress_hidden = self.progress_encoder(
-            torch.cat([visited_pool, map_pool, current_pool, text_pool], dim=-1)
-        )
         phase_logits = self.phase_head(progress_hidden)
         route_state_logits = self.route_state_head(progress_hidden)
         remaining = torch.sigmoid(self.remaining_head(progress_hidden)).squeeze(-1)
@@ -776,11 +805,6 @@ class OnlineMapGraphFusion(nn.Module):
         candidate_features = torch.cat(
             [gmap_embeds, graph_context, progress_per_node], dim=-1
         )
-        graph_indices = torch.arange(
-            gmap_embeds.shape[1], device=gmap_embeds.device
-        ).unsqueeze(0)
-        ghost_masks = gmap_masks & valid_visited.logical_not() & (graph_indices > 0)
-        stop_masks = gmap_masks & (graph_indices == 0)
         recovery_logits = (
             self.recovery_head(candidate_features).squeeze(-1) * ghost_masks
         )

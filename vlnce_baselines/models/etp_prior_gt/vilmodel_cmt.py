@@ -977,6 +977,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
                 gmap_masks,
                 map_tokens,
                 map_token_masks,
+                visual_node_embeds=gmap_img_fts,
                 gmap_visited_masks=gmap_visited_masks,
                 gmap_step_ids=gmap_step_ids,
                 txt_embeds=txt_embeds,

@@ -770,7 +770,7 @@ class GlobalMapEncoder(nn.Module):
             + self.gmap_pos_embeddings(gmap_pos_fts)
         )
         gmap_masks = gen_seq_masks(gmap_lens)
-        return gmap_embeds, gmap_masks
+        return gmap_embeds, gmap_masks, gmap_img_fts
 
     def forward(
         self,
@@ -792,7 +792,7 @@ class GlobalMapEncoder(nn.Module):
         gmap_new_evidence_masks=None,
         decode_dense_grid=False,
     ):
-        gmap_embeds, gmap_masks = self.gmap_input_embedding(
+        gmap_embeds, gmap_masks, gmap_img_fts = self.gmap_input_embedding(
             split_traj_embeds,
             split_traj_vp_lens,
             traj_vpids,
@@ -833,6 +833,7 @@ class GlobalMapEncoder(nn.Module):
                     gmap_masks,
                     map_tokens,
                     map_token_masks,
+                    visual_node_embeds=gmap_img_fts,
                     gmap_visited_masks=cumulative_visited,
                     gmap_step_ids=gmap_step_ids,
                     txt_embeds=txt_embeds,

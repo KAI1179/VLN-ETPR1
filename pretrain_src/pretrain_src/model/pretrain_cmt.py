@@ -133,6 +133,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 state=getattr(config, "online_state_loss_weight", 0.05),
                 visual=getattr(config, "online_visual_loss_weight", 0.0),
                 progress=getattr(config, "online_progress_loss_weight", 0.1),
+                recovery=getattr(config, "online_recovery_loss_weight", 0.1),
                 ghost=getattr(config, "online_ghost_loss_weight", 0.1),
             )
 
@@ -460,7 +461,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             remaining_valid_mask=batch["remaining_valid_masks"],
             recovery=batch["recovery_targets"],
             recovery_valid_mask=batch["recovery_valid_masks"],
-            expert_action=batch["global_act_labels"],
+            # MLM batches have no action target. L_ghost is intentionally
+            # inactive there and is supervised only on SAP expert ghosts.
+            expert_action=batch.get("global_act_labels"),
         )
         losses = compute_online_fusion_losses(
             output,

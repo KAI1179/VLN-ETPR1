@@ -23,6 +23,7 @@ class OnlineFusionLossWeights:
     state: float = 0.05
     visual: float = 0.2
     progress: float = 0.1
+    recovery: float = 0.1
     ghost: float = 0.1
 
     def __post_init__(self) -> None:
@@ -166,12 +167,23 @@ def _progress_loss(
                     targets.remaining.to(dtype=output.remaining.dtype)[mask],
                 )
             )
-    if targets.recovery is not None:
-        mask = targets.recovery_valid_mask
-        if mask is None:
-            raise ValueError("recovery_valid_mask is required with recovery targets")
-        terms.append(_masked_binary_loss(output.recovery_logits, targets.recovery, mask))
     return sum(terms, output.phase_logits.sum() * 0.0)
+
+
+def _recovery_loss(
+    output: OnlineMapFusionOutput,
+    targets: OnlineFusionTargets,
+) -> torch.Tensor:
+    if targets.recovery is None or targets.recovery_valid_mask is None:
+        raise ValueError(
+            "recovery targets and recovery_valid_mask are required when "
+            "recovery loss is enabled"
+        )
+    return _masked_binary_loss(
+        output.recovery_logits,
+        targets.recovery,
+        targets.recovery_valid_mask,
+    )
 
 
 def _ghost_rank_loss(
@@ -227,6 +239,8 @@ def compute_online_fusion_losses(
         )
     if weights.progress:
         losses["progress"] = weights.progress * _progress_loss(output, targets)
+    if weights.recovery:
+        losses["recovery"] = weights.recovery * _recovery_loss(output, targets)
     if weights.ghost:
         losses["ghost"] = weights.ghost * _ghost_rank_loss(
             output,

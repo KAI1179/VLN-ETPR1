@@ -1211,6 +1211,7 @@ class RLTrainer(BaseVLNCETrainer):
             state=getattr(map_cfg, "online_state_loss_weight", 0.05),
             visual=getattr(map_cfg, "online_visual_loss_weight", 0.0),
             progress=getattr(map_cfg, "online_progress_loss_weight", 0.1),
+            recovery=getattr(map_cfg, "online_recovery_loss_weight", 0.1),
             ghost=getattr(map_cfg, "online_ghost_loss_weight", 0.1),
         )
 

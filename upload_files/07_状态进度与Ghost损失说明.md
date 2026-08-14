@@ -7,6 +7,7 @@
 - 预训练：`VisualEvidenceHead` 以 `1× LR` 训练，使用离线 37 类 panorama GT，`λ_visual=0.2`。
 - DAgger：严格加载预训练权重后冻结该 head，`λ_visual=0`，不创建 Semantic sensors。
 - 固定的 37 类输出仍参与地图更新；后续 `visual_category_projection` 和其余融合模块继续训练。
+- 该 head 只读取现有 `gmap_img_fts` panorama 节点特征，不读取 graph step/task/global-position embedding 或指令。
 
 ## 2. L_state 是什么
 
@@ -21,42 +22,39 @@ L_state = mean((Z_t-Z_0)²)
 - 第三项防止所有地图 token 变得过于相似。
 - 它没有 GT，整体再乘 `λ_state=0.05`。
 
-评价：它能防止地图乱写和坍塌，但也可能阻碍修正错误的初始地图；必要性较低，建议后续删除或显著减弱，而不是作为核心监督。
+评价：它能防止地图乱写和坍塌，但也可能阻碍修正错误的初始地图。当前方案明确保留，后续只对其权重和组成做消融。
 
-## 3. L_progress 是否过于复杂
-
-当前形式：
+## 3. L_progress 与 L_recovery 的最终划分
 
 ```text
 L_progress = CE(phase)
            + CE(route_state)
            + SmoothL1(remaining)
-           + BCE(recovery)
+
+L_recovery = class-balanced BCE(recovery)
 ```
 
-这些预测值本身不直接送入动作 head；它们主要监督共享的 `progress hidden`，后者才进入 ghost/STOP 分支。
+拆分已实施：`recovery` 是 off-route 时的逐 ghost 候选动作监督，以独立 `λ_recovery=0.1` 加权；它不再影响 `L_progress` 的量级。`phase` 目前仍保留，作为 `remaining` 的五档离散监督，是后续可消融项。
 
-必要性判断：
+各预测值本身不硬编码回 action head；它们共享的 `progress hidden` 会条件化 map→ghost 查询，并进入 ghost/STOP 独立残差分支。
 
-- `route_state`：保留，用于区分 `on-route/off-route/finished`。
-- `remaining`：保留，提供连续的剩余路线比例。
-- `phase`：建议删除；它只是 `remaining` 的五档离散化，信息重复。
-- `recovery`：不是进度，而是 off-route 时的候选动作监督；建议从 `L_progress` 拆出，之后决定与 `L_ghost` 合并或删除。
-
-建议最终简化为：
+## 4. map→ghost 查询与残差边界
 
 ```text
-L_progress = CE(route_state) + SmoothL1(remaining)
+graph query = graph node + instruction pool + progress hidden
+graph context = CrossAttention(graph query, updated map tokens)
 ```
 
-本次只做必要性评估，尚未修改这部分代码。
+- 只有 ghost 获得 map-conditioned **graph embedding residual**；visited 节点、padding 和 STOP 保持原 graph embedding。
+- ghost 和 STOP 的 action logit 由两个独立 head 修正：`ghost_residual_head` 只写 ghost，`stop_residual_head` 只写 STOP。
+- 这样既让认知地图影响 frontier 排序，又不污染 visited 表示，STOP 也不被当作空间节点。
 
-## 4. L_ghost 是什么
+## 5. L_ghost 是什么
 
 `L_ghost` 只在 expert action 指向某个 ghost 时计算：
 
 ```text
-更新地图 + progress hidden + ghost 表示
+用 instruction/progress 查询得到的地图上下文 + ghost 表示
         → ghost residual logits
         → 对 expert ghost 做 CrossEntropy
 ```
@@ -65,9 +63,9 @@ L_progress = CE(route_state) + SmoothL1(remaining)
 
 主 action loss 已经监督最终 logits，因此 `L_ghost` 有一定重复；但它能防止强 baseline 独自完成决策，直接迫使“认知地图→ghost”新分支学习候选排序。当前建议保留，确认新分支有效后再考虑退火。
 
-## 5. phase、remaining 与连续环境中的 p
+## 6. phase、remaining 与连续环境中的 p
 
-### 5.1 phase 的五类
+### 6.1 phase 的五类
 
 phase 不是五种语义事件，只是路线比例的五个区间：
 
@@ -81,7 +79,7 @@ phase 不是五种语义事件，只是路线比例的五个区间：
 
 `finished` 是单独的 route state；此时 phase 被 mask。
 
-### 5.2 remaining
+### 6.2 remaining
 
 ```text
 remaining = 1-p
@@ -89,7 +87,7 @@ remaining = 1-p
 
 它表示 GT 路径还剩多少比例，不是剩余米数、动作数或语义子任务数。`finished` 时为 0；`off-route` 时不计算该损失。
 
-### 5.3 连续环境如何计算 p
+### 6.3 连续环境如何计算 p
 
 DAgger 中的当前位置虽然连续，但 GT trajectory 是一串离散坐标：
 
@@ -101,3 +99,12 @@ DAgger 中的当前位置虽然连续，但 GT trajectory 是一串离散坐标�
 所以它本质是“连续位置投影到最近的未来 GT 点”，不是连续积分距离。GT 点近似均匀时才近似真实路程比例；更准确的做法是使用累计 geodesic 路径长度比例。
 
 另外，预训练的 `p` 使用拓扑 viewpoint 索引，DAgger 使用连续 GT trajectory 点索引，两阶段定义并不完全一致。
+
+## 7. 六项辅助 loss 与训练契约
+
+OnlineFusion 共有 `grid/state/visual/progress/recovery/ghost` 6 项辅助 loss。预训练全部启用；DAgger 令 `visual=0`，因此是 `L_action` 加其余 5 项辅助 loss。
+
+- 预训练：Map Encoder 与 OnlineFusion 用 `1× LR`，现有 graph-language 后端和 MLM/SAP head 用 `0.1× LR`，language/panorama 前端冻结。基础 checkpoint 只可缺少明确新增的 Map Encoder/OnlineFusion 子树，若任一子树已存在就必须完整加载。
+- DAgger：OnlineFusion 仍用 `1× LR`，但 `VisualEvidenceHead` 强制冻结；Map Encoder 与现有后端用 `0.1× LR`，其余前端冻结。
+- DAgger 必须使用 `optimizer_profile=online_fusion`、`freeze_base=False`、`require_complete_pretrained_modules=True`，且从完整 OnlineFusion 预训练 checkpoint 启动。Map Encoder 或 VLN-BERT/OnlineFusion 子树的键名/shape 不完整时直接报错。
+- 参数组必须完整覆盖 trainable tensors 且不重复。

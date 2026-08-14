@@ -144,6 +144,7 @@ def main(opts):
     model_config.online_state_loss_weight = opts.online_state_loss_weight
     model_config.online_visual_loss_weight = opts.online_visual_loss_weight
     model_config.online_progress_loss_weight = opts.online_progress_loss_weight
+    model_config.online_recovery_loss_weight = opts.online_recovery_loss_weight
     model_config.online_ghost_loss_weight = opts.online_ghost_loss_weight
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")

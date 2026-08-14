@@ -220,6 +220,7 @@ _C.MODEL.MAP_ENCODER.online_grid_loss_weight = 0.3
 _C.MODEL.MAP_ENCODER.online_state_loss_weight = 0.05
 _C.MODEL.MAP_ENCODER.online_visual_loss_weight = 0.0
 _C.MODEL.MAP_ENCODER.online_progress_loss_weight = 0.1
+_C.MODEL.MAP_ENCODER.online_recovery_loss_weight = 0.1
 _C.MODEL.MAP_ENCODER.online_ghost_loss_weight = 0.1
 
 

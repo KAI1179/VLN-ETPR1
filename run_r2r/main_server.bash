@@ -195,7 +195,12 @@ LLM_GRID_ONLINE_FUSION_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
       MODEL.MAP_ENCODER.source llm_grid
       MODEL.MAP_ENCODER.target_namespace ${LLM_GRID_ONLINE_FUSION_TARGET_NAMESPACE}
       MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_ONLINE_FUSION_MODEL_KEY}
+      MODEL.MAP_ENCODER.online_grid_loss_weight 0.3
+      MODEL.MAP_ENCODER.online_state_loss_weight 0.05
       MODEL.MAP_ENCODER.online_visual_loss_weight 0.0
+      MODEL.MAP_ENCODER.online_progress_loss_weight 0.1
+      MODEL.MAP_ENCODER.online_recovery_loss_weight 0.1
+      MODEL.MAP_ENCODER.online_ghost_loss_weight 0.1
       MODEL.MAP_ENCODER.require_complete_pretrained_modules True
       MODEL.pretrained_path ${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT}"
 

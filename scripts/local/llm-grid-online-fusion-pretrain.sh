@@ -44,6 +44,11 @@ exec bash pretrain_src/run_pt/run_mix_server.bash \
   --llm-cache-model-key "${MODEL_KEY}" \
   --cognitive-map-target-namespace "${TARGET_NAMESPACE}" \
   --visual-evidence-cache "${VISUAL_EVIDENCE_CACHE}" \
+  --online-grid-loss-weight 0.3 \
+  --online-state-loss-weight 0.05 \
   --online-visual-loss-weight 0.2 \
+  --online-progress-loss-weight 0.1 \
+  --online-recovery-loss-weight 0.1 \
+  --online-ghost-loss-weight 0.1 \
   --optimizer-profile online_fusion \
   --checkpoint "${BASE_CHECKPOINT}"

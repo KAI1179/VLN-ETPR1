@@ -96,6 +96,7 @@ def load_parser():
     parser.add_argument("--online-state-loss-weight", default=0.05, type=float)
     parser.add_argument("--online-visual-loss-weight", default=0.0, type=float)
     parser.add_argument("--online-progress-loss-weight", default=0.1, type=float)
+    parser.add_argument("--online-recovery-loss-weight", default=0.1, type=float)
     parser.add_argument("--online-ghost-loss-weight", default=0.1, type=float)
     # training parameters
     parser.add_argument(
@@ -261,6 +262,7 @@ def parse_with_config(parser):
                 args.online_state_loss_weight,
                 args.online_visual_loss_weight,
                 args.online_progress_loss_weight,
+                args.online_recovery_loss_weight,
                 args.online_ghost_loss_weight,
             )
             if any(weight < 0 for weight in weights):
