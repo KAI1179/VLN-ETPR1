@@ -1,6 +1,7 @@
 import os
 import time
 from collections import defaultdict
+from pathlib import Path
 from easydict import EasyDict
 from tqdm import tqdm
 
@@ -17,6 +18,17 @@ from transformers import AutoTokenizer, PretrainedConfig
 from transformers import AutoModel
 
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from vlnce_baselines.models.optimizer_profiles import (
+    ONLINE_FUSION_OPTIMIZER_PROFILE,
+    configure_pretrain_optimizer_profile,
+    optimizer_profile_summary,
+)
+from vlnce_baselines.models.etp_prior_gt.pretrain_checkpoint import (
+    FUSION_SOURCE_PREFIX,
+    MAP_ENCODER_SOURCE_PREFIX,
+    load_checkpoint_submodule,
+    validate_pretraining_initialization,
+)
 
 from utils.logger import LOGGER, TB_LOGGER, RunningMeter, add_log_to_file
 from utils.save import ModelSaver, save_training_meta
@@ -125,6 +137,14 @@ def main(opts):
     model_config.cognitive_map_namespace = opts.cognitive_map_namespace
     model_config.llm_cache_model_key = opts.llm_cache_model_key
     model_config.llm_cache_dir = opts.llm_cache_dir
+    model_config.cognitive_map_target_namespace = (
+        opts.cognitive_map_target_namespace
+    )
+    model_config.online_grid_loss_weight = opts.online_grid_loss_weight
+    model_config.online_state_loss_weight = opts.online_state_loss_weight
+    model_config.online_visual_loss_weight = opts.online_visual_loss_weight
+    model_config.online_progress_loss_weight = opts.online_progress_loss_weight
+    model_config.online_ghost_loss_weight = opts.online_ghost_loss_weight
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 
@@ -209,9 +229,53 @@ def main(opts):
     model = model_class.from_pretrained(
         pretrained_model_name_or_path=None, config=model_config, state_dict=checkpoint
     )
+    if (
+        opts.checkpoint
+        and opts.optimizer_profile == ONLINE_FUSION_OPTIMIZER_PROFILE
+    ):
+        checkpoint_path = Path(opts.checkpoint)
+        validate_pretraining_initialization(
+            model,
+            checkpoint,
+            checkpoint_path,
+            allowed_missing_prefixes=(
+                MAP_ENCODER_SOURCE_PREFIX,
+                FUSION_SOURCE_PREFIX,
+            ),
+        )
+        load_checkpoint_submodule(
+            model.map_encoder,
+            checkpoint,
+            checkpoint_path=checkpoint_path,
+            source_prefix=MAP_ENCODER_SOURCE_PREFIX,
+            module_name="map_encoder",
+            required=False,
+        )
+        load_checkpoint_submodule(
+            model.bert.global_encoder.graph_map_attention,
+            checkpoint,
+            checkpoint_path=checkpoint_path,
+            source_prefix=FUSION_SOURCE_PREFIX,
+            module_name="graph_map_attention",
+            required=False,
+        )
     model.train()
     set_dropout(model, opts.dropout)  # 0.1
+    configure_pretrain_optimizer_profile(
+        model,
+        opts.optimizer_profile,
+    )
     model = wrap_model(model, device, opts.local_rank)
+    lr_scales = configure_pretrain_optimizer_profile(
+        model,
+        opts.optimizer_profile,
+    )
+    if default_gpu:
+        LOGGER.info(
+            "Pretraining optimizer profile %s:\n%s",
+            opts.optimizer_profile,
+            optimizer_profile_summary(lr_scales, model.named_parameters()),
+        )
     del checkpoint
 
     # load data training set
@@ -221,6 +285,8 @@ def main(opts):
         "cognitive_map_namespace": opts.cognitive_map_namespace,
         "llm_cache_dir": opts.llm_cache_dir,
         "llm_cache_model_key": opts.llm_cache_model_key,
+        "cognitive_map_target_namespace": opts.cognitive_map_target_namespace,
+        "visual_evidence_cache": opts.visual_evidence_cache,
     }
     train_nav_db = R2RTextPathData(
         data_cfg.train_traj_files,
@@ -290,7 +356,7 @@ def main(opts):
     meta_loader = PrefetchLoader(meta_loader, device)
 
     # Prepare optimizer
-    optimizer = build_optimizer(model, opts)
+    optimizer = build_optimizer(model, opts, lr_scales=lr_scales)
 
     if opts.fp16:
         grad_scaler = amp.GradScaler()
@@ -357,7 +423,7 @@ def main(opts):
             # learning rate scheduling
             lr_this_step = get_lr_sched(global_step, opts)
             for param_group in optimizer.param_groups:
-                param_group["lr"] = lr_this_step
+                param_group["lr"] = lr_this_step * param_group.get("lr_scale", 1.0)
             TB_LOGGER.add_scalar("lr", lr_this_step, global_step)
 
             # NOTE: not gathered across GPUs for efficiency

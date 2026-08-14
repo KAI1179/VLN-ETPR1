@@ -8,7 +8,10 @@ from torch import nn
 
 from transformers.models.bert.modeling_bert import BertPreTrainedModel
 
-from vlnce_baselines.models.etp_prior_gt.map_fusion import build_map_token_fusion
+from vlnce_baselines.models.etp_prior_gt.map_fusion import (
+    OnlineMapFusionOutput,
+    build_map_token_fusion,
+)
 
 from .ops import create_transformer_encoder
 from .ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
@@ -22,6 +25,7 @@ class NavigationModelOutput:
     txt_embeds: torch.Tensor
     gmap_embeds: torch.Tensor
     updated_map_tokens: Optional[torch.Tensor]
+    online_fusion_output: Optional[OnlineMapFusionOutput] = None
 
 
 BertLayerNorm = torch.nn.LayerNorm
@@ -682,6 +686,7 @@ class GlobalMapEncoder(nn.Module):
             self.sprel_linear = None
 
         self.task_embedding_dropout_prob = config.hidden_dropout_prob
+        self.navigation_architecture = config.navigation_architecture
 
     def _aggregate_gmap_features(
         self,
@@ -783,6 +788,9 @@ class GlobalMapEncoder(nn.Module):
         graph_sprels=None,
         map_tokens=None,
         map_token_masks=None,
+        gmap_visited_masks=None,
+        gmap_new_evidence_masks=None,
+        decode_dense_grid=False,
     ):
         gmap_embeds, gmap_masks = self.gmap_input_embedding(
             split_traj_embeds,
@@ -796,9 +804,50 @@ class GlobalMapEncoder(nn.Module):
             gmap_lens,
         )
 
-        gmap_embeds, updated_map_tokens = self.graph_map_attention(
-            gmap_embeds, gmap_masks, map_tokens, map_token_masks
-        )
+        online_fusion_output = None
+        if self.navigation_architecture == "online_fusion" and map_tokens is not None:
+            if gmap_visited_masks is None:
+                raise ValueError("online_fusion requires gmap_visited_masks")
+            if gmap_new_evidence_masks is None:
+                raise ValueError("online_fusion requires gmap_new_evidence_masks")
+            max_step = int(
+                gmap_step_ids.masked_fill(~gmap_visited_masks, 0).max().item()
+            )
+            if max_step < 1:
+                raise ValueError("online_fusion requires at least one visited node")
+            previous_map_state = None
+            for step_id in range(1, max_step + 1):
+                cumulative_visited = (
+                    gmap_visited_masks & (gmap_step_ids <= step_id) & gmap_masks
+                )
+                # Offline samples contain a complete expert prefix. Replay its
+                # visited nodes in step order so the same recurrent state
+                # transition used by DAgger is trained here as well.
+                new_evidence = (
+                    gmap_visited_masks
+                    & (gmap_step_ids == step_id)
+                    & cumulative_visited
+                )
+                online_fusion_output = self.graph_map_attention(
+                    gmap_embeds,
+                    gmap_masks,
+                    map_tokens,
+                    map_token_masks,
+                    gmap_visited_masks=cumulative_visited,
+                    gmap_step_ids=gmap_step_ids,
+                    txt_embeds=txt_embeds,
+                    txt_masks=txt_masks,
+                    previous_map_state=previous_map_state,
+                    new_evidence_mask=new_evidence,
+                    decode_dense_grid=(decode_dense_grid and step_id == max_step),
+                )
+                previous_map_state = online_fusion_output.map_state
+            gmap_embeds = online_fusion_output.updated_gmap_embeds
+            updated_map_tokens = online_fusion_output.updated_map_tokens
+        else:
+            gmap_embeds, updated_map_tokens = self.graph_map_attention(
+                gmap_embeds, gmap_masks, map_tokens, map_token_masks
+            )
 
         if self.sprel_linear is not None:
             if graph_sprels is None:
@@ -818,6 +867,7 @@ class GlobalMapEncoder(nn.Module):
             txt_embeds=txt_embeds,
             gmap_embeds=gmap_embeds,
             updated_map_tokens=updated_map_tokens,
+            online_fusion_output=online_fusion_output,
         )
 
 
@@ -858,6 +908,9 @@ class GlocalTextPathCMT(BertPreTrainedModel):
         gmap_vpids,
         map_tokens=None,
         map_token_masks=None,
+        gmap_visited_masks=None,
+        gmap_new_evidence_masks=None,
+        decode_dense_grid=False,
     ):
         # text embedding
         txt_token_type_ids = torch.zeros_like(txt_ids)
@@ -895,4 +948,7 @@ class GlocalTextPathCMT(BertPreTrainedModel):
             graph_sprels=gmap_pair_dists,
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
+            gmap_visited_masks=gmap_visited_masks,
+            gmap_new_evidence_masks=gmap_new_evidence_masks,
+            decode_dense_grid=decode_dense_grid,
         )

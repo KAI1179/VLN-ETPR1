@@ -121,7 +121,7 @@ A model component that converts updated map tokens into an updated cognitive map
 _Avoid_: box decoder when the component predicts dense map logits
 
 **Navigation architecture**:
-The model-side contract for consuming cognitive-map tokens, independent of where the map came from. The supported architectures are `current` and `try5`.
+The model-side contract for consuming cognitive-map tokens, independent of where the map came from. The supported architectures are `current`, `try5`, and `online_fusion`.
 _Avoid_: model candidate when only the token interaction is meant
 
 **Current architecture**:
@@ -131,6 +131,10 @@ _Avoid_: default architecture, new model
 **Try5 architecture**:
 The navigation architecture with one-way graph queries over fixed map tokens, `direction5` metadata, and no cognitive-map decoder or box loss.
 _Avoid_: Try5-like when the implementation satisfies this complete contract
+
+**Online-fusion architecture**:
+The navigation architecture that recurrently updates the complete cognitive-map token state from visited graph nodes without graph-to-grid coordinate alignment, then lets every ghost query the updated map. It uses `direction5` metadata and dense cognitive-map, visual-evidence, progress, recovery, and ghost-ranking supervision during training.
+_Avoid_: Try5 when map tokens are updated, online LLM when the LLM is not in the rollout
 
 **Cognitive-map source**:
 The producer or cache family supplying a cognitive map. Supported sources are `prior_gt`, `imagined`, `llm_boxes`, and `llm_grid`.

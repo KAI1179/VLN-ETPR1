@@ -3,6 +3,9 @@
 from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    available_vlnce_cognitive_map_episode_ids,
+)
 from vlnce_baselines.models.etp_llm.navigation import (
     available_llm_navigation_episode_ids,
     llm_navigation_cache_report,
@@ -47,7 +50,7 @@ class RLTrainer(PriorGTRLTrainer):
         model_key = map_cfg.llm_cache_model_key
         if not model_key:
             raise ValueError("MODEL.MAP_ENCODER.llm_cache_model_key is required")
-        return available_llm_navigation_episode_ids(
+        llm_episode_ids = available_llm_navigation_episode_ids(
             self.config.MODEL.task_type,
             self.config.TASK_CONFIG.DATASET.SPLIT,
             require_boxes=candidate.requires_box_targets,
@@ -59,6 +62,36 @@ class RLTrainer(PriorGTRLTrainer):
                 "",
             ),
         )
+        if not candidate.requires_cognitive_map_targets:
+            return llm_episode_ids
+        target_namespace = getattr(map_cfg, "target_namespace", "")
+        if not target_namespace:
+            raise ValueError(
+                "MODEL.MAP_ENCODER.target_namespace is required for OnlineFusion"
+            )
+        target_episode_ids = set(
+            available_vlnce_cognitive_map_episode_ids(
+                self.config.MODEL.task_type,
+                self.config.TASK_CONFIG.DATASET.SPLIT,
+                require_boxes=False,
+                namespace=target_namespace,
+            )
+        )
+        paired = [
+            episode_id
+            for episode_id in llm_episode_ids
+            if episode_id in target_episode_ids
+        ]
+        print(
+            "finetuning_online_fusion_pairing: "
+            f"llm={len(llm_episode_ids)} paired_gt={len(paired)} "
+            f"skipped={len(llm_episode_ids) - len(paired)}"
+        )
+        if not paired:
+            raise FileNotFoundError(
+                "No DAgger episodes have both LLM-Grid input and cognitive-map GT"
+            )
+        return paired
 
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         dataset = self.config.MODEL.task_type
@@ -137,6 +170,6 @@ class RLTrainer(PriorGTRLTrainer):
         return aggregated_states
 
     def _cognitive_map_cache_id(self, episode):
-        dataset = self.config.MODEL.task_type.upper()
+        dataset = "R2R" if self.config.MODEL.task_type.lower() == "r2r" else "RxR"
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         return f"{dataset}_{split}_{episode.episode_id}"

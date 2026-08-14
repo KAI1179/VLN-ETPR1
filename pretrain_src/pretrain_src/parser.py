@@ -8,6 +8,7 @@ from vlnce_baselines.models.cognitive_map_candidate import (
     CognitiveMapSource,
     NavigationArchitecture,
 )
+from vlnce_baselines.models.optimizer_profiles import OPTIMIZER_PROFILES
 
 
 def load_parser():
@@ -75,6 +76,27 @@ def load_parser():
         default=None,
         help="Optional LLM-Navigation cache root override",
     )
+    parser.add_argument(
+        "--cognitive-map-target-namespace",
+        default=None,
+        help="Training-only cognitive-map target namespace under data/cognitive_maps",
+    )
+    parser.add_argument(
+        "--optimizer-profile",
+        choices=OPTIMIZER_PROFILES,
+        default="full",
+        help="Explicit trainable-module and learning-rate profile",
+    )
+    parser.add_argument(
+        "--visual-evidence-cache",
+        default=None,
+        help="Optional HDF5 cache keyed by scan_viewpoint with 37-way labels",
+    )
+    parser.add_argument("--online-grid-loss-weight", default=0.3, type=float)
+    parser.add_argument("--online-state-loss-weight", default=0.05, type=float)
+    parser.add_argument("--online-visual-loss-weight", default=0.0, type=float)
+    parser.add_argument("--online-progress-loss-weight", default=0.1, type=float)
+    parser.add_argument("--online-ghost-loss-weight", default=0.1, type=float)
     # training parameters
     parser.add_argument(
         "--train_batch_size",
@@ -167,7 +189,9 @@ def parse_with_config(parser):
     if args.config is not None:
         config_args = json.load(open(args.config))
         override_keys = {
-            arg[2:].split("=")[0] for arg in sys.argv[1:] if arg.startswith("--")
+            arg[2:].split("=")[0].replace("-", "_")
+            for arg in sys.argv[1:]
+            if arg.startswith("--")
         }
         print("override_keys", override_keys)
         for k, v in config_args.items():
@@ -187,7 +211,9 @@ def parse_with_config(parser):
         args.cognitive_map_namespace,
         args.llm_cache_model_key,
         args.llm_cache_dir,
+        args.cognitive_map_target_namespace,
         args.map_predictor_checkpoint,
+        args.visual_evidence_cache,
     )):
         raise ValueError(
             "Cognitive-map cache and predictor arguments require an explicit candidate"
@@ -209,6 +235,47 @@ def parse_with_config(parser):
             raise ValueError(
                 f"--llm-cache-model-key is required for {candidate.source.value}"
             )
+        if (
+            candidate.requires_cognitive_map_targets
+            and not args.cognitive_map_target_namespace
+        ):
+            raise ValueError(
+                "--cognitive-map-target-namespace is required for "
+                f"{candidate.architecture.value}"
+            )
+        if (
+            not candidate.requires_cognitive_map_targets
+            and args.cognitive_map_target_namespace
+        ):
+            raise ValueError(
+                "--cognitive-map-target-namespace is only valid for an "
+                "architecture with cognitive-map target supervision"
+            )
+        if candidate.requires_cognitive_map_targets:
+            if args.optimizer_profile != "online_fusion":
+                raise ValueError(
+                    "online_fusion requires --optimizer-profile online_fusion"
+                )
+            weights = (
+                args.online_grid_loss_weight,
+                args.online_state_loss_weight,
+                args.online_visual_loss_weight,
+                args.online_progress_loss_weight,
+                args.online_ghost_loss_weight,
+            )
+            if any(weight < 0 for weight in weights):
+                raise ValueError("OnlineFusion loss weights must be non-negative")
+            if not any(weight > 0 for weight in weights):
+                raise ValueError("At least one OnlineFusion loss must be enabled")
+            if args.online_visual_loss_weight > 0 and not args.visual_evidence_cache:
+                raise ValueError(
+                    "--visual-evidence-cache is required when "
+                    "--online-visual-loss-weight is positive"
+                )
+        elif args.visual_evidence_cache:
+            raise ValueError(
+                "--visual-evidence-cache is only valid for online_fusion"
+            )
         if not candidate.uses_llm_cache and args.llm_cache_model_key:
             raise ValueError(
                 "--llm-cache-model-key is only valid for an LLM cognitive-map source"
@@ -220,5 +287,15 @@ def parse_with_config(parser):
             raise ValueError(
                 "--map_predictor_checkpoint is only valid for the imagined source"
             )
+    if (
+        args.optimizer_profile == "online_fusion"
+        and (
+            source is None
+            or not candidate.requires_cognitive_map_targets
+        )
+    ):
+        raise ValueError(
+            "--optimizer-profile online_fusion requires the online_fusion architecture"
+        )
     print("args:\n", args)
     return args

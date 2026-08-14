@@ -31,6 +31,68 @@ def _copy_cognitive_map_inputs(inputs, output):
         output["cognitive_map_box_targets"] = inputs["cognitive_map_box_targets"]
 
 
+def _copy_online_fusion_inputs(inputs, output):
+    if "gmap_new_evidence_masks" not in inputs:
+        return
+    output["gmap_new_evidence_masks"] = torch.BoolTensor(
+        inputs["gmap_new_evidence_masks"]
+    )
+    output["phase_targets"] = int(inputs["phase_targets"])
+    output["route_state_targets"] = int(inputs["route_state_targets"])
+    output["remaining_targets"] = float(inputs["remaining_targets"])
+    output["remaining_valid_masks"] = bool(inputs["remaining_valid_masks"])
+    output["recovery_targets"] = torch.as_tensor(
+        inputs["recovery_targets"], dtype=torch.float32
+    )
+    output["recovery_valid_masks"] = torch.as_tensor(
+        inputs["recovery_valid_masks"], dtype=torch.bool
+    )
+    if "target_cognitive_maps" in inputs:
+        output["target_cognitive_maps"] = inputs["target_cognitive_maps"]
+        output["grid_valid_masks"] = inputs["grid_valid_masks"]
+    if "visual_evidence_targets" in inputs:
+        output["visual_evidence_targets"] = torch.from_numpy(
+            inputs["visual_evidence_targets"]
+        )
+        output["visual_evidence_valid_masks"] = torch.from_numpy(
+            inputs["visual_evidence_valid_masks"]
+        )
+
+
+def _collate_online_fusion_inputs(batch):
+    if "gmap_new_evidence_masks" not in batch:
+        return
+    batch["gmap_new_evidence_masks"] = pad_sequence(
+        batch["gmap_new_evidence_masks"], batch_first=True, padding_value=0
+    )
+    batch["phase_targets"] = torch.LongTensor(batch["phase_targets"])
+    batch["route_state_targets"] = torch.LongTensor(batch["route_state_targets"])
+    batch["remaining_targets"] = torch.FloatTensor(batch["remaining_targets"])
+    batch["remaining_valid_masks"] = torch.BoolTensor(
+        batch["remaining_valid_masks"]
+    )
+    batch["recovery_targets"] = pad_sequence(
+        batch["recovery_targets"], batch_first=True, padding_value=0.0
+    )
+    batch["recovery_valid_masks"] = pad_sequence(
+        batch["recovery_valid_masks"], batch_first=True, padding_value=0
+    )
+    if "target_cognitive_maps" in batch:
+        batch["target_cognitive_maps"] = torch.stack(
+            batch["target_cognitive_maps"]
+        )
+        batch["grid_valid_masks"] = torch.stack(batch["grid_valid_masks"])
+    if "visual_evidence_targets" in batch:
+        batch["visual_evidence_targets"] = pad_sequence(
+            batch["visual_evidence_targets"], batch_first=True, padding_value=0.0
+        )
+        batch["visual_evidence_valid_masks"] = pad_sequence(
+            batch["visual_evidence_valid_masks"],
+            batch_first=True,
+            padding_value=0,
+        )
+
+
 ############### Masked Language Modeling ###############
 def random_word(tokens, vocab_range, mask):
     """
@@ -146,6 +208,7 @@ class MlmDataset(Dataset):
             output["gmap_task_embeddings"] = None
 
         _copy_cognitive_map_inputs(inputs, output)
+        _copy_online_fusion_inputs(inputs, output)
         return output
 
 
@@ -204,6 +267,8 @@ def mlm_collate(inputs):
             "gmap_pair_dists"
         ][i]
     batch["gmap_pair_dists"] = gmap_pair_dists
+
+    _collate_online_fusion_inputs(batch)
 
     return batch
 
@@ -281,6 +346,7 @@ class SapDataset(Dataset):
         output["local_act_labels"] = inputs["local_act_labels"]
         output["global_act_labels"] = inputs["global_act_labels"]
         _copy_cognitive_map_inputs(inputs, output)
+        _copy_online_fusion_inputs(inputs, output)
         return output
 
 
@@ -338,5 +404,7 @@ def sap_collate(inputs):
 
     batch["local_act_labels"] = torch.LongTensor(batch["local_act_labels"])
     batch["global_act_labels"] = torch.LongTensor(batch["global_act_labels"])
+
+    _collate_online_fusion_inputs(batch)
 
     return batch

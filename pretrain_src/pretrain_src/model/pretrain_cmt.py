@@ -9,6 +9,13 @@ from transformers.models.bert.modeling_bert import BertPreTrainedModel
 from vlnce_baselines.models.cognitive_map_candidate import (
     CognitiveMapCandidate,
     CognitiveMapSource,
+    NavigationArchitecture,
+)
+from vlnce_baselines.models.etp_prior_gt.online_fusion_losses import (
+    OnlineFusionLossWeights,
+    OnlineFusionTargets,
+    compute_online_fusion_losses,
+    total_online_fusion_loss,
 )
 from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 
@@ -115,6 +122,19 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.map_decoder = None
         self.map_box_criterion = None
         self.map_predictor = None
+        self.online_fusion_loss_weights = None
+        if (
+            self.cognitive_map_candidate is not None
+            and self.cognitive_map_candidate.architecture
+            is NavigationArchitecture.ONLINE_FUSION
+        ):
+            self.online_fusion_loss_weights = OnlineFusionLossWeights(
+                grid=getattr(config, "online_grid_loss_weight", 0.3),
+                state=getattr(config, "online_state_loss_weight", 0.05),
+                visual=getattr(config, "online_visual_loss_weight", 0.0),
+                progress=getattr(config, "online_progress_loss_weight", 0.1),
+                ghost=getattr(config, "online_ghost_loss_weight", 0.1),
+            )
 
         if "mlm" in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
@@ -173,6 +193,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 )
 
         self.init_weights()
+        if self.online_fusion_loss_weights is not None:
+            self.bert.global_encoder.graph_map_attention._zero_residual_projection()
         self.tie_weights()
         self._load_map_predictor_checkpoint()
 
@@ -261,6 +283,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 cognitive_map_box_targets=batch["cognitive_map_box_targets"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
+                gmap_visited_masks=batch["gmap_visited_masks"],
+                gmap_new_evidence_masks=batch["gmap_new_evidence_masks"],
+                online_fusion_targets=batch,
             )
             return (
                 losses + map_loss if compute_loss and map_loss is not None else losses
@@ -294,6 +319,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                 cognitive_map_box_targets=batch["cognitive_map_box_targets"],
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
+                gmap_new_evidence_masks=batch["gmap_new_evidence_masks"],
+                online_fusion_targets=batch,
             )
             return (
                 losses + map_loss if compute_loss and map_loss is not None else losses
@@ -378,6 +405,11 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
     ):
         if not compute_loss or not self.cognitive_map_candidate:
             return None
+        if (
+            self.cognitive_map_candidate.architecture
+            is NavigationArchitecture.ONLINE_FUSION
+        ):
+            return None
         if not self.cognitive_map_candidate.requires_box_targets:
             if updated_map_tokens is not None:
                 raise RuntimeError(
@@ -406,6 +438,37 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             cognitive_map_box_targets,
         )
 
+    def _compute_online_fusion_loss(
+        self,
+        navigation_output,
+        batch,
+        compute_loss,
+    ):
+        if not compute_loss or self.online_fusion_loss_weights is None:
+            return None
+        output = navigation_output.online_fusion_output
+        if output is None:
+            raise RuntimeError("online_fusion did not return its rich output")
+        targets = OnlineFusionTargets(
+            dense_grid=batch["target_cognitive_maps"],
+            grid_valid_mask=batch["grid_valid_masks"],
+            visual=batch["visual_evidence_targets"],
+            visual_valid_mask=batch["visual_evidence_valid_masks"],
+            phase=batch["phase_targets"],
+            route_state=batch["route_state_targets"],
+            remaining=batch["remaining_targets"],
+            remaining_valid_mask=batch["remaining_valid_masks"],
+            recovery=batch["recovery_targets"],
+            recovery_valid_mask=batch["recovery_valid_masks"],
+            expert_action=batch["global_act_labels"],
+        )
+        losses = compute_online_fusion_losses(
+            output,
+            targets,
+            self.online_fusion_loss_weights,
+        )
+        return total_online_fusion_loss(losses)
+
     def forward_mlm(
         self,
         txt_ids,
@@ -433,6 +496,9 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         cognitive_map_box_targets=None,
         map_tokens=None,
         map_token_masks=None,
+        gmap_visited_masks=None,
+        gmap_new_evidence_masks=None,
+        online_fusion_targets=None,
     ):
         navigation_output = self.bert(
             txt_ids,
@@ -456,11 +522,23 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             gmap_vpids,
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
+            gmap_visited_masks=gmap_visited_masks,
+            gmap_new_evidence_masks=gmap_new_evidence_masks,
+            decode_dense_grid=(
+                compute_loss
+                and self.online_fusion_loss_weights is not None
+                and self.online_fusion_loss_weights.grid > 0
+            ),
         )
         txt_embeds = navigation_output.txt_embeds
         updated_map_loss = self._compute_updated_cognitive_map_loss(
             navigation_output.updated_map_tokens,
             cognitive_map_box_targets,
+            compute_loss,
+        )
+        online_fusion_loss = self._compute_online_fusion_loss(
+            navigation_output,
+            online_fusion_targets,
             compute_loss,
         )
 
@@ -473,6 +551,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             )
             if updated_map_loss is not None:
                 mask_loss = mask_loss + updated_map_loss
+            if online_fusion_loss is not None:
+                mask_loss = mask_loss + online_fusion_loss
             return mask_loss
         else:
             return prediction_scores
@@ -512,6 +592,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         cognitive_map_box_targets=None,
         map_tokens=None,
         map_token_masks=None,
+        gmap_new_evidence_masks=None,
+        online_fusion_targets=None,
     ):
         navigation_output = self.bert(
             txt_ids,
@@ -535,12 +617,24 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             gmap_vpids,
             map_tokens=map_tokens,
             map_token_masks=map_token_masks,
+            gmap_visited_masks=gmap_visited_masks,
+            gmap_new_evidence_masks=gmap_new_evidence_masks,
+            decode_dense_grid=(
+                compute_loss
+                and self.online_fusion_loss_weights is not None
+                and self.online_fusion_loss_weights.grid > 0
+            ),
         )
         txt_embeds = navigation_output.txt_embeds
         gmap_embeds = navigation_output.gmap_embeds
         updated_map_loss = self._compute_updated_cognitive_map_loss(
             navigation_output.updated_map_tokens,
             cognitive_map_box_targets,
+            compute_loss,
+        )
+        online_fusion_loss = self._compute_online_fusion_loss(
+            navigation_output,
+            online_fusion_targets,
             compute_loss,
         )
 
@@ -554,6 +648,11 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         )
         fusion_input = torch.cat([gmap_embeds, graph_attentioned_txt_embeds], dim=-1)
         global_logits = self.global_sap_head(fusion_input).squeeze(2)
+        if navigation_output.online_fusion_output is not None:
+            global_logits = (
+                global_logits
+                + navigation_output.online_fusion_output.action_logit_residuals
+            )
 
         global_logits.masked_fill_(gmap_visited_masks, -float("inf"))
         global_logits.masked_fill_(
@@ -567,6 +666,8 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             losses = global_losses
             if updated_map_loss is not None:
                 losses = losses + updated_map_loss
+            if online_fusion_loss is not None:
+                losses = losses + online_fusion_loss
             return losses
         else:
             return global_logits, global_act_labels

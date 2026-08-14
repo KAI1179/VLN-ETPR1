@@ -940,6 +940,9 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         gmap_task_embeddings,
         map_tokens=None,
         map_token_masks=None,
+        previous_map_state=None,
+        gmap_new_evidence_masks=None,
+        decode_dense_grid=False,
     ):
         # global branch
         batch_size = gmap_task_embeddings.size(0)
@@ -964,9 +967,30 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
 
         # Bidirectional fusion preserves both views:
         # gmap_embeds stays (B, G, hidden_size), updated_map_tokens is (B, 101, hidden_size).
-        gmap_embeds, updated_map_tokens = self.graph_map_attention(
-            gmap_embeds, gmap_masks, map_tokens, map_token_masks
-        )
+        online_fusion_output = None
+        if (
+            self.config.navigation_architecture == "online_fusion"
+            and map_tokens is not None
+        ):
+            online_fusion_output = self.graph_map_attention(
+                gmap_embeds,
+                gmap_masks,
+                map_tokens,
+                map_token_masks,
+                gmap_visited_masks=gmap_visited_masks,
+                gmap_step_ids=gmap_step_ids,
+                txt_embeds=txt_embeds,
+                txt_masks=txt_masks,
+                previous_map_state=previous_map_state,
+                new_evidence_mask=gmap_new_evidence_masks,
+                decode_dense_grid=decode_dense_grid,
+            )
+            gmap_embeds = online_fusion_output.updated_gmap_embeds
+            updated_map_tokens = online_fusion_output.updated_map_tokens
+        else:
+            gmap_embeds, updated_map_tokens = self.graph_map_attention(
+                gmap_embeds, gmap_masks, map_tokens, map_token_masks
+            )
 
         if self.global_encoder.sprel_linear is not None:
             graph_sprels = (
@@ -992,6 +1016,8 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         # fusion_input=(B, G, hidden_size*2), global_logits=(B, G).
         fusion_input = torch.cat([gmap_embeds, graph_attentioned_txt_embeds], dim=-1)
         global_logits = self.global_sap_head(fusion_input).squeeze(2)
+        if online_fusion_output is not None:
+            global_logits = global_logits + online_fusion_output.action_logit_residuals
         global_logits.masked_fill_(gmap_visited_masks, -float("inf"))
         global_logits.masked_fill_(gmap_masks.logical_not(), -float("inf"))
 
@@ -999,4 +1025,24 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         if updated_map_tokens is not None:
             # Inspection-only POC output: trainers must not feed A* into action prediction.
             outs["updated_map_tokens"] = updated_map_tokens
+        if online_fusion_output is not None:
+            outs.update(
+                {
+                    "online_fusion_output": online_fusion_output,
+                    "map_state": online_fusion_output.map_state,
+                    "online_visual_logits": online_fusion_output.visual_logits,
+                    "online_phase_logits": online_fusion_output.phase_logits,
+                    "online_route_state_logits": online_fusion_output.route_state_logits,
+                    "online_remaining": online_fusion_output.remaining,
+                    "online_recovery_logits": online_fusion_output.recovery_logits,
+                    "online_action_logit_residuals": online_fusion_output.action_logit_residuals,
+                    "online_map_write_gate": online_fusion_output.map_write_gate,
+                    "online_map_write_residual": online_fusion_output.map_write_residual,
+                    "online_map_state_residual": online_fusion_output.map_state_residual,
+                }
+            )
+            if online_fusion_output.dense_grid_logits is not None:
+                outs["online_dense_grid_logits"] = (
+                    online_fusion_output.dense_grid_logits
+                )
         return outs

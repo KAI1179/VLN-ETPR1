@@ -44,6 +44,7 @@ def test_llm_candidate_policies_select_complete_candidate(monkeypatch):
     from vlnce_baselines.models.etp_prior_gt import policy as policy_module
     from vlnce_baselines.models.etp_llm.policy import (
         LLMBoxesCurrentPolicy,
+        LLMGridOnlineFusionPolicy,
         LLMGridTry5Policy,
     )
 
@@ -60,7 +61,11 @@ def test_llm_candidate_policies_select_complete_candidate(monkeypatch):
             )
 
     monkeypatch.setattr(policy_module, "ETP_PriorGT", FakeETP)
-    for policy in (LLMBoxesCurrentPolicy, LLMGridTry5Policy):
+    for policy in (
+        LLMBoxesCurrentPolicy,
+        LLMGridTry5Policy,
+        LLMGridOnlineFusionPolicy,
+    ):
         config = get_config()
         config.defrost()
         config.TORCH_GPU_ID = 0
@@ -73,6 +78,7 @@ def test_llm_candidate_policies_select_complete_candidate(monkeypatch):
     assert captured == [
         ("current", "llm_boxes"),
         ("try5", "llm_grid"),
+        ("online_fusion", "llm_grid"),
     ]
 
 

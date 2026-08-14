@@ -13,6 +13,7 @@ from vlnce_baselines.models.cognitive_map_candidate import (
         ("current", "imagined", "path5", True),
         ("current", "llm_boxes", "path5", True),
         ("current", "prior_gt", "path5", True),
+        ("online_fusion", "llm_grid", "direction5", False),
         ("try5", "llm_grid", "direction5", False),
         ("try5", "prior_gt", "direction5", False),
     ],
@@ -25,6 +26,9 @@ def test_candidate_contract(
     assert candidate.metadata_schema == metadata_schema
     assert candidate.requires_box_targets is requires_box_targets
     assert candidate.uses_llm_cache is source.startswith("llm_")
+    assert candidate.requires_cognitive_map_targets is (
+        architecture == "online_fusion"
+    )
 
 
 @pytest.mark.parametrize(
@@ -33,6 +37,8 @@ def test_candidate_contract(
         (NavigationArchitecture.CURRENT, CognitiveMapSource.LLM_GRID),
         (NavigationArchitecture.TRY5, CognitiveMapSource.IMAGINED),
         (NavigationArchitecture.TRY5, CognitiveMapSource.LLM_BOXES),
+        (NavigationArchitecture.ONLINE_FUSION, CognitiveMapSource.PRIOR_GT),
+        (NavigationArchitecture.ONLINE_FUSION, CognitiveMapSource.LLM_BOXES),
     ],
 )
 def test_candidate_rejects_unsupported_combinations(architecture, source):

@@ -926,3 +926,13 @@ Drop Rate By `max_new_tokens`:
 - OpenScene 与 Mosaic3D 均已在 checkpoint-specific permission gate 于 load/runtime 前 NO-GO；获授权的
   三个候选至此全部完成。OOOPS validated manifest SHA-256 为 `3d2fce62…779c3`，完整 package tree
   SHA-256 为 `c76c576c…8238`。
+
+## 08/13（双地图在线交互）
+
+- [详细记录：方案与实现状态](daily/2026-08-13.md)
+- 已按 05 方案接通 `online_fusion` 的预训练和 DAgger：视觉拓扑图全局更新认知
+  地图，更新地图为全部 ghost 提供长时程价值，并联合训练地图、视觉证据、进度、
+  偏航恢复和动作目标；前端 encoder 不变且固定。
+- 基础权重、LLM-Grid 与认知地图 GT 均已核对；GPU 6 的单-viewpoint Habitat
+  真实渲染、37 类映射和 HDF5 数据集读取冒烟通过。当前唯一缺少的训练输入是尚未
+  全量生成的 panorama 语义标签 cache；完整 rollout 还需等待本方案预训练权重。

@@ -69,6 +69,7 @@ _C.GRPO.require_complete_checkpoint = False
 # -----------------------------------------------------------------------------
 _C.IL = CN()
 _C.IL.lr = 2.5e-4
+_C.IL.optimizer_profile = "full"
 _C.IL.batch_size = 5
 _C.IL.epochs = 4
 _C.IL.use_iw = True
@@ -213,6 +214,13 @@ _C.MODEL.MAP_ENCODER.llm_cache_model_key = ""
 _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
     ""  # optional cache whose available train episodes define the comparison population
 )
+_C.MODEL.MAP_ENCODER.target_namespace = ""
+_C.MODEL.MAP_ENCODER.require_complete_pretrained_modules = False
+_C.MODEL.MAP_ENCODER.online_grid_loss_weight = 0.3
+_C.MODEL.MAP_ENCODER.online_state_loss_weight = 0.05
+_C.MODEL.MAP_ENCODER.online_visual_loss_weight = 0.2
+_C.MODEL.MAP_ENCODER.online_progress_loss_weight = 0.1
+_C.MODEL.MAP_ENCODER.online_ghost_loss_weight = 0.1
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

@@ -7,7 +7,11 @@ import jsonlines
 import numpy as np
 import h5py
 import math
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import torch
 
 from vlnce_baselines.models.cognitive_map_candidate import (
     CognitiveMapCandidate,
@@ -30,12 +34,19 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
 from vlnce_baselines.models.etp_prior_gt.map_box_targets import (
     relevant_semantic_boxes_to_decoder_target,
 )
+from vlnce_baselines.models.etp_prior_gt.online_fusion_losses import (
+    IGNORE_INDEX,
+    ROUTE_FINISHED,
+    ROUTE_ON,
+    sparse_grid_valid_mask,
+)
 from vlnce_baselines.models.etp_llm.navigation import (
     llm_cached_cognitive_map_to_tensors,
     llm_navigation_cognitive_map_boxes_path,
     llm_navigation_cognitive_map_raster_path,
 )
 from prior.bbox import RelevantSemanticBoxes
+from prior.constants import MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES
 from prior.etp_r1 import is_english_like_pretrain_record
 
 MAX_DIST = 30  # normalize
@@ -45,6 +56,49 @@ PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
 PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
 PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
 PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
+
+
+def _annotation_split(path: str) -> str:
+    name = Path(path).name.lower()
+    for split in ("val_unseen", "val_seen", "train"):
+        if split in name:
+            return split
+    raise ValueError(f"Cannot infer dataset split from annotation file: {path}")
+
+
+def _target_cache_id(item: Dict[str, Any], split: str) -> str:
+    dataset = item.get("dataset_name")
+    episode_id = item.get("episode_id")
+    if dataset not in {"R2R", "RxR"} or episode_id is None:
+        raise ValueError(
+            "OnlineFusion target pairing requires dataset_name in {R2R,RxR} "
+            "and episode_id in every pretraining record"
+        )
+    return f"{dataset}_{split}_{episode_id}"
+
+
+def _filter_missing_pretrain_cognitive_map_targets(items, namespace: str):
+    available = []
+    skipped = 0
+    for item in items:
+        target_path = cognitive_map_cache_path(
+            item["scan"],
+            item["_cognitive_map_target_cache_id"],
+            namespace=namespace,
+        )
+        if target_path.is_file():
+            available.append(item)
+        else:
+            skipped += 1
+    print(
+        "pretrain_online_fusion_targets: "
+        f"available={len(available)} skipped_missing={skipped}"
+    )
+    if items and not available:
+        raise FileNotFoundError(
+            f"No OnlineFusion cognitive-map targets found in namespace {namespace}"
+        )
+    return available
 
 
 def _filter_missing_pretrain_cognitive_maps(
@@ -170,6 +224,8 @@ class ReverieTextPathData(object):
         cognitive_map_namespace=None,
         llm_cache_dir=None,
         llm_cache_model_key=None,
+        cognitive_map_target_namespace=None,
+        visual_evidence_cache=None,
         random_rotation_augmentation=False,
     ):
         if candidate is not None and candidate.source in {
@@ -179,10 +235,30 @@ class ReverieTextPathData(object):
             raise ValueError("PriorGT-backed map sources require a cache namespace")
         if candidate is not None and candidate.uses_llm_cache and not llm_cache_model_key:
             raise ValueError("LLM map sources require a cache model key")
+        if (
+            candidate is not None
+            and candidate.requires_cognitive_map_targets
+            and not cognitive_map_target_namespace
+        ):
+            raise ValueError("OnlineFusion requires a cognitive-map target namespace")
         self.candidate = candidate
         self.cognitive_map_namespace = cognitive_map_namespace
         self.llm_cache_dir = llm_cache_dir
         self.llm_cache_model_key = llm_cache_model_key
+        self.cognitive_map_target_namespace = cognitive_map_target_namespace
+        self.visual_evidence_cache = (
+            None if not visual_evidence_cache else Path(visual_evidence_cache)
+        )
+        if (
+            self.visual_evidence_cache is not None
+            and not self.visual_evidence_cache.is_file()
+        ):
+            raise FileNotFoundError(
+                f"Missing panorama semantic evidence cache: "
+                f"{self.visual_evidence_cache}"
+            )
+        self._visual_evidence_store = None
+        self._visual_evidence_store_pid = None
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -225,8 +301,16 @@ class ReverieTextPathData(object):
         self.data: List[Dict[str, Any]] = []
 
         for anno_file in anno_files:
+            split = _annotation_split(anno_file)
             with jsonlines.open(anno_file, "r") as f:
                 for item in f:
+                    if (
+                        self.candidate is not None
+                        and self.candidate.requires_cognitive_map_targets
+                    ):
+                        item["_cognitive_map_target_cache_id"] = _target_cache_id(
+                            item, split
+                        )
                     self.data.append(item)
 
         if self.candidate is not None and self.candidate.uses_llm_cache:
@@ -246,6 +330,14 @@ class ReverieTextPathData(object):
                 cache_dir=self.llm_cache_dir,
                 model_key=self.llm_cache_model_key,
                 require_boxes=self.candidate.requires_box_targets,
+            )
+        if (
+            self.candidate is not None
+            and self.candidate.requires_cognitive_map_targets
+        ):
+            self.data = _filter_missing_pretrain_cognitive_map_targets(
+                self.data,
+                self.cognitive_map_target_namespace,
             )
 
         if val_sample_num:
@@ -331,6 +423,68 @@ class ReverieTextPathData(object):
                 relevant_semantic_boxes_to_decoder_target(relevant)
             )
         return result
+
+    def _load_cognitive_map_target(self, item: Dict[str, Any]):
+        tensors = cached_cognitive_map_to_tensors(
+            item["scan"],
+            item["_cognitive_map_target_cache_id"],
+            namespace=self.cognitive_map_target_namespace,
+            metadata_schema="direction5",
+        )
+        target = tensors["grid"].to(dtype=torch.float32)
+        return {
+            "target_cognitive_maps": target,
+            "grid_valid_masks": sparse_grid_valid_mask(target),
+        }
+
+    def _load_visual_evidence_targets(self, scan, gmap_vpids, visited_masks):
+        if self.visual_evidence_cache is None:
+            return {}
+        process_id = os.getpid()
+        if self._visual_evidence_store_pid != process_id:
+            if self._visual_evidence_store is not None:
+                self._visual_evidence_store.close()
+            self._visual_evidence_store = h5py.File(
+                self.visual_evidence_cache, "r"
+            )
+            self._visual_evidence_store_pid = process_id
+            schema = self._visual_evidence_store.attrs.get("schema")
+            object_names = self._visual_evidence_store.attrs.get("object_names")
+            region_names = self._visual_evidence_store.attrs.get("region_names")
+            if (
+                schema != "online-fusion-panorama-semantics-v1"
+                or json.loads(object_names or "null") != list(MAPPED_OBJECT_NAMES)
+                or json.loads(region_names or "null") != list(MAPPED_REGION_NAMES)
+            ):
+                raise ValueError(
+                    "Panorama semantic evidence cache has an incompatible schema: "
+                    f"{self.visual_evidence_cache}"
+                )
+        targets = np.zeros((len(gmap_vpids), 37), dtype=np.float32)
+        valid = np.zeros((len(gmap_vpids),), dtype=np.bool_)
+        for index, (viewpoint, is_visited) in enumerate(
+            zip(gmap_vpids, visited_masks)
+        ):
+            if not is_visited:
+                continue
+            key = f"{scan}_{viewpoint}"
+            if key not in self._visual_evidence_store:
+                raise KeyError(
+                    f"Missing panorama semantic evidence {key} in "
+                    f"{self.visual_evidence_cache}"
+                )
+            value = np.asarray(self._visual_evidence_store[key], dtype=np.float32)
+            if value.shape != (37,):
+                raise ValueError(
+                    f"Panorama semantic evidence {key} must have shape (37,), "
+                    f"got {value.shape}"
+                )
+            targets[index] = value
+            valid[index] = True
+        return {
+            "visual_evidence_targets": targets,
+            "visual_evidence_valid_masks": valid,
+        }
 
     def _reject_box_target_rotation_augmentation(self) -> None:
         if self.random_rotation_augmentation and self.candidate.requires_box_targets:
@@ -740,6 +894,8 @@ class R2RTextPathData(ReverieTextPathData):
         cognitive_map_namespace=None,
         llm_cache_dir=None,
         llm_cache_model_key=None,
+        cognitive_map_target_namespace=None,
+        visual_evidence_cache=None,
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -764,6 +920,8 @@ class R2RTextPathData(ReverieTextPathData):
             cognitive_map_namespace=cognitive_map_namespace,
             llm_cache_dir=llm_cache_dir,
             llm_cache_model_key=llm_cache_model_key,
+            cognitive_map_target_namespace=cognitive_map_target_namespace,
+            visual_evidence_cache=visual_evidence_cache,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 
@@ -882,6 +1040,33 @@ class R2RTextPathData(ReverieTextPathData):
             "vp_pos_fts": vp_pos_fts,
         }
 
+        new_evidence_masks = [
+            bool(is_visited and viewpoint == end_vp)
+            for viewpoint, is_visited in zip(gmap_vpids, gmap_visited_masks)
+        ]
+        if sum(new_evidence_masks) != 1:
+            raise RuntimeError(
+                "Every pretraining prefix must identify exactly one new visited node"
+            )
+        outs["gmap_new_evidence_masks"] = new_evidence_masks
+
+        full_path_last_index = max(len(item["path"]) - 1, 1)
+        is_finished = end_idx == len(item["path"]) - 1
+        outs["route_state_targets"] = (
+            ROUTE_FINISHED if is_finished else ROUTE_ON
+        )
+        outs["phase_targets"] = (
+            IGNORE_INDEX
+            if is_finished
+            else min(4, int(5 * end_idx / full_path_last_index))
+        )
+        outs["remaining_targets"] = float(
+            (len(item["path"]) - 1 - end_idx) / full_path_last_index
+        )
+        outs["remaining_valid_masks"] = True
+        outs["recovery_targets"] = np.zeros(len(gmap_vpids), dtype=np.float32)
+        outs["recovery_valid_masks"] = np.zeros(len(gmap_vpids), dtype=np.bool_)
+
         if return_act_label:
             global_act_label, local_act_label = self.get_act_labels(
                 end_vp, end_idx, item, gmap_vpids, traj_cand_vpids
@@ -901,6 +1086,18 @@ class R2RTextPathData(ReverieTextPathData):
             outs.update(self._load_pretrain_cognitive_map(item))
         if self.candidate is not None and self.candidate.uses_llm_cache:
             outs.update(self._load_llm_cognitive_map(item))
+        if (
+            self.candidate is not None
+            and self.candidate.requires_cognitive_map_targets
+        ):
+            outs.update(self._load_cognitive_map_target(item))
+            outs.update(
+                self._load_visual_evidence_targets(
+                    scan,
+                    gmap_vpids,
+                    gmap_visited_masks,
+                )
+            )
 
         return outs
 

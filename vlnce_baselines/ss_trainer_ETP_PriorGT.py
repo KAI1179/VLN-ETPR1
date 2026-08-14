@@ -48,6 +48,24 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from vlnce_baselines.models.cognitive_map_candidate import NavigationArchitecture
+from vlnce_baselines.models.etp_prior_gt.online_fusion_losses import (
+    IGNORE_INDEX,
+    ROUTE_FINISHED,
+    ROUTE_OFF,
+    ROUTE_ON,
+    OnlineFusionLossWeights,
+    OnlineFusionTargets,
+    compute_online_fusion_losses,
+    sparse_grid_valid_mask,
+    total_online_fusion_loss,
+)
+from vlnce_baselines.models.optimizer_profiles import (
+    ONLINE_FUSION_OPTIMIZER_PROFILE,
+    build_lr_parameter_groups,
+    configure_dagger_optimizer_profile,
+    optimizer_profile_summary,
+)
 
 
 def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
@@ -130,6 +148,27 @@ class RLTrainer(BaseVLNCETrainer):
                 task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
                 resize_config.append((camera_template.lower(), resizer_size))
                 crop_config.append((camera_template.lower(), cropper_size))
+        map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
+        use_online_visual_targets = (
+            map_cfg is not None
+            and getattr(map_cfg, "enabled", False)
+            and getattr(map_cfg, "architecture", "") == "online_fusion"
+            and getattr(map_cfg, "online_visual_loss_weight", 0.0) > 0
+        )
+        if use_online_visual_targets:
+            semantic_template = deepcopy(task_config.SIMULATOR.SEMANTIC_SENSOR)
+            depth_template = task_config.SIMULATOR.DEPTH_SENSOR
+            for field in ("WIDTH", "HEIGHT", "HFOV", "POSITION"):
+                setattr(semantic_template, field, deepcopy(getattr(depth_template, field)))
+            semantic_orientations = {"0": [0.0, 0.0, 0.0]}
+            semantic_orientations.update(camera_orientations)
+            for action, orient in semantic_orientations.items():
+                camera_template = f"SEMANTIC_{action}"
+                camera_config = deepcopy(semantic_template)
+                camera_config.ORIENTATION = orient
+                camera_config.UUID = camera_template.lower()
+                setattr(task_config.SIMULATOR, camera_template, camera_config)
+                task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
             crop_config
@@ -269,6 +308,35 @@ class RLTrainer(BaseVLNCETrainer):
 
         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
         freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
+        optimizer_profile = getattr(config.IL, "optimizer_profile", "full")
+        if optimizer_profile == ONLINE_FUSION_OPTIMIZER_PROFILE:
+            if map_cfg is None or not map_cfg.enabled:
+                raise ValueError(
+                    "DAgger optimizer profile 'online_fusion' requires an enabled "
+                    "cognitive map"
+                )
+            candidate = CognitiveMapCandidate.parse(
+                map_cfg.architecture,
+                map_cfg.source,
+            )
+            if candidate.architecture.value != "online_fusion":
+                raise ValueError(
+                    "DAgger optimizer profile 'online_fusion' requires "
+                    "MODEL.MAP_ENCODER.architecture=online_fusion"
+                )
+            if freeze_base:
+                raise ValueError(
+                    "MODEL.MAP_ENCODER.freeze_base cannot be combined with the "
+                    "online_fusion optimizer profile"
+                )
+            if not getattr(map_cfg, "require_complete_pretrained_modules", False):
+                raise ValueError(
+                    "OnlineFusion DAgger requires strict loading of the complete "
+                    "pretraining checkpoint"
+                )
+            online_weights = self._online_fusion_loss_weights(map_cfg)
+            if not any(online_weights.__dict__.values()):
+                raise ValueError("At least one OnlineFusion loss must be enabled")
 
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
@@ -277,6 +345,11 @@ class RLTrainer(BaseVLNCETrainer):
                     param.requires_grad_(False)
             logger.info("[Map probe] Base model frozen - map modules are trainable.")
 
+        configure_dagger_optimizer_profile(
+            self.policy,
+            optimizer_profile,
+        )
+
         if self.config.GPU_NUMBERS > 1:
             print("Using", self.config.GPU_NUMBERS, "GPU!")
             # In probe mode many params are intentionally unused/frozen.
@@ -284,33 +357,30 @@ class RLTrainer(BaseVLNCETrainer):
                 self.policy.net.to(self.device),
                 device_ids=[self.device],
                 output_device=self.device,
-                find_unused_parameters=freeze_base,
+                find_unused_parameters=(freeze_base or optimizer_profile != "full"),
                 broadcast_buffers=False,
             )
 
         param_optimizer = list(self.policy.named_parameters())
-        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in param_optimizer
-                    if p.requires_grad and not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in param_optimizer
-                    if p.requires_grad and any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
+        lr_scales = configure_dagger_optimizer_profile(
+            self.policy,
+            optimizer_profile,
+        )
+        optimizer_grouped_parameters = build_lr_parameter_groups(
+            param_optimizer,
+            lr_scales,
+            learning_rate=self.config.IL.lr,
+            weight_decay=0.01,
+        )
+        logger.info(
+            "DAgger optimizer profile %s:\n%s",
+            optimizer_profile,
+            optimizer_profile_summary(lr_scales, self.policy.named_parameters()),
+        )
 
         self.optimizer = torch.optim.AdamW(
-            optimizer_grouped_parameters, lr=self.config.IL.lr
+            optimizer_grouped_parameters,
+            lr=self.config.IL.lr,
         )
         num_warmup_steps = self.config.IL.warmup_iters
         num_training_steps = self.config.IL.iters
@@ -692,6 +762,12 @@ class RLTrainer(BaseVLNCETrainer):
                     "rt",
                 ) as f:
                     self.gt_data.update(json.load(f))
+        elif self._online_fusion_enabled():
+            with gzip.open(
+                self.config.TASK_CONFIG.TASK.NDTW.GT_PATH.format(split=self.split),
+                "rt",
+            ) as f:
+                self.gt_data = json.load(f)
 
         observation_space, action_space = self._init_envs()
         start_iter = self._initialize_policy(
@@ -1103,7 +1179,7 @@ class RLTrainer(BaseVLNCETrainer):
         return map_cfg.enabled
 
     def _cognitive_map_cache_id(self, episode):
-        dataset = self.config.MODEL.task_type.upper()
+        dataset = "R2R" if self.config.MODEL.task_type.lower() == "r2r" else "RxR"
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         return f"{dataset}_{split}_{episode.episode_id}"
 
@@ -1123,6 +1199,249 @@ class RLTrainer(BaseVLNCETrainer):
             )
             for ep in self.envs.current_episodes()
         ]
+
+    def _online_fusion_enabled(self, map_cfg=None):
+        map_cfg = map_cfg or getattr(self.config.MODEL, "MAP_ENCODER", None)
+        return (
+            map_cfg is not None
+            and getattr(map_cfg, "enabled", False)
+            and getattr(map_cfg, "architecture", "")
+            == NavigationArchitecture.ONLINE_FUSION.value
+        )
+
+    def _online_fusion_loss_weights(self, map_cfg):
+        return OnlineFusionLossWeights(
+            grid=getattr(map_cfg, "online_grid_loss_weight", 0.3),
+            state=getattr(map_cfg, "online_state_loss_weight", 0.05),
+            visual=getattr(map_cfg, "online_visual_loss_weight", 0.2),
+            progress=getattr(map_cfg, "online_progress_loss_weight", 0.1),
+            ghost=getattr(map_cfg, "online_ghost_loss_weight", 0.1),
+        )
+
+    def _build_cognitive_map_targets(self):
+        map_cfg = self.config.MODEL.MAP_ENCODER
+        namespace = getattr(map_cfg, "target_namespace", "")
+        if not namespace:
+            raise ValueError(
+                "MODEL.MAP_ENCODER.target_namespace is required for OnlineFusion"
+            )
+        targets = []
+        for episode in self.envs.current_episodes():
+            tensors = cached_cognitive_map_to_tensors(
+                episode.scene_id,
+                self._cognitive_map_cache_id(episode),
+                namespace=namespace,
+                metadata_schema="direction5",
+            )
+            grid = tensors["grid"].to(dtype=torch.float32)
+            targets.append(
+                {
+                    "grid": grid,
+                    "valid_mask": sparse_grid_valid_mask(grid),
+                }
+            )
+        return targets
+
+    def _online_new_evidence_masks(self, nav_inputs, cur_vp, consumed_views):
+        masks = torch.zeros_like(nav_inputs["gmap_visited_masks"])
+        for index, (viewpoint, consumed) in enumerate(zip(cur_vp, consumed_views)):
+            if viewpoint in consumed:
+                continue
+            try:
+                graph_index = nav_inputs["gmap_vp_ids"][index].index(viewpoint)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Current graph node {viewpoint} is absent from gmap_vp_ids"
+                ) from exc
+            if not nav_inputs["gmap_visited_masks"][index, graph_index]:
+                raise RuntimeError("New evidence must point to a visited graph node")
+            masks[index, graph_index] = True
+            consumed.add(viewpoint)
+        return masks
+
+    def _online_visual_targets(self, nav_inputs, cur_vp, weights):
+        if weights.visual <= 0:
+            return None, None
+        labels = self.envs.call(
+            ["current_panorama_semantic_labels"] * self.envs.num_envs
+        )
+        graph_shape = nav_inputs["gmap_visited_masks"].shape
+        targets = torch.zeros(
+            *graph_shape,
+            37,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        valid = torch.zeros(*graph_shape, dtype=torch.bool, device=self.device)
+        for index, (viewpoint, label) in enumerate(zip(cur_vp, labels)):
+            graph_index = nav_inputs["gmap_vp_ids"][index].index(viewpoint)
+            label_tensor = torch.as_tensor(label, dtype=torch.float32, device=self.device)
+            if label_tensor.shape != (37,):
+                raise ValueError(
+                    "current_panorama_semantic_labels must have shape (37,)"
+                )
+            targets[index, graph_index] = label_tensor
+            valid[index, graph_index] = True
+        return targets, valid
+
+    def _online_progress_targets(self, nav_inputs, route_progress):
+        batch_size, graph_size = nav_inputs["gmap_masks"].shape
+        phase = torch.full(
+            (batch_size,), IGNORE_INDEX, dtype=torch.long, device=self.device
+        )
+        route_state = torch.full_like(phase, IGNORE_INDEX)
+        remaining = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        remaining_valid = torch.zeros(
+            batch_size, dtype=torch.bool, device=self.device
+        )
+        recovery = torch.zeros(
+            batch_size, graph_size, dtype=torch.float32, device=self.device
+        )
+        recovery_valid = torch.zeros(
+            batch_size, graph_size, dtype=torch.bool, device=self.device
+        )
+
+        for index, episode in enumerate(self.envs.current_episodes()):
+            record = self.gt_data.get(str(episode.episode_id))
+            path = None if record is None else record.get("locations")
+            if not path:
+                continue
+            distances = np.asarray(
+                self.envs.call_at(index, "current_dist_to_refpath", {"path": path}),
+                dtype=np.float64,
+            )
+            finite = np.isfinite(distances)
+            if not finite.any():
+                continue
+            current_path_distance = float(distances[finite].min())
+            goal_distance = self.envs.call_at(
+                index, "current_dist_to_goal", {"is_train": True}
+            )
+            if np.isfinite(goal_distance) and goal_distance < 1.5:
+                route_state[index] = ROUTE_FINISHED
+                remaining[index] = 0.0
+                remaining_valid[index] = True
+                continue
+            if current_path_distance > 3.0:
+                route_state[index] = ROUTE_OFF
+                ghost_entries = []
+                for graph_index, viewpoint in enumerate(
+                    nav_inputs["gmap_vp_ids"][index]
+                ):
+                    if viewpoint is None or not str(viewpoint).startswith("g"):
+                        continue
+                    positions = self.gmaps[index].ghost_real_pos.get(viewpoint, ())
+                    ghost_entries.append((graph_index, positions))
+                flat_positions = [
+                    position
+                    for _, positions in ghost_entries
+                    for position in positions
+                ]
+                flat_distances = iter(
+                    self.envs.call_at(
+                        index,
+                        "points_dist_to_refpath",
+                        {"positions": flat_positions, "path": path},
+                    )
+                )
+                for graph_index, positions in ghost_entries:
+                    candidate_distances = [
+                        next(flat_distances) for _ in positions
+                    ]
+                    candidate_distances = [
+                        value for value in candidate_distances if np.isfinite(value)
+                    ]
+                    if not candidate_distances:
+                        continue
+                    ghost_distance = min(candidate_distances)
+                    recovery_valid[index, graph_index] = True
+                    recovery[index, graph_index] = float(
+                        ghost_distance <= 3.0
+                        or current_path_distance - ghost_distance >= 0.25
+                    )
+                continue
+
+            route_state[index] = ROUTE_ON
+            eligible = np.arange(len(path)) >= route_progress[index]
+            eligible &= finite
+            if eligible.any():
+                masked = np.where(eligible, distances, np.inf)
+                nearest_index = int(masked.argmin())
+                route_progress[index] = max(route_progress[index], nearest_index)
+            progress = route_progress[index] / max(len(path) - 1, 1)
+            phase[index] = min(4, int(progress * 5))
+            remaining[index] = 1.0 - progress
+            remaining_valid[index] = True
+
+        return phase, route_state, remaining, remaining_valid, recovery, recovery_valid
+
+    def _compute_online_fusion_auxiliary_loss(
+        self,
+        nav_outs,
+        nav_inputs,
+        cur_vp,
+        teacher_actions,
+        cognitive_map_targets,
+        route_progress,
+        weights,
+    ):
+        output = nav_outs.get("online_fusion_output")
+        if output is None:
+            raise RuntimeError("OnlineFusion navigation returned no rich output")
+        grid_targets = torch.stack(
+            [item["grid"] for item in cognitive_map_targets]
+        ).to(self.device)
+        grid_valid_masks = torch.stack(
+            [item["valid_mask"] for item in cognitive_map_targets]
+        ).to(self.device)
+        visual, visual_valid = self._online_visual_targets(
+            nav_inputs, cur_vp, weights
+        )
+        (
+            phase,
+            route_state,
+            remaining,
+            remaining_valid,
+            recovery,
+            recovery_valid,
+        ) = self._online_progress_targets(nav_inputs, route_progress)
+        losses = compute_online_fusion_losses(
+            output,
+            OnlineFusionTargets(
+                dense_grid=grid_targets,
+                grid_valid_mask=grid_valid_masks,
+                visual=visual,
+                visual_valid_mask=visual_valid,
+                phase=phase,
+                route_state=route_state,
+                remaining=remaining,
+                remaining_valid_mask=remaining_valid,
+                recovery=recovery,
+                recovery_valid_mask=recovery_valid,
+                expert_action=teacher_actions,
+            ),
+            weights,
+        )
+        for name, value in losses.items():
+            self.logs[f"online_{name}_loss"].append(value.detach().item())
+        with torch.no_grad():
+            self.logs["online_map_state_residual_rms"].append(
+                output.map_state_residual.square().mean().sqrt().item()
+            )
+            self.logs["online_map_write_gate_mean"].append(
+                output.map_write_gate.mean().item()
+            )
+            if output.dense_grid_logits is not None:
+                probabilities = torch.sigmoid(output.dense_grid_logits)
+                entropy = -(
+                    probabilities * probabilities.clamp_min(1e-6).log()
+                    + (1.0 - probabilities)
+                    * (1.0 - probabilities).clamp_min(1e-6).log()
+                )
+                self.logs["online_map_prediction_entropy"].append(
+                    entropy.mean().item()
+                )
+        return total_online_fusion_loss(losses)
 
     def _prepare_eval_episodes_allowed(self, episodes_allowed):
         return episodes_allowed
@@ -1288,6 +1607,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         loss = 0.0
         map_aux_loss_total = None
+        map_aux_loss_steps = 0
         total_actions = 0.0
 
         not_done_index = list(range(self.envs.num_envs))
@@ -1306,12 +1626,24 @@ class RLTrainer(BaseVLNCETrainer):
 
         # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
+        online_fusion = self._online_fusion_enabled(map_cfg)
+        online_weights = (
+            self._online_fusion_loss_weights(map_cfg) if online_fusion else None
+        )
+        online_map_state = None
+        consumed_views = [set() for _ in range(self.envs.num_envs)]
+        route_progress = [0 for _ in range(self.envs.num_envs)]
         if self._should_load_cognitive_maps(mode, map_cfg):
             cognitive_maps = self._build_cognitive_maps(
                 random_rotation_augmentation=False
             )
         else:
             cognitive_maps = None
+        cognitive_map_targets = (
+            self._build_cognitive_map_targets()
+            if mode == "train" and online_fusion
+            else None
+        )
 
         for stepk in range(self.max_len):
             total_actions += self.envs.num_envs
@@ -1391,6 +1723,19 @@ class RLTrainer(BaseVLNCETrainer):
             )
             no_vp_left = nav_inputs.pop("no_vp_left")
 
+            if online_fusion:
+                nav_inputs["gmap_new_evidence_masks"] = (
+                    self._online_new_evidence_masks(
+                        nav_inputs,
+                        cur_vp,
+                        consumed_views,
+                    )
+                )
+                nav_inputs["previous_map_state"] = online_map_state
+                nav_inputs["decode_dense_grid"] = bool(
+                    mode == "train" and online_weights.grid > 0
+                )
+
             map_aux_loss = self._prepare_map_inputs(
                 nav_inputs,
                 txt_embeds,
@@ -1402,6 +1747,8 @@ class RLTrainer(BaseVLNCETrainer):
             )
 
             nav_outs = self.policy.net(**nav_inputs)
+            if online_fusion:
+                online_map_state = nav_outs["map_state"]
             nav_logits = nav_outs["global_logits"]
             nav_probs = F.softmax(nav_logits, 1)
             for i, gmap in enumerate(self.gmaps):
@@ -1415,7 +1762,18 @@ class RLTrainer(BaseVLNCETrainer):
                 loss += F.cross_entropy(
                     nav_logits, teacher_actions, reduction="sum", ignore_index=-100
                 )
+                if online_fusion:
+                    map_aux_loss = self._compute_online_fusion_auxiliary_loss(
+                        nav_outs,
+                        nav_inputs,
+                        cur_vp,
+                        teacher_actions,
+                        cognitive_map_targets,
+                        route_progress,
+                        online_weights,
+                    )
                 if map_aux_loss is not None:
+                    map_aux_loss_steps += 1
                     map_aux_loss_total = (
                         map_aux_loss
                         if map_aux_loss_total is None
@@ -1614,6 +1972,18 @@ class RLTrainer(BaseVLNCETrainer):
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)
+                        if cognitive_map_targets is not None:
+                            cognitive_map_targets.pop(i)
+                        consumed_views.pop(i)
+                        route_progress.pop(i)
+                        if online_map_state is not None:
+                            online_map_state = torch.cat(
+                                (
+                                    online_map_state[:i],
+                                    online_map_state[i + 1 :],
+                                ),
+                                dim=0,
+                            )
                         all_txt_ids = torch.cat(
                             (all_txt_ids[:i], all_txt_ids[i + 1 :]), dim=0
                         )
@@ -1645,6 +2015,6 @@ class RLTrainer(BaseVLNCETrainer):
         if mode == "train":
             loss = ml_weight * loss / total_actions
             if map_aux_loss_total is not None:
-                loss = loss + map_aux_loss_total
+                loss = loss + map_aux_loss_total / max(map_aux_loss_steps, 1)
             self.loss += loss
             self.logs["IL_loss"].append(loss.item())

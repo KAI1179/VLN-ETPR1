@@ -14,3 +14,9 @@ class LLMBoxesCurrentPolicy(PriorGTPolicy):
 class LLMGridTry5Policy(PriorGTPolicy):
     navigation_architecture = "try5"
     cognitive_map_source = "llm_grid"
+
+
+@baseline_registry.register_policy
+class LLMGridOnlineFusionPolicy(PriorGTPolicy):
+    navigation_architecture = "online_fusion"
+    cognitive_map_source = "llm_grid"

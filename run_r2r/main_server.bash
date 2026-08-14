@@ -55,6 +55,10 @@ LLM_GRID_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_
 LLM_GRID_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_dagger/store/ckpt.iter28000.pth"
 LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter450.pth"
 
+LLM_GRID_ONLINE_FUSION_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+LLM_GRID_ONLINE_FUSION_TARGET_NAMESPACE="gt.legacy.r1p5.direction5.v1"
+LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT="${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT:-}"
+
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
       TORCH_GPU_IDS ${GPU_IDS}
@@ -183,8 +187,25 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
       GRPO.require_complete_checkpoint True
       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
+LLM_GRID_ONLINE_FUSION_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMGridOnlineFusionPolicy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture online_fusion
+      MODEL.MAP_ENCODER.source llm_grid
+      MODEL.MAP_ENCODER.target_namespace ${LLM_GRID_ONLINE_FUSION_TARGET_NAMESPACE}
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_ONLINE_FUSION_MODEL_KEY}
+      MODEL.MAP_ENCODER.require_complete_pretrained_modules True
+      MODEL.pretrained_path ${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT}"
+
 launch() {
-      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $1
+      torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" run.py $1
+}
+
+require_checkpoint() {
+      if [ -z "$1" ] || [ ! -f "$1" ]; then
+            echo "Missing checkpoint: $1" >&2
+            exit 2
+      fi
 }
 
 warn_unimplemented() {
@@ -278,6 +299,11 @@ case $mode in
       echo "###### LLM-Grid Try5 DAgger ######"
       launch "--exp_name release_r2r_llm_grid_try5_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
+      llm_grid_online_fusion_dagger)
+      echo "###### LLM-Grid OnlineFusion DAgger ######"
+      require_checkpoint "${LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT}"
+      launch "--exp_name release_r2r_llm_grid_online_fusion_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_ONLINE_FUSION_MODEL_ARGS} ${DAGGER_ARGS} IL.optimizer_profile online_fusion"
+      ;;
       llm_grid_try5_eval_dagger)
       echo "###### LLM-Grid Try5 DAgger eval ######"
       launch "--exp_name release_r2r_llm_grid_try5_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_DAGGER_CKPT} IL.back_algo control"
@@ -313,3 +339,4 @@ esac
 # bash run_r2r/main_server.bash imagined_eval_grpo
 # bash run_r2r/main_server.bash llm_boxes_current_dagger
 # bash run_r2r/main_server.bash llm_grid_try5_dagger
+# LLM_GRID_ONLINE_FUSION_PRETRAINED_CKPT=<checkpoint> bash run_r2r/main_server.bash llm_grid_online_fusion_dagger

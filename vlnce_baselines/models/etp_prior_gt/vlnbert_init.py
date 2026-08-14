@@ -1,4 +1,12 @@
-import torch
+from pathlib import Path
+
+from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
+from vlnce_baselines.models.etp_prior_gt.pretrain_checkpoint import (
+    FUSION_SOURCE_PREFIX,
+    load_checkpoint_submodule,
+    load_pretraining_checkpoint,
+    map_pretraining_state_to_vlnbert,
+)
 
 
 def get_tokenizer(args):
@@ -12,7 +20,11 @@ def get_tokenizer(args):
     return tokenizer
 
 
-def get_vlnbert_models(config=None, dropout_rate=0.1):
+def get_vlnbert_models(
+    config=None,
+    dropout_rate=0.1,
+    checkpoint_state=None,
+):
     if config is None:
         raise ValueError("config is required")
 
@@ -23,20 +35,10 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
 
     model_name_or_path = config.pretrained_path
     new_ckpt_weights = {}
-    keywords = [
-        "graph_query_text",
-        "graph_attentioned_txt_embeds_transform",
-        "global_sap_head",
-    ]
     if model_name_or_path is not None:
-        ckpt_weights = torch.load(model_name_or_path, map_location="cpu")
-        for k, v in ckpt_weights.items():
-            if k.startswith("module"):
-                new_ckpt_weights[k[7:]] = v
-            if any(key in k for key in keywords):
-                new_ckpt_weights["bert." + k] = v
-            else:
-                new_ckpt_weights[k] = v
+        if checkpoint_state is None:
+            checkpoint_state = load_pretraining_checkpoint(model_name_or_path)
+        new_ckpt_weights = map_pretraining_state_to_vlnbert(checkpoint_state)
 
     cfg_name = "bert_config/xlm-roberta-base"
     vis_config = PretrainedConfig.from_pretrained(cfg_name)
@@ -76,4 +78,29 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
         config=vis_config,
         state_dict=new_ckpt_weights,
     )
+    if model_name_or_path is not None:
+        map_cfg = config.MAP_ENCODER
+        require_complete = bool(
+            getattr(map_cfg, "require_complete_pretrained_modules", False)
+        )
+        if require_complete:
+            runtime_state = {
+                key[len("bert.") :]: value
+                for key, value in new_ckpt_weights.items()
+                if key.startswith("bert.")
+            }
+            load_complete_state_dict(
+                visual_model,
+                runtime_state,
+                Path(model_name_or_path),
+                "vln_bert",
+            )
+        load_checkpoint_submodule(
+            visual_model.graph_map_attention,
+            checkpoint_state,
+            checkpoint_path=Path(model_name_or_path),
+            source_prefix=FUSION_SOURCE_PREFIX,
+            module_name="graph_map_attention",
+            required=require_complete,
+        )
     return visual_model

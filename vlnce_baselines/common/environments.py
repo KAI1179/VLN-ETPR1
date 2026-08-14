@@ -183,6 +183,44 @@ class VLNCEDaggerEnv(habitat.RLEnv):
         # circle_dists = np.linalg.norm(np.array(path)-current_pos, axis=1).tolist()
         return circle_dists
 
+    def point_dist_to_refpath(self, pos, path):
+        distances = [self._env.sim.geodesic_distance(pos, point) for point in path]
+        return min(distances) if distances else float("inf")
+
+    def points_dist_to_refpath(self, positions, path):
+        return [self.point_dist_to_refpath(position, path) for position in positions]
+
+    def current_panorama_semantic_labels(self):
+        """Return training-only 37-way semantic presence for 12 current views."""
+
+        from vlnce_baselines.models.etp_prior_gt.semantic_panorama import (
+            panorama_semantic_label,
+        )
+
+        observations = self._env.sim.get_sensor_observations()
+        semantic_keys = sorted(
+            key for key in observations if key.startswith("semantic_")
+        )
+        if len(semantic_keys) != 12:
+            raise RuntimeError(
+                "OnlineFusion visual supervision requires 12 semantic sensors; "
+                f"found {semantic_keys}"
+            )
+        normalized = {}
+        for key, value in observations.items():
+            if key.startswith("semantic_"):
+                suffix = key[len("semantic_") :]
+                normalized[f"semantic_{suffix.zfill(3)}"] = value
+            elif key == "depth":
+                normalized["depth_000"] = value
+            elif key.startswith("depth_"):
+                suffix = key[len("depth_") :]
+                normalized[f"depth_{suffix.zfill(3)}"] = value
+        return panorama_semantic_label(
+            normalized,
+            self._env.sim.semantic_annotations(),
+        )
+
     def ghost_dist_to_ref(self, ghost_vp_pos, ref_path):
         episode_id = self._env.current_episode.episode_id
         if episode_id != self.prev_episode_id:

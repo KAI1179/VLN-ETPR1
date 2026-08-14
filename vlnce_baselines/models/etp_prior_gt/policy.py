@@ -9,6 +9,7 @@ The author's R1Policy.py and etp/ directory are not modified.
 """
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -24,6 +25,11 @@ from habitat_baselines.rl.ppo.policy import Net
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
+from vlnce_baselines.models.etp_prior_gt.pretrain_checkpoint import (
+    MAP_ENCODER_SOURCE_PREFIX,
+    load_checkpoint_submodule,
+    load_pretraining_checkpoint,
+)
 from vlnce_baselines.models.encoders.resnet_encoders import (
     VlnResnetDepthEncoder,
     CLIPEncoder,
@@ -126,8 +132,16 @@ class ETP_PriorGT(Net):
         self.device = device
 
         print("\nInitalizing the ETP_PriorGT model ...")
+        checkpoint_path = getattr(model_config, "pretrained_path", None)
+        checkpoint_state = (
+            None
+            if checkpoint_path is None
+            else load_pretraining_checkpoint(checkpoint_path)
+        )
         self.vln_bert = get_vlnbert_models(
-            config=model_config, dropout_rate=dropout_rate
+            config=model_config,
+            dropout_rate=dropout_rate,
+            checkpoint_state=checkpoint_state,
         )
         self.drop_env = nn.Dropout(p=0.4)
 
@@ -165,6 +179,21 @@ class ETP_PriorGT(Net):
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=map_hidden_size,
             )
+            if checkpoint_path is not None:
+                load_checkpoint_submodule(
+                    self.map_encoder,
+                    checkpoint_state,
+                    checkpoint_path=Path(checkpoint_path),
+                    source_prefix=MAP_ENCODER_SOURCE_PREFIX,
+                    module_name="map_encoder",
+                    required=bool(
+                        getattr(
+                            map_cfg,
+                            "require_complete_pretrained_modules",
+                            False,
+                        )
+                    ),
+                )
             print(
                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
             )
@@ -210,6 +239,9 @@ class ETP_PriorGT(Net):
         start_positions=None,
         map_tokens=None,
         map_token_masks=None,
+        previous_map_state=None,
+        gmap_new_evidence_masks=None,
+        decode_dense_grid=False,
     ):
 
         if mode == "language":
@@ -410,5 +442,8 @@ class ETP_PriorGT(Net):
                 gmap_task_embeddings,
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
+                previous_map_state=previous_map_state,
+                gmap_new_evidence_masks=gmap_new_evidence_masks,
+                decode_dense_grid=decode_dense_grid,
             )
             return outs

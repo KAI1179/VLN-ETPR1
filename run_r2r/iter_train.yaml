@@ -49,6 +49,7 @@ IL:
   iters: 15000
   log_every: 200
   lr: 1e-5
+  optimizer_profile: full
   batch_size: 1 # equal to NUM_ENVIRONMENTS
   ml_weight: 1.0
   expert_policy: spl

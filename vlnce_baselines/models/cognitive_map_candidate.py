@@ -9,6 +9,7 @@ from typing import Literal
 
 class NavigationArchitecture(str, Enum):
     CURRENT = "current"
+    ONLINE_FUSION = "online_fusion"
     TRY5 = "try5"
 
 
@@ -29,6 +30,7 @@ class CognitiveMapCandidate:
             (NavigationArchitecture.CURRENT, CognitiveMapSource.IMAGINED),
             (NavigationArchitecture.CURRENT, CognitiveMapSource.LLM_BOXES),
             (NavigationArchitecture.CURRENT, CognitiveMapSource.PRIOR_GT),
+            (NavigationArchitecture.ONLINE_FUSION, CognitiveMapSource.LLM_GRID),
             (NavigationArchitecture.TRY5, CognitiveMapSource.LLM_GRID),
             (NavigationArchitecture.TRY5, CognitiveMapSource.PRIOR_GT),
         }:
@@ -55,13 +57,21 @@ class CognitiveMapCandidate:
     def metadata_schema(self) -> Literal["path5", "direction5"]:
         return (
             "direction5"
-            if self.architecture is NavigationArchitecture.TRY5
+            if self.architecture
+            in {
+                NavigationArchitecture.ONLINE_FUSION,
+                NavigationArchitecture.TRY5,
+            }
             else "path5"
         )
 
     @property
     def requires_box_targets(self) -> bool:
         return self.architecture is NavigationArchitecture.CURRENT
+
+    @property
+    def requires_cognitive_map_targets(self) -> bool:
+        return self.architecture is NavigationArchitecture.ONLINE_FUSION
 
     @property
     def uses_llm_cache(self) -> bool:

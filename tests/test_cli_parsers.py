@@ -150,6 +150,9 @@ def test_default_config_exposes_llm_navigation_cache_settings():
     assert config.MODEL.MAP_ENCODER.llm_cache_dir == ""
     assert config.MODEL.MAP_ENCODER.llm_cache_model_key == ""
     assert config.MODEL.MAP_ENCODER.llm_train_reference_model_key == ""
+    assert config.MODEL.MAP_ENCODER.target_namespace == ""
+    assert config.MODEL.MAP_ENCODER.require_complete_pretrained_modules is False
+    assert config.IL.optimizer_profile == "full"
 
 
 def test_bbox_parser_accepts_scenes_and_optional_episode_selector():
