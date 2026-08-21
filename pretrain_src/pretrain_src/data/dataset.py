@@ -8,6 +8,7 @@ import numpy as np
 import h5py
 import math
 import torch
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from vlnce_baselines.models.cognitive_map_candidate import (
@@ -46,6 +47,18 @@ PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
 PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
 PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
 PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
+
+
+def _annotation_split(path: str) -> str:
+    name = Path(path).name.lower()
+    for split in ("val_unseen", "val_seen", "train"):
+        if split in name:
+            return split
+    raise ValueError(f"Cannot infer dataset split from annotation file: {path}")
+
+
+def _target_cache_id(item: Dict[str, Any], split: str) -> str:
+    return f"{item['dataset_name']}_{split}_{item['episode_id']}"
 
 
 def _filter_missing_pretrain_cognitive_maps(
@@ -232,8 +245,13 @@ class ReverieTextPathData(object):
         self.data: List[Dict[str, Any]] = []
 
         for anno_file in anno_files:
+            split = _annotation_split(anno_file) if self.pose_gated_map else None
             with jsonlines.open(anno_file, "r") as f:
                 for item in f:
+                    if self.pose_gated_map:
+                        item["_pose_gated_target_cache_id"] = _target_cache_id(
+                            item, split
+                        )
                     self.data.append(item)
 
         if self.candidate is not None and self.candidate.uses_llm_cache:
@@ -351,8 +369,7 @@ class ReverieTextPathData(object):
             ]
         target = cached_cognitive_map_to_tensors(
             item["scan"],
-            item["instr_id"],
-            cache_dir=PRETRAIN_COGNITIVE_MAP_DIR,
+            item["_pose_gated_target_cache_id"],
             namespace=self.target_cognitive_map_namespace,
             metadata_schema="direction5",
         )
