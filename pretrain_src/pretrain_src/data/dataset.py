@@ -61,6 +61,30 @@ def _target_cache_id(item: Dict[str, Any], split: str) -> str:
     return f"{item['dataset_name']}_{split}_{item['episode_id']}"
 
 
+def _filter_missing_pose_gated_targets(items, namespace: str):
+    available = []
+    skipped = 0
+    for item in items:
+        target_path = cognitive_map_cache_path(
+            item["scan"],
+            item["_pose_gated_target_cache_id"],
+            namespace=namespace,
+        )
+        if target_path.is_file():
+            available.append(item)
+        else:
+            skipped += 1
+    print(
+        "pretrain_pose_gated_targets: "
+        f"available={len(available)} skipped_missing={skipped}"
+    )
+    if items and not available:
+        raise FileNotFoundError(
+            f"No pose-gated cognitive-map targets found in namespace {namespace}"
+        )
+    return available
+
+
 def _filter_missing_pretrain_cognitive_maps(
     items,
     namespace: str,
@@ -271,6 +295,11 @@ class ReverieTextPathData(object):
                 cache_dir=self.llm_cache_dir,
                 model_key=self.llm_cache_model_key,
                 require_boxes=self.candidate.requires_box_targets,
+            )
+        if self.pose_gated_map:
+            self.data = _filter_missing_pose_gated_targets(
+                self.data,
+                self.target_cognitive_map_namespace,
             )
 
         if val_sample_num:
