@@ -54,6 +54,8 @@ LLM_GRID_TRY5_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
 LLM_GRID_TRY5_PRETRAINED_CKPT="pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt"
 LLM_GRID_TRY5_DAGGER_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_dagger/store/ckpt.iter28000.pth"
 LLM_GRID_TRY5_GRPO_CKPT="data/logs/checkpoints/release_r2r_llm_grid_try5_grpo/store/ckpt.iter450.pth"
+POSE_GATED_PRETRAINED_CKPT="${POSE_GATED_PRETRAINED_CKPT:-}"
+POSE_GATED_TARGET_NAMESPACE="${POSE_GATED_TARGET_NAMESPACE:-gt.legacy.r1p5.direction5.v1}"
 
 COMMON_ARGS="--exp-config ${EXP_CONFIG}
       SIMULATOR_GPU_IDS ${GPU_IDS}
@@ -183,8 +185,18 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
       GRPO.require_complete_checkpoint True
       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
+LLM_GRID_POSE_GATED_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMGridTry5Policy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source llm_grid
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
+      MODEL.MAP_ENCODER.pose_gated_map True
+      MODEL.MAP_ENCODER.target_cache_namespace ${POSE_GATED_TARGET_NAMESPACE}
+      MODEL.pretrained_path ${POSE_GATED_PRETRAINED_CKPT}"
+
 launch() {
-      torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $1
+      torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" run.py $1
 }
 
 warn_unimplemented() {
@@ -281,6 +293,14 @@ case $mode in
       llm_grid_try5_eval_dagger)
       echo "###### LLM-Grid Try5 DAgger eval ######"
       launch "--exp_name release_r2r_llm_grid_try5_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_DAGGER_CKPT} IL.back_algo control"
+      ;;
+      llm_grid_pose_gated_dagger)
+      if [ -z "${POSE_GATED_PRETRAINED_CKPT}" ]; then
+            echo "Set POSE_GATED_PRETRAINED_CKPT to the pose-gated pretraining checkpoint." >&2
+            exit 1
+      fi
+      echo "###### LLM-Grid pose-gated DAgger ######"
+      launch "--exp_name release_r2r_llm_grid_pose_gated_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_POSE_GATED_MODEL_ARGS} ${DAGGER_ARGS}"
       ;;
       llm_grid_try5_grpo)
       echo "###### LLM-Grid Try5 GRPO ######"

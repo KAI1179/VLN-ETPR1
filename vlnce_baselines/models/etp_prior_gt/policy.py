@@ -24,6 +24,7 @@ from habitat_baselines.rl.ppo.policy import Net
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
+from vlnce_baselines.models.etp_prior_gt.route_map_update import RouteMapUpdater
 from vlnce_baselines.models.encoders.resnet_encoders import (
     VlnResnetDepthEncoder,
     CLIPEncoder,
@@ -168,6 +169,22 @@ class ETP_PriorGT(Net):
             print(
                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
             )
+        self.route_map_updater = None
+        if self.map_encoder_enabled and getattr(map_cfg, "pose_gated_map", False):
+            self.route_map_updater = RouteMapUpdater(self.vln_bert.config.hidden_size)
+            checkpoint = torch.load(model_config.pretrained_path, map_location="cpu")
+            map_state = {
+                key[len("map_encoder.") :]: value
+                for key, value in checkpoint.items()
+                if key.startswith("map_encoder.")
+            }
+            updater_state = {
+                key[len("route_map_updater.") :]: value
+                for key, value in checkpoint.items()
+                if key.startswith("route_map_updater.")
+            }
+            self.map_encoder.load_state_dict(map_state, strict=True)
+            self.route_map_updater.load_state_dict(updater_state, strict=True)
 
     @property
     def output_size(self):
@@ -210,6 +227,15 @@ class ETP_PriorGT(Net):
         start_positions=None,
         map_tokens=None,
         map_token_masks=None,
+        map_state=None,
+        pano_features=None,
+        text_features=None,
+        positions=None,
+        rotations=None,
+        world_starts=None,
+        map_starts=None,
+        spatial_rgb_fts=None,
+        spatial_dep_fts=None,
     ):
 
         if mode == "language":
@@ -395,6 +421,27 @@ class ETP_PriorGT(Net):
                 start_direction_vectors,
                 start_positions,
             )
+
+        elif mode == "map_update":
+            assert self.route_map_updater is not None
+            return self.route_map_updater.update(
+                map_state,
+                pano_features,
+                text_features,
+                positions,
+                rotations,
+                world_starts,
+                map_starts,
+            )
+
+        elif mode == "spatial_visual_features":
+            rgb_embeds = self.vln_bert.img_embeddings.img_layer_norm(
+                self.vln_bert.img_embeddings.img_linear(spatial_rgb_fts)
+            )
+            dep_embeds = self.vln_bert.img_embeddings.dep_layer_norm(
+                self.vln_bert.img_embeddings.dep_linear(spatial_dep_fts)
+            )
+            return rgb_embeds + dep_embeds
 
         elif mode == "navigation":
             outs = self.vln_bert.forward_navigation(

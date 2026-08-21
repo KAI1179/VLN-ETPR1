@@ -125,6 +125,14 @@ def main(opts):
     model_config.cognitive_map_namespace = opts.cognitive_map_namespace
     model_config.llm_cache_model_key = opts.llm_cache_model_key
     model_config.llm_cache_dir = opts.llm_cache_dir
+    model_config.pose_gated_map = opts.pose_gated_map
+    model_config.spatial_visual_cache = opts.spatial_visual_cache
+    model_config.target_cognitive_map_namespace = opts.target_cognitive_map_namespace
+    model_config.pose_gated_visual_loss_weight = opts.pose_gated_visual_loss_weight
+    model_config.pose_gated_route_loss_weight = opts.pose_gated_route_loss_weight
+    model_config.pose_gated_seen_loss_weight = opts.pose_gated_seen_loss_weight
+    model_config.pose_gated_fix_loss_weight = opts.pose_gated_fix_loss_weight
+    model_config.pose_gated_keep_loss_weight = opts.pose_gated_keep_loss_weight
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 
@@ -221,6 +229,9 @@ def main(opts):
         "cognitive_map_namespace": opts.cognitive_map_namespace,
         "llm_cache_dir": opts.llm_cache_dir,
         "llm_cache_model_key": opts.llm_cache_model_key,
+        "pose_gated_map": opts.pose_gated_map,
+        "spatial_visual_cache": opts.spatial_visual_cache,
+        "target_cognitive_map_namespace": opts.target_cognitive_map_namespace,
     }
     train_nav_db = R2RTextPathData(
         data_cfg.train_traj_files,
@@ -357,7 +368,7 @@ def main(opts):
             # learning rate scheduling
             lr_this_step = get_lr_sched(global_step, opts)
             for param_group in optimizer.param_groups:
-                param_group["lr"] = lr_this_step
+                param_group["lr"] = lr_this_step * param_group["lr_scale"]
             TB_LOGGER.add_scalar("lr", lr_this_step, global_step)
 
             # NOTE: not gathered across GPUs for efficiency

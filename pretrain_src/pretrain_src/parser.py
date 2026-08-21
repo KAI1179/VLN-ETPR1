@@ -75,6 +75,14 @@ def load_parser():
         default=None,
         help="Optional LLM-Navigation cache root override",
     )
+    parser.add_argument("--pose-gated-map", action="store_true")
+    parser.add_argument("--spatial-visual-cache", default="")
+    parser.add_argument("--target-cognitive-map-namespace", default="")
+    parser.add_argument("--pose-gated-visual-loss-weight", type=float, default=1.0)
+    parser.add_argument("--pose-gated-route-loss-weight", type=float, default=1.0)
+    parser.add_argument("--pose-gated-seen-loss-weight", type=float, default=1.0)
+    parser.add_argument("--pose-gated-fix-loss-weight", type=float, default=1.0)
+    parser.add_argument("--pose-gated-keep-loss-weight", type=float, default=1.0)
     # training parameters
     parser.add_argument(
         "--train_batch_size",
@@ -219,6 +227,13 @@ def parse_with_config(parser):
         ):
             raise ValueError(
                 "--map_predictor_checkpoint is only valid for the imagined source"
+            )
+    if args.pose_gated_map:
+        if not args.spatial_visual_cache:
+            raise ValueError("--spatial-visual-cache is required with --pose-gated-map")
+        if not args.target_cognitive_map_namespace:
+            raise ValueError(
+                "--target-cognitive-map-namespace is required with --pose-gated-map"
             )
     print("args:\n", args)
     return args

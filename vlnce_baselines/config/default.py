@@ -213,6 +213,14 @@ _C.MODEL.MAP_ENCODER.llm_cache_model_key = ""
 _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
     ""  # optional cache whose available train episodes define the comparison population
 )
+_C.MODEL.MAP_ENCODER.pose_gated_map = False
+_C.MODEL.MAP_ENCODER.spatial_visual_cache = ""
+_C.MODEL.MAP_ENCODER.target_cache_namespace = ""
+_C.MODEL.MAP_ENCODER.visual_loss_weight = 1.0
+_C.MODEL.MAP_ENCODER.route_loss_weight = 1.0
+_C.MODEL.MAP_ENCODER.seen_loss_weight = 1.0
+_C.MODEL.MAP_ENCODER.fix_loss_weight = 1.0
+_C.MODEL.MAP_ENCODER.keep_loss_weight = 1.0
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

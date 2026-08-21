@@ -20,6 +20,10 @@ from .vilmodel import (
     BertOutAttention,
 )
 from .ops import gen_seq_masks, extend_neg_masks
+from vlnce_baselines.models.etp_prior_gt.route_map_update import (
+    RouteMapUpdater,
+    map_losses,
+)
 
 
 class RegionClassification(nn.Module):
@@ -115,6 +119,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         self.map_decoder = None
         self.map_box_criterion = None
         self.map_predictor = None
+        self.route_map_updater = None
 
         if "mlm" in config.pretrain_tasks:
             self.mlm_head = BertOnlyMLMHead(self.config)
@@ -144,6 +149,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=self.config.hidden_size
             )
+            if getattr(config, "pose_gated_map", False):
+                self.route_map_updater = RouteMapUpdater(self.config.hidden_size)
+                for parameter in self.bert.img_embeddings.parameters():
+                    parameter.requires_grad_(False)
             if self.cognitive_map_candidate.requires_box_targets:
                 from vlnce_baselines.models.etp_prior_gt.map_decoder import (
                     CognitiveMapDecoder,
@@ -360,15 +369,113 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             # cognitive_maps=(B, 37, 100, 100), metadata=(B, 5, 2),
             # direction=(B, 2), start=(B, 2). The map encoder returns
             # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
+            cognitive_maps = batch["cognitive_maps"]
+            map_loss = None
+            if self.route_map_updater is not None:
+                cognitive_maps, map_loss = self._pose_gated_map_update(
+                    batch, compute_loss
+                )
             map_tokens, map_token_masks = map_encoder(
-                batch["cognitive_maps"],
+                cognitive_maps,
                 batch["map_trajectory_metadata"],
                 batch["start_direction_vectors"],
                 batch["start_positions"],
             )
-            return map_tokens, map_token_masks, None
+            return map_tokens, map_token_masks, map_loss
 
         return None, None, None
+
+    def _pose_gated_map_update(self, batch, compute_loss):
+        spatial_features = self.bert.img_embeddings.img_layer_norm(
+            self.bert.img_embeddings.img_linear(batch["traj_spatial_view_fts"])
+        ) + self.bert.img_embeddings.dep_layer_norm(
+            self.bert.img_embeddings.dep_linear(batch["traj_spatial_dep_fts"])
+        )
+        text_token_types = torch.zeros_like(batch["txt_ids"])
+        text_embeds = self.bert.embeddings(
+            batch["txt_ids"], batch["txt_task_encoding"], text_token_types
+        )
+        text_embeds = self.bert.lang_encoder(
+            text_embeds, gen_seq_masks(batch["txt_lens"])
+        )
+        states = []
+        losses = {name: [] for name in ("visual", "route", "seen", "fix", "keep")}
+        offset = 0
+        for batch_index, step_count in enumerate(batch["traj_step_lens"]):
+            prior = batch["cognitive_maps"][batch_index : batch_index + 1]
+            state = self.route_map_updater.initial_state(prior)
+            world_start = batch["traj_positions"][offset : offset + 1]
+            map_start = batch["start_positions"][batch_index : batch_index + 1]
+            target_map = batch["target_cognitive_maps"][batch_index : batch_index + 1]
+            for step_index in range(step_count):
+                index = offset + step_index
+                state, outputs = self.route_map_updater.update(
+                    state,
+                    spatial_features[index : index + 1],
+                    text_embeds[batch_index : batch_index + 1].mean(dim=1),
+                    batch["traj_positions"][index : index + 1],
+                    batch["traj_rotations"][index : index + 1],
+                    world_start,
+                    map_start,
+                )
+                if compute_loss:
+                    losses["visual"].append(
+                        F.binary_cross_entropy_with_logits(
+                            outputs["semantic_logits"],
+                            batch["spatial_semantic_targets"][index : index + 1],
+                        )
+                        + F.binary_cross_entropy_with_logits(
+                            outputs["coverage_logits"],
+                            batch["spatial_coverage_targets"][index : index + 1],
+                        )
+                    )
+                    losses["route"].append(
+                        F.binary_cross_entropy_with_logits(
+                            outputs["route_gate_logits"],
+                            torch.ones_like(outputs["route_gate_logits"]),
+                        )
+                    )
+                    for name, value in map_losses(
+                        state.current, state.prior, target_map, state.coverage
+                    ).items():
+                        losses[name].append(value)
+            if compute_loss:
+                negative_features = self.bert.img_embeddings.img_layer_norm(
+                    self.bert.img_embeddings.img_linear(
+                        batch["route_negative_spatial_view_fts"][batch_index : batch_index + 1]
+                    )
+                ) + self.bert.img_embeddings.dep_layer_norm(
+                    self.bert.img_embeddings.dep_linear(
+                        batch["route_negative_spatial_dep_fts"][batch_index : batch_index + 1]
+                    )
+                )
+                negative_logits = self.route_map_updater.route_gate(
+                    negative_features,
+                    text_embeds[batch_index : batch_index + 1].mean(dim=1),
+                    state.current,
+                )
+                losses["route"].append(
+                    F.binary_cross_entropy_with_logits(
+                        negative_logits, torch.zeros_like(negative_logits)
+                    )
+                )
+            states.append(state.current)
+            offset += step_count
+        current_maps = torch.cat(states, dim=0)
+        if not compute_loss:
+            return current_maps, None
+        weights = {
+            "visual": self.config.pose_gated_visual_loss_weight,
+            "route": self.config.pose_gated_route_loss_weight,
+            "seen": self.config.pose_gated_seen_loss_weight,
+            "fix": self.config.pose_gated_fix_loss_weight,
+            "keep": self.config.pose_gated_keep_loss_weight,
+        }
+        total = sum(
+            weights[name] * torch.stack(values).mean()
+            for name, values in losses.items()
+        )
+        return current_maps, total
 
     def _compute_updated_cognitive_map_loss(
         self,
