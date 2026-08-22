@@ -45,6 +45,12 @@ def _copy_pose_gated_map_inputs(inputs, output):
     )
     if "traj_spatial_view_fts" in inputs:
         output.update({key: inputs[key] for key in keys})
+        output["traj_spatial_view_fts"] = [
+            torch.from_numpy(feature) for feature in inputs["traj_spatial_view_fts"]
+        ]
+        output["traj_spatial_dep_fts"] = [
+            torch.from_numpy(feature) for feature in inputs["traj_spatial_dep_fts"]
+        ]
 
 
 ############### Masked Language Modeling ###############
