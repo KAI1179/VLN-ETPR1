@@ -918,9 +918,16 @@ class R2RTextPathData(ReverieTextPathData):
 
         gt_path = gt_path[: end_idx + 1]
         cur_heading, cur_elevation = self.get_cur_angle(scan, gt_path, start_heading)
+        if self.pose_gated_map:
+            headings = [start_heading]
+            for previous_vp, current_vp in zip(gt_path, gt_path[1:]):
+                view_index = self.scanvp_cands[f"{scan}_{previous_vp}"][current_vp][0]
+                headings.append((view_index % 12) * math.radians(30))
 
         if len(gt_path) > TRAIN_MAX_STEP:
             gt_path = gt_path[:TRAIN_MAX_STEP] + [end_vp]
+            if self.pose_gated_map:
+                headings = headings[:TRAIN_MAX_STEP] + [headings[-1]]
 
         (
             traj_view_img_fts,
@@ -973,10 +980,6 @@ class R2RTextPathData(ReverieTextPathData):
             outs["traj_spatial_view_fts"] = traj_spatial_view_fts
             outs["traj_spatial_dep_fts"] = traj_spatial_dep_fts
             outs.update(self._load_pose_gated_targets(item, gt_path))
-            headings = [start_heading]
-            for previous_vp, current_vp in zip(gt_path, gt_path[1:]):
-                view_index = self.scanvp_cands[f"{scan}_{previous_vp}"][current_vp][0]
-                headings.append((view_index % 12) * math.radians(30))
             outs["traj_rotations"] = [
                 torch.tensor((0.0, math.sin(heading / 2), 0.0, math.cos(heading / 2)))
                 for heading in headings
