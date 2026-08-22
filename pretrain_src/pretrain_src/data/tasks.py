@@ -40,6 +40,7 @@ def _copy_pose_gated_map_inputs(inputs, output):
         "traj_positions",
         "traj_rotations",
         "target_cognitive_maps",
+        "route_negative_valid",
         "route_negative_spatial_view_fts",
         "route_negative_spatial_dep_fts",
     )
@@ -195,6 +196,9 @@ def mlm_collate(inputs):
         batch["route_negative_spatial_dep_fts"] = torch.stack(
             batch["route_negative_spatial_dep_fts"]
         )
+        batch["route_negative_valid"] = torch.BoolTensor(
+            batch["route_negative_valid"]
+        )
 
     batch["txt_lens"] = torch.LongTensor([len(x) for x in batch["txt_ids"]])
     batch["txt_ids"] = pad_sequence(batch["txt_ids"], batch_first=True, padding_value=1)
@@ -344,6 +348,9 @@ def sap_collate(inputs):
         )
         batch["route_negative_spatial_dep_fts"] = torch.stack(
             batch["route_negative_spatial_dep_fts"]
+        )
+        batch["route_negative_valid"] = torch.BoolTensor(
+            batch["route_negative_valid"]
         )
 
     batch["txt_lens"] = torch.LongTensor([len(x) for x in batch["txt_ids"]])

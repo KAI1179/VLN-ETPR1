@@ -439,7 +439,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                         state.current, state.prior, target_map, state.coverage
                     ).items():
                         losses[name].append(value)
-            if compute_loss:
+            if compute_loss and batch["route_negative_valid"][batch_index].item():
                 negative_features = self.bert.img_embeddings.img_layer_norm(
                     self.bert.img_embeddings.img_linear(
                         batch["route_negative_spatial_view_fts"][batch_index : batch_index + 1]

@@ -1005,13 +1005,26 @@ class R2RTextPathData(ReverieTextPathData):
                 for vp in self.graphs[scan].nodes
                 if min(self.shortest_distances[scan][vp][route_vp] for route_vp in suffix) > 3.0
             ]
-            negative_vp = np.random.choice(negative_vps)
-            negative_view_fts, negative_dep_fts = self.get_scanvp_feature(scan, negative_vp)
+            if negative_vps:
+                negative_vp = np.random.choice(negative_vps)
+                negative_view_fts, negative_dep_fts = self.get_scanvp_feature(
+                    scan, negative_vp
+                )
+                negative_view_fts = negative_view_fts[
+                    12:24, : self.image_feat_size
+                ]
+                negative_dep_fts = negative_dep_fts[
+                    12:24, : self.depth_feat_size
+                ]
+            else:
+                negative_view_fts = traj_spatial_view_fts[-1]
+                negative_dep_fts = traj_spatial_dep_fts[-1]
+            outs["route_negative_valid"] = bool(negative_vps)
             outs["route_negative_spatial_view_fts"] = torch.from_numpy(
-                negative_view_fts[12:24, : self.image_feat_size]
+                negative_view_fts
             )
             outs["route_negative_spatial_dep_fts"] = torch.from_numpy(
-                negative_dep_fts[12:24, : self.depth_feat_size]
+                negative_dep_fts
             )
 
         if return_act_label:
