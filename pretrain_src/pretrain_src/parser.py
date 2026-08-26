@@ -22,6 +22,12 @@ def load_parser():
     parser.add_argument(
         "--checkpoint", default=None, type=str, help="path to model checkpoint (*.pt)"
     )
+    parser.add_argument(
+        "--checkpoint-sha256",
+        default="",
+        type=str,
+        help="Expected SHA-256 of --checkpoint",
+    )
 
     parser.add_argument(
         "--output_dir",
@@ -229,11 +235,22 @@ def parse_with_config(parser):
                 "--map_predictor_checkpoint is only valid for the imagined source"
             )
     if args.pose_gated_map:
+        if not args.checkpoint:
+            raise ValueError("--checkpoint is required with --pose-gated-map")
+        if not args.checkpoint_sha256:
+            raise ValueError("--checkpoint-sha256 is required with --pose-gated-map")
         if not args.spatial_visual_cache:
             raise ValueError("--spatial-visual-cache is required with --pose-gated-map")
         if not args.target_cognitive_map_namespace:
             raise ValueError(
                 "--target-cognitive-map-namespace is required with --pose-gated-map"
             )
+    if args.checkpoint_sha256 and not args.checkpoint:
+        raise ValueError("--checkpoint-sha256 requires --checkpoint")
+    if args.checkpoint_sha256:
+        checksum = args.checkpoint_sha256.lower()
+        if len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum):
+            raise ValueError("--checkpoint-sha256 must be 64 hexadecimal characters")
+        args.checkpoint_sha256 = checksum
     print("args:\n", args)
     return args

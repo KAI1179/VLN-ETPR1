@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 from collections import defaultdict
@@ -68,9 +69,41 @@ def create_dataloaders(
     return dataloaders
 
 
+def validate_checkpoint_checksum(opts):
+    if not opts.checkpoint_sha256:
+        return
+
+    error = None
+    if opts.rank == 0:
+        try:
+            digest = hashlib.sha256()
+            with open(opts.checkpoint, "rb") as checkpoint_file:
+                chunks = iter(
+                    lambda: checkpoint_file.read(8 * 1024 * 1024), b""
+                )
+                for chunk in chunks:
+                    digest.update(chunk)
+            actual = digest.hexdigest()
+            if actual != opts.checkpoint_sha256:
+                error = (
+                    f"Checkpoint SHA-256 mismatch for {opts.checkpoint}: "
+                    f"expected {opts.checkpoint_sha256}, got {actual}"
+                )
+        except OSError as exc:
+            error = f"Cannot read checkpoint {opts.checkpoint}: {exc}"
+
+    if opts.local_rank != -1:
+        result = [error]
+        torch.distributed.broadcast_object_list(result, src=0)
+        error = result[0]
+    if error is not None:
+        raise RuntimeError(error)
+
+
 def main(opts):
     default_gpu, n_gpu, device = set_cuda(opts)
     print(default_gpu, n_gpu, device)
+    validate_checkpoint_checksum(opts)
 
     if default_gpu:
         LOGGER.info(
