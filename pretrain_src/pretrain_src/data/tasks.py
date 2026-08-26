@@ -43,6 +43,8 @@ def _copy_pose_gated_map_inputs(inputs, output):
         "route_negative_valid",
         "route_negative_spatial_view_fts",
         "route_negative_spatial_dep_fts",
+        "route_negative_position",
+        "route_negative_rotation",
     )
     if "traj_spatial_view_fts" in inputs:
         output.update({key: inputs[key] for key in keys})
@@ -196,6 +198,12 @@ def mlm_collate(inputs):
         batch["route_negative_spatial_dep_fts"] = torch.stack(
             batch["route_negative_spatial_dep_fts"]
         )
+        batch["route_negative_position"] = torch.stack(
+            batch["route_negative_position"]
+        )
+        batch["route_negative_rotation"] = torch.stack(
+            batch["route_negative_rotation"]
+        )
         batch["route_negative_valid"] = torch.BoolTensor(
             batch["route_negative_valid"]
         )
@@ -348,6 +356,12 @@ def sap_collate(inputs):
         )
         batch["route_negative_spatial_dep_fts"] = torch.stack(
             batch["route_negative_spatial_dep_fts"]
+        )
+        batch["route_negative_position"] = torch.stack(
+            batch["route_negative_position"]
+        )
+        batch["route_negative_rotation"] = torch.stack(
+            batch["route_negative_rotation"]
         )
         batch["route_negative_valid"] = torch.BoolTensor(
             batch["route_negative_valid"]

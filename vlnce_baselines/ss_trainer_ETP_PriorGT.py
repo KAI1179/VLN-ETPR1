@@ -1223,9 +1223,8 @@ class RLTrainer(BaseVLNCETrainer):
             suffix_distances = distances[suffix_start:]
             labels.append(float(min(suffix_distances) <= 3.0))
             if labels[-1]:
-                self.route_map_progress[index] = max(
-                    suffix_start,
-                    int(np.argmin(distances)),
+                self.route_map_progress[index] = suffix_start + int(
+                    np.argmin(suffix_distances)
                 )
         return torch.tensor(labels, dtype=torch.float32, device=self.device)
 

@@ -1017,6 +1017,7 @@ class R2RTextPathData(ReverieTextPathData):
                     12:24, : self.depth_feat_size
                 ]
             else:
+                negative_vp = gt_path[-1]
                 negative_view_fts = traj_spatial_view_fts[-1]
                 negative_dep_fts = traj_spatial_dep_fts[-1]
             outs["route_negative_valid"] = bool(negative_vps)
@@ -1025,6 +1026,12 @@ class R2RTextPathData(ReverieTextPathData):
             )
             outs["route_negative_spatial_dep_fts"] = torch.from_numpy(
                 negative_dep_fts
+            )
+            outs["route_negative_position"] = torch.tensor(
+                self.graphs[scan].nodes[negative_vp]["position"], dtype=torch.float32
+            )
+            outs["route_negative_rotation"] = torch.tensor(
+                (0.0, 0.0, 0.0, 1.0), dtype=torch.float32
             )
 
         if return_act_label:

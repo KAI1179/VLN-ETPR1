@@ -128,8 +128,12 @@ class RouteMapUpdater(nn.Module):
         )
         coverage_grid = semantic.new_zeros(batch_size, 1, grid_size, grid_size)
         heading = self._heading_from_quaternion(rotations)
-        current_row = map_starts[:, 0] + (positions[:, 0] - world_starts[:, 0]) / MAP_CELL_SIZE_M
-        current_col = map_starts[:, 1] + (positions[:, 2] - world_starts[:, 2]) / MAP_CELL_SIZE_M
+        current_row = (
+            map_starts[:, 0] + positions[:, 0] - world_starts[:, 0]
+        ) / MAP_CELL_SIZE_M
+        current_col = (
+            map_starts[:, 1] + positions[:, 2] - world_starts[:, 2]
+        ) / MAP_CELL_SIZE_M
         for azimuth in range(NUM_AZIMUTHS):
             angle = heading + azimuth * (2 * torch.pi / NUM_AZIMUTHS)
             for distance_bin in range(NUM_DISTANCE_BINS):
@@ -169,17 +173,26 @@ class RouteMapUpdater(nn.Module):
             map_starts,
             state.current.shape[-1],
         )
-        evidence = torch.where(
+        candidate_evidence = torch.where(
             visual_coverage > 0,
             visual_evidence,
             state.evidence,
         )
-        coverage = torch.maximum(state.coverage, visual_coverage)
-        delta, beta = self.refiner(state.prior, evidence, coverage)
+        candidate_coverage = torch.maximum(state.coverage, visual_coverage)
+        delta, beta = self.refiner(
+            state.prior, candidate_evidence, candidate_coverage
+        )
         unseen = torch.clamp(state.prior + beta * delta, 0, 1)
-        observed = (1 - coverage) * state.current + coverage * evidence
-        candidate = coverage * observed + (1 - coverage) * unseen
+        observed = (
+            (1 - candidate_coverage) * state.current
+            + candidate_coverage * candidate_evidence
+        )
+        candidate = (
+            candidate_coverage * observed + (1 - candidate_coverage) * unseen
+        )
         current = gate * candidate + (1 - gate) * state.current
+        evidence = gate * candidate_evidence + (1 - gate) * state.evidence
+        coverage = gate * candidate_coverage + (1 - gate) * state.coverage
         return (
             RouteMapState(state.prior, current, evidence, coverage),
             {

@@ -400,6 +400,7 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
         )
         states = []
         losses = {name: [] for name in ("visual", "route", "seen", "fix", "keep")}
+        nochange_losses = []
         offset = 0
         for batch_index, step_count in enumerate(batch["traj_step_lens"]):
             prior = batch["cognitive_maps"][batch_index : batch_index + 1]
@@ -449,15 +450,25 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
                         batch["route_negative_spatial_dep_fts"][batch_index : batch_index + 1]
                     )
                 )
-                negative_logits = self.route_map_updater.route_gate(
+                negative_state, negative_outputs = self.route_map_updater.update(
+                    state,
                     negative_features,
                     text_embeds[batch_index : batch_index + 1].mean(dim=1),
-                    state.current,
+                    batch["route_negative_position"][batch_index : batch_index + 1],
+                    batch["route_negative_rotation"][batch_index : batch_index + 1],
+                    world_start,
+                    map_start,
                 )
                 losses["route"].append(
                     F.binary_cross_entropy_with_logits(
-                        negative_logits, torch.zeros_like(negative_logits)
+                        negative_outputs["route_gate_logits"],
+                        torch.zeros_like(negative_outputs["route_gate_logits"]),
                     )
+                )
+                nochange_losses.append(
+                    F.l1_loss(negative_state.current, state.current.detach())
+                    + F.l1_loss(negative_state.evidence, state.evidence.detach())
+                    + F.l1_loss(negative_state.coverage, state.coverage.detach())
                 )
             states.append(state.current)
             offset += step_count
@@ -475,6 +486,10 @@ class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
             weights[name] * torch.stack(values).mean()
             for name, values in losses.items()
         )
+        if nochange_losses:
+            total = total + self.config.pose_gated_route_loss_weight * torch.stack(
+                nochange_losses
+            ).mean()
         return current_maps, total
 
     def _compute_updated_cognitive_map_loss(
