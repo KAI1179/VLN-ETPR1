@@ -97,6 +97,23 @@ class NextActionPrediction(nn.Module):
 
 
 class GlocalTextPathCMTPreTraining(BertPreTrainedModel):
+    def _init_weights(self, module):
+        if getattr(module, "_preserve_manual_init", False):
+            return
+        super()._init_weights(module)
+        if isinstance(module, nn.Conv2d):
+            module.weight.data.normal_(
+                mean=0.0, std=self.config.initializer_range
+            )
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.MultiheadAttention):
+            module.in_proj_weight.data.normal_(
+                mean=0.0, std=self.config.initializer_range
+            )
+            if module.in_proj_bias is not None:
+                module.in_proj_bias.data.zero_()
+
     def __init__(self, config):
         super().__init__(config)
 

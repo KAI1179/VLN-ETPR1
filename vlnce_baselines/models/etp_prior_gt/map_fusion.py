@@ -16,8 +16,10 @@ class GraphMapCrossAttention(nn.Module):
         self._zero_residual_projection()
 
     def _zero_residual_projection(self):
-        nn.init.zeros_(self.residual_projection.weight)
-        nn.init.zeros_(self.residual_projection.bias)
+        with torch.no_grad():
+            self.residual_projection.weight.zero_()
+            self.residual_projection.bias.zero_()
+        self.residual_projection._preserve_manual_init = True
 
     def _map_key_padding_mask(self, map_token_masks):
         if map_token_masks is None:
@@ -55,10 +57,13 @@ class BidirectionalMapTokenFusion(nn.Module):
         self._zero_residual_projection()
 
     def _zero_residual_projection(self):
-        nn.init.zeros_(self.map_residual_projection.weight)
-        nn.init.zeros_(self.map_residual_projection.bias)
-        nn.init.zeros_(self.graph_residual_projection.weight)
-        nn.init.zeros_(self.graph_residual_projection.bias)
+        with torch.no_grad():
+            self.map_residual_projection.weight.zero_()
+            self.map_residual_projection.bias.zero_()
+            self.graph_residual_projection.weight.zero_()
+            self.graph_residual_projection.bias.zero_()
+        self.map_residual_projection._preserve_manual_init = True
+        self.graph_residual_projection._preserve_manual_init = True
 
     def _map_key_padding_mask(self, map_token_masks):
         if map_token_masks is None:

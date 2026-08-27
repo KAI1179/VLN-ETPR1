@@ -11,6 +11,41 @@ from pretrain_src.pretrain_src.data.tasks import mlm_collate, sap_collate
 from vlnce_baselines.models.etp_prior_gt.route_map_update import RouteMapState
 
 
+def test_pretrain_initializes_missing_convolution_and_attention_weights():
+    model = GlocalTextPathCMTPreTraining.__new__(GlocalTextPathCMTPreTraining)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(initializer_range=0.02)
+    convolution = nn.Conv2d(4, 4, 3)
+    convolution.weight.data.fill_(float("nan"))
+    convolution.bias.data.fill_(float("nan"))
+    model._init_weights(convolution)
+    assert all(
+        torch.isfinite(parameter).all() for parameter in convolution.parameters()
+    )
+
+    attention = nn.MultiheadAttention(8, 2)
+    attention.in_proj_weight.data.fill_(float("nan"))
+    attention.in_proj_bias.data.fill_(float("nan"))
+    model._init_weights(attention)
+    assert torch.isfinite(attention.in_proj_weight).all()
+    assert torch.isfinite(attention.in_proj_bias).all()
+
+
+def test_pretrain_preserves_explicit_module_initialization():
+    model = GlocalTextPathCMTPreTraining.__new__(GlocalTextPathCMTPreTraining)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(initializer_range=0.02)
+    module = nn.Linear(4, 4)
+    module.weight.data.fill_(3.0)
+    module.bias.data.fill_(2.0)
+    module._preserve_manual_init = True
+
+    model._init_weights(module)
+
+    assert torch.equal(module.weight, torch.full_like(module.weight, 3.0))
+    assert torch.equal(module.bias, torch.full_like(module.bias, 2.0))
+
+
 class _TextEmbeddings(nn.Module):
     def forward(self, txt_ids, task_encoding, token_types):
         return torch.zeros(txt_ids.shape[0], txt_ids.shape[1], 4)
