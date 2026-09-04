@@ -107,4 +107,12 @@ class RefinerDataset(Dataset):
 
 def trajectory_files(split_dir: Path, teacher_only: bool = False) -> List[Path]:
     pattern = "*_teacher.npz" if teacher_only else "*.npz"
-    return sorted(split_dir.rglob(pattern))
+    paths = sorted(split_dir.rglob(pattern))
+    retained = []
+    for path in paths:
+        with np.load(path, allow_pickle=True) as trajectory:
+            p0_path = _scalar_path(trajectory["p0_path"])
+        with np.load(p0_path) as p0_data:
+            if p0_data["grid"].sum() != 0:
+                retained.append(path)
+    return retained

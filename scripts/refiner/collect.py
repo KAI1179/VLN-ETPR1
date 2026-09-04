@@ -11,12 +11,15 @@ from typing import Dict, List, Optional, Set, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from habitat import make_dataset
 from habitat_baselines.common.obs_transformers import apply_obs_transforms_batch
 from habitat_baselines.utils.common import batch_obs
+from matplotlib.colors import BoundaryNorm, ListedColormap
 from tap import Tap
 
 import habitat_extensions  # noqa: F401
 import vlnce_baselines  # noqa: F401
+from prior.constants import MAPPED_OBJECT_COLORS, MAPPED_OBJECT_NAMES
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.models.graph_utils import GraphMap
 from vlnce_baselines.models.etp_llm.navigation import (
@@ -33,6 +36,8 @@ class Arguments(Tap):
     split: str = "train"
     suffix: Optional[str] = None
     limit: int = 100
+    shard: int = 0
+    num_shards: int = 1
     num_environments: int = 4
     gpu_device: int = 0
     llm_cache_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
@@ -42,6 +47,15 @@ class Arguments(Tap):
         "pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt"
     )
     kinds: Tuple[str, ...] = ("teacher", "perturbed")
+
+
+class CollectionTrainer(RLTrainer):
+    def __init__(self, config, episode_ids: List[str]):
+        self.collection_episode_ids = episode_ids
+        super().__init__(config)
+
+    def _finetuning_episodes_allowed(self):
+        return self.collection_episode_ids
 
 
 def _config(args: Arguments):
@@ -90,6 +104,42 @@ def _map_paths(args: Arguments, trainer: RLTrainer, episode):
         namespace=args.gt_namespace,
     )
     return cache_id, p0_path, gt_path
+
+
+def _eligible_episode_ids(args: Arguments, config) -> List[str]:
+    if not 0 <= args.shard < args.num_shards:
+        raise ValueError(
+            f"shard must satisfy 0 <= shard < num_shards, got "
+            f"{args.shard}/{args.num_shards}"
+        )
+    random.seed(config.TASK_CONFIG.SEED)
+    dataset = make_dataset(
+        config.TASK_CONFIG.DATASET.TYPE,
+        config=config.TASK_CONFIG.DATASET,
+    )
+    eligible = []
+    for episode in dataset.episodes:
+        episode_id = str(episode.episode_id)
+        if int(episode_id) % args.num_shards != args.shard:
+            continue
+        cache_id = f"R2R_{args.split}_{episode_id}"
+        p0_path = llm_navigation_cognitive_map_raster_path(
+            episode.scene_id,
+            cache_id,
+            "r2r",
+            args.split,
+            cache_dir=args.llm_cache_dir or None,
+            model_key=args.llm_cache_model_key,
+        )
+        if not p0_path.is_file():
+            continue
+        with np.load(p0_path) as cached:
+            if cached["grid"].sum() == 0:
+                continue
+        eligible.append(episode_id)
+    if args.limit >= 0:
+        eligible = eligible[: args.limit]
+    return eligible
 
 
 def _snapshot(evidence, pose):
@@ -147,9 +197,9 @@ def _choose_actions(trainer, kind, teacher_actions, nav_inputs, no_vp_left, rngs
         if dev_left[index] > 0:
             dev_left[index] -= 1
             actions.append(int(rngs[index].choice(alternative)) if alternative else teacher)
-        elif rngs[index].random() < 0.25 and alternative:
+        elif rngs[index].random() < 0.4 and alternative:
             actions.append(int(rngs[index].choice(alternative)))
-            dev_left[index] = int(rngs[index].integers(1, 5))
+            dev_left[index] = int(rngs[index].integers(1, 9))
         else:
             actions.append(teacher)
     return np.asarray(actions, dtype=np.int64)
@@ -223,6 +273,16 @@ def _collect_rollout(
     observations = trainer.envs.reset()
     episodes = list(trainer.envs.current_episodes())
     cognitive_maps = trainer._build_cognitive_maps(random_rotation_augmentation=False)
+    for index in reversed(range(trainer.envs.num_envs)):
+        episode_key = (str(episodes[index].episode_id), kind)
+        if cognitive_maps[index]["grid"].sum().item() != 0 and episode_key not in seen:
+            continue
+        trainer.envs.pause_at(index)
+        observations.pop(index)
+        episodes.pop(index)
+        cognitive_maps.pop(index)
+    if trainer.envs.num_envs == 0:
+        return []
     trainer._initialize_refiner_state(cognitive_maps)
     trainer.gmaps = [
         GraphMap(
@@ -351,8 +411,10 @@ def _collect_rollout(
     return written
 
 
-def _collect_kind(args: Arguments, kind: str) -> List[Path]:
-    trainer = RLTrainer(_config(args))
+def _collect_kind(
+    args: Arguments, kind: str, episode_ids: List[str]
+) -> List[Path]:
+    trainer = CollectionTrainer(_config(args), episode_ids)
     random.seed(trainer.config.TASK_CONFIG.SEED)
     trainer._set_config()
     observation_space, action_space = trainer._init_envs()
@@ -364,8 +426,7 @@ def _collect_kind(args: Arguments, kind: str) -> List[Path]:
     )
     trainer.policy.eval()
     trainer.waypoint_predictor.eval()
-    available = sum(trainer.envs.number_of_episodes)
-    target = available if args.limit < 0 else min(args.limit, available)
+    target = len(episode_ids)
     output_paths: List[Path] = []
     seen: Set[Tuple[str, str]] = set()
     started = time.perf_counter()
@@ -423,25 +484,50 @@ def _collection_metrics(paths: List[Path]) -> Dict[str, float]:
 
 def _write_reports(paths: List[Path], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for trajectory_path in paths[:3]:
+    report_episode_ids = {"353", "8384"}
+    object_ids = [
+        index
+        for index, name in enumerate(MAPPED_OBJECT_NAMES)
+        if name not in {"void", "structure", "other", "free-space"}
+    ]
+    cmap = ListedColormap(
+        ["#000000"] + [MAPPED_OBJECT_COLORS[index] for index in object_ids]
+    )
+    norm = BoundaryNorm(np.arange(-0.5, len(object_ids) + 1.5), cmap.N)
+    for trajectory_path in paths:
         with np.load(trajectory_path, allow_pickle=True) as trajectory:
+            if (
+                str(trajectory["episode_id"].item()) not in report_episode_ids
+                or str(trajectory["kind"].item()) != "teacher"
+            ):
+                continue
             gt_path = Path(str(trajectory["gt_path"].item()))
             step = trajectory["steps"][-1]
         with np.load(gt_path) as target:
-            gt_object = target["grid"][:27].max(axis=0)
+            gt_channels = target["grid"][object_ids]
         sem = np.unpackbits(
             step["sem"], count=27 * 100 * 100
         ).reshape(27, 100, 100)
+        sem_channels = sem[object_ids]
+        gt_object = np.zeros((100, 100), dtype=np.int16)
+        sem_object = np.zeros((100, 100), dtype=np.int16)
+        gt_present = gt_channels.max(axis=0) > 0
+        sem_present = sem_channels.max(axis=0) > 0
+        gt_object[gt_present] = gt_channels[:, gt_present].argmax(axis=0) + 1
+        sem_object[sem_present] = sem_channels[:, sem_present].argmax(axis=0) + 1
         observed = np.unpackbits(
             step["observed"], count=100 * 100
         ).reshape(100, 100)
         figure, axes = plt.subplots(1, 3, figsize=(12, 4))
         for axis, image, title in zip(
             axes,
-            (gt_object, sem.max(axis=0), observed),
+            (gt_object, sem_object, observed),
             ("GT objects", "visual semantics", "observed"),
         ):
-            axis.imshow(image)
+            if title == "observed":
+                axis.imshow(image, cmap="gray", vmin=0, vmax=1)
+            else:
+                axis.imshow(image, cmap=cmap, norm=norm)
             axis.set_title(title)
             axis.axis("off")
         figure.tight_layout()
@@ -452,11 +538,16 @@ def _write_reports(paths: List[Path], output_dir: Path) -> None:
 def main() -> None:
     args = Arguments(underscores_to_dashes=True).parse_args()
     torch.cuda.set_device(args.gpu_device)
+    episode_ids = _eligible_episode_ids(args, _config(args))
+    print(
+        f"eligible_episodes={len(episode_ids)} shard={args.shard}/{args.num_shards}",
+        flush=True,
+    )
     all_paths: List[Path] = []
     kinds = args.kinds if args.split == "train" else ("teacher",)
     started = time.perf_counter()
     for kind in kinds:
-        all_paths.extend(_collect_kind(args, kind))
+        all_paths.extend(_collect_kind(args, kind, episode_ids))
     elapsed = time.perf_counter() - started
     _write_reports(all_paths, args.report_dir)
     metrics = _collection_metrics(all_paths)
