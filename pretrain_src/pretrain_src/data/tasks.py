@@ -31,31 +31,6 @@ def _copy_cognitive_map_inputs(inputs, output):
         output["cognitive_map_box_targets"] = inputs["cognitive_map_box_targets"]
 
 
-def _copy_pose_gated_map_inputs(inputs, output):
-    keys = (
-        "traj_spatial_view_fts",
-        "traj_spatial_dep_fts",
-        "spatial_semantic_targets",
-        "spatial_coverage_targets",
-        "traj_positions",
-        "traj_rotations",
-        "target_cognitive_maps",
-        "route_negative_valid",
-        "route_negative_spatial_view_fts",
-        "route_negative_spatial_dep_fts",
-        "route_negative_position",
-        "route_negative_rotation",
-    )
-    if "traj_spatial_view_fts" in inputs:
-        output.update({key: inputs[key] for key in keys})
-        output["traj_spatial_view_fts"] = [
-            torch.from_numpy(feature) for feature in inputs["traj_spatial_view_fts"]
-        ]
-        output["traj_spatial_dep_fts"] = [
-            torch.from_numpy(feature) for feature in inputs["traj_spatial_dep_fts"]
-        ]
-
-
 ############### Masked Language Modeling ###############
 def random_word(tokens, vocab_range, mask):
     """
@@ -171,7 +146,6 @@ class MlmDataset(Dataset):
             output["gmap_task_embeddings"] = None
 
         _copy_cognitive_map_inputs(inputs, output)
-        _copy_pose_gated_map_inputs(inputs, output)
         return output
 
 
@@ -184,29 +158,6 @@ def mlm_collate(inputs):
         batch["map_trajectory_metadata"] = torch.stack(batch["map_trajectory_metadata"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
-    if "traj_spatial_view_fts" in batch:
-        batch["traj_spatial_view_fts"] = pad_tensors(sum(batch["traj_spatial_view_fts"], []))
-        batch["traj_spatial_dep_fts"] = pad_tensors(sum(batch["traj_spatial_dep_fts"], []))
-        batch["spatial_semantic_targets"] = pad_tensors(sum(batch["spatial_semantic_targets"], []))
-        batch["spatial_coverage_targets"] = pad_tensors(sum(batch["spatial_coverage_targets"], []))
-        batch["traj_positions"] = pad_tensors(sum(batch["traj_positions"], []))
-        batch["traj_rotations"] = pad_tensors(sum(batch["traj_rotations"], []))
-        batch["target_cognitive_maps"] = torch.stack(batch["target_cognitive_maps"])
-        batch["route_negative_spatial_view_fts"] = torch.stack(
-            batch["route_negative_spatial_view_fts"]
-        )
-        batch["route_negative_spatial_dep_fts"] = torch.stack(
-            batch["route_negative_spatial_dep_fts"]
-        )
-        batch["route_negative_position"] = torch.stack(
-            batch["route_negative_position"]
-        )
-        batch["route_negative_rotation"] = torch.stack(
-            batch["route_negative_rotation"]
-        )
-        batch["route_negative_valid"] = torch.BoolTensor(
-            batch["route_negative_valid"]
-        )
 
     batch["txt_lens"] = torch.LongTensor([len(x) for x in batch["txt_ids"]])
     batch["txt_ids"] = pad_sequence(batch["txt_ids"], batch_first=True, padding_value=1)
@@ -330,7 +281,6 @@ class SapDataset(Dataset):
         output["local_act_labels"] = inputs["local_act_labels"]
         output["global_act_labels"] = inputs["global_act_labels"]
         _copy_cognitive_map_inputs(inputs, output)
-        _copy_pose_gated_map_inputs(inputs, output)
         return output
 
 
@@ -343,29 +293,6 @@ def sap_collate(inputs):
         batch["map_trajectory_metadata"] = torch.stack(batch["map_trajectory_metadata"])
         batch["start_direction_vectors"] = torch.stack(batch["start_direction_vectors"])
         batch["start_positions"] = torch.stack(batch["start_positions"])
-    if "traj_spatial_view_fts" in batch:
-        batch["traj_spatial_view_fts"] = pad_tensors(sum(batch["traj_spatial_view_fts"], []))
-        batch["traj_spatial_dep_fts"] = pad_tensors(sum(batch["traj_spatial_dep_fts"], []))
-        batch["spatial_semantic_targets"] = pad_tensors(sum(batch["spatial_semantic_targets"], []))
-        batch["spatial_coverage_targets"] = pad_tensors(sum(batch["spatial_coverage_targets"], []))
-        batch["traj_positions"] = pad_tensors(sum(batch["traj_positions"], []))
-        batch["traj_rotations"] = pad_tensors(sum(batch["traj_rotations"], []))
-        batch["target_cognitive_maps"] = torch.stack(batch["target_cognitive_maps"])
-        batch["route_negative_spatial_view_fts"] = torch.stack(
-            batch["route_negative_spatial_view_fts"]
-        )
-        batch["route_negative_spatial_dep_fts"] = torch.stack(
-            batch["route_negative_spatial_dep_fts"]
-        )
-        batch["route_negative_position"] = torch.stack(
-            batch["route_negative_position"]
-        )
-        batch["route_negative_rotation"] = torch.stack(
-            batch["route_negative_rotation"]
-        )
-        batch["route_negative_valid"] = torch.BoolTensor(
-            batch["route_negative_valid"]
-        )
 
     batch["txt_lens"] = torch.LongTensor([len(x) for x in batch["txt_ids"]])
     batch["txt_ids"] = pad_sequence(batch["txt_ids"], batch_first=True, padding_value=1)

@@ -7,8 +7,6 @@ import jsonlines
 import numpy as np
 import h5py
 import math
-import torch
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from vlnce_baselines.models.cognitive_map_candidate import (
@@ -47,42 +45,6 @@ PRETRAIN_COGNITIVE_MAP_DIR = ETP_R1_COGNITIVE_MAP_DIR
 PRETRAIN_LLM_COGNITIVE_MAP_DIR = None
 PRETRAIN_LLM_COGNITIVE_MAP_DATASET = "pretrain"
 PRETRAIN_LLM_COGNITIVE_MAP_SPLIT = "mixed"
-
-
-def _annotation_split(path: str) -> str:
-    name = Path(path).name.lower()
-    for split in ("val_unseen", "val_seen", "train"):
-        if split in name:
-            return split
-    raise ValueError(f"Cannot infer dataset split from annotation file: {path}")
-
-
-def _target_cache_id(item: Dict[str, Any], split: str) -> str:
-    return f"{item['dataset_name']}_{split}_{item['episode_id']}"
-
-
-def _filter_missing_pose_gated_targets(items, namespace: str):
-    available = []
-    skipped = 0
-    for item in items:
-        target_path = cognitive_map_cache_path(
-            item["scan"],
-            item["_pose_gated_target_cache_id"],
-            namespace=namespace,
-        )
-        if target_path.is_file():
-            available.append(item)
-        else:
-            skipped += 1
-    print(
-        "pretrain_pose_gated_targets: "
-        f"available={len(available)} skipped_missing={skipped}"
-    )
-    if items and not available:
-        raise FileNotFoundError(
-            f"No pose-gated cognitive-map targets found in namespace {namespace}"
-        )
-    return available
 
 
 def _filter_missing_pretrain_cognitive_maps(
@@ -208,9 +170,6 @@ class ReverieTextPathData(object):
         cognitive_map_namespace=None,
         llm_cache_dir=None,
         llm_cache_model_key=None,
-        pose_gated_map=False,
-        spatial_visual_cache=None,
-        target_cognitive_map_namespace=None,
         random_rotation_augmentation=False,
     ):
         if candidate is not None and candidate.source in {
@@ -224,9 +183,6 @@ class ReverieTextPathData(object):
         self.cognitive_map_namespace = cognitive_map_namespace
         self.llm_cache_dir = llm_cache_dir
         self.llm_cache_model_key = llm_cache_model_key
-        self.pose_gated_map = pose_gated_map
-        self.spatial_visual_cache = spatial_visual_cache
-        self.target_cognitive_map_namespace = target_cognitive_map_namespace
         self.random_rotation_augmentation = random_rotation_augmentation
         self.connectivity_dir = connectivity_dir
         self.img_ft_file = img_ft_file
@@ -269,13 +225,8 @@ class ReverieTextPathData(object):
         self.data: List[Dict[str, Any]] = []
 
         for anno_file in anno_files:
-            split = _annotation_split(anno_file) if self.pose_gated_map else None
             with jsonlines.open(anno_file, "r") as f:
                 for item in f:
-                    if self.pose_gated_map:
-                        item["_pose_gated_target_cache_id"] = _target_cache_id(
-                            item, split
-                        )
                     self.data.append(item)
 
         if self.candidate is not None and self.candidate.uses_llm_cache:
@@ -295,11 +246,6 @@ class ReverieTextPathData(object):
                 cache_dir=self.llm_cache_dir,
                 model_key=self.llm_cache_model_key,
                 require_boxes=self.candidate.requires_box_targets,
-            )
-        if self.pose_gated_map:
-            self.data = _filter_missing_pose_gated_targets(
-                self.data,
-                self.target_cognitive_map_namespace,
             )
 
         if val_sample_num:
@@ -385,32 +331,6 @@ class ReverieTextPathData(object):
                 relevant_semantic_boxes_to_decoder_target(relevant)
             )
         return result
-
-    def _load_pose_gated_targets(self, item: Dict[str, Any], path: List[str]):
-        with h5py.File(self.spatial_visual_cache, "r") as cache:
-            semantic = [
-                torch.from_numpy(cache["semantic"][f"{item['scan']}_{vp}"][...])
-                for vp in path
-            ]
-            coverage = [
-                torch.from_numpy(cache["coverage"][f"{item['scan']}_{vp}"][...])
-                for vp in path
-            ]
-        target = cached_cognitive_map_to_tensors(
-            item["scan"],
-            item["_pose_gated_target_cache_id"],
-            namespace=self.target_cognitive_map_namespace,
-            metadata_schema="direction5",
-        )
-        return {
-            "spatial_semantic_targets": semantic,
-            "spatial_coverage_targets": coverage,
-            "traj_positions": [
-                torch.tensor(self.graphs[item["scan"]].nodes[vp]["position"], dtype=torch.float32)
-                for vp in path
-            ],
-            "target_cognitive_maps": target["grid"],
-        }
 
     def _reject_box_target_rotation_augmentation(self) -> None:
         if self.random_rotation_augmentation and self.candidate.requires_box_targets:
@@ -820,9 +740,6 @@ class R2RTextPathData(ReverieTextPathData):
         cognitive_map_namespace=None,
         llm_cache_dir=None,
         llm_cache_model_key=None,
-        pose_gated_map=False,
-        spatial_visual_cache=None,
-        target_cognitive_map_namespace=None,
         random_rotation_augmentation=False,
     ):
         super().__init__(
@@ -847,9 +764,6 @@ class R2RTextPathData(ReverieTextPathData):
             cognitive_map_namespace=cognitive_map_namespace,
             llm_cache_dir=llm_cache_dir,
             llm_cache_model_key=llm_cache_model_key,
-            pose_gated_map=pose_gated_map,
-            spatial_visual_cache=spatial_visual_cache,
-            target_cognitive_map_namespace=target_cognitive_map_namespace,
             random_rotation_augmentation=random_rotation_augmentation,
         )
 
@@ -918,16 +832,9 @@ class R2RTextPathData(ReverieTextPathData):
 
         gt_path = gt_path[: end_idx + 1]
         cur_heading, cur_elevation = self.get_cur_angle(scan, gt_path, start_heading)
-        if self.pose_gated_map:
-            headings = [start_heading]
-            for previous_vp, current_vp in zip(gt_path, gt_path[1:]):
-                view_index = self.scanvp_cands[f"{scan}_{previous_vp}"][current_vp][0]
-                headings.append((view_index % 12) * math.radians(30))
 
         if len(gt_path) > TRAIN_MAX_STEP:
             gt_path = gt_path[:TRAIN_MAX_STEP] + [end_vp]
-            if self.pose_gated_map:
-                headings = headings[:TRAIN_MAX_STEP] + [headings[-1]]
 
         (
             traj_view_img_fts,
@@ -936,8 +843,6 @@ class R2RTextPathData(ReverieTextPathData):
             traj_nav_types,
             traj_cand_vpids,
             last_vp_angles,
-            traj_spatial_view_fts,
-            traj_spatial_dep_fts,
         ) = self.get_traj_pano_fts(scan, gt_path)
 
         gmap_vpids, gmap_step_ids, gmap_visited_masks, gmap_pos_fts, gmap_pair_dists = (
@@ -976,63 +881,6 @@ class R2RTextPathData(ReverieTextPathData):
             "gmap_pair_dists": gmap_pair_dists,
             "vp_pos_fts": vp_pos_fts,
         }
-        if self.pose_gated_map:
-            outs["traj_spatial_view_fts"] = traj_spatial_view_fts
-            outs["traj_spatial_dep_fts"] = traj_spatial_dep_fts
-            outs.update(self._load_pose_gated_targets(item, gt_path))
-            outs["traj_rotations"] = [
-                torch.tensor((0.0, math.sin(heading / 2), 0.0, math.cos(heading / 2)))
-                for heading in headings
-            ]
-            for step_index, heading in enumerate(headings):
-                offset = int(round(heading / math.radians(30))) % 12
-                order = torch.from_numpy(np.roll(np.arange(12), -offset))
-                outs["traj_spatial_view_fts"][step_index] = outs[
-                    "traj_spatial_view_fts"
-                ][step_index][order]
-                outs["traj_spatial_dep_fts"][step_index] = outs[
-                    "traj_spatial_dep_fts"
-                ][step_index][order]
-                outs["spatial_semantic_targets"][step_index] = outs[
-                    "spatial_semantic_targets"
-                ][step_index][order]
-                outs["spatial_coverage_targets"][step_index] = outs[
-                    "spatial_coverage_targets"
-                ][step_index][order]
-            suffix = item["path"][end_idx:]
-            negative_vps = [
-                vp
-                for vp in self.graphs[scan].nodes
-                if min(self.shortest_distances[scan][vp][route_vp] for route_vp in suffix) > 3.0
-            ]
-            if negative_vps:
-                negative_vp = np.random.choice(negative_vps)
-                negative_view_fts, negative_dep_fts = self.get_scanvp_feature(
-                    scan, negative_vp
-                )
-                negative_view_fts = negative_view_fts[
-                    12:24, : self.image_feat_size
-                ]
-                negative_dep_fts = negative_dep_fts[
-                    12:24, : self.depth_feat_size
-                ]
-            else:
-                negative_vp = gt_path[-1]
-                negative_view_fts = traj_spatial_view_fts[-1]
-                negative_dep_fts = traj_spatial_dep_fts[-1]
-            outs["route_negative_valid"] = bool(negative_vps)
-            outs["route_negative_spatial_view_fts"] = torch.from_numpy(
-                negative_view_fts
-            )
-            outs["route_negative_spatial_dep_fts"] = torch.from_numpy(
-                negative_dep_fts
-            )
-            outs["route_negative_position"] = torch.tensor(
-                self.graphs[scan].nodes[negative_vp]["position"], dtype=torch.float32
-            )
-            outs["route_negative_rotation"] = torch.tensor(
-                (0.0, 0.0, 0.0, 1.0), dtype=torch.float32
-            )
 
         if return_act_label:
             global_act_label, local_act_label = self.get_act_labels(
@@ -1067,9 +915,7 @@ class R2RTextPathData(ReverieTextPathData):
             traj_loc_fts,
             traj_nav_types,
             traj_cand_vpids,
-            traj_spatial_view_fts,
-            traj_spatial_dep_fts,
-        ) = [], [], [], [], [], [], []
+        ) = [], [], [], [], []
 
         for vp in path:
             view_fts, dep_fts = self.get_scanvp_feature(scan, vp)
@@ -1115,8 +961,6 @@ class R2RTextPathData(ReverieTextPathData):
                 [1] * len(cand_vpids) + [0] * (36 - len(used_viewidxs))
             )
             traj_cand_vpids.append(cand_vpids)
-            traj_spatial_view_fts.append(view_fts[12:24, : self.image_feat_size])
-            traj_spatial_dep_fts.append(dep_fts[12:24, : self.depth_feat_size])
 
             last_vp_angles = view_angles
 
@@ -1127,6 +971,4 @@ class R2RTextPathData(ReverieTextPathData):
             traj_nav_types,
             traj_cand_vpids,
             last_vp_angles,
-            traj_spatial_view_fts,
-            traj_spatial_dep_fts,
         )

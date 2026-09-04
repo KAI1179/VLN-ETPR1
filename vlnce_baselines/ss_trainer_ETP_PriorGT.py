@@ -48,10 +48,6 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
-from vlnce_baselines.models.etp_prior_gt.route_map_update import (
-    RouteMapState,
-    map_losses,
-)
 
 
 def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
@@ -71,13 +67,6 @@ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
 
     ckpt_list.sort(key=_sort_key)
     return ckpt_list[-1]
-
-
-def _balanced_route_bce(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    positive = labels.sum().clamp_min(1)
-    negative = (labels.numel() - labels.sum()).clamp_min(1)
-    weights = torch.where(labels > 0.5, 0.5 / positive, 0.5 / negative)
-    return (F.binary_cross_entropy_with_logits(logits, labels, reduction="none") * weights).sum()
 
 
 @baseline_registry.register_trainer(name="SS-ETP-PriorGT")
@@ -287,17 +276,6 @@ class RLTrainer(BaseVLNCETrainer):
                 if "map_encoder" not in name and "map_predictor" not in name:
                     param.requires_grad_(False)
             logger.info("[Map probe] Base model frozen - map modules are trainable.")
-        if map_cfg is not None and map_cfg.pose_gated_map:
-            policy_net = self.policy.net
-            for parameter in policy_net.route_map_updater.visual_head.parameters():
-                parameter.requires_grad_(False)
-            for module in (
-                policy_net.rgb_encoder,
-                policy_net.depth_encoder,
-                policy_net.vln_bert.img_embeddings,
-            ):
-                for parameter in module.parameters():
-                    parameter.requires_grad_(False)
 
         if self.config.GPU_NUMBERS > 1:
             print("Using", self.config.GPU_NUMBERS, "GPU!")
@@ -312,47 +290,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         param_optimizer = list(self.policy.named_parameters())
         no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-        if map_cfg is not None and map_cfg.pose_gated_map:
-            optimizer_grouped_parameters = [
-                {
-                    "params": [
-                        p for n, p in param_optimizer
-                        if p.requires_grad and "route_map_updater" in n
-                        and not any(nd in n for nd in no_decay)
-                    ],
-                    "weight_decay": 0.01,
-                    "lr": self.config.IL.lr,
-                },
-                {
-                    "params": [
-                        p for n, p in param_optimizer
-                        if p.requires_grad and "route_map_updater" in n
-                        and any(nd in n for nd in no_decay)
-                    ],
-                    "weight_decay": 0.0,
-                    "lr": self.config.IL.lr,
-                },
-                {
-                    "params": [
-                        p for n, p in param_optimizer
-                        if p.requires_grad and "route_map_updater" not in n
-                        and not any(nd in n for nd in no_decay)
-                    ],
-                    "weight_decay": 0.01,
-                    "lr": self.config.IL.lr * 0.1,
-                },
-                {
-                    "params": [
-                        p for n, p in param_optimizer
-                        if p.requires_grad and "route_map_updater" not in n
-                        and any(nd in n for nd in no_decay)
-                    ],
-                    "weight_decay": 0.0,
-                    "lr": self.config.IL.lr * 0.1,
-                },
-            ]
-        else:
-            optimizer_grouped_parameters = [
+        optimizer_grouped_parameters = [
             {
                 "params": [
                     p
@@ -369,13 +307,11 @@ class RLTrainer(BaseVLNCETrainer):
                 ],
                 "weight_decay": 0.0,
             },
-            ]
+        ]
 
         self.optimizer = torch.optim.AdamW(
             optimizer_grouped_parameters, lr=self.config.IL.lr
         )
-        for group in self.optimizer.param_groups:
-            group["lr_scale"] = group["lr"] / self.config.IL.lr
         num_warmup_steps = self.config.IL.warmup_iters
         num_training_steps = self.config.IL.iters
         min_lr_ratio = self.config.IL.min_lr_ratio
@@ -1120,9 +1056,6 @@ class RLTrainer(BaseVLNCETrainer):
         map_cfg,
         mode,
         stepk,
-        pano_features=None,
-        cur_pos=None,
-        cur_ori=None,
     ):
         # PriorGT uses the full dynamically generated cognitive map directly.
         if not map_cfg.enabled or cognitive_maps is None:
@@ -1154,53 +1087,6 @@ class RLTrainer(BaseVLNCETrainer):
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
-        map_aux_loss = None
-        if map_cfg.pose_gated_map:
-            if self.route_map_world_starts is None:
-                self.route_map_world_starts = torch.tensor(
-                    cur_pos, dtype=torch.float32, device=self.device
-                )
-            map_states, map_outputs = self.policy.net(
-                mode="map_update",
-                map_state=RouteMapState(
-                    prior=torch.cat([state.prior for state in self.route_map_states]),
-                    current=torch.cat([state.current for state in self.route_map_states]),
-                    evidence=torch.cat([state.evidence for state in self.route_map_states]),
-                    coverage=torch.cat([state.coverage for state in self.route_map_states]),
-                ),
-                pano_features=pano_features,
-                text_features=txt_embeds.mean(dim=1),
-                positions=torch.tensor(cur_pos, dtype=torch.float32, device=self.device),
-                rotations=torch.tensor(cur_ori, dtype=torch.float32, device=self.device),
-                world_starts=self.route_map_world_starts,
-                map_starts=start_positions,
-            )
-            self.route_map_states = [
-                RouteMapState(
-                    map_states.prior[i : i + 1],
-                    map_states.current[i : i + 1],
-                    map_states.evidence[i : i + 1],
-                    map_states.coverage[i : i + 1],
-                )
-                for i in range(self.envs.num_envs)
-            ]
-            cognitive_crops = map_states.current
-            if mode == "train":
-                route_labels = self._route_update_labels()
-                target_maps = torch.stack(self.route_map_targets).to(self.device)
-                losses = map_losses(
-                    map_states.current,
-                    map_states.prior,
-                    target_maps,
-                    map_states.coverage,
-                )
-                map_aux_loss = (
-                    map_cfg.route_loss_weight
-                    * _balanced_route_bce(map_outputs["route_gate_logits"], route_labels)
-                    + map_cfg.seen_loss_weight * losses["seen"]
-                    + map_cfg.fix_loss_weight * losses["fix"]
-                    + map_cfg.keep_loss_weight * losses["keep"]
-                )
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=cognitive_crops,
@@ -1211,22 +1097,7 @@ class RLTrainer(BaseVLNCETrainer):
         # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
         nav_inputs["map_tokens"] = map_tokens
         nav_inputs["map_token_masks"] = map_token_masks
-        return map_aux_loss
-
-    def _route_update_labels(self):
-        labels = []
-        for index, episode in enumerate(self.envs.current_episodes()):
-            distances = self.envs.call_at(
-                index, "current_dist_to_refpath", {"path": episode.reference_path}
-            )
-            suffix_start = self.route_map_progress[index]
-            suffix_distances = distances[suffix_start:]
-            labels.append(float(min(suffix_distances) <= 3.0))
-            if labels[-1]:
-                self.route_map_progress[index] = suffix_start + int(
-                    np.argmin(suffix_distances)
-                )
-        return torch.tensor(labels, dtype=torch.float32, device=self.device)
+        return None
 
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
@@ -1250,18 +1121,6 @@ class RLTrainer(BaseVLNCETrainer):
                 random_rotation_augmentation=random_rotation_augmentation,
                 metadata_schema=candidate.metadata_schema,
             )
-            for ep in self.envs.current_episodes()
-        ]
-
-    def _build_target_cognitive_maps(self):
-        namespace = self.config.MODEL.MAP_ENCODER.target_cache_namespace
-        return [
-            cached_cognitive_map_to_tensors(
-                ep.scene_id,
-                self._cognitive_map_cache_id(ep),
-                namespace=namespace,
-                metadata_schema="direction5",
-            )["grid"]
             for ep in self.envs.current_episodes()
         ]
 
@@ -1453,24 +1312,6 @@ class RLTrainer(BaseVLNCETrainer):
             )
         else:
             cognitive_maps = None
-        self.route_map_world_starts = None
-        self.route_map_progress = [0] * self.envs.num_envs
-        self.route_map_states = None
-        self.route_map_targets = None
-        if map_cfg.enabled and map_cfg.pose_gated_map:
-            policy_net = (
-                self.policy.net.module
-                if isinstance(self.policy.net, DDP)
-                else self.policy.net
-            )
-            self.route_map_states = [
-                policy_net.route_map_updater.initial_state(
-                    cognitive_map["grid"].unsqueeze(0).to(self.device)
-                )
-                for cognitive_map in cognitive_maps
-            ]
-            if mode == "train":
-                self.route_map_targets = self._build_target_cognitive_maps()
 
         for stepk in range(self.max_len):
             total_actions += self.envs.num_envs
@@ -1492,11 +1333,6 @@ class RLTrainer(BaseVLNCETrainer):
                 }
             )
             pano_embeds, pano_masks = self.policy.net(**vp_inputs)
-            spatial_pano_features = self.policy.net(
-                mode="spatial_visual_features",
-                spatial_rgb_fts=wp_outputs["pano_rgb"],
-                spatial_dep_fts=wp_outputs["pano_depth"],
-            )
             avg_pano_embeds = torch.sum(
                 pano_embeds * pano_masks.unsqueeze(2), 1
             ) / torch.sum(pano_masks, 1, keepdim=True)
@@ -1563,9 +1399,6 @@ class RLTrainer(BaseVLNCETrainer):
                 map_cfg,
                 mode,
                 stepk,
-                pano_features=spatial_pano_features,
-                cur_pos=cur_pos,
-                cur_ori=cur_ori,
             )
 
             nav_outs = self.policy.net(**nav_inputs)
@@ -1781,17 +1614,6 @@ class RLTrainer(BaseVLNCETrainer):
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)
-                        if map_cfg.pose_gated_map:
-                            self.route_map_states.pop(i)
-                            self.route_map_progress.pop(i)
-                            if self.route_map_targets is not None:
-                                self.route_map_targets.pop(i)
-                            self.route_map_world_starts = torch.cat(
-                                (
-                                    self.route_map_world_starts[:i],
-                                    self.route_map_world_starts[i + 1 :],
-                                )
-                            )
                         all_txt_ids = torch.cat(
                             (all_txt_ids[:i], all_txt_ids[i + 1 :]), dim=0
                         )

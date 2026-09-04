@@ -22,12 +22,6 @@ def load_parser():
     parser.add_argument(
         "--checkpoint", default=None, type=str, help="path to model checkpoint (*.pt)"
     )
-    parser.add_argument(
-        "--checkpoint-sha256",
-        default="",
-        type=str,
-        help="Expected SHA-256 of --checkpoint",
-    )
 
     parser.add_argument(
         "--output_dir",
@@ -81,14 +75,6 @@ def load_parser():
         default=None,
         help="Optional LLM-Navigation cache root override",
     )
-    parser.add_argument("--pose-gated-map", action="store_true")
-    parser.add_argument("--spatial-visual-cache", default="")
-    parser.add_argument("--target-cognitive-map-namespace", default="")
-    parser.add_argument("--pose-gated-visual-loss-weight", type=float, default=1.0)
-    parser.add_argument("--pose-gated-route-loss-weight", type=float, default=1.0)
-    parser.add_argument("--pose-gated-seen-loss-weight", type=float, default=1.0)
-    parser.add_argument("--pose-gated-fix-loss-weight", type=float, default=1.0)
-    parser.add_argument("--pose-gated-keep-loss-weight", type=float, default=1.0)
     # training parameters
     parser.add_argument(
         "--train_batch_size",
@@ -234,23 +220,5 @@ def parse_with_config(parser):
             raise ValueError(
                 "--map_predictor_checkpoint is only valid for the imagined source"
             )
-    if args.pose_gated_map:
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required with --pose-gated-map")
-        if not args.checkpoint_sha256:
-            raise ValueError("--checkpoint-sha256 is required with --pose-gated-map")
-        if not args.spatial_visual_cache:
-            raise ValueError("--spatial-visual-cache is required with --pose-gated-map")
-        if not args.target_cognitive_map_namespace:
-            raise ValueError(
-                "--target-cognitive-map-namespace is required with --pose-gated-map"
-            )
-    if args.checkpoint_sha256 and not args.checkpoint:
-        raise ValueError("--checkpoint-sha256 requires --checkpoint")
-    if args.checkpoint_sha256:
-        checksum = args.checkpoint_sha256.lower()
-        if len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum):
-            raise ValueError("--checkpoint-sha256 must be 64 hexadecimal characters")
-        args.checkpoint_sha256 = checksum
     print("args:\n", args)
     return args

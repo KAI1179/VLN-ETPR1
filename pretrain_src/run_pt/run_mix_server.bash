@@ -12,7 +12,7 @@ fi
 echo "Output dir: $OUTPUT_DIR"
 echo "Args: $*"
 
-PYTHONPATH=$PYTHONPATH:. torchrun --standalone --nproc_per_node="${NUM_GPUS}" \
+PYTHONPATH=$PYTHONPATH:. torchrun --standalone --nproc-per-node="${NUM_GPUS}" \
     pretrain_src/pretrain_src/train_r2r.py \
     --vlnbert cmt \
     --model_config pretrain_src/run_pt/mix_model_config_dep.json \

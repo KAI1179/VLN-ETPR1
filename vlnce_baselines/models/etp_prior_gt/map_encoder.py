@@ -141,7 +141,6 @@ class EmbeddingGridMapEncoder(nn.Module):
             self.category_projection.weight.copy_(
                 init_embeds.t().unsqueeze(-1).unsqueeze(-1)
             )
-        self.category_projection._preserve_manual_init = True
 
         self.spatial_tokenizer = nn.Conv2d(
             CLIP_EMBEDDING_DIM,

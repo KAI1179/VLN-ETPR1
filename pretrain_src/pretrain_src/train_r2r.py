@@ -1,4 +1,3 @@
-import hashlib
 import os
 import time
 from collections import defaultdict
@@ -69,41 +68,9 @@ def create_dataloaders(
     return dataloaders
 
 
-def validate_checkpoint_checksum(opts):
-    if not opts.checkpoint_sha256:
-        return
-
-    error = None
-    if opts.rank == 0:
-        try:
-            digest = hashlib.sha256()
-            with open(opts.checkpoint, "rb") as checkpoint_file:
-                chunks = iter(
-                    lambda: checkpoint_file.read(8 * 1024 * 1024), b""
-                )
-                for chunk in chunks:
-                    digest.update(chunk)
-            actual = digest.hexdigest()
-            if actual != opts.checkpoint_sha256:
-                error = (
-                    f"Checkpoint SHA-256 mismatch for {opts.checkpoint}: "
-                    f"expected {opts.checkpoint_sha256}, got {actual}"
-                )
-        except OSError as exc:
-            error = f"Cannot read checkpoint {opts.checkpoint}: {exc}"
-
-    if opts.local_rank != -1:
-        result = [error]
-        torch.distributed.broadcast_object_list(result, src=0)
-        error = result[0]
-    if error is not None:
-        raise RuntimeError(error)
-
-
 def main(opts):
     default_gpu, n_gpu, device = set_cuda(opts)
     print(default_gpu, n_gpu, device)
-    validate_checkpoint_checksum(opts)
 
     if default_gpu:
         LOGGER.info(
@@ -158,14 +125,6 @@ def main(opts):
     model_config.cognitive_map_namespace = opts.cognitive_map_namespace
     model_config.llm_cache_model_key = opts.llm_cache_model_key
     model_config.llm_cache_dir = opts.llm_cache_dir
-    model_config.pose_gated_map = opts.pose_gated_map
-    model_config.spatial_visual_cache = opts.spatial_visual_cache
-    model_config.target_cognitive_map_namespace = opts.target_cognitive_map_namespace
-    model_config.pose_gated_visual_loss_weight = opts.pose_gated_visual_loss_weight
-    model_config.pose_gated_route_loss_weight = opts.pose_gated_route_loss_weight
-    model_config.pose_gated_seen_loss_weight = opts.pose_gated_seen_loss_weight
-    model_config.pose_gated_fix_loss_weight = opts.pose_gated_fix_loss_weight
-    model_config.pose_gated_keep_loss_weight = opts.pose_gated_keep_loss_weight
 
     tokenizer = AutoTokenizer.from_pretrained("./bert_config/xlm-roberta-base")
 
@@ -262,9 +221,6 @@ def main(opts):
         "cognitive_map_namespace": opts.cognitive_map_namespace,
         "llm_cache_dir": opts.llm_cache_dir,
         "llm_cache_model_key": opts.llm_cache_model_key,
-        "pose_gated_map": opts.pose_gated_map,
-        "spatial_visual_cache": opts.spatial_visual_cache,
-        "target_cognitive_map_namespace": opts.target_cognitive_map_namespace,
     }
     train_nav_db = R2RTextPathData(
         data_cfg.train_traj_files,
@@ -401,7 +357,7 @@ def main(opts):
             # learning rate scheduling
             lr_this_step = get_lr_sched(global_step, opts)
             for param_group in optimizer.param_groups:
-                param_group["lr"] = lr_this_step * param_group["lr_scale"]
+                param_group["lr"] = lr_this_step
             TB_LOGGER.add_scalar("lr", lr_this_step, global_step)
 
             # NOTE: not gathered across GPUs for efficiency
