@@ -213,6 +213,7 @@ _C.MODEL.MAP_ENCODER.llm_cache_model_key = ""
 _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
     ""  # optional cache whose available train episodes define the comparison population
 )
+_C.MODEL.MAP_ENCODER.refiner_ckpt = ""
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

@@ -19,6 +19,8 @@ from scipy.spatial.transform import Rotation as R
 import cv2
 import os
 
+from prior.constants import MAPPED_OBJECT_NAMES, OBJECT_MAPPING
+
 
 def quat_from_heading(heading, elevation=0):
     array_h = np.array([0, heading, 0])
@@ -99,6 +101,72 @@ class VLNCEDaggerEnv(habitat.RLEnv):
         pos = agent_state.position
         ori = np.array([*(agent_state.rotation.imag), agent_state.rotation.real])
         return (pos, ori)
+
+    def get_refiner_episode_metadata(self):
+        sim = self._env.sim
+        agent_state = sim.get_agent_state()
+        start_y = float(agent_state.position[1])
+        level_ranges = [
+            (
+                float(level.aabb.center[1] - level.aabb.sizes[1] / 2.0),
+                float(level.aabb.center[1] + level.aabb.sizes[1] / 2.0),
+                level,
+            )
+            for level in sim.semantic_scene.levels
+        ]
+        level = next(
+            level
+            for min_y, max_y, level in level_ranges
+            if min_y <= start_y <= max_y
+        )
+        min_y = float(level.aabb.center[1] - level.aabb.sizes[1] / 2.0)
+        max_y = float(level.aabb.center[1] + level.aabb.sizes[1] / 2.0)
+        semantic_lut = {}
+        for obj in sim.semantic_scene.objects:
+            if obj is None or obj.category is None:
+                continue
+            semantic_id = int(obj.id.rsplit("_", 1)[-1])
+            raw_category = int(obj.category.index(mapping="mpcat40"))
+            if raw_category == 0:
+                mapped_category = 0
+            elif 0 < raw_category < len(OBJECT_MAPPING):
+                mapped_category = OBJECT_MAPPING[raw_category]
+            else:
+                mapped_category = MAPPED_OBJECT_NAMES.index("other")
+            semantic_lut[semantic_id] = mapped_category
+        return {
+            "start_position": np.asarray(agent_state.position, dtype=np.float32),
+            "range_y": np.asarray(
+                [min_y, max_y],
+                dtype=np.float32,
+            ),
+            "semantic_lut": semantic_lut,
+        }
+
+    def get_refiner_sensor_states(self, sensor_uuids):
+        agent_state = self._env.sim.get_agent_state()
+        sensor_states = {}
+        for sensor_uuid in sensor_uuids:
+            sensor_state = agent_state.sensor_states[sensor_uuid]
+            sensor_states[sensor_uuid] = (
+                np.asarray(sensor_state.position, dtype=np.float32),
+                np.asarray(
+                    [*(sensor_state.rotation.imag), sensor_state.rotation.real],
+                    dtype=np.float32,
+                ),
+            )
+        return {
+            "pose": np.concatenate(
+                [
+                    np.asarray(agent_state.position, dtype=np.float32),
+                    np.asarray(
+                        [*(agent_state.rotation.imag), agent_state.rotation.real],
+                        dtype=np.float32,
+                    ),
+                ]
+            ),
+            "sensor_states": sensor_states,
+        }
 
     def get_observation_at(
         self,

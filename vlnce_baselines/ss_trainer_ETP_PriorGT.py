@@ -48,6 +48,8 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from prior.online_evidence import OnlineEvidence
+from vlnce_baselines.models.refiner import CognitiveMapRefiner
 
 
 def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
@@ -77,6 +79,28 @@ class RLTrainer(BaseVLNCETrainer):
             config.IL.max_traj_len
         )  #  * 0.97 transfered gt path got 0.96 spl
         self.illegal_episodes_count = 0
+
+    def _refiner_enabled(self):
+        return bool(self.config.MODEL.MAP_ENCODER.refiner_ckpt)
+
+    @staticmethod
+    def _add_refiner_semantic_sensors(task_config):
+        camera_orientations = get_camera_orientations12()
+        sensor = task_config.SIMULATOR.SEMANTIC_SENSOR
+        sensor.WIDTH = 256
+        sensor.HEIGHT = 256
+        sensor.HFOV = 90
+        task_config.SIMULATOR.AGENT_0.SENSORS.append("SEMANTIC_SENSOR")
+        for action, orient in camera_orientations.items():
+            camera_template = f"SEMANTIC_{action}"
+            camera_config = deepcopy(sensor)
+            camera_config.WIDTH = 256
+            camera_config.HEIGHT = 256
+            camera_config.HFOV = 90
+            camera_config.ORIENTATION = orient
+            camera_config.UUID = camera_template.lower()
+            setattr(task_config.SIMULATOR, camera_template, camera_config)
+            task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
 
     def _make_dirs(self):
         if self.config.local_rank == 0:
@@ -130,6 +154,8 @@ class RLTrainer(BaseVLNCETrainer):
                 task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
                 resize_config.append((camera_template.lower(), resizer_size))
                 crop_config.append((camera_template.lower(), cropper_size))
+        if self._refiner_enabled():
+            self._add_refiner_semantic_sensors(task_config)
         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
             crop_config
@@ -187,6 +213,14 @@ class RLTrainer(BaseVLNCETrainer):
             self.config.TORCH_GPU_ID = self.config.TORCH_GPU_IDS[self.local_rank]
             self.config.freeze()
             torch.cuda.set_device(self.device)
+
+    def eval(self):
+        if self._refiner_enabled():
+            self.config.defrost()
+            self._add_refiner_semantic_sensors(self.config.TASK_CONFIG)
+            self.config.SENSORS = self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS
+            self.config.freeze()
+        return super().eval()
 
     def _init_envs(self):
         # for DDP to load different data
@@ -266,6 +300,17 @@ class RLTrainer(BaseVLNCETrainer):
         self.policy.to(self.device)
         self.waypoint_predictor.to(self.device)
         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
+
+        if self._refiner_enabled():
+            self.refiner = CognitiveMapRefiner().to(self.device)
+            self.refiner.load_state_dict(
+                torch.load(
+                    self.config.MODEL.MAP_ENCODER.refiner_ckpt,
+                    map_location="cpu",
+                )
+            )
+            self.refiner.eval()
+            self.refiner.requires_grad_(False)
 
         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
         freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
@@ -1047,6 +1092,86 @@ class RLTrainer(BaseVLNCETrainer):
         ori = [x[1] for x in pos_ori]
         return pos, ori
 
+    @staticmethod
+    def _refiner_sensor_uuids():
+        suffixes = [""] + [f"_{angle}" for angle in range(30, 360, 30)]
+        return [f"depth{suffix}" for suffix in suffixes]
+
+    def _initialize_refiner_state(self, cognitive_maps):
+        metadata = self.envs.call(
+            ["get_refiner_episode_metadata"] * self.envs.num_envs
+        )
+        self.evidence = []
+        self.refiner_p0 = []
+        self.refiner_semantic_luts = []
+        for cognitive_map, episode_metadata in zip(cognitive_maps, metadata):
+            p0 = cognitive_map["grid"].clone()
+            start_world = episode_metadata["start_position"]
+            start_local = cognitive_map["start_position"].numpy()
+            origin_xz = (
+                float(start_world[0] - start_local[0]),
+                float(start_world[2] - start_local[1]),
+            )
+            self.evidence.append(
+                OnlineEvidence(origin_xz, tuple(episode_metadata["range_y"]))
+            )
+            self.refiner_p0.append(p0)
+            self.refiner_semantic_luts.append(episode_metadata["semantic_lut"])
+
+    def _update_online_evidence(self, observations):
+        depth_uuids = self._refiner_sensor_uuids()
+        states = self.envs.call(
+            ["get_refiner_sensor_states"] * self.envs.num_envs,
+            [{"sensor_uuids": depth_uuids}] * self.envs.num_envs,
+        )
+        for env_index, (observation, state) in enumerate(zip(observations, states)):
+            semantic_lut = self.refiner_semantic_luts[env_index]
+            for depth_uuid in depth_uuids:
+                semantic_uuid = depth_uuid.replace("depth", "semantic", 1)
+                semantic_ids = np.asarray(observation[semantic_uuid])
+                semantic_categories = np.full(semantic_ids.shape, -1, dtype=np.int16)
+                for semantic_id in np.unique(semantic_ids):
+                    if int(semantic_id) in semantic_lut:
+                        semantic_categories[semantic_ids == semantic_id] = semantic_lut[
+                            int(semantic_id)
+                        ]
+                depth_m = np.asarray(observation[depth_uuid], dtype=np.float32)
+                if depth_m.ndim == 3:
+                    depth_m = depth_m[..., 0]
+                sensor_position, sensor_rotation = state["sensor_states"][depth_uuid]
+                self.evidence[env_index].update(
+                    depth_m * 10.0,
+                    semantic_categories,
+                    sensor_position,
+                    sensor_rotation,
+                    90.0,
+                )
+        return states
+
+    def _update_refined_cognitive_maps(self, observations, cognitive_maps):
+        self._update_online_evidence(observations)
+
+        p0 = torch.stack(self.refiner_p0[: self.envs.num_envs]).to(self.device)
+        evidence = torch.from_numpy(
+            np.stack(
+                [item.tensor() for item in self.evidence[: self.envs.num_envs]]
+            )
+        ).to(self.device)
+        with torch.no_grad():
+            output = self.refiner(torch.cat((p0, evidence), dim=1))
+        observed = torch.from_numpy(
+            np.stack(
+                [item.observed for item in self.evidence[: self.envs.num_envs]]
+            )
+        ).to(self.device)
+        refined = output.clone()
+        refined[:, :27] = (
+            observed[:, None] * output[:, :27]
+            + (~observed[:, None]) * p0[:, :27]
+        )
+        for cognitive_map, grid in zip(cognitive_maps, refined):
+            cognitive_map["grid"] = grid
+
     def _prepare_map_inputs(
         self,
         nav_inputs,
@@ -1231,6 +1356,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         self.envs.resume_all()
         observations = self.envs.reset()
+        refiner_observations = observations
 
         instr_max_len = self.config.IL.max_text_len
         instr_pad_id = 1
@@ -1257,6 +1383,11 @@ class RLTrainer(BaseVLNCETrainer):
                 if ep.episode_id in self.stat_eps
             ]
             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
+            refiner_observations = [
+                observation
+                for index, observation in enumerate(refiner_observations)
+                if index not in env_to_pause
+            ]
             if self.envs.num_envs == 0:
                 return
         if mode == "infer":
@@ -1266,6 +1397,11 @@ class RLTrainer(BaseVLNCETrainer):
                 if ep.episode_id in self.path_eps
             ]
             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
+            refiner_observations = [
+                observation
+                for index, observation in enumerate(refiner_observations)
+                if index not in env_to_pause
+            ]
             if self.envs.num_envs == 0:
                 return
             curr_eps = self.envs.current_episodes()
@@ -1312,6 +1448,8 @@ class RLTrainer(BaseVLNCETrainer):
             )
         else:
             cognitive_maps = None
+        if self._refiner_enabled() and cognitive_maps is not None:
+            self._initialize_refiner_state(cognitive_maps)
 
         for stepk in range(self.max_len):
             total_actions += self.envs.num_envs
@@ -1390,6 +1528,12 @@ class RLTrainer(BaseVLNCETrainer):
                 }
             )
             no_vp_left = nav_inputs.pop("no_vp_left")
+
+            if self._refiner_enabled() and cognitive_maps is not None:
+                self._update_refined_cognitive_maps(
+                    refiner_observations,
+                    cognitive_maps,
+                )
 
             map_aux_loss = self._prepare_map_inputs(
                 nav_inputs,
@@ -1614,6 +1758,10 @@ class RLTrainer(BaseVLNCETrainer):
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)
+                        if self._refiner_enabled() and cognitive_maps is not None:
+                            self.evidence.pop(i)
+                            self.refiner_p0.pop(i)
+                            self.refiner_semantic_luts.pop(i)
                         all_txt_ids = torch.cat(
                             (all_txt_ids[:i], all_txt_ids[i + 1 :]), dim=0
                         )
@@ -1641,6 +1789,7 @@ class RLTrainer(BaseVLNCETrainer):
             )
             batch = batch_obs(observations, self.device)
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)
+            refiner_observations = observations
 
         if mode == "train":
             loss = ml_weight * loss / total_actions
