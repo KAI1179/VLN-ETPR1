@@ -181,7 +181,7 @@ def _validate(
     metrics = _MetricAccumulator()
     for batch in _loader(dataset, args, shuffle=False):
         inputs = batch["x"].to(args.device, non_blocking=True)
-        output = model(inputs)
+        output = torch.sigmoid(model(inputs))
         p0 = batch["p0"].to(args.device, non_blocking=True)
         observed = batch["obs"].to(args.device, non_blocking=True)
         refined = _compose_refined(output, p0, observed)
@@ -212,8 +212,10 @@ def _train_epoch(
         observed = batch["obs"].to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         with torch.cuda.amp.autocast():
-            output = model(inputs)
-        bce = F.binary_cross_entropy(output.float(), target, reduction="none")
+            logits = model(inputs)
+        bce = F.binary_cross_entropy_with_logits(
+            logits.float(), target, reduction="none"
+        )
         weights = torch.ones_like(bce)
         weights[:, :OBJECT_CHANNELS] = observed[:, None]
         positive_weights = torch.ones_like(bce)

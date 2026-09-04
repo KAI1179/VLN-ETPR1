@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -215,7 +216,8 @@ def _collect_rollout(
     args: Arguments,
     trainer: RLTrainer,
     kind: str,
-    remaining: int,
+    target: int,
+    seen: Set[Tuple[str, str]],
 ) -> List[Path]:
     trainer.envs.resume_all()
     observations = trainer.envs.reset()
@@ -242,8 +244,16 @@ def _collect_rollout(
         for index, state in enumerate(evidence_states):
             records[index].append(_snapshot(trainer.evidence[index], state["pose"]))
 
+        policy_observations = [
+            {
+                key: value
+                for key, value in observation.items()
+                if key.startswith("rgb") or key.startswith("depth")
+            }
+            for observation in observations
+        ]
         transformed = apply_obs_transforms_batch(
-            batch_obs(observations, trainer.device), trainer.obs_transforms
+            batch_obs(policy_observations, trainer.device), trainer.obs_transforms
         )
         wp_outputs = trainer.policy.net(
             mode="waypoint",
@@ -311,7 +321,8 @@ def _collect_rollout(
         for index in reversed(range(trainer.envs.num_envs)):
             if not dones[index]:
                 continue
-            if len(written) < remaining:
+            episode_key = (str(episodes[index].episode_id), kind)
+            if episode_key not in seen and len(seen) < target:
                 written.append(
                     _save_trajectory(
                         args,
@@ -322,6 +333,7 @@ def _collect_rollout(
                         records[index],
                     )
                 )
+                seen.add(episode_key)
             trainer.envs.pause_at(index)
             observations.pop(index)
             episodes.pop(index)
@@ -341,6 +353,7 @@ def _collect_rollout(
 
 def _collect_kind(args: Arguments, kind: str) -> List[Path]:
     trainer = RLTrainer(_config(args))
+    random.seed(trainer.config.TASK_CONFIG.SEED)
     trainer._set_config()
     observation_space, action_space = trainer._init_envs()
     trainer._initialize_policy(
@@ -354,10 +367,11 @@ def _collect_kind(args: Arguments, kind: str) -> List[Path]:
     available = sum(trainer.envs.number_of_episodes)
     target = available if args.limit < 0 else min(args.limit, available)
     output_paths: List[Path] = []
+    seen: Set[Tuple[str, str]] = set()
     started = time.perf_counter()
-    while len(output_paths) < target:
+    while len(seen) < target:
         output_paths.extend(
-            _collect_rollout(args, trainer, kind, target - len(output_paths))
+            _collect_rollout(args, trainer, kind, target, seen)
         )
     elapsed = time.perf_counter() - started
     trainer.envs.close()
@@ -367,6 +381,44 @@ def _collect_kind(args: Arguments, kind: str) -> List[Path]:
         flush=True,
     )
     return output_paths
+
+
+def _collection_metrics(paths: List[Path]) -> Dict[str, float]:
+    trajectory_steps = []
+    initial_observed = []
+    final_observed = []
+    final_by_episode: Dict[str, Dict[str, np.ndarray]] = {}
+    for path in paths:
+        with np.load(path, allow_pickle=True) as trajectory:
+            episode_id = str(trajectory["episode_id"].item())
+            kind = str(trajectory["kind"].item())
+            steps = trajectory["steps"]
+            initial = np.unpackbits(steps[0]["observed"], count=100 * 100).astype(bool)
+            final = np.unpackbits(steps[-1]["observed"], count=100 * 100).astype(bool)
+        trajectory_steps.append(len(steps))
+        initial_observed.append(int(initial.sum()))
+        final_observed.append(int(final.sum()))
+        final_by_episode.setdefault(episode_id, {})[kind] = final
+
+    paired_jaccards = []
+    for kinds in final_by_episode.values():
+        if "teacher" not in kinds or "perturbed" not in kinds:
+            continue
+        teacher = kinds["teacher"]
+        perturbed = kinds["perturbed"]
+        union = np.logical_or(teacher, perturbed).sum()
+        intersection = np.logical_and(teacher, perturbed).sum()
+        paired_jaccards.append(float(intersection / union) if union else 1.0)
+
+    return {
+        "average_trajectory_steps": float(np.mean(trajectory_steps)),
+        "t0_observed_cells_mean": float(np.mean(initial_observed)),
+        "final_observed_cells_mean": float(np.mean(final_observed)),
+        "paired_episodes": float(len(paired_jaccards)),
+        "paired_final_observed_jaccard_mean": (
+            float(np.mean(paired_jaccards)) if paired_jaccards else float("nan")
+        ),
+    }
 
 
 def _write_reports(paths: List[Path], output_dir: Path) -> None:
@@ -402,9 +454,23 @@ def main() -> None:
     torch.cuda.set_device(args.gpu_device)
     all_paths: List[Path] = []
     kinds = args.kinds if args.split == "train" else ("teacher",)
+    started = time.perf_counter()
     for kind in kinds:
         all_paths.extend(_collect_kind(args, kind))
+    elapsed = time.perf_counter() - started
     _write_reports(all_paths, args.report_dir)
+    metrics = _collection_metrics(all_paths)
+    print(
+        f"S1 episodes={len(all_paths)} seconds={elapsed:.2f} "
+        f"episodes_per_second={len(all_paths) / elapsed:.4f} "
+        f"average_trajectory_steps={metrics['average_trajectory_steps']:.4f} "
+        f"t0_observed_cells_mean={metrics['t0_observed_cells_mean']:.4f} "
+        f"final_observed_cells_mean={metrics['final_observed_cells_mean']:.4f} "
+        f"paired_episodes={int(metrics['paired_episodes'])} "
+        "paired_final_observed_jaccard_mean="
+        f"{metrics['paired_final_observed_jaccard_mean']:.6f}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -67,4 +67,4 @@ class CognitiveMapRefiner(nn.Module):
         decoded = self.decoder2(level3, level2)
         decoded = self.decoder1(decoded, level1)
         decoded = self.decoder0(decoded, level0)
-        return torch.sigmoid(self.output(decoded))
+        return self.output(decoded)

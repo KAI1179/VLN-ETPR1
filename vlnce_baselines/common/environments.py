@@ -115,10 +115,18 @@ class VLNCEDaggerEnv(habitat.RLEnv):
             for level in sim.semantic_scene.levels
         ]
         level = next(
-            level
-            for min_y, max_y, level in level_ranges
-            if min_y <= start_y <= max_y
+            (
+                level
+                for min_y, max_y, level in level_ranges
+                if min_y <= start_y <= max_y
+            ),
+            None,
         )
+        if level is None:
+            level = min(
+                level_ranges,
+                key=lambda item: abs(start_y - (item[0] + item[1]) / 2.0),
+            )[2]
         min_y = float(level.aabb.center[1] - level.aabb.sizes[1] / 2.0)
         max_y = float(level.aabb.center[1] + level.aabb.sizes[1] / 2.0)
         semantic_lut = {}
@@ -136,6 +144,7 @@ class VLNCEDaggerEnv(habitat.RLEnv):
             semantic_lut[semantic_id] = mapped_category
         return {
             "start_position": np.asarray(agent_state.position, dtype=np.float32),
+            "floor_y": start_y,
             "range_y": np.asarray(
                 [min_y, max_y],
                 dtype=np.float32,

@@ -1113,7 +1113,11 @@ class RLTrainer(BaseVLNCETrainer):
                 float(start_world[2] - start_local[1]),
             )
             self.evidence.append(
-                OnlineEvidence(origin_xz, tuple(episode_metadata["range_y"]))
+                OnlineEvidence(
+                    origin_xz,
+                    tuple(episode_metadata["range_y"]),
+                    float(episode_metadata["floor_y"]),
+                )
             )
             self.refiner_p0.append(p0)
             self.refiner_semantic_luts.append(episode_metadata["semantic_lut"])
@@ -1158,7 +1162,7 @@ class RLTrainer(BaseVLNCETrainer):
             )
         ).to(self.device)
         with torch.no_grad():
-            output = self.refiner(torch.cat((p0, evidence), dim=1))
+            output = torch.sigmoid(self.refiner(torch.cat((p0, evidence), dim=1)))
         observed = torch.from_numpy(
             np.stack(
                 [item.observed for item in self.evidence[: self.envs.num_envs]]
@@ -1373,7 +1377,17 @@ class RLTrainer(BaseVLNCETrainer):
             pad_id=instr_pad_id,
             task_type=task_type,
         )
-        batch = batch_obs(observations, self.device)
+        policy_observations = observations
+        if self._refiner_enabled():
+            policy_observations = [
+                {
+                    key: value
+                    for key, value in observation.items()
+                    if not key.startswith("semantic")
+                }
+                for observation in observations
+            ]
+        batch = batch_obs(policy_observations, self.device)
         batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
         if mode == "eval":
@@ -1787,7 +1801,17 @@ class RLTrainer(BaseVLNCETrainer):
                 pad_id=instr_pad_id,
                 task_type=task_type,
             )
-            batch = batch_obs(observations, self.device)
+            policy_observations = observations
+            if self._refiner_enabled():
+                policy_observations = [
+                    {
+                        key: value
+                        for key, value in observation.items()
+                        if not key.startswith("semantic")
+                    }
+                    for observation in observations
+                ]
+            batch = batch_obs(policy_observations, self.device)
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)
             refiner_observations = observations
 

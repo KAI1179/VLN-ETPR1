@@ -12,9 +12,11 @@ class OnlineEvidence:
         self,
         origin_xz: tuple[float, float],
         range_y: tuple[float, float],
+        floor_y: float,
     ) -> None:
         self.origin_xz = np.asarray(origin_xz, dtype=np.float64)
         self.range_y = range_y
+        self.floor_y = floor_y
         self.sem = np.zeros((27, 100, 100), dtype=bool)
         self.observed = np.zeros((100, 100), dtype=bool)
         self.free = np.zeros((100, 100), dtype=bool)
@@ -30,7 +32,7 @@ class OnlineEvidence:
     ) -> None:
         """Project and accumulate one metric depth/semantic view."""
 
-        valid = (depth_m >= 0.2) & (depth_m <= 10.0)
+        valid = (depth_m >= 0.2) & (depth_m < 9.99)
         image_rows, image_cols = np.nonzero(valid)
         depth = depth_m[image_rows, image_cols].astype(np.float64)
 
@@ -64,7 +66,7 @@ class OnlineEvidence:
         rows = rows[inside]
         cols = cols[inside]
         categories = categories[inside]
-        point_heights = world_points[inside, 1] - self.range_y[0]
+        point_heights = world_points[inside, 1] - self.floor_y
 
         self.observed[rows, cols] = True
         free = point_heights < 0.2
