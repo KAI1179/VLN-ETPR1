@@ -2,7 +2,7 @@
 
 ## 1. 训练设置
 
-- S3b 代码提交：`c14aba0 feat: add dihedral refiner augmentation`
+- S3b 代码提交：`31edf8c feat: add dihedral refiner augmentation`
 - S3b 与 S3 使用相同数据、seed、模型、损失和超参数；唯一训练差异为 dihedral 增强。
 - 每个训练样本使用同一个随机变换同步处理 `x/y/p0/obs/route`：旋转 `0/90/180/270°`，再以 0.5 概率水平翻转。
 - 输出目录：`data/refiner/checkpoints_aug/`
