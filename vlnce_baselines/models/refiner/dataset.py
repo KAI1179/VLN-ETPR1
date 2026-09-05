@@ -52,16 +52,19 @@ class RefinerDataset(Dataset):
         *,
         steps_per_trajectory: int = 6,
         all_steps: bool = False,
+        augment: bool = False,
         seed: int = 0,
     ) -> None:
         self.trajectory_paths = tuple(sorted(trajectory_paths))
         self.steps_per_trajectory = steps_per_trajectory
         self.all_steps = all_steps
+        self.augment = augment
         self.seed = seed
         self.samples: List[Tuple[Path, int]] = []
         self.set_epoch(0)
 
     def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
         rng = np.random.default_rng(self.seed + epoch)
         samples: List[Tuple[Path, int]] = []
         for path in self.trajectory_paths:
@@ -96,6 +99,19 @@ class RefinerDataset(Dataset):
         evidence, observed = _unpack_step(step)
         inputs = np.concatenate((p0, evidence), axis=0)
         route = target.sum(axis=0) > 0
+        if self.augment:
+            rng = np.random.default_rng(
+                self.seed + self.epoch * len(self.samples) + index
+            )
+            k = int(rng.integers(4))
+            flip = rng.random() < 0.5
+            arrays = [inputs, target, p0, observed, route]
+            arrays = [np.rot90(array, k, axes=(-2, -1)) for array in arrays]
+            if flip:
+                arrays = [np.flip(array, axis=-1) for array in arrays]
+            inputs, target, p0, observed, route = [
+                np.ascontiguousarray(array) for array in arrays
+            ]
         return {
             "x": torch.from_numpy(inputs),
             "y": torch.from_numpy(target),

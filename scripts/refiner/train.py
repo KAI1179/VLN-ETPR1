@@ -33,6 +33,7 @@ class Arguments(Tap):
     num_workers: int = 8
     seed: int = 0
     device: str = "cuda"
+    augment: bool = False
 
 
 def _loader(
@@ -347,6 +348,7 @@ def main() -> None:
     train_paths = trajectory_files(args.data_root / "train")
     train_dataset = RefinerDataset(
         train_paths,
+        augment=args.augment,
         seed=args.seed,
     )
     val_seen_dataset = RefinerDataset(
@@ -412,6 +414,7 @@ def main() -> None:
             torch.save(model.state_dict(), args.output_dir / "best.pt")
         torch.save(model.state_dict(), args.output_dir / "last.pt")
         metrics = {
+            "augment": args.augment,
             "object_pos_weight": object_pos_weight.cpu().tolist(),
             "pos_weight_trajectories": len(pos_weight_paths),
             "pos_weight_samples": len(pos_weight_dataset),
