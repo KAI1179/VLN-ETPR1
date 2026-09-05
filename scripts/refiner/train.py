@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List
 
 import numpy as np
@@ -16,6 +17,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
+from prior.constants import MAPPED_OBJECT_COLORS, MAPPED_REGION_COLORS
 from vlnce_baselines.models.refiner.dataset import RefinerDataset, trajectory_files
 from vlnce_baselines.models.refiner.model import CognitiveMapRefiner
 
@@ -28,7 +30,7 @@ class Arguments(Tap):
     batch_size: int = 32
     epochs: int = 10
     lr: float = 3e-4
-    num_workers: int = 4
+    num_workers: int = 8
     seed: int = 0
     device: str = "cuda"
 
@@ -98,25 +100,7 @@ class _MetricAccumulator:
             "100x100",
         )
 
-        pooled_predictions = {
-            name: F.max_pool2d(mask.float(), 10).bool()
-            for name, mask in predictions.items()
-        }
-        pooled_target = F.max_pool2d(target_mask.float(), 10).bool()
-        pooled_seen = F.max_pool2d(observed[:, None].float(), 10).squeeze(1).bool()
-        pooled_route = F.max_pool2d(route[:, None].float(), 10).squeeze(1).bool()
-        pooled_groups = {
-            "seen": pooled_seen,
-            "unseen": ~pooled_seen,
-            "route": pooled_route,
-            "route_seen": pooled_route & pooled_seen,
-        }
-        self._update_resolution(
-            pooled_predictions,
-            pooled_target,
-            pooled_groups,
-            "10x10",
-        )
+        self._update_pooled_resolution(predictions, target_mask, native_groups)
 
     def _update_resolution(
         self,
@@ -134,7 +118,40 @@ class _MetricAccumulator:
                 counts["intersection"] += intersection.cpu()
                 counts["union"] += union.cpu()
 
+    def _update_pooled_resolution(
+        self,
+        predictions: Dict[str, torch.Tensor],
+        target: torch.Tensor,
+        groups: Dict[str, torch.Tensor],
+    ) -> None:
+        for source, prediction in predictions.items():
+            for group, cell_mask in groups.items():
+                mask = cell_mask[:, None]
+                pooled_prediction = F.max_pool2d(
+                    (prediction & mask).float(), 10
+                ).bool()
+                pooled_target = F.max_pool2d(
+                    (target & mask).float(), 10
+                ).bool()
+                counts = self.counts[source]["10x10"][group]
+                counts["intersection"] += (
+                    pooled_prediction & pooled_target
+                ).sum(dim=(0, 2, 3)).cpu()
+                counts["union"] += (
+                    pooled_prediction | pooled_target
+                ).sum(dim=(0, 2, 3)).cpu()
+
     def result(self) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
+        for resolution in ("100x100", "10x10"):
+            for statistic in ("intersection", "union"):
+                p0 = self.counts["p0"][resolution]["unseen"][statistic]
+                refined = self.counts["refined"][resolution]["unseen"][statistic]
+                if not torch.equal(
+                    p0[:OBJECT_CHANNELS], refined[:OBJECT_CHANNELS]
+                ):
+                    raise AssertionError(
+                        f"BUG: unseen object {statistic} differs at {resolution}"
+                    )
         results: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
         for source, resolutions in self.counts.items():
             results[source] = {}
@@ -164,9 +181,10 @@ def _compose_refined(
 ) -> torch.Tensor:
     composed = output.clone()
     observed = observed[:, None]
-    composed[:, :OBJECT_CHANNELS] = (
-        observed * output[:, :OBJECT_CHANNELS]
-        + (~observed) * p0[:, :OBJECT_CHANNELS]
+    composed[:, :OBJECT_CHANNELS] = torch.where(
+        observed,
+        output[:, :OBJECT_CHANNELS],
+        p0[:, :OBJECT_CHANNELS],
     )
     return composed
 
@@ -185,6 +203,12 @@ def _validate(
         p0 = batch["p0"].to(args.device, non_blocking=True)
         observed = batch["obs"].to(args.device, non_blocking=True)
         refined = _compose_refined(output, p0, observed)
+        unseen = (~observed)[:, None].expand(-1, OBJECT_CHANNELS, -1, -1)
+        if not torch.equal(
+            refined[:, :OBJECT_CHANNELS][unseen],
+            p0[:, :OBJECT_CHANNELS][unseen],
+        ):
+            raise AssertionError("BUG: refined unseen object cells differ from P0")
         metrics.update(
             p0,
             refined,
@@ -233,6 +257,85 @@ def _train_epoch(
     return total_loss / total_batches
 
 
+def _argmax_labels(
+    grid: torch.Tensor,
+    start: int,
+    end: int,
+    offset: int,
+) -> np.ndarray:
+    values, labels = grid[start:end].max(dim=0)
+    rendered = torch.zeros_like(labels)
+    present = values >= 0.5
+    rendered[present] = labels[present] + offset
+    return rendered.cpu().numpy()
+
+
+@torch.no_grad()
+def _save_val_unseen_examples(
+    model: CognitiveMapRefiner,
+    paths: List[Path],
+    args: Arguments,
+) -> None:
+    import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
+
+    selected: List[Path] = []
+    scenes = set()
+    for path in paths:
+        if path.parent.name not in scenes:
+            selected.append(path)
+            scenes.add(path.parent.name)
+        if len(selected) == 3:
+            break
+
+    report_dir = Path("reports/refiner")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    colormap = colors.ListedColormap(
+        ["#000000"] + list(MAPPED_OBJECT_COLORS) + list(MAPPED_REGION_COLORS)
+    )
+    norm = colors.BoundaryNorm(np.arange(-0.5, 38.5), colormap.N)
+    model.eval()
+    for path in selected:
+        dataset = RefinerDataset([path], all_steps=True)
+        sample = dataset[len(dataset) - 1]
+        p0 = sample["p0"].to(args.device)
+        output = torch.sigmoid(model(sample["x"][None].to(args.device)))[0]
+        refined = _compose_refined(
+            output[None],
+            p0[None],
+            sample["obs"][None].to(args.device),
+        )[0]
+        target = sample["y"].to(args.device)
+        grids = (p0, refined, target)
+        figure, axes = plt.subplots(2, 3, figsize=(12, 8))
+        for column, (title, grid) in enumerate(
+            zip(("P0", "refined", "GT"), grids)
+        ):
+            axes[0, column].imshow(
+                _argmax_labels(grid, 0, OBJECT_CHANNELS, 1),
+                cmap=colormap,
+                norm=norm,
+                origin="lower",
+            )
+            axes[0, column].set_title(f"{title} objects")
+            axes[1, column].imshow(
+                _argmax_labels(grid, OBJECT_CHANNELS, 37, 28),
+                cmap=colormap,
+                norm=norm,
+                origin="lower",
+            )
+            axes[1, column].set_title(f"{title} regions")
+            axes[0, column].axis("off")
+            axes[1, column].axis("off")
+        with np.load(path, allow_pickle=True) as trajectory:
+            episode_id = str(trajectory["episode_id"].item())
+        output_path = report_dir / f"val_unseen_{episode_id}_last.png"
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=150)
+        plt.close(figure)
+        print(f"wrote {output_path}", flush=True)
+
+
 def main() -> None:
     args = Arguments(underscores_to_dashes=True).parse_args()
     random.seed(args.seed)
@@ -254,9 +357,20 @@ def main() -> None:
         trajectory_files(args.data_root / "val_unseen", teacher_only=True),
         all_steps=True,
     )
-    object_pos_weight = _object_pos_weight(
-        RefinerDataset(train_paths, all_steps=True), args
-    ).to(args.device)
+    pos_weight_paths = random.Random(args.seed).sample(train_paths, 2000)
+    pos_weight_dataset = RefinerDataset(pos_weight_paths, all_steps=True)
+    print(
+        f"train_trajectories={len(train_paths)} "
+        f"train_samples_per_epoch={len(train_dataset)} "
+        f"pos_weight_trajectories={len(pos_weight_paths)} "
+        f"pos_weight_samples={len(pos_weight_dataset)} "
+        f"val_seen_samples={len(val_seen_dataset)} "
+        f"val_unseen_samples={len(val_unseen_dataset)}",
+        flush=True,
+    )
+    object_pos_weight = _object_pos_weight(pos_weight_dataset, args).to(
+        args.device
+    )
     print("object_pos_weight", object_pos_weight.cpu().tolist(), flush=True)
 
     model = CognitiveMapRefiner().to(args.device)
@@ -268,6 +382,7 @@ def main() -> None:
     best_epoch = -1
 
     for epoch in range(args.epochs):
+        epoch_start = perf_counter()
         train_dataset.set_epoch(epoch)
         train_loss = _train_epoch(
             model,
@@ -280,10 +395,12 @@ def main() -> None:
         scheduler.step()
         val_seen = _validate(model, val_seen_dataset, args)
         val_unseen = _validate(model, val_unseen_dataset, args)
+        epoch_seconds = perf_counter() - epoch_start
         score = val_unseen["refined"]["100x100"]["route_seen"]["object_miou"]
         epoch_metrics = {
             "epoch": epoch + 1,
             "train_loss": train_loss,
+            "seconds": epoch_seconds,
             "lr": scheduler.get_last_lr()[0],
             "val_seen": val_seen,
             "val_unseen": val_unseen,
@@ -296,6 +413,8 @@ def main() -> None:
         torch.save(model.state_dict(), args.output_dir / "last.pt")
         metrics = {
             "object_pos_weight": object_pos_weight.cpu().tolist(),
+            "pos_weight_trajectories": len(pos_weight_paths),
+            "pos_weight_samples": len(pos_weight_dataset),
             "best_epoch": best_epoch,
             "best_val_unseen_route_seen_object_miou": best_score,
             "epochs": history,
@@ -306,9 +425,19 @@ def main() -> None:
         )
         print(
             f"epoch={epoch + 1} loss={train_loss:.6f} "
-            f"val_unseen_route_seen_object_miou={score:.6f}",
+            f"val_unseen_route_seen_object_miou={score:.6f} "
+            f"seconds={epoch_seconds:.2f}",
             flush=True,
         )
+
+    model.load_state_dict(
+        torch.load(args.output_dir / "best.pt", map_location=args.device)
+    )
+    _save_val_unseen_examples(
+        model,
+        trajectory_files(args.data_root / "val_unseen", teacher_only=True),
+        args,
+    )
 
 
 if __name__ == "__main__":
