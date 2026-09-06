@@ -180,14 +180,7 @@ def _compose_refined(
     p0: torch.Tensor,
     observed: torch.Tensor,
 ) -> torch.Tensor:
-    composed = output.clone()
-    observed = observed[:, None]
-    composed[:, :OBJECT_CHANNELS] = torch.where(
-        observed,
-        output[:, :OBJECT_CHANNELS],
-        p0[:, :OBJECT_CHANNELS],
-    )
-    return composed
+    return torch.where(observed[:, None], output, p0)
 
 
 @torch.no_grad()
@@ -204,12 +197,12 @@ def _validate(
         p0 = batch["p0"].to(args.device, non_blocking=True)
         observed = batch["obs"].to(args.device, non_blocking=True)
         refined = _compose_refined(output, p0, observed)
-        unseen = (~observed)[:, None].expand(-1, OBJECT_CHANNELS, -1, -1)
+        unseen = (~observed)[:, None].expand(-1, p0.shape[1], -1, -1)
         if not torch.equal(
-            refined[:, :OBJECT_CHANNELS][unseen],
-            p0[:, :OBJECT_CHANNELS][unseen],
+            refined[unseen],
+            p0[unseen],
         ):
-            raise AssertionError("BUG: refined unseen object cells differ from P0")
+            raise AssertionError("BUG: refined unseen cells differ from P0")
         metrics.update(
             p0,
             refined,

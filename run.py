@@ -24,6 +24,7 @@ class RunArgs(Tap):
     exp_name: str
     run_type: str
     exp_config: str
+    dry_run: bool = False
     opts: Optional[List[str]] = None
 
     def configure(self) -> None:
@@ -39,6 +40,11 @@ class RunArgs(Tap):
         self.add_argument(
             "--exp-config",
             help="path to config yaml containing info about experiment",
+        )
+        self.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="resolve and save the configuration without starting a run",
         )
         self.add_argument(
             "opts",
@@ -61,7 +67,13 @@ def main():
     run_exp(**args.as_dict())
 
 
-def run_exp(exp_name: str, exp_config: str, run_type: str, opts=None) -> None:
+def run_exp(
+    exp_name: str,
+    exp_config: str,
+    run_type: str,
+    dry_run: bool = False,
+    opts=None,
+) -> None:
     r"""Runs experiment given mode and config
 
     Args:
@@ -97,6 +109,14 @@ def run_exp(exp_name: str, exp_config: str, run_type: str, opts=None) -> None:
         )
     else:
         logger.add_filehandler("data/logs/running_log/" + config.LOG_FILE)
+
+    if dry_run:
+        if config.local_rank == 0:
+            config_path = os.path.join(config.CHECKPOINT_FOLDER, "config.yaml")
+            with open(config_path, "w") as config_file:
+                config_file.write(config.dump())
+            print(f"Dry run configuration saved to {config_path}")
+        return
 
     random.seed(config.TASK_CONFIG.SEED)
     np.random.seed(config.TASK_CONFIG.SEED)

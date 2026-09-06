@@ -80,11 +80,7 @@ class RLTrainer(BaseVLNCETrainer):
             config.IL.max_traj_len
         )  #  * 0.97 transfered gt path got 0.96 spl
         self.illegal_episodes_count = 0
-        self._refiner_diagnostic_episode = None
-        self._refiner_diagnostic_initial_logged = False
-        self._refiner_diagnostic_last = None
-        self._refiner_projection_seconds = 0.0
-        self._refiner_forward_seconds = 0.0
+        self._refiner_active_cells = None
 
     def _refiner_enabled(self):
         return bool(self.config.MODEL.MAP_ENCODER.refiner_ckpt)
@@ -787,8 +783,6 @@ class RLTrainer(BaseVLNCETrainer):
             if sample_ratio <= 0.15:
                 sample_ratio = 0.0
             logger.info(f"sample ratio: {sample_ratio}")
-            self._refiner_projection_seconds = 0.0
-            self._refiner_forward_seconds = 0.0
             interval_start = perf_counter()
             logs = self._train_interval(
                 interval, self.config.IL.ml_weight, sample_ratio
@@ -804,18 +798,15 @@ class RLTrainer(BaseVLNCETrainer):
                     interval_seconds / interval,
                 )
                 if self._refiner_enabled():
-                    rest_seconds = (
-                        interval_seconds
-                        - self._refiner_projection_seconds
-                        - self._refiner_forward_seconds
-                    )
+                    p0_cells, refined_cells = self._refiner_active_cells
                     logger.info(
-                        "[Refiner profile] projection_seconds=%.3f "
-                        "forward_seconds=%.3f rest_seconds=%.3f",
-                        self._refiner_projection_seconds,
-                        self._refiner_forward_seconds,
-                        rest_seconds,
+                        "[Refiner active] enabled=True p0_active_cells=%d "
+                        "refined_active_cells=%d",
+                        int(p0_cells),
+                        int(refined_cells),
                     )
+                else:
+                    logger.info("[Refiner active] enabled=False")
                 loss_str = f"iter {cur_iter}: "
                 for k, v in logs.items():
                     logs[k] = np.mean(v)
@@ -825,7 +816,11 @@ class RLTrainer(BaseVLNCETrainer):
                 writer.add_scalar("train/lr", current_lr, cur_iter)
                 logger.info(loss_str)
                 logger.info(f"lr: {current_lr}")
-                self.save_checkpoint(cur_iter)
+                checkpoint_interval = self.config.CHECKPOINT_INTERVAL
+                if checkpoint_interval <= 0 or (
+                    cur_iter % checkpoint_interval == 0 or cur_iter == total_iter
+                ):
+                    self.save_checkpoint(cur_iter)
                 gc.collect()
                 torch.cuda.empty_cache()
 
@@ -1160,10 +1155,6 @@ class RLTrainer(BaseVLNCETrainer):
             )
             self.refiner_p0.append(p0)
             self.refiner_semantic_luts.append(episode_metadata["semantic_lut"])
-        if self.local_rank < 1 and self._refiner_diagnostic_episode is None:
-            self._refiner_diagnostic_episode = str(
-                self.envs.current_episodes()[0].episode_id
-            )
 
     def _update_online_evidence(self, observations):
         depth_uuids = self._refiner_sensor_uuids()
@@ -1196,12 +1187,8 @@ class RLTrainer(BaseVLNCETrainer):
         return states
 
     def _update_refined_cognitive_maps(self, observations, cognitive_maps):
-        projection_start = perf_counter()
         self._update_online_evidence(observations)
-        self._refiner_projection_seconds += perf_counter() - projection_start
 
-        torch.cuda.synchronize(self.device)
-        forward_start = perf_counter()
         p0 = torch.stack(self.refiner_p0[: self.envs.num_envs]).to(self.device)
         evidence = torch.from_numpy(
             np.stack(
@@ -1215,35 +1202,15 @@ class RLTrainer(BaseVLNCETrainer):
                 [item.observed for item in self.evidence[: self.envs.num_envs]]
             )
         ).to(self.device)
-        refined = output.clone()
-        refined[:, :27] = (
-            observed[:, None] * output[:, :27]
-            + (~observed[:, None]) * p0[:, :27]
-        )
-        torch.cuda.synchronize(self.device)
-        self._refiner_forward_seconds += perf_counter() - forward_start
+        refined = observed[:, None] * output + (~observed[:, None]) * p0
         for cognitive_map, grid in zip(cognitive_maps, refined):
             cognitive_map["grid"] = grid
 
         if self.local_rank < 1:
-            for index, episode in enumerate(self.envs.current_episodes()):
-                if str(episode.episode_id) != self._refiner_diagnostic_episode:
-                    continue
-                counts = (
-                    int((p0[index] >= 0.5).any(dim=0).sum()),
-                    int((refined[index] >= 0.5).any(dim=0).sum()),
-                )
-                self._refiner_diagnostic_last = counts
-                if not self._refiner_diagnostic_initial_logged:
-                    logger.info(
-                        "[Refiner map cells] episode=%s step=0 "
-                        "p0_active_cells=%d refined_active_cells=%d",
-                        self._refiner_diagnostic_episode,
-                        counts[0],
-                        counts[1],
-                    )
-                    self._refiner_diagnostic_initial_logged = True
-                break
+            self._refiner_active_cells = (
+                (p0[0] >= 0.5).any(dim=0).sum(),
+                (refined[0] >= 0.5).any(dim=0).sum(),
+            )
 
     def _prepare_map_inputs(
         self,
@@ -1769,19 +1736,6 @@ class RLTrainer(BaseVLNCETrainer):
                         continue
                     info = infos[i]
                     ep_id = curr_eps[i].episode_id
-                    if (
-                        self._refiner_enabled()
-                        and self.local_rank < 1
-                        and str(ep_id) == self._refiner_diagnostic_episode
-                    ):
-                        counts = self._refiner_diagnostic_last
-                        logger.info(
-                            "[Refiner map cells] episode=%s step=last "
-                            "p0_active_cells=%d refined_active_cells=%d",
-                            self._refiner_diagnostic_episode,
-                            counts[0],
-                            counts[1],
-                        )
                     gt_path = np.array(self.gt_data[str(ep_id)]["locations"]).astype(
                         float
                     )
