@@ -44,6 +44,8 @@ class RunArgs(Tap):
         self.add_argument(
             "--dry-run",
             action="store_true",
+            default=False,
+            required=False,
             help="resolve and save the configuration without starting a run",
         )
         self.add_argument(
