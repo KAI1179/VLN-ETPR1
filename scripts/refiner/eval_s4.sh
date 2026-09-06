@@ -79,12 +79,16 @@ import json
 import sys
 
 metrics = json.load(open(sys.argv[1]))
+success = metrics["success"] * 100
+spl = metrics["spl"] * 100
+distance_to_goal = metrics["distance_to_goal"]
+oracle_success = metrics["oracle_success"] * 100
 row = (
     f"| {sys.argv[3]} | {sys.argv[4]} | "
-    f"{metrics[\"success\"] * 100:.2f} | "
-    f"{metrics[\"spl\"] * 100:.2f} | "
-    f"{metrics[\"distance_to_goal\"]:.3f} | "
-    f"{metrics[\"oracle_success\"] * 100:.2f} |\n"
+    f"{success:.2f} | "
+    f"{spl:.2f} | "
+    f"{distance_to_goal:.3f} | "
+    f"{oracle_success:.2f} |\n"
 )
 with open(sys.argv[2], "a") as report:
     report.write(row)
