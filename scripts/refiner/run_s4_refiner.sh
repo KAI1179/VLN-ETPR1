@@ -57,19 +57,11 @@ COMMAND=(
 mkdir -p "${RUN_DIR}"
 cd "${REPO_ROOT}"
 
-if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
-    env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
-        PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" >"${LOG_PATH}" 2>&1
-    echo "Dry run complete"
-    echo "Log: ${LOG_PATH}"
-    echo "Config: ${CONFIG_PATH}"
-    exit 0
-fi
-
-nohup env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
-    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" >"${LOG_PATH}" 2>&1 &
-PID=$!
-
-echo "PID: ${PID}"
 echo "Log: ${LOG_PATH}"
 echo "Config: ${CONFIG_PATH}"
+env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
+
+if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+    echo "Dry run complete"
+fi

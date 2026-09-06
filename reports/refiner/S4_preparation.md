@@ -8,19 +8,22 @@
   refiner output; unseen cells preserve P0.
 - Decoupled logging and checkpoint cadence: logs every 200 iterations and
   checkpoints every 1,000 iterations.
-- Added two background DAgger launchers and one single-GPU evaluation launcher.
+- Added two foreground DAgger launchers and one single-GPU evaluation launcher.
 
 ## Launchers
 
 | Script | Purpose | GPUs | Run name |
 |---|---|---|---|
-| [`scripts/refiner/run_s4_refiner.sh`](../../scripts/refiner/run_s4_refiner.sh) | Try5 + refiner, 30k DAgger | 0–3 | `s4_try5_refiner` |
-| [`scripts/refiner/run_s4_control.sh`](../../scripts/refiner/run_s4_control.sh) | Try5 control, 30k DAgger | 0–3 | `s4_try5_control` |
+| [`scripts/refiner/run_s4_refiner.sh`](../../scripts/refiner/run_s4_refiner.sh) | Foreground Try5 + refiner, 30k DAgger | 0–3 | `s4_try5_refiner` |
+| [`scripts/refiner/run_s4_control.sh`](../../scripts/refiner/run_s4_control.sh) | Foreground Try5 control, 30k DAgger | 0–3 | `s4_try5_control` |
 | [`scripts/refiner/eval_s4.sh`](../../scripts/refiner/eval_s4.sh) | `val_unseen` evaluation | 4 by default | supplied run name |
 
 All launchers contain an absolute repository path, Python environment path,
 initial Try5 checkpoint path, and output paths. They change to the repository
 root internally and do not depend on the caller's current directory.
+The training launchers stay attached to the terminal and use `tee` to show live
+output while writing the same output to `train.log`; session persistence is left
+to the user's `tmux` session.
 
 ## Output contract
 
