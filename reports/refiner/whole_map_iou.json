@@ -18,6 +18,12 @@
           "region_semantic_iou": 0.16396474550131632,
           "combined_semantic_iou": 0.13539373519081788
         },
+        "50x50": {
+          "object_semantic_iou": 0.13125380666492648,
+          "object_occupancy_iou": 0.2073998642226748,
+          "region_semantic_iou": 0.1925938800117316,
+          "combined_semantic_iou": 0.17216422397867145
+        },
         "10x10": {
           "object_semantic_iou": 0.2155580879265879,
           "object_occupancy_iou": 0.4300320769847634,
@@ -31,6 +37,12 @@
           "object_occupancy_iou": 0.1882251129080239,
           "region_semantic_iou": 0.21482441764710677,
           "combined_semantic_iou": 0.18918784006389458
+        },
+        "50x50": {
+          "object_semantic_iou": 0.23935367240061875,
+          "object_occupancy_iou": 0.3236877353483788,
+          "region_semantic_iou": 0.258272800645682,
+          "combined_semantic_iou": 0.2505656194481984
         },
         "10x10": {
           "object_semantic_iou": 0.35432978159769235,
@@ -51,6 +63,12 @@
           "region_semantic_iou": 0.06750115189679005,
           "combined_semantic_iou": 0.05075103573115722
         },
+        "50x50": {
+          "object_semantic_iou": 0.02853994576472519,
+          "object_occupancy_iou": 0.12073271305943711,
+          "region_semantic_iou": 0.07761779701652743,
+          "combined_semantic_iou": 0.05994145462733619
+        },
         "10x10": {
           "object_semantic_iou": 0.11468369387384111,
           "object_occupancy_iou": 0.3770089462433695,
@@ -64,6 +82,12 @@
           "object_occupancy_iou": 0.1446880599446164,
           "region_semantic_iou": 0.12354971252254253,
           "combined_semantic_iou": 0.11263179916317992
+        },
+        "50x50": {
+          "object_semantic_iou": 0.16346611138960654,
+          "object_occupancy_iou": 0.2585623392446189,
+          "region_semantic_iou": 0.1510040769476494,
+          "combined_semantic_iou": 0.15670227302781412
         },
         "10x10": {
           "object_semantic_iou": 0.2746588395067137,

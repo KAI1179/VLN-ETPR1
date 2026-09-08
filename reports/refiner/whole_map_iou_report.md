@@ -16,6 +16,10 @@
 | 100×100 | Object occupancy IoU | 7.29 | **14.47** | +7.18 |
 | 100×100 | Region semantic IoU | 6.75 | **12.35** | +5.60 |
 | 100×100 | Combined semantic IoU | 5.08 | **11.26** | +6.19 |
+| 50×50 | Object semantic IoU | 2.85 | **16.35** | +13.49 |
+| 50×50 | Object occupancy IoU | 12.07 | **25.86** | +13.78 |
+| 50×50 | Region semantic IoU | 7.76 | **15.10** | +7.34 |
+| 50×50 | Combined semantic IoU | 5.99 | **15.67** | +9.68 |
 | 10×10 | Object semantic IoU | 11.47 | **27.47** | +16.00 |
 | 10×10 | Object occupancy IoU | 37.70 | **52.08** | +14.38 |
 | 10×10 | Region semantic IoU | 16.81 | **24.44** | +7.63 |
@@ -29,6 +33,10 @@
 | 100×100 | Object occupancy IoU | 12.08 | **18.82** | +6.74 |
 | 100×100 | Region semantic IoU | 16.40 | **21.48** | +5.09 |
 | 100×100 | Combined semantic IoU | 13.54 | **18.92** | +5.38 |
+| 50×50 | Object semantic IoU | 13.13 | **23.94** | +10.81 |
+| 50×50 | Object occupancy IoU | 20.74 | **32.37** | +11.63 |
+| 50×50 | Region semantic IoU | 19.26 | **25.83** | +6.57 |
+| 50×50 | Combined semantic IoU | 17.22 | **25.06** | +7.84 |
 | 10×10 | Object semantic IoU | 21.56 | **35.43** | +13.88 |
 | 10×10 | Object occupancy IoU | 43.00 | **55.99** | +12.99 |
 | 10×10 | Region semantic IoU | 28.89 | **34.93** | +6.05 |

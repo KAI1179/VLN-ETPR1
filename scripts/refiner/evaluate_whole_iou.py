@@ -47,7 +47,7 @@ class _WholeMapCounts:
                     )
                     for name in (f"{metric}_intersection", f"{metric}_union")
                 }
-                for resolution in ("100x100", "10x10")
+                for resolution in ("100x100", "50x50", "10x10")
             }
             for source in ("p0", "refined")
         }
@@ -61,6 +61,12 @@ class _WholeMapCounts:
         target = target >= 0.5
         for source, prediction in (("p0", p0 >= 0.5), ("refined", refined >= 0.5)):
             self._update_resolution(source, "100x100", prediction, target)
+            self._update_resolution(
+                source,
+                "50x50",
+                F.max_pool2d(prediction.float(), 2).bool(),
+                F.max_pool2d(target.float(), 2).bool(),
+            )
             self._update_resolution(
                 source,
                 "10x10",
