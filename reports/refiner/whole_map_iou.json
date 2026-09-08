@@ -1,0 +1,77 @@
+{
+  "checkpoint": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/refiner/checkpoints_aug/best.pt",
+  "evaluation_step": "final",
+  "threshold": 0.5,
+  "excluded_object_categories": [
+    "free-space",
+    "other",
+    "structure",
+    "void"
+  ],
+  "val_seen": {
+    "episodes": 749,
+    "metrics": {
+      "p0": {
+        "100x100": {
+          "object_semantic_iou": 0.0695564656069966,
+          "object_occupancy_iou": 0.12080786505068228,
+          "region_semantic_iou": 0.16396474550131632,
+          "combined_semantic_iou": 0.13539373519081788
+        },
+        "10x10": {
+          "object_semantic_iou": 0.2155580879265879,
+          "object_occupancy_iou": 0.4300320769847634,
+          "region_semantic_iou": 0.288855421686747,
+          "combined_semantic_iou": 0.24805528661569792
+        }
+      },
+      "refined": {
+        "100x100": {
+          "object_semantic_iou": 0.14271885552985686,
+          "object_occupancy_iou": 0.1882251129080239,
+          "region_semantic_iou": 0.21482441764710677,
+          "combined_semantic_iou": 0.18918784006389458
+        },
+        "10x10": {
+          "object_semantic_iou": 0.35432978159769235,
+          "object_occupancy_iou": 0.5598935226264419,
+          "region_semantic_iou": 0.34932837028645414,
+          "combined_semantic_iou": 0.35222354745271767
+        }
+      }
+    }
+  },
+  "val_unseen": {
+    "episodes": 1821,
+    "metrics": {
+      "p0": {
+        "100x100": {
+          "object_semantic_iou": 0.01595518858821925,
+          "object_occupancy_iou": 0.0728887301772388,
+          "region_semantic_iou": 0.06750115189679005,
+          "combined_semantic_iou": 0.05075103573115722
+        },
+        "10x10": {
+          "object_semantic_iou": 0.11468369387384111,
+          "object_occupancy_iou": 0.3770089462433695,
+          "region_semantic_iou": 0.16809801565202098,
+          "combined_semantic_iou": 0.1380096
+        }
+      },
+      "refined": {
+        "100x100": {
+          "object_semantic_iou": 0.09639008802949756,
+          "object_occupancy_iou": 0.1446880599446164,
+          "region_semantic_iou": 0.12354971252254253,
+          "combined_semantic_iou": 0.11263179916317992
+        },
+        "10x10": {
+          "object_semantic_iou": 0.2746588395067137,
+          "object_occupancy_iou": 0.520806017528121,
+          "region_semantic_iou": 0.244350737140282,
+          "combined_semantic_iou": 0.2623861103507606
+        }
+      }
+    }
+  }
+}
