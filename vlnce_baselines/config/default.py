@@ -214,6 +214,7 @@ _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
     ""  # optional cache whose available train episodes define the comparison population
 )
 _C.MODEL.MAP_ENCODER.refiner_ckpt = ""
+_C.MODEL.MAP_ENCODER.eval_map_source = "refiner"
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

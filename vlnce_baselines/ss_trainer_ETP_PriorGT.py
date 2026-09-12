@@ -83,7 +83,8 @@ class RLTrainer(BaseVLNCETrainer):
         self._refiner_active_cells = None
 
     def _refiner_enabled(self):
-        return bool(self.config.MODEL.MAP_ENCODER.refiner_ckpt)
+        cfg = self.config.MODEL.MAP_ENCODER
+        return bool(cfg.refiner_ckpt) or getattr(cfg, "eval_map_source", "refiner") in ("gt_seen", "gt_full")
 
     @staticmethod
     def _add_refiner_semantic_sensors(task_config):
@@ -1138,6 +1139,9 @@ class RLTrainer(BaseVLNCETrainer):
         self.evidence = []
         self.refiner_p0 = []
         self.refiner_semantic_luts = []
+        self.refiner_gt = []
+        eval_source = getattr(self.config.MODEL.MAP_ENCODER, "eval_map_source", "refiner")
+        episodes = self.envs.current_episodes()
         for cognitive_map, episode_metadata in zip(cognitive_maps, metadata):
             p0 = cognitive_map["grid"].clone()
             start_world = episode_metadata["start_position"]
@@ -1155,6 +1159,14 @@ class RLTrainer(BaseVLNCETrainer):
             )
             self.refiner_p0.append(p0)
             self.refiner_semantic_luts.append(episode_metadata["semantic_lut"])
+            if eval_source in ("gt_seen", "gt_full"):
+                episode = episodes[len(self.refiner_gt)]
+                self.refiner_gt.append(cached_cognitive_map_to_tensors(
+                    episode.scene_id,
+                    self._cognitive_map_cache_id(episode),
+                    namespace="gt.legacy.r1p5.direction5.v1",
+                    metadata_schema="try5",
+                )["grid"].clone())
 
     def _update_online_evidence(self, observations):
         depth_uuids = self._refiner_sensor_uuids()
@@ -1187,6 +1199,9 @@ class RLTrainer(BaseVLNCETrainer):
         return states
 
     def _update_refined_cognitive_maps(self, observations, cognitive_maps):
+        eval_source = getattr(self.config.MODEL.MAP_ENCODER, "eval_map_source", "refiner")
+        if eval_source == "p0":
+            return
         self._update_online_evidence(observations)
 
         p0 = torch.stack(self.refiner_p0[: self.envs.num_envs]).to(self.device)
@@ -1195,14 +1210,21 @@ class RLTrainer(BaseVLNCETrainer):
                 [item.tensor() for item in self.evidence[: self.envs.num_envs]]
             )
         ).to(self.device)
-        with torch.no_grad():
-            output = torch.sigmoid(self.refiner(torch.cat((p0, evidence), dim=1)))
-        observed = torch.from_numpy(
-            np.stack(
-                [item.observed for item in self.evidence[: self.envs.num_envs]]
-            )
-        ).to(self.device)
-        refined = observed[:, None] * output + (~observed[:, None]) * p0
+        if eval_source == "gt_full":
+            refined = torch.stack(self.refiner_gt[: self.envs.num_envs]).to(self.device)
+        elif eval_source == "gt_seen":
+            gt = torch.stack(self.refiner_gt[: self.envs.num_envs]).to(self.device)
+            observed = torch.from_numpy(
+                np.stack([item.observed for item in self.evidence[: self.envs.num_envs]])
+            ).to(self.device)
+            refined = observed[:, None] * gt + (~observed[:, None]) * p0
+        else:
+            with torch.no_grad():
+                output = torch.sigmoid(self.refiner(torch.cat((p0, evidence), dim=1)))
+            observed = torch.from_numpy(
+                np.stack([item.observed for item in self.evidence[: self.envs.num_envs]])
+            ).to(self.device)
+            refined = observed[:, None] * output + (~observed[:, None]) * p0
         for cognitive_map, grid in zip(cognitive_maps, refined):
             cognitive_map["grid"] = grid
 

@@ -12,13 +12,14 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN_ARGS=(--dry-run)
     shift
 fi
-if [[ $# -ne 2 ]]; then
-    echo "Usage: bash scripts/refiner/eval_s4.sh [--dry-run] <run_name> <iter>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "Usage: bash scripts/refiner/eval_s4.sh [--dry-run] <run_name> <iter> [map_source]" >&2
     exit 2
 fi
 
 RUN_NAME="$1"
 ITER="$2"
+MAP_SOURCE="${3:-refiner}"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 CONFIG_PATH="${RUN_DIR}/config.yaml"
 CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
@@ -29,8 +30,8 @@ RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_
 REFINER_CKPT="$(${PYTHON} -c \
     'import sys, yaml; config = yaml.safe_load(open(sys.argv[1])); print(config["MODEL"]["MAP_ENCODER"].get("refiner_ckpt", ""))' \
     "${CONFIG_PATH}")"
-REFINER_ARGS=()
-if [[ -n "${REFINER_CKPT}" ]]; then
+REFINER_ARGS=(MODEL.MAP_ENCODER.eval_map_source "${MAP_SOURCE}")
+if [[ -n "${REFINER_CKPT}" && "${MAP_SOURCE}" == "refiner" ]]; then
     REFINER_ARGS=(MODEL.MAP_ENCODER.refiner_ckpt "${REFINER_CKPT}")
 fi
 
