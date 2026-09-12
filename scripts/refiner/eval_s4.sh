@@ -23,8 +23,8 @@ MAP_SOURCE="${3:-refiner}"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 CONFIG_PATH="${RUN_DIR}/config.yaml"
 CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
-EVAL_NAME="${RUN_NAME}_eval_iter${ITER}"
-EVAL_LOG="${RUN_DIR}/eval_iter${ITER}.log"
+EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${MAP_SOURCE}"
+EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${MAP_SOURCE}.log"
 RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_val_unseen.json"
 
 REFINER_CKPT="$(${PYTHON} -c \
