@@ -304,7 +304,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.waypoint_predictor.to(self.device)
         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
 
-        if self._refiner_enabled():
+        if self.config.MODEL.MAP_ENCODER.refiner_ckpt:
             self.refiner = CognitiveMapRefiner().to(self.device)
             self.refiner.load_state_dict(
                 torch.load(
