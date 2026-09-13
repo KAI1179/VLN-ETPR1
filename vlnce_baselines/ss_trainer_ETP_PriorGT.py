@@ -1165,7 +1165,7 @@ class RLTrainer(BaseVLNCETrainer):
                     episode.scene_id,
                     self._cognitive_map_cache_id(episode),
                     namespace="gt.legacy.r1p5.direction5.v1",
-                    metadata_schema="try5",
+                    metadata_schema="direction5",
                 )["grid"].clone())
 
     def _update_online_evidence(self, observations):
