@@ -81,6 +81,13 @@ _C.IL.load_from_ckpt = False
 _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
 # if True, loads the optimizer state, epoch, and step_id from the ckpt dict.
 _C.IL.is_requeue = False
+# Frozen ground-truth map teacher used only by the DAgger distillation path.
+_C.IL.gt_teacher_enabled = False
+_C.IL.distill_weight = 1.0
+_C.IL.distill_temperature = 1.0
+_C.IL.gt_teacher_ckpt = ""
+_C.IL.gt_teacher_map_namespace = ""
+_C.IL.gt_teacher_policy_name = ""
 # it True, start training from the saved epoch
 # -----------------------------------------------------------------------------
 # IL: RXR TRAINER CONFIG

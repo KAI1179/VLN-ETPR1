@@ -81,6 +81,11 @@ class RLTrainer(BaseVLNCETrainer):
         )  #  * 0.97 transfered gt path got 0.96 spl
         self.illegal_episodes_count = 0
         self._refiner_active_cells = None
+        self.gt_teacher = None
+
+    @property
+    def _gtt_on(self):
+        return self.gt_teacher is not None
 
     def _refiner_enabled(self):
         cfg = self.config.MODEL.MAP_ENCODER
@@ -479,6 +484,44 @@ class RLTrainer(BaseVLNCETrainer):
             logger.info(
                 f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}"
             )
+
+        # The teacher is opt-in through the DAgger launcher configuration.  The
+        # rollout side additionally gates all use on ``mode == "train"``;
+        # evaluation and GRPO launchers leave this flag at its default False.
+        if self.config.IL.gt_teacher_enabled:
+            assert (
+                self.config.IL.gt_teacher_ckpt
+                and self.config.IL.gt_teacher_map_namespace
+                and self.config.IL.gt_teacher_policy_name
+            ), "gt_teacher_enabled=True but teacher configuration is incomplete"
+            t_config = self.config.clone()
+            t_config.defrost()
+            t_config.MODEL.policy_name = self.config.IL.gt_teacher_policy_name
+            t_config.MODEL.MAP_ENCODER.source = "prior_gt"
+            t_config.MODEL.MAP_ENCODER.cache_namespace = (
+                self.config.IL.gt_teacher_map_namespace
+            )
+            t_config.MODEL.MAP_ENCODER.refiner_ckpt = ""
+            t_config.freeze()
+            teacher_cls = baseline_registry.get_policy(t_config.MODEL.policy_name)
+            self.gt_teacher = teacher_cls.from_config(
+                config=t_config,
+                observation_space=observation_space,
+                action_space=action_space,
+            )
+            sd = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")[
+                "state_dict"
+            ]
+            sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
+            missing, unexpected = self.gt_teacher.load_state_dict(sd, strict=False)
+            logger.info(
+                f"[gt_teacher] loaded {self.config.IL.gt_teacher_ckpt}: "
+                f"missing={len(missing)} unexpected={len(unexpected)}"
+            )
+            assert len(missing) == 0, f"gt_teacher missing keys: {missing[:10]}"
+            self.gt_teacher.to(self.device).eval()
+            for p in self.gt_teacher.parameters():
+                p.requires_grad_(False)
 
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
@@ -1494,6 +1537,16 @@ class RLTrainer(BaseVLNCETrainer):
             txt_masks=all_txt_masks,
         )
 
+        # Frozen GT teacher caches are created only for training rollouts.
+        if self._gtt_on and mode == "train":
+            with torch.no_grad():
+                gtt_txt_embeds = self.gt_teacher.net(
+                    mode="language",
+                    txt_ids=all_txt_ids,
+                    txt_task_encoding=all_txt_task_encoding,
+                    txt_masks=all_txt_masks,
+                )
+
         loss = 0.0
         map_aux_loss_total = None
         total_actions = 0.0
@@ -1510,6 +1563,18 @@ class RLTrainer(BaseVLNCETrainer):
             )
             for _ in range(self.envs.num_envs)
         ]
+        if self._gtt_on and mode == "train":
+            self.gtt_gmaps = [
+                GraphMap(
+                    have_real_pos,
+                    self.config.IL.loc_noise,
+                    self.config.MODEL.merge_ghost,
+                    ghost_aug,
+                )
+                for _ in range(self.envs.num_envs)
+            ]
+            gtt_distill_loss = torch.zeros((), device=self.device)
+            gtt_teacher_ce = 0.0
         prev_vp = [None] * self.envs.num_envs
 
         # Build cognitive maps for current episodes.
@@ -1522,6 +1587,33 @@ class RLTrainer(BaseVLNCETrainer):
             cognitive_maps = None
         if self._refiner_enabled() and cognitive_maps is not None:
             self._initialize_refiner_state(cognitive_maps)
+
+        if self._gtt_on and mode == "train":
+            gtt_map_tokens = gtt_map_token_masks = None
+            assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
+            # Re-load the same episodes from the teacher's immutable GT map cache.
+            t_candidate = CognitiveMapCandidate.parse(
+                self.config.MODEL.MAP_ENCODER.architecture, "prior_gt"
+            )
+            gtt_maps = [
+                cached_cognitive_map_to_tensors(
+                    ep.scene_id,
+                    self._cognitive_map_cache_id(ep),
+                    namespace=self.config.IL.gt_teacher_map_namespace,
+                    random_rotation_augmentation=False,
+                    metadata_schema=t_candidate.metadata_schema,
+                )
+                for ep in self.envs.current_episodes()
+            ]
+            with torch.no_grad():
+                gtt_map_tokens, gtt_map_token_masks = self.gt_teacher.net(
+                    mode="map_encoding",
+                    cognitive_crops=torch.stack([m["grid"] for m in gtt_maps]).to(self.device),
+                    trajectory_keypoints=torch.stack([m["map_trajectory_metadata"] for m in gtt_maps]).to(self.device),
+                    start_direction_vectors=torch.stack([m["start_direction_vector"] for m in gtt_maps]).to(self.device),
+                    start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
+                )
+            del gtt_maps
 
         for stepk in range(self.max_len):
             total_actions += self.envs.num_envs
@@ -1591,6 +1683,19 @@ class RLTrainer(BaseVLNCETrainer):
                     cand_real_pos[i],
                 )
 
+            if self._gtt_on and mode == "train":
+                with torch.no_grad():
+                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
+                    gtt_avg = torch.sum(
+                        gtt_pano_embeds * gtt_pano_masks.unsqueeze(2), 1
+                    ) / torch.sum(gtt_pano_masks, 1, keepdim=True)
+                for i in range(self.envs.num_envs):
+                    gtt_cand = gtt_pano_embeds[i][vp_inputs["nav_types"][i] == 1]
+                    self.gtt_gmaps[i].update_graph(
+                        prev_vp[i], stepk + 1, cur_vp[i], cur_pos[i], gtt_avg[i],
+                        cand_vp[i], cand_pos[i], gtt_cand, cand_real_pos[i]
+                    )
+
             nav_inputs = self._nav_gmap_variable(cur_vp, cur_pos, cur_ori, task_type)
             nav_inputs.update(
                 {
@@ -1637,6 +1742,36 @@ class RLTrainer(BaseVLNCETrainer):
                         if map_aux_loss_total is None
                         else map_aux_loss_total + map_aux_loss
                     )
+                if self._gtt_on:
+                    gtt_img_fts = []
+                    for i, tgmap in enumerate(self.gtt_gmaps):
+                        vp_ids = nav_inputs["gmap_vp_ids"][i][1:]
+                        assert vp_ids == list(tgmap.node_pos.keys()) + list(tgmap.ghost_pos.keys())
+                        fts = [tgmap.get_node_embeds(vp) for vp in vp_ids]
+                        gtt_img_fts.append(torch.stack([torch.zeros_like(fts[0])] + fts, dim=0))
+                    gtt_img_fts = pad_tensors_wgrad(gtt_img_fts)
+                    t_inputs = dict(nav_inputs)
+                    t_inputs["txt_embeds"] = gtt_txt_embeds
+                    t_inputs["gmap_img_fts"] = gtt_img_fts
+                    # map tokens are supplied when the teacher map encoder is enabled.
+                    if gtt_map_tokens is not None:
+                        t_inputs["map_tokens"] = gtt_map_tokens
+                        t_inputs["map_token_masks"] = gtt_map_token_masks
+                    with torch.no_grad():
+                        t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
+                    t_probs = F.softmax(t_logits, dim=1)
+                    for i, tgmap in enumerate(self.gtt_gmaps):
+                        tgmap.node_stop_scores[cur_vp[i]] = t_probs[i, 0].item()
+                    valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
+                    valid = valid & (teacher_actions != -100).unsqueeze(1)
+                    temp = self.config.IL.distill_temperature
+                    s_logp = F.log_softmax(nav_logits.float() / temp, dim=1)
+                    t_logp = F.log_softmax(t_logits.float() / temp, dim=1)
+                    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(s_logp))
+                    gtt_distill_loss = gtt_distill_loss + kl.sum() * (temp * temp)
+                    gtt_teacher_ce += F.cross_entropy(
+                        t_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+                    ).item()
 
             # determine action
             if feedback == "sample":
@@ -1746,6 +1881,8 @@ class RLTrainer(BaseVLNCETrainer):
                     prev_vp[i] = front_vp
                     if self.config.MODEL.consume_ghost:
                         gmap.delete_ghost(ghost_vp)
+                        if self._gtt_on and mode == "train":
+                            self.gtt_gmaps[i].delete_ghost(ghost_vp)
 
             outputs = self.envs.step(env_actions)
             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
@@ -1827,6 +1964,8 @@ class RLTrainer(BaseVLNCETrainer):
                         self.envs.pause_at(i)
                         observations.pop(i)
                         self.gmaps.pop(i)
+                        if self._gtt_on and mode == "train":
+                            self.gtt_gmaps.pop(i)
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)
@@ -1847,6 +1986,17 @@ class RLTrainer(BaseVLNCETrainer):
                         all_txt_embeds = torch.cat(
                             (all_txt_embeds[:i], all_txt_embeds[i + 1 :]), dim=0
                         )
+                        if self._gtt_on and mode == "train":
+                            gtt_txt_embeds = torch.cat(
+                                (gtt_txt_embeds[:i], gtt_txt_embeds[i + 1 :]), dim=0
+                            )
+                            if gtt_map_tokens is not None:
+                                gtt_map_tokens = torch.cat(
+                                    (gtt_map_tokens[:i], gtt_map_tokens[i + 1 :]), dim=0
+                                )
+                                gtt_map_token_masks = torch.cat(
+                                    (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
+                                )
 
             if self.envs.num_envs == 0:
                 break
@@ -1875,6 +2025,11 @@ class RLTrainer(BaseVLNCETrainer):
 
         if mode == "train":
             loss = ml_weight * loss / total_actions
+            if self._gtt_on:
+                gtt_distill_loss = self.config.IL.distill_weight * gtt_distill_loss / total_actions
+                loss = loss + gtt_distill_loss
+                self.logs["distill_loss"].append(gtt_distill_loss.item())
+                self.logs["teacher_ce"].append(gtt_teacher_ce / total_actions)
             if map_aux_loss_total is not None:
                 loss = loss + map_aux_loss_total
             self.loss += loss
