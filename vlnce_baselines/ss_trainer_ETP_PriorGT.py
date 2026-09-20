@@ -1685,12 +1685,25 @@ class RLTrainer(BaseVLNCETrainer):
 
             if self._gtt_on and mode == "train":
                 with torch.no_grad():
-                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
+                    # RGB/depth encoders remain optimizer-eligible in normal
+                    # DAgger (only eval mode is forced below), so the teacher
+                    # computes its own panorama inputs through its encoders.
+                    gtt_wp_outputs = self.gt_teacher.net(
+                        mode="waypoint",
+                        waypoint_predictor=self.waypoint_predictor,
+                        observations=batch,
+                        in_train=False,
+                    )
+                    gtt_vp_inputs = self._vp_feature_variable(gtt_wp_outputs)
+                    gtt_vp_inputs["mode"] = "panorama"
+                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(
+                        **gtt_vp_inputs
+                    )
                     gtt_avg = torch.sum(
                         gtt_pano_embeds * gtt_pano_masks.unsqueeze(2), 1
                     ) / torch.sum(gtt_pano_masks, 1, keepdim=True)
                 for i in range(self.envs.num_envs):
-                    gtt_cand = gtt_pano_embeds[i][vp_inputs["nav_types"][i] == 1]
+                    gtt_cand = gtt_pano_embeds[i][gtt_vp_inputs["nav_types"][i] == 1]
                     self.gtt_gmaps[i].update_graph(
                         prev_vp[i], stepk + 1, cur_vp[i], cur_pos[i], gtt_avg[i],
                         cand_vp[i], cand_pos[i], gtt_cand, cand_real_pos[i]
