@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 RUN_NAME="dagger_teacher_diag"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -21,26 +22,26 @@ elif [[ $# -ne 0 ]]; then
 fi
 
 COMMAND=(
-    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
+    "${TORCHRUN}" --nproc_per_node=8 --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
     --exp_name "${RUN_NAME}"
     --run-type dagger
     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
     "${DRY_RUN_ARGS[@]}"
-    SIMULATOR_GPU_IDS '[0,1,2,3]'
-    TORCH_GPU_IDS '[0,1,2,3]'
-    GPU_NUMBERS 4
+    SIMULATOR_GPU_IDS '[0,1,2,3,4,5,6,7]'
+    TORCH_GPU_IDS '[0,1,2,3,4,5,6,7]'
+    GPU_NUMBERS 8
     TASK_CONFIG.SEED 100
     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
     NUM_ENVIRONMENTS 4
-    CHECKPOINT_INTERVAL 1000
+    CHECKPOINT_INTERVAL 500
     ONLY_LAST_SAVEALL False
-    IL.iters 30000
+    IL.iters 20000
     IL.lr 1e-5
     IL.log_every 200
     IL.ml_weight 1.0
     IL.sample_ratio 0.75
-    IL.decay_interval 2000
-    IL.warmup_iters 500
+    IL.decay_interval 1400
+    IL.warmup_iters 300
     IL.min_lr_ratio 1.0
     IL.load_from_ckpt False
     IL.is_requeue False
@@ -67,7 +68,7 @@ cd "${REPO_ROOT}"
 
 echo "Log: ${LOG_PATH}"
 echo "Config: ${CONFIG_PATH}"
-env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
     PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
 
 if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then

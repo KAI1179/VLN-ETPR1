@@ -1556,6 +1556,7 @@ class RLTrainer(BaseVLNCETrainer):
         loss = 0.0
         map_aux_loss_total = None
         total_actions = 0.0
+        student_ce = 0.0
 
         not_done_index = list(range(self.envs.num_envs))
         have_real_pos = mode == "train" or self.config.VIDEO_OPTION
@@ -1738,9 +1739,11 @@ class RLTrainer(BaseVLNCETrainer):
                     nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
                 )
             if mode == "train":
-                loss += F.cross_entropy(
+                student_ce_loss = F.cross_entropy(
                     nav_logits, teacher_actions, reduction="sum", ignore_index=-100
                 )
+                loss += student_ce_loss
+                student_ce += student_ce_loss.item()
                 if map_aux_loss is not None:
                     map_aux_loss_total = (
                         map_aux_loss
@@ -2036,6 +2039,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         if mode == "train":
             loss = ml_weight * loss / total_actions
+            self.logs["student_ce"].append(student_ce / total_actions)
             if self._gtt_on:
                 gtt_distill_loss = self.config.IL.distill_weight * gtt_distill_loss / total_actions
                 loss = loss + gtt_distill_loss
