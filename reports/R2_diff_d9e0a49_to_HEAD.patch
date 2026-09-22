@@ -1,0 +1,1095 @@
+diff --git a/reports/R2_diff.patch b/reports/R2_diff.patch
+new file mode 100644
+index 0000000..4034dd2
+--- /dev/null
++++ b/reports/R2_diff.patch
+@@ -0,0 +1,497 @@
++diff --git a/scripts/distill/run_dagger_distill.sh b/scripts/distill/run_dagger_distill.sh
++new file mode 100755
++index 0000000..689b0f3
++--- /dev/null
+++++ b/scripts/distill/run_dagger_distill.sh
++@@ -0,0 +1,78 @@
+++#!/usr/bin/env bash
+++set -euo pipefail
+++# Fill GT_TEACHER_CKPT and GT_TEACHER_NAMESPACE, and verify the policy name before running.
+++
+++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+++RUN_NAME="dagger_distill_gt_teacher"
+++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+++LOG_PATH="${RUN_DIR}/train.log"
+++CONFIG_PATH="${RUN_DIR}/config.yaml"
+++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+++REFINER_CKPT="${REPO_ROOT}/data/refiner/checkpoints_aug/best.pt"
+++GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
+++GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
+++# Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).
+++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
+++
+++DRY_RUN_ARGS=()
+++if [[ "${1:-}" == "--dry-run" ]]; then
+++    DRY_RUN_ARGS=(--dry-run)
+++elif [[ $# -ne 0 ]]; then
+++    echo "Usage: bash scripts/distill/run_dagger_distill.sh [--dry-run]" >&2
+++    exit 2
+++fi
+++
+++COMMAND=(
+++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
+++    --exp_name "${RUN_NAME}"
+++    --run-type dagger
+++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+++    "${DRY_RUN_ARGS[@]}"
+++    SIMULATOR_GPU_IDS '[0,1,2,3]'
+++    TORCH_GPU_IDS '[0,1,2,3]'
+++    GPU_NUMBERS 4
+++    TASK_CONFIG.SEED 100
+++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+++    NUM_ENVIRONMENTS 4
+++    CHECKPOINT_INTERVAL 1000
+++    ONLY_LAST_SAVEALL False
+++    IL.iters 30000
+++    IL.lr 1e-5
+++    IL.log_every 200
+++    IL.ml_weight 1.0
+++    IL.sample_ratio 0.75
+++    IL.decay_interval 2000
+++    IL.warmup_iters 500
+++    IL.min_lr_ratio 1.0
+++    IL.load_from_ckpt False
+++    IL.is_requeue False
+++    IL.waypoint_aug True
+++    TASK_CONFIG.DATASET.SUFFIX _90
+++    TRAINER_NAME SS-ETP-LLM
+++    MODEL.policy_name LLMGridTry5Policy
+++    MODEL.MAP_ENCODER.enabled True
+++    MODEL.MAP_ENCODER.architecture try5
+++    MODEL.MAP_ENCODER.source llm_grid
+++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+++    MODEL.MAP_ENCODER.refiner_ckpt ""
+++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
+++    IL.gt_teacher_enabled True
+++    IL.distill_weight 1.0
+++    IL.distill_temperature 1.0
+++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
+++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
+++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
+++)
+++
+++mkdir -p "${RUN_DIR}"
+++cd "${REPO_ROOT}"
+++
+++echo "Log: ${LOG_PATH}"
+++echo "Config: ${CONFIG_PATH}"
+++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
+++
+++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+++    echo "Dry run complete"
+++fi
++diff --git a/scripts/distill/run_dagger_teacher_diag.sh b/scripts/distill/run_dagger_teacher_diag.sh
++new file mode 100755
++index 0000000..b0544c6
++--- /dev/null
+++++ b/scripts/distill/run_dagger_teacher_diag.sh
++@@ -0,0 +1,78 @@
+++#!/usr/bin/env bash
+++set -euo pipefail
+++# Fill GT_TEACHER_CKPT and GT_TEACHER_NAMESPACE, and verify the policy name before running.
+++
+++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+++RUN_NAME="dagger_teacher_diag"
+++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+++LOG_PATH="${RUN_DIR}/train.log"
+++CONFIG_PATH="${RUN_DIR}/config.yaml"
+++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+++REFINER_CKPT="${REPO_ROOT}/data/refiner/checkpoints_aug/best.pt"
+++GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
+++GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
+++# Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).
+++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
+++
+++DRY_RUN_ARGS=()
+++if [[ "${1:-}" == "--dry-run" ]]; then
+++    DRY_RUN_ARGS=(--dry-run)
+++elif [[ $# -ne 0 ]]; then
+++    echo "Usage: bash scripts/distill/run_dagger_teacher_diag.sh [--dry-run]" >&2
+++    exit 2
+++fi
+++
+++COMMAND=(
+++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
+++    --exp_name "${RUN_NAME}"
+++    --run-type dagger
+++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+++    "${DRY_RUN_ARGS[@]}"
+++    SIMULATOR_GPU_IDS '[0,1,2,3]'
+++    TORCH_GPU_IDS '[0,1,2,3]'
+++    GPU_NUMBERS 4
+++    TASK_CONFIG.SEED 100
+++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+++    NUM_ENVIRONMENTS 4
+++    CHECKPOINT_INTERVAL 1000
+++    ONLY_LAST_SAVEALL False
+++    IL.iters 30000
+++    IL.lr 1e-5
+++    IL.log_every 200
+++    IL.ml_weight 1.0
+++    IL.sample_ratio 0.75
+++    IL.decay_interval 2000
+++    IL.warmup_iters 500
+++    IL.min_lr_ratio 1.0
+++    IL.load_from_ckpt False
+++    IL.is_requeue False
+++    IL.waypoint_aug True
+++    TASK_CONFIG.DATASET.SUFFIX _90
+++    TRAINER_NAME SS-ETP-LLM
+++    MODEL.policy_name LLMGridTry5Policy
+++    MODEL.MAP_ENCODER.enabled True
+++    MODEL.MAP_ENCODER.architecture try5
+++    MODEL.MAP_ENCODER.source llm_grid
+++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+++    MODEL.MAP_ENCODER.refiner_ckpt ""
+++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
+++    IL.gt_teacher_enabled True
+++    IL.distill_weight 0.0
+++    IL.distill_temperature 1.0
+++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
+++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
+++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
+++)
+++
+++mkdir -p "${RUN_DIR}"
+++cd "${REPO_ROOT}"
+++
+++echo "Log: ${LOG_PATH}"
+++echo "Config: ${CONFIG_PATH}"
+++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
+++
+++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+++    echo "Dry run complete"
+++fi
++diff --git a/scripts/distill/run_dagger_try5_baseline.sh b/scripts/distill/run_dagger_try5_baseline.sh
++new file mode 100755
++index 0000000..e0dfcdb
++--- /dev/null
+++++ b/scripts/distill/run_dagger_try5_baseline.sh
++@@ -0,0 +1,68 @@
+++#!/usr/bin/env bash
+++set -euo pipefail
+++# Baseline launcher: no refiner and no GT teacher.
+++
+++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+++RUN_NAME="dagger_try5_norefiner"
+++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+++LOG_PATH="${RUN_DIR}/train.log"
+++CONFIG_PATH="${RUN_DIR}/config.yaml"
+++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+++
+++DRY_RUN_ARGS=()
+++if [[ "${1:-}" == "--dry-run" ]]; then
+++    DRY_RUN_ARGS=(--dry-run)
+++elif [[ $# -ne 0 ]]; then
+++    echo "Usage: bash scripts/distill/run_dagger_try5_baseline.sh [--dry-run]" >&2
+++    exit 2
+++fi
+++
+++COMMAND=(
+++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
+++    --exp_name "${RUN_NAME}"
+++    --run-type dagger
+++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+++    "${DRY_RUN_ARGS[@]}"
+++    SIMULATOR_GPU_IDS '[0,1,2,3]'
+++    TORCH_GPU_IDS '[0,1,2,3]'
+++    GPU_NUMBERS 4
+++    TASK_CONFIG.SEED 100
+++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+++    NUM_ENVIRONMENTS 4
+++    CHECKPOINT_INTERVAL 1000
+++    ONLY_LAST_SAVEALL False
+++    IL.iters 30000
+++    IL.lr 1e-5
+++    IL.log_every 200
+++    IL.ml_weight 1.0
+++    IL.sample_ratio 0.75
+++    IL.decay_interval 2000
+++    IL.warmup_iters 500
+++    IL.min_lr_ratio 1.0
+++    IL.load_from_ckpt False
+++    IL.is_requeue False
+++    IL.waypoint_aug True
+++    TASK_CONFIG.DATASET.SUFFIX _90
+++    TRAINER_NAME SS-ETP-LLM
+++    MODEL.policy_name LLMGridTry5Policy
+++    MODEL.MAP_ENCODER.enabled True
+++    MODEL.MAP_ENCODER.architecture try5
+++    MODEL.MAP_ENCODER.source llm_grid
+++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+++    MODEL.MAP_ENCODER.refiner_ckpt ""
+++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
+++    IL.gt_teacher_enabled False
+++)
+++
+++mkdir -p "${RUN_DIR}"
+++cd "${REPO_ROOT}"
+++
+++echo "Log: ${LOG_PATH}"
+++echo "Config: ${CONFIG_PATH}"
+++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
+++
+++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+++    echo "Dry run complete"
+++fi
++diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
++index 65be920..d5b91ec 100755
++--- a/vlnce_baselines/config/default.py
+++++ b/vlnce_baselines/config/default.py
++@@ -81,6 +81,13 @@ _C.IL.load_from_ckpt = False
++ _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
++ # if True, loads the optimizer state, epoch, and step_id from the ckpt dict.
++ _C.IL.is_requeue = False
+++# Frozen ground-truth map teacher used only by the DAgger distillation path.
+++_C.IL.gt_teacher_enabled = False
+++_C.IL.distill_weight = 1.0
+++_C.IL.distill_temperature = 1.0
+++_C.IL.gt_teacher_ckpt = ""
+++_C.IL.gt_teacher_map_namespace = ""
+++_C.IL.gt_teacher_policy_name = ""
++ # it True, start training from the saved epoch
++ # -----------------------------------------------------------------------------
++ # IL: RXR TRAINER CONFIG
++diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++index 2b44cf1..20df027 100644
++--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++@@ -81,6 +81,11 @@ class RLTrainer(BaseVLNCETrainer):
++         )  #  * 0.97 transfered gt path got 0.96 spl
++         self.illegal_episodes_count = 0
++         self._refiner_active_cells = None
+++        self.gt_teacher = None
+++
+++    @property
+++    def _gtt_on(self):
+++        return self.gt_teacher is not None
++ 
++     def _refiner_enabled(self):
++         cfg = self.config.MODEL.MAP_ENCODER
++@@ -480,6 +485,44 @@ class RLTrainer(BaseVLNCETrainer):
++                 f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}"
++             )
++ 
+++        # The teacher is opt-in through the DAgger launcher configuration.  The
+++        # rollout side additionally gates all use on ``mode == "train"``;
+++        # evaluation and GRPO launchers leave this flag at its default False.
+++        if self.config.IL.gt_teacher_enabled:
+++            assert (
+++                self.config.IL.gt_teacher_ckpt
+++                and self.config.IL.gt_teacher_map_namespace
+++                and self.config.IL.gt_teacher_policy_name
+++            ), "gt_teacher_enabled=True but teacher configuration is incomplete"
+++            t_config = self.config.clone()
+++            t_config.defrost()
+++            t_config.MODEL.policy_name = self.config.IL.gt_teacher_policy_name
+++            t_config.MODEL.MAP_ENCODER.source = "prior_gt"
+++            t_config.MODEL.MAP_ENCODER.cache_namespace = (
+++                self.config.IL.gt_teacher_map_namespace
+++            )
+++            t_config.MODEL.MAP_ENCODER.refiner_ckpt = ""
+++            t_config.freeze()
+++            teacher_cls = baseline_registry.get_policy(t_config.MODEL.policy_name)
+++            self.gt_teacher = teacher_cls.from_config(
+++                config=t_config,
+++                observation_space=observation_space,
+++                action_space=action_space,
+++            )
+++            sd = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")[
+++                "state_dict"
+++            ]
+++            sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
+++            missing, unexpected = self.gt_teacher.load_state_dict(sd, strict=False)
+++            logger.info(
+++                f"[gt_teacher] loaded {self.config.IL.gt_teacher_ckpt}: "
+++                f"missing={len(missing)} unexpected={len(unexpected)}"
+++            )
+++            assert len(missing) == 0, f"gt_teacher missing keys: {missing[:10]}"
+++            self.gt_teacher.to(self.device).eval()
+++            for p in self.gt_teacher.parameters():
+++                p.requires_grad_(False)
+++
++         params = sum(param.numel() for param in self.policy.parameters())
++         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
++         logger.info(
++@@ -1494,6 +1537,16 @@ class RLTrainer(BaseVLNCETrainer):
++             txt_masks=all_txt_masks,
++         )
++ 
+++        # Frozen GT teacher caches are created only for training rollouts.
+++        if self._gtt_on and mode == "train":
+++            with torch.no_grad():
+++                gtt_txt_embeds = self.gt_teacher.net(
+++                    mode="language",
+++                    txt_ids=all_txt_ids,
+++                    txt_task_encoding=all_txt_task_encoding,
+++                    txt_masks=all_txt_masks,
+++                )
+++
++         loss = 0.0
++         map_aux_loss_total = None
++         total_actions = 0.0
++@@ -1510,6 +1563,18 @@ class RLTrainer(BaseVLNCETrainer):
++             )
++             for _ in range(self.envs.num_envs)
++         ]
+++        if self._gtt_on and mode == "train":
+++            self.gtt_gmaps = [
+++                GraphMap(
+++                    have_real_pos,
+++                    self.config.IL.loc_noise,
+++                    self.config.MODEL.merge_ghost,
+++                    ghost_aug,
+++                )
+++                for _ in range(self.envs.num_envs)
+++            ]
+++            gtt_distill_loss = torch.zeros((), device=self.device)
+++            gtt_teacher_ce = 0.0
++         prev_vp = [None] * self.envs.num_envs
++ 
++         # Build cognitive maps for current episodes.
++@@ -1523,6 +1588,33 @@ class RLTrainer(BaseVLNCETrainer):
++         if self._refiner_enabled() and cognitive_maps is not None:
++             self._initialize_refiner_state(cognitive_maps)
++ 
+++        if self._gtt_on and mode == "train":
+++            gtt_map_tokens = gtt_map_token_masks = None
+++            assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
+++            # Re-load the same episodes from the teacher's immutable GT map cache.
+++            t_candidate = CognitiveMapCandidate.parse(
+++                self.config.MODEL.MAP_ENCODER.architecture, "prior_gt"
+++            )
+++            gtt_maps = [
+++                cached_cognitive_map_to_tensors(
+++                    ep.scene_id,
+++                    self._cognitive_map_cache_id(ep),
+++                    namespace=self.config.IL.gt_teacher_map_namespace,
+++                    random_rotation_augmentation=False,
+++                    metadata_schema=t_candidate.metadata_schema,
+++                )
+++                for ep in self.envs.current_episodes()
+++            ]
+++            with torch.no_grad():
+++                gtt_map_tokens, gtt_map_token_masks = self.gt_teacher.net(
+++                    mode="map_encoding",
+++                    cognitive_crops=torch.stack([m["grid"] for m in gtt_maps]).to(self.device),
+++                    trajectory_keypoints=torch.stack([m["map_trajectory_metadata"] for m in gtt_maps]).to(self.device),
+++                    start_direction_vectors=torch.stack([m["start_direction_vector"] for m in gtt_maps]).to(self.device),
+++                    start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
+++                )
+++            del gtt_maps
+++
++         for stepk in range(self.max_len):
++             total_actions += self.envs.num_envs
++             txt_masks = all_txt_masks
++@@ -1591,6 +1683,19 @@ class RLTrainer(BaseVLNCETrainer):
++                     cand_real_pos[i],
++                 )
++ 
+++            if self._gtt_on and mode == "train":
+++                with torch.no_grad():
+++                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
+++                    gtt_avg = torch.sum(
+++                        gtt_pano_embeds * gtt_pano_masks.unsqueeze(2), 1
+++                    ) / torch.sum(gtt_pano_masks, 1, keepdim=True)
+++                for i in range(self.envs.num_envs):
+++                    gtt_cand = gtt_pano_embeds[i][vp_inputs["nav_types"][i] == 1]
+++                    self.gtt_gmaps[i].update_graph(
+++                        prev_vp[i], stepk + 1, cur_vp[i], cur_pos[i], gtt_avg[i],
+++                        cand_vp[i], cand_pos[i], gtt_cand, cand_real_pos[i]
+++                    )
+++
++             nav_inputs = self._nav_gmap_variable(cur_vp, cur_pos, cur_ori, task_type)
++             nav_inputs.update(
++                 {
++@@ -1637,6 +1742,36 @@ class RLTrainer(BaseVLNCETrainer):
++                         if map_aux_loss_total is None
++                         else map_aux_loss_total + map_aux_loss
++                     )
+++                if self._gtt_on:
+++                    gtt_img_fts = []
+++                    for i, tgmap in enumerate(self.gtt_gmaps):
+++                        vp_ids = nav_inputs["gmap_vp_ids"][i][1:]
+++                        assert vp_ids == list(tgmap.node_pos.keys()) + list(tgmap.ghost_pos.keys())
+++                        fts = [tgmap.get_node_embeds(vp) for vp in vp_ids]
+++                        gtt_img_fts.append(torch.stack([torch.zeros_like(fts[0])] + fts, dim=0))
+++                    gtt_img_fts = pad_tensors_wgrad(gtt_img_fts)
+++                    t_inputs = dict(nav_inputs)
+++                    t_inputs["txt_embeds"] = gtt_txt_embeds
+++                    t_inputs["gmap_img_fts"] = gtt_img_fts
+++                    # map tokens are supplied when the teacher map encoder is enabled.
+++                    if gtt_map_tokens is not None:
+++                        t_inputs["map_tokens"] = gtt_map_tokens
+++                        t_inputs["map_token_masks"] = gtt_map_token_masks
+++                    with torch.no_grad():
+++                        t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
+++                    t_probs = F.softmax(t_logits, dim=1)
+++                    for i, tgmap in enumerate(self.gtt_gmaps):
+++                        tgmap.node_stop_scores[cur_vp[i]] = t_probs[i, 0].item()
+++                    valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
+++                    valid = valid & (teacher_actions != -100).unsqueeze(1)
+++                    temp = self.config.IL.distill_temperature
+++                    s_logp = F.log_softmax(nav_logits.float() / temp, dim=1)
+++                    t_logp = F.log_softmax(t_logits.float() / temp, dim=1)
+++                    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(s_logp))
+++                    gtt_distill_loss = gtt_distill_loss + kl.sum() * (temp * temp)
+++                    gtt_teacher_ce += F.cross_entropy(
+++                        t_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+++                    ).item()
++ 
++             # determine action
++             if feedback == "sample":
++@@ -1746,6 +1881,8 @@ class RLTrainer(BaseVLNCETrainer):
++                     prev_vp[i] = front_vp
++                     if self.config.MODEL.consume_ghost:
++                         gmap.delete_ghost(ghost_vp)
+++                        if self._gtt_on and mode == "train":
+++                            self.gtt_gmaps[i].delete_ghost(ghost_vp)
++ 
++             outputs = self.envs.step(env_actions)
++             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
++@@ -1827,6 +1964,8 @@ class RLTrainer(BaseVLNCETrainer):
++                         self.envs.pause_at(i)
++                         observations.pop(i)
++                         self.gmaps.pop(i)
+++                        if self._gtt_on and mode == "train":
+++                            self.gtt_gmaps.pop(i)
++                         prev_vp.pop(i)
++                         if cognitive_maps is not None:
++                             cognitive_maps.pop(i)
++@@ -1847,6 +1986,17 @@ class RLTrainer(BaseVLNCETrainer):
++                         all_txt_embeds = torch.cat(
++                             (all_txt_embeds[:i], all_txt_embeds[i + 1 :]), dim=0
++                         )
+++                        if self._gtt_on and mode == "train":
+++                            gtt_txt_embeds = torch.cat(
+++                                (gtt_txt_embeds[:i], gtt_txt_embeds[i + 1 :]), dim=0
+++                            )
+++                            if gtt_map_tokens is not None:
+++                                gtt_map_tokens = torch.cat(
+++                                    (gtt_map_tokens[:i], gtt_map_tokens[i + 1 :]), dim=0
+++                                )
+++                                gtt_map_token_masks = torch.cat(
+++                                    (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
+++                                )
++ 
++             if self.envs.num_envs == 0:
++                 break
++@@ -1875,6 +2025,11 @@ class RLTrainer(BaseVLNCETrainer):
++ 
++         if mode == "train":
++             loss = ml_weight * loss / total_actions
+++            if self._gtt_on:
+++                gtt_distill_loss = self.config.IL.distill_weight * gtt_distill_loss / total_actions
+++                loss = loss + gtt_distill_loss
+++                self.logs["distill_loss"].append(gtt_distill_loss.item())
+++                self.logs["teacher_ce"].append(gtt_teacher_ce / total_actions)
++             if map_aux_loss_total is not None:
++                 loss = loss + map_aux_loss_total
++             self.loss += loss
++
+diff --git a/reports/R2_review_d9e0a49.md b/reports/R2_review_d9e0a49.md
+new file mode 100644
+index 0000000..25db81c
+--- /dev/null
++++ b/reports/R2_review_d9e0a49.md
+@@ -0,0 +1,79 @@
++# R2 review：d9e0a49
++
++审查对象：`d9e0a49 Add frozen GT teacher DAgger distillation`。本审查只读检查提交内容，没有启动训练或评测。
++
++## 结论
++
++该提交目前不建议进入 smoke。存在一个高风险功能错误和两个中风险契约问题：教师 panorama 没有独立编码，教师构建条件没有检查实际 run type，且 launcher 与任务书要求的 smoke 覆盖参数不一致。
++
++## Findings
++
++### F1 — 高风险：教师 panorama 复用了学生的 `vp_inputs`
++
++位置：`vlnce_baselines/ss_trainer_ETP_PriorGT.py:1683-1691`（d9e0a49 中新增代码）。
++
++```python
++if self._gtt_on and mode == "train":
++    with torch.no_grad():
++        gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
++```
++
++`vp_inputs` 在此之前由学生的 `_vp_feature_variable(wp_outputs)` 构造，来自学生 RGB/depth encoder 的输出。提交没有调用教师的 waypoint 分支，也没有重新构造教师 panorama 输入。因此教师的 panorama encoder 虽然被调用，输入特征仍是学生编码结果，违反“教师独立计算自己的全景特征”和 R2 §4a 的分支要求。
++
++依据：学生输入构造在 `ss_trainer_ETP_PriorGT.py:1548-1550`；学生 waypoint 输出来自 `self.policy.net`，而 d9e0a49 只在 panorama 阶段调用 `self.gt_teacher.net`。普通 DAgger 中 `rgb_encoder/depth_encoder` 没有 `requires_grad_(False)`，只有 `.eval()`，所以不能把学生构造的 `vp_inputs` 视为冻结共享特征。
++
++影响：教师 logits 依赖学生视觉编码，教师与学生的独立编码约束失效；若学生视觉 encoder 被训练，教师输入还会随学生参数变化。
++
++### F2 — 中风险：教师构建没有绑定实际 DAgger run type
++
++位置：`vlnce_baselines/ss_trainer_ETP_PriorGT.py:490-493`。
++
++```python
++if self.config.IL.gt_teacher_enabled:
++```
++
++任务书要求教师只作用于 DAgger，且不影响 eval 与 GRPO。这里仅检查配置开关；`_initialize_policy` 同时被训练、评测路径调用，而 `run_type` 没有传入该函数。只要 eval 或 GRPO 配置继承/覆盖 `IL.gt_teacher_enabled=True`，就会加载教师 checkpoint、构建教师模型并占用显存，违反“教师不影响 eval 与 GRPO”。
++
++默认值为 False 只能降低误触发概率，不能替代 run-type 守卫。
++
++### F3 — 中风险：提交的 launcher 没有提供任务书要求的 smoke 覆盖入口
++
++三个 launcher 仅接受可选的 `--dry-run`，并将参数硬编码在数组中；没有 `IL.iters 20`、`IL.log_every 5`、`NUM_ENVIRONMENTS 1`、`GPU_NUMBERS 1` 的 smoke 命令或覆盖说明。R2 §7 明确要求交付说明提供该 smoke 命令，且基线与教师诊断应能使用同样覆盖参数。
++
++这不一定导致训练逻辑错误，但会使交付验收无法按任务书直接复现。
++
++### F4 — 低风险：教师 map-token 分支依赖学生 cognitive-map 开关状态
++
++位置：`ss_trainer_ETP_PriorGT.py:1588-1616`。
++
++提交在 rollout 中使用：
++
++```python
++if cognitive_maps is not None:
++    ...
++    gtt_map_tokens, gtt_map_token_masks = self.gt_teacher.net(...)
++```
++
++当 teacher 开启且 `cognitive_maps is None` 时，教师 map tokens 保持 `None`，后续 navigation 只在 `gtt_map_tokens is not None` 时替换教师 map tokens。这会使教师 fallback 到学生 `nav_inputs` 中的 map tokens，违反教师 GT map 独立编码。当前 launcher 显式设置 `MODEL.MAP_ENCODER.enabled True`，所以该路径通常不会触发；代码本身没有强制不变量。
++
++## 已确认的正确点
++
++- `gt_teacher=None` 与 `_gtt_on` 属性存在，默认开关为 False。
++- 教师 checkpoint 使用 CPU 加载、冻结参数并调用 `.eval()`；缺失 key 会 assert。
++- 教师 language 前向在 rollout 开头执行，batch pause 时同步裁剪语言缓存。
++- 镜像 `update_graph`、`delete_ghost`、`gtt_gmaps.pop` 和 stop score 写入均已加入。
++- KL 使用 `torch.where` 处理 visited/padding mask，避免直接对 `-inf - -inf` 做乘零。
++
++## 验证状态
++
++已执行：
++
++- `python -m py_compile vlnce_baselines/ss_trainer_ETP_PriorGT.py vlnce_baselines/config/default.py`
++- 三个 launcher 的 `bash -n`
++- `git diff --check`
++
++未执行训练、评测或 smoke，因此教师 checkpoint 的 `missing/unexpected` 实际数量仍为空，KL 数值、显存和 episode pause 行为尚未运行时验证。
++
++## 建议验收顺序
++
++先修正 F1 的教师 waypoint/panorama 输入独立性，再补充 F2 的 DAgger run-type 守卫；之后用 1 环境、20 iter smoke 检查教师加载计数、有限非零 `distill_loss`、无 NaN、镜像 ID assert 和 pause 后缓存尺寸。
+diff --git a/scripts/distill/run_dagger_distill.sh b/scripts/distill/run_dagger_distill.sh
+new file mode 100755
+index 0000000..11c3fb4
+--- /dev/null
++++ b/scripts/distill/run_dagger_distill.sh
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++set -euo pipefail
++# Fill GT_TEACHER_CKPT and GT_TEACHER_NAMESPACE, and verify the policy name before running.
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++RUN_NAME="dagger_distill_gt_teacher"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++CONFIG_PATH="${RUN_DIR}/config.yaml"
++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
++GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
++# Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).
++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
++
++DRY_RUN_ARGS=()
++if [[ "${1:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++elif [[ $# -ne 0 ]]; then
++    echo "Usage: bash scripts/distill/run_dagger_distill.sh [--dry-run]" >&2
++    exit 2
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS '[0,1,2,3]'
++    TORCH_GPU_IDS '[0,1,2,3]'
++    GPU_NUMBERS 4
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS 4
++    CHECKPOINT_INTERVAL 1000
++    ONLY_LAST_SAVEALL False
++    IL.iters 30000
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 2000
++    IL.warmup_iters 500
++    IL.min_lr_ratio 1.0
++    IL.load_from_ckpt False
++    IL.is_requeue False
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled True
++    IL.distill_weight 1.0
++    IL.distill_temperature 1.0
++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
++)
++
++mkdir -p "${RUN_DIR}"
++cd "${REPO_ROOT}"
++
++echo "Log: ${LOG_PATH}"
++echo "Config: ${CONFIG_PATH}"
++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++fi
+diff --git a/scripts/distill/run_dagger_teacher_diag.sh b/scripts/distill/run_dagger_teacher_diag.sh
+new file mode 100755
+index 0000000..a1c0264
+--- /dev/null
++++ b/scripts/distill/run_dagger_teacher_diag.sh
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++set -euo pipefail
++# Fill GT_TEACHER_CKPT and GT_TEACHER_NAMESPACE, and verify the policy name before running.
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++RUN_NAME="dagger_teacher_diag"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++CONFIG_PATH="${RUN_DIR}/config.yaml"
++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
++GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
++# Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).
++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
++
++DRY_RUN_ARGS=()
++if [[ "${1:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++elif [[ $# -ne 0 ]]; then
++    echo "Usage: bash scripts/distill/run_dagger_teacher_diag.sh [--dry-run]" >&2
++    exit 2
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS '[0,1,2,3]'
++    TORCH_GPU_IDS '[0,1,2,3]'
++    GPU_NUMBERS 4
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS 4
++    CHECKPOINT_INTERVAL 1000
++    ONLY_LAST_SAVEALL False
++    IL.iters 30000
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 2000
++    IL.warmup_iters 500
++    IL.min_lr_ratio 1.0
++    IL.load_from_ckpt False
++    IL.is_requeue False
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled True
++    IL.distill_weight 0.0
++    IL.distill_temperature 1.0
++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
++)
++
++mkdir -p "${RUN_DIR}"
++cd "${REPO_ROOT}"
++
++echo "Log: ${LOG_PATH}"
++echo "Config: ${CONFIG_PATH}"
++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++fi
+diff --git a/scripts/distill/run_dagger_try5_baseline.sh b/scripts/distill/run_dagger_try5_baseline.sh
+new file mode 100755
+index 0000000..e0dfcdb
+--- /dev/null
++++ b/scripts/distill/run_dagger_try5_baseline.sh
+@@ -0,0 +1,68 @@
++#!/usr/bin/env bash
++set -euo pipefail
++# Baseline launcher: no refiner and no GT teacher.
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++RUN_NAME="dagger_try5_norefiner"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++CONFIG_PATH="${RUN_DIR}/config.yaml"
++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++
++DRY_RUN_ARGS=()
++if [[ "${1:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++elif [[ $# -ne 0 ]]; then
++    echo "Usage: bash scripts/distill/run_dagger_try5_baseline.sh [--dry-run]" >&2
++    exit 2
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --standalone --nproc_per_node=4 "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS '[0,1,2,3]'
++    TORCH_GPU_IDS '[0,1,2,3]'
++    GPU_NUMBERS 4
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS 4
++    CHECKPOINT_INTERVAL 1000
++    ONLY_LAST_SAVEALL False
++    IL.iters 30000
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 2000
++    IL.warmup_iters 500
++    IL.min_lr_ratio 1.0
++    IL.load_from_ckpt False
++    IL.is_requeue False
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled False
++)
++
++mkdir -p "${RUN_DIR}"
++cd "${REPO_ROOT}"
++
++echo "Log: ${LOG_PATH}"
++echo "Config: ${CONFIG_PATH}"
++env CUDA_VISIBLE_DEVICES=0,1,2,3 GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++fi
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 65be920..d5b91ec 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -81,6 +81,13 @@ _C.IL.load_from_ckpt = False
+ _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
+ # if True, loads the optimizer state, epoch, and step_id from the ckpt dict.
+ _C.IL.is_requeue = False
++# Frozen ground-truth map teacher used only by the DAgger distillation path.
++_C.IL.gt_teacher_enabled = False
++_C.IL.distill_weight = 1.0
++_C.IL.distill_temperature = 1.0
++_C.IL.gt_teacher_ckpt = ""
++_C.IL.gt_teacher_map_namespace = ""
++_C.IL.gt_teacher_policy_name = ""
+ # it True, start training from the saved epoch
+ # -----------------------------------------------------------------------------
+ # IL: RXR TRAINER CONFIG
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 2b44cf1..710a6d5 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -81,6 +81,11 @@ class RLTrainer(BaseVLNCETrainer):
+         )  #  * 0.97 transfered gt path got 0.96 spl
+         self.illegal_episodes_count = 0
+         self._refiner_active_cells = None
++        self.gt_teacher = None
++
++    @property
++    def _gtt_on(self):
++        return self.gt_teacher is not None
+ 
+     def _refiner_enabled(self):
+         cfg = self.config.MODEL.MAP_ENCODER
+@@ -272,6 +277,7 @@ class RLTrainer(BaseVLNCETrainer):
+         load_from_ckpt: bool,
+         observation_space: Space,
+         action_space: Space,
++        initialize_gt_teacher: bool = False,
+     ):
+         start_iter = 0
+         policy = baseline_registry.get_policy(self.config.MODEL.policy_name)
+@@ -480,6 +486,44 @@ class RLTrainer(BaseVLNCETrainer):
+                 f"Loaded weights from checkpoint: {ckpt_path}, iteration: {start_iter}"
+             )
+ 
++        # The teacher is opt-in through the DAgger launcher configuration.  The
++        # rollout side additionally gates all use on ``mode == "train"``;
++        # evaluation and GRPO launchers leave this flag at its default False.
++        if self.config.IL.gt_teacher_enabled and initialize_gt_teacher:
++            assert (
++                self.config.IL.gt_teacher_ckpt
++                and self.config.IL.gt_teacher_map_namespace
++                and self.config.IL.gt_teacher_policy_name
++            ), "gt_teacher_enabled=True but teacher configuration is incomplete"
++            t_config = self.config.clone()
++            t_config.defrost()
++            t_config.MODEL.policy_name = self.config.IL.gt_teacher_policy_name
++            t_config.MODEL.MAP_ENCODER.source = "prior_gt"
++            t_config.MODEL.MAP_ENCODER.cache_namespace = (
++                self.config.IL.gt_teacher_map_namespace
++            )
++            t_config.MODEL.MAP_ENCODER.refiner_ckpt = ""
++            t_config.freeze()
++            teacher_cls = baseline_registry.get_policy(t_config.MODEL.policy_name)
++            self.gt_teacher = teacher_cls.from_config(
++                config=t_config,
++                observation_space=observation_space,
++                action_space=action_space,
++            )
++            sd = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")[
++                "state_dict"
++            ]
++            sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
++            missing, unexpected = self.gt_teacher.load_state_dict(sd, strict=False)
++            logger.info(
++                f"[gt_teacher] loaded {self.config.IL.gt_teacher_ckpt}: "
++                f"missing={len(missing)} unexpected={len(unexpected)}"
++            )
++            assert len(missing) == 0, f"gt_teacher missing keys: {missing[:10]}"
++            self.gt_teacher.to(self.device).eval()
++            for p in self.gt_teacher.parameters():
++                p.requires_grad_(False)
++
+         params = sum(param.numel() for param in self.policy.parameters())
+         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+         logger.info(
+@@ -756,6 +800,7 @@ class RLTrainer(BaseVLNCETrainer):
+             self.config.IL.load_from_ckpt,
+             observation_space=observation_space,
+             action_space=action_space,
++            initialize_gt_teacher=True,
+         )
+ 
+         total_iter = self.config.IL.iters
+@@ -1494,6 +1539,16 @@ class RLTrainer(BaseVLNCETrainer):
+             txt_masks=all_txt_masks,
+         )
+ 
++        # Frozen GT teacher caches are created only for training rollouts.
++        if self._gtt_on and mode == "train":
++            with torch.no_grad():
++                gtt_txt_embeds = self.gt_teacher.net(
++                    mode="language",
++                    txt_ids=all_txt_ids,
++                    txt_task_encoding=all_txt_task_encoding,
++                    txt_masks=all_txt_masks,
++                )
++
+         loss = 0.0
+         map_aux_loss_total = None
+         total_actions = 0.0
+@@ -1510,6 +1565,18 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+             for _ in range(self.envs.num_envs)
+         ]
++        if self._gtt_on and mode == "train":
++            self.gtt_gmaps = [
++                GraphMap(
++                    have_real_pos,
++                    self.config.IL.loc_noise,
++                    self.config.MODEL.merge_ghost,
++                    ghost_aug,
++                )
++                for _ in range(self.envs.num_envs)
++            ]
++            gtt_distill_loss = torch.zeros((), device=self.device)
++            gtt_teacher_ce = 0.0
+         prev_vp = [None] * self.envs.num_envs
+ 
+         # Build cognitive maps for current episodes.
+@@ -1523,6 +1590,32 @@ class RLTrainer(BaseVLNCETrainer):
+         if self._refiner_enabled() and cognitive_maps is not None:
+             self._initialize_refiner_state(cognitive_maps)
+ 
++        if self._gtt_on and mode == "train":
++            assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
++            # Re-load the same episodes from the teacher's immutable GT map cache.
++            t_candidate = CognitiveMapCandidate.parse(
++                self.config.MODEL.MAP_ENCODER.architecture, "prior_gt"
++            )
++            gtt_maps = [
++                cached_cognitive_map_to_tensors(
++                    ep.scene_id,
++                    self._cognitive_map_cache_id(ep),
++                    namespace=self.config.IL.gt_teacher_map_namespace,
++                    random_rotation_augmentation=False,
++                    metadata_schema=t_candidate.metadata_schema,
++                )
++                for ep in self.envs.current_episodes()
++            ]
++            with torch.no_grad():
++                gtt_map_tokens, gtt_map_token_masks = self.gt_teacher.net(
++                    mode="map_encoding",
++                    cognitive_crops=torch.stack([m["grid"] for m in gtt_maps]).to(self.device),
++                    trajectory_keypoints=torch.stack([m["map_trajectory_metadata"] for m in gtt_maps]).to(self.device),
++                    start_direction_vectors=torch.stack([m["start_direction_vector"] for m in gtt_maps]).to(self.device),
++                    start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
++                )
++            del gtt_maps
++
+         for stepk in range(self.max_len):
+             total_actions += self.envs.num_envs
+             txt_masks = all_txt_masks
+@@ -1591,6 +1684,19 @@ class RLTrainer(BaseVLNCETrainer):
+                     cand_real_pos[i],
+                 )
+ 
++            if self._gtt_on and mode == "train":
++                with torch.no_grad():
++                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
++                    gtt_avg = torch.sum(
++                        gtt_pano_embeds * gtt_pano_masks.unsqueeze(2), 1
++                    ) / torch.sum(gtt_pano_masks, 1, keepdim=True)
++                for i in range(self.envs.num_envs):
++                    gtt_cand = gtt_pano_embeds[i][vp_inputs["nav_types"][i] == 1]
++                    self.gtt_gmaps[i].update_graph(
++                        prev_vp[i], stepk + 1, cur_vp[i], cur_pos[i], gtt_avg[i],
++                        cand_vp[i], cand_pos[i], gtt_cand, cand_real_pos[i]
++                    )
++
+             nav_inputs = self._nav_gmap_variable(cur_vp, cur_pos, cur_ori, task_type)
+             nav_inputs.update(
+                 {
+@@ -1637,6 +1743,34 @@ class RLTrainer(BaseVLNCETrainer):
+                         if map_aux_loss_total is None
+                         else map_aux_loss_total + map_aux_loss
+                     )
++                if self._gtt_on:
++                    gtt_img_fts = []
++                    for i, tgmap in enumerate(self.gtt_gmaps):
++                        vp_ids = nav_inputs["gmap_vp_ids"][i][1:]
++                        assert vp_ids == list(tgmap.node_pos.keys()) + list(tgmap.ghost_pos.keys())
++                        fts = [tgmap.get_node_embeds(vp) for vp in vp_ids]
++                        gtt_img_fts.append(torch.stack([torch.zeros_like(fts[0])] + fts, dim=0))
++                    gtt_img_fts = pad_tensors_wgrad(gtt_img_fts)
++                    t_inputs = dict(nav_inputs)
++                    t_inputs["txt_embeds"] = gtt_txt_embeds
++                    t_inputs["gmap_img_fts"] = gtt_img_fts
++                    t_inputs["map_tokens"] = gtt_map_tokens
++                    t_inputs["map_token_masks"] = gtt_map_token_masks
++                    with torch.no_grad():
++                        t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
++                    t_probs = F.softmax(t_logits, dim=1)
++                    for i, tgmap in enumerate(self.gtt_gmaps):
++                        tgmap.node_stop_scores[cur_vp[i]] = t_probs[i, 0].item()
++                    valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
++                    valid = valid & (teacher_actions != -100).unsqueeze(1)
++                    temp = self.config.IL.distill_temperature
++                    s_logp = F.log_softmax(nav_logits.float() / temp, dim=1)
++                    t_logp = F.log_softmax(t_logits.float() / temp, dim=1)
++                    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(s_logp))
++                    gtt_distill_loss = gtt_distill_loss + kl.sum() * (temp * temp)
++                    gtt_teacher_ce += F.cross_entropy(
++                        t_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
++                    ).item()
+ 
+             # determine action
+             if feedback == "sample":
+@@ -1746,6 +1880,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     prev_vp[i] = front_vp
+                     if self.config.MODEL.consume_ghost:
+                         gmap.delete_ghost(ghost_vp)
++                        if self._gtt_on and mode == "train":
++                            self.gtt_gmaps[i].delete_ghost(ghost_vp)
+ 
+             outputs = self.envs.step(env_actions)
+             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
+@@ -1827,6 +1963,8 @@ class RLTrainer(BaseVLNCETrainer):
+                         self.envs.pause_at(i)
+                         observations.pop(i)
+                         self.gmaps.pop(i)
++                        if self._gtt_on and mode == "train":
++                            self.gtt_gmaps.pop(i)
+                         prev_vp.pop(i)
+                         if cognitive_maps is not None:
+                             cognitive_maps.pop(i)
+@@ -1847,6 +1985,16 @@ class RLTrainer(BaseVLNCETrainer):
+                         all_txt_embeds = torch.cat(
+                             (all_txt_embeds[:i], all_txt_embeds[i + 1 :]), dim=0
+                         )
++                        if self._gtt_on and mode == "train":
++                            gtt_txt_embeds = torch.cat(
++                                (gtt_txt_embeds[:i], gtt_txt_embeds[i + 1 :]), dim=0
++                            )
++                            gtt_map_tokens = torch.cat(
++                                (gtt_map_tokens[:i], gtt_map_tokens[i + 1 :]), dim=0
++                            )
++                            gtt_map_token_masks = torch.cat(
++                                (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
++                            )
+ 
+             if self.envs.num_envs == 0:
+                 break
+@@ -1875,6 +2023,11 @@ class RLTrainer(BaseVLNCETrainer):
+ 
+         if mode == "train":
+             loss = ml_weight * loss / total_actions
++            if self._gtt_on:
++                gtt_distill_loss = self.config.IL.distill_weight * gtt_distill_loss / total_actions
++                loss = loss + gtt_distill_loss
++                self.logs["distill_loss"].append(gtt_distill_loss.item())
++                self.logs["teacher_ce"].append(gtt_teacher_ce / total_actions)
+             if map_aux_loss_total is not None:
+                 loss = loss + map_aux_loss_total
+             self.loss += loss
+
