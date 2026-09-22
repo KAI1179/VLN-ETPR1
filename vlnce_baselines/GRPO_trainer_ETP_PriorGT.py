@@ -728,7 +728,11 @@ class RLTrainer(BaseVLNCETrainer):
             )
 
             gmap_pos_fts = gmap.get_pos_fts(
-                cur_vp[i], cur_pos[i], cur_ori[i], gmap_vp_ids
+                cur_vp[i],
+                cur_pos[i],
+                cur_ori[i],
+                gmap_vp_ids,
+                elevation_axis=self.config.MODEL.elevation_axis,
             )
             gmap_pair_dists = np.zeros(
                 (len(gmap_vp_ids), len(gmap_vp_ids)), dtype=np.float32

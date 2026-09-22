@@ -20,7 +20,9 @@ def calc_position_distance(a, b):
     return dist
 
 
-def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0, to_clock=False):
+def calculate_vp_rel_pos_fts(
+    a, b, base_heading=0, base_elevation=0, to_clock=False, elevation_axis="y"
+):
     # a, b: (x, y, z)
     a = np.asarray(a, dtype=np.float32)
     b = np.asarray(b, dtype=np.float32)
@@ -44,7 +46,10 @@ def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0, to_clock=Fa
     if to_clock:
         heading = 2 * np.pi - heading
 
-    elevation = np.arcsin(np.clip(dy / xyz_dist, -1.0, 1.0))  # [-pi/2, pi/2]
+    if elevation_axis == "z":
+        elevation = np.arcsin(np.clip(dz / xyz_dist, -1.0, 1.0))  # [-pi/2, pi/2]
+    else:
+        elevation = np.arcsin(np.clip(dy / xyz_dist, -1.0, 1.0))  # [-pi/2, pi/2]
     elevation -= base_elevation
 
     return heading, elevation, xyz_dist
@@ -299,7 +304,7 @@ class GraphMap(object):
         else:
             return self.ghost_embeds[vp][0] / self.ghost_embeds[vp][1]
 
-    def get_pos_fts(self, cur_vp, cur_pos, cur_ori, gmap_vp_ids):
+    def get_pos_fts(self, cur_vp, cur_pos, cur_ori, gmap_vp_ids, elevation_axis="y"):
         rel_angles, rel_dists = [], []
         for vp in gmap_vp_ids:
             if vp is None:
@@ -316,6 +321,7 @@ class GraphMap(object):
                     base_heading,
                     base_elevation,
                     to_clock=True,
+                    elevation_axis=elevation_axis,
                 )
                 rel_angles.append([rel_heading, rel_elevation])
                 front_dis, front_vp = self.front_to_ghost_dist(vp)
@@ -339,6 +345,7 @@ class GraphMap(object):
                     base_heading,
                     base_elevation,
                     to_clock=True,
+                    elevation_axis=elevation_axis,
                 )
                 rel_angles.append([rel_heading, rel_elevation])
                 shortest_dist = self.shortest_dist[cur_vp][vp]

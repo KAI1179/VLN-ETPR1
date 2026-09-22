@@ -155,6 +155,7 @@ _C.MODEL.policy_name = "CMAPolicy"  # or "Seq2SeqPolicy"
 _C.MODEL.ablate_depth = False
 _C.MODEL.ablate_rgb = False
 _C.MODEL.ablate_instruction = False
+_C.MODEL.elevation_axis = "y"
 
 _C.MODEL.INSTRUCTION_ENCODER = CN()
 _C.MODEL.INSTRUCTION_ENCODER.sensor_uuid = "instruction"
