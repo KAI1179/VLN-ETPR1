@@ -9,7 +9,6 @@ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 CONFIG_PATH="${RUN_DIR}/config.yaml"
 PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
-REFINER_CKPT="${REPO_ROOT}/data/refiner/checkpoints_aug/best.pt"
 GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
 GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
 # Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).

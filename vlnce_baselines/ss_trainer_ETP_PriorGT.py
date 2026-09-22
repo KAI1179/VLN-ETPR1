@@ -277,6 +277,7 @@ class RLTrainer(BaseVLNCETrainer):
         load_from_ckpt: bool,
         observation_space: Space,
         action_space: Space,
+        initialize_gt_teacher: bool = False,
     ):
         start_iter = 0
         policy = baseline_registry.get_policy(self.config.MODEL.policy_name)
@@ -488,7 +489,7 @@ class RLTrainer(BaseVLNCETrainer):
         # The teacher is opt-in through the DAgger launcher configuration.  The
         # rollout side additionally gates all use on ``mode == "train"``;
         # evaluation and GRPO launchers leave this flag at its default False.
-        if self.config.IL.gt_teacher_enabled:
+        if self.config.IL.gt_teacher_enabled and initialize_gt_teacher:
             assert (
                 self.config.IL.gt_teacher_ckpt
                 and self.config.IL.gt_teacher_map_namespace
@@ -799,6 +800,7 @@ class RLTrainer(BaseVLNCETrainer):
             self.config.IL.load_from_ckpt,
             observation_space=observation_space,
             action_space=action_space,
+            initialize_gt_teacher=True,
         )
 
         total_iter = self.config.IL.iters
@@ -1589,7 +1591,6 @@ class RLTrainer(BaseVLNCETrainer):
             self._initialize_refiner_state(cognitive_maps)
 
         if self._gtt_on and mode == "train":
-            gtt_map_tokens = gtt_map_token_masks = None
             assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
             # Re-load the same episodes from the teacher's immutable GT map cache.
             t_candidate = CognitiveMapCandidate.parse(
@@ -1685,25 +1686,12 @@ class RLTrainer(BaseVLNCETrainer):
 
             if self._gtt_on and mode == "train":
                 with torch.no_grad():
-                    # RGB/depth encoders remain optimizer-eligible in normal
-                    # DAgger (only eval mode is forced below), so the teacher
-                    # computes its own panorama inputs through its encoders.
-                    gtt_wp_outputs = self.gt_teacher.net(
-                        mode="waypoint",
-                        waypoint_predictor=self.waypoint_predictor,
-                        observations=batch,
-                        in_train=False,
-                    )
-                    gtt_vp_inputs = self._vp_feature_variable(gtt_wp_outputs)
-                    gtt_vp_inputs["mode"] = "panorama"
-                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(
-                        **gtt_vp_inputs
-                    )
+                    gtt_pano_embeds, gtt_pano_masks = self.gt_teacher.net(**vp_inputs)
                     gtt_avg = torch.sum(
                         gtt_pano_embeds * gtt_pano_masks.unsqueeze(2), 1
                     ) / torch.sum(gtt_pano_masks, 1, keepdim=True)
                 for i in range(self.envs.num_envs):
-                    gtt_cand = gtt_pano_embeds[i][gtt_vp_inputs["nav_types"][i] == 1]
+                    gtt_cand = gtt_pano_embeds[i][vp_inputs["nav_types"][i] == 1]
                     self.gtt_gmaps[i].update_graph(
                         prev_vp[i], stepk + 1, cur_vp[i], cur_pos[i], gtt_avg[i],
                         cand_vp[i], cand_pos[i], gtt_cand, cand_real_pos[i]
@@ -1766,10 +1754,8 @@ class RLTrainer(BaseVLNCETrainer):
                     t_inputs = dict(nav_inputs)
                     t_inputs["txt_embeds"] = gtt_txt_embeds
                     t_inputs["gmap_img_fts"] = gtt_img_fts
-                    # map tokens are supplied when the teacher map encoder is enabled.
-                    if gtt_map_tokens is not None:
-                        t_inputs["map_tokens"] = gtt_map_tokens
-                        t_inputs["map_token_masks"] = gtt_map_token_masks
+                    t_inputs["map_tokens"] = gtt_map_tokens
+                    t_inputs["map_token_masks"] = gtt_map_token_masks
                     with torch.no_grad():
                         t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
                     t_probs = F.softmax(t_logits, dim=1)
@@ -2003,13 +1989,12 @@ class RLTrainer(BaseVLNCETrainer):
                             gtt_txt_embeds = torch.cat(
                                 (gtt_txt_embeds[:i], gtt_txt_embeds[i + 1 :]), dim=0
                             )
-                            if gtt_map_tokens is not None:
-                                gtt_map_tokens = torch.cat(
-                                    (gtt_map_tokens[:i], gtt_map_tokens[i + 1 :]), dim=0
-                                )
-                                gtt_map_token_masks = torch.cat(
-                                    (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
-                                )
+                            gtt_map_tokens = torch.cat(
+                                (gtt_map_tokens[:i], gtt_map_tokens[i + 1 :]), dim=0
+                            )
+                            gtt_map_token_masks = torch.cat(
+                                (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
+                            )
 
             if self.envs.num_envs == 0:
                 break
