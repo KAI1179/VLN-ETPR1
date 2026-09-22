@@ -8,7 +8,7 @@ RUN_NAME="dagger_try5_norefiner"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 CONFIG_PATH="${RUN_DIR}/config.yaml"
-PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+PRETRAINED_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
 
 DRY_RUN_ARGS=()
 if [[ "${1:-}" == "--dry-run" ]]; then

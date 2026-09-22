@@ -88,6 +88,7 @@ _C.IL.distill_temperature = 1.0
 _C.IL.gt_teacher_ckpt = ""
 _C.IL.gt_teacher_map_namespace = ""
 _C.IL.gt_teacher_policy_name = ""
+_C.IL.gt_teacher_elevation_axis = "z"
 # it True, start training from the saved epoch
 # -----------------------------------------------------------------------------
 # IL: RXR TRAINER CONFIG

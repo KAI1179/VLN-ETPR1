@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Fill GT_TEACHER_CKPT and GT_TEACHER_NAMESPACE, and verify the policy name before running.
 
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
@@ -8,10 +7,9 @@ RUN_NAME="dagger_distill_gt_teacher"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 CONFIG_PATH="${RUN_DIR}/config.yaml"
-PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
-GT_TEACHER_CKPT="<GT_TEACHER_CKPT>"
-GT_TEACHER_NAMESPACE="<GT_TEACHER_NAMESPACE>"
-# Registry policy for source=prior_gt, architecture=try5 (see PriorGTTry5Policy).
+PRETRAINED_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
+GT_TEACHER_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
+GT_TEACHER_NAMESPACE="gt.online121c369.r1p5.direction5.v1"
 GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
 
 DRY_RUN_ARGS=()

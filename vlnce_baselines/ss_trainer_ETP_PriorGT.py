@@ -1755,9 +1755,18 @@ class RLTrainer(BaseVLNCETrainer):
                         fts = [tgmap.get_node_embeds(vp) for vp in vp_ids]
                         gtt_img_fts.append(torch.stack([torch.zeros_like(fts[0])] + fts, dim=0))
                     gtt_img_fts = pad_tensors_wgrad(gtt_img_fts)
+                    gtt_pos_fts = []
+                    for i, gmap in enumerate(self.gmaps):
+                        gtt_pos_fts.append(torch.from_numpy(gmap.get_pos_fts(
+                            cur_vp[i], cur_pos[i], cur_ori[i],
+                            nav_inputs["gmap_vp_ids"][i],
+                            elevation_axis=self.config.IL.gt_teacher_elevation_axis,
+                        )))
+                    gtt_pos_fts = pad_tensors_wgrad(gtt_pos_fts).cuda()
                     t_inputs = dict(nav_inputs)
                     t_inputs["txt_embeds"] = gtt_txt_embeds
                     t_inputs["gmap_img_fts"] = gtt_img_fts
+                    t_inputs["gmap_pos_fts"] = gtt_pos_fts
                     t_inputs["map_tokens"] = gtt_map_tokens
                     t_inputs["map_token_masks"] = gtt_map_token_masks
                     with torch.no_grad():
