@@ -1,0 +1,541 @@
+From b12eac48c255b7082edae338691c01a036e2a408 Mon Sep 17 00:00:00 2001
+From: PRO-2684 <54608551+PRO-2684@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 08:15:23 -0400
+Subject: [PATCH 1/2] feat: add cognitive map refiner training core
+
+---
+ scripts/refiner/train.py                   | 313 +++++++++++++++++++++
+ vlnce_baselines/models/refiner/__init__.py |   5 +
+ vlnce_baselines/models/refiner/dataset.py  | 110 ++++++++
+ vlnce_baselines/models/refiner/model.py    |  70 +++++
+ 4 files changed, 498 insertions(+)
+ create mode 100644 scripts/refiner/train.py
+ create mode 100644 vlnce_baselines/models/refiner/__init__.py
+ create mode 100644 vlnce_baselines/models/refiner/dataset.py
+ create mode 100644 vlnce_baselines/models/refiner/model.py
+
+diff --git a/scripts/refiner/train.py b/scripts/refiner/train.py
+new file mode 100644
+index 0000000..b09c520
+--- /dev/null
++++ b/scripts/refiner/train.py
+@@ -0,0 +1,313 @@
++#!/usr/bin/env python3
++"""Train the visual-evidence cognitive-map refiner."""
++
++from __future__ import annotations
++
++import json
++import random
++from pathlib import Path
++from typing import Dict, List
++
++import numpy as np
++import torch
++from tap import Tap
++from torch.nn import functional as F
++from torch.optim import AdamW
++from torch.optim.lr_scheduler import CosineAnnealingLR
++from torch.utils.data import DataLoader
++
++from vlnce_baselines.models.refiner.dataset import RefinerDataset, trajectory_files
++from vlnce_baselines.models.refiner.model import CognitiveMapRefiner
++
++OBJECT_CHANNELS = 27
++
++
++class Arguments(Tap):
++    data_root: Path = Path("data/refiner")
++    output_dir: Path = Path("data/refiner/checkpoints")
++    batch_size: int = 32
++    epochs: int = 10
++    lr: float = 3e-4
++    num_workers: int = 4
++    seed: int = 0
++    device: str = "cuda"
++
++
++def _loader(
++    dataset: RefinerDataset,
++    args: Arguments,
++    *,
++    shuffle: bool,
++) -> DataLoader:
++    return DataLoader(
++        dataset,
++        batch_size=args.batch_size,
++        shuffle=shuffle,
++        num_workers=args.num_workers,
++        pin_memory=True,
++    )
++
++
++def _object_pos_weight(
++    dataset: RefinerDataset,
++    args: Arguments,
++) -> torch.Tensor:
++    positive = torch.zeros(OBJECT_CHANNELS, dtype=torch.float64)
++    negative = torch.zeros(OBJECT_CHANNELS, dtype=torch.float64)
++    for batch in _loader(dataset, args, shuffle=False):
++        target = batch["y"][:, :OBJECT_CHANNELS]
++        observed = batch["obs"][:, None]
++        positive += ((target > 0) & observed).sum(dim=(0, 2, 3))
++        negative += ((target == 0) & observed).sum(dim=(0, 2, 3))
++    return (negative / positive.clamp_min(1)).clamp(1, 20).float()
++
++
++class _MetricAccumulator:
++    def __init__(self) -> None:
++        self.counts: Dict[str, Dict[str, Dict[str, torch.Tensor]]] = {}
++        for source in ("p0", "refined"):
++            self.counts[source] = {}
++            for resolution in ("100x100", "10x10"):
++                self.counts[source][resolution] = {}
++                for group in ("seen", "unseen", "route", "route_seen"):
++                    self.counts[source][resolution][group] = {
++                        "intersection": torch.zeros(37, dtype=torch.float64),
++                        "union": torch.zeros(37, dtype=torch.float64),
++                    }
++
++    def update(
++        self,
++        p0: torch.Tensor,
++        refined: torch.Tensor,
++        target: torch.Tensor,
++        observed: torch.Tensor,
++        route: torch.Tensor,
++    ) -> None:
++        predictions = {"p0": p0 >= 0.5, "refined": refined >= 0.5}
++        target_mask = target >= 0.5
++        native_groups = {
++            "seen": observed,
++            "unseen": ~observed,
++            "route": route,
++            "route_seen": route & observed,
++        }
++        self._update_resolution(
++            predictions,
++            target_mask,
++            native_groups,
++            "100x100",
++        )
++
++        pooled_predictions = {
++            name: F.max_pool2d(mask.float(), 10).bool()
++            for name, mask in predictions.items()
++        }
++        pooled_target = F.max_pool2d(target_mask.float(), 10).bool()
++        pooled_seen = F.max_pool2d(observed[:, None].float(), 10).squeeze(1).bool()
++        pooled_route = F.max_pool2d(route[:, None].float(), 10).squeeze(1).bool()
++        pooled_groups = {
++            "seen": pooled_seen,
++            "unseen": ~pooled_seen,
++            "route": pooled_route,
++            "route_seen": pooled_route & pooled_seen,
++        }
++        self._update_resolution(
++            pooled_predictions,
++            pooled_target,
++            pooled_groups,
++            "10x10",
++        )
++
++    def _update_resolution(
++        self,
++        predictions: Dict[str, torch.Tensor],
++        target: torch.Tensor,
++        groups: Dict[str, torch.Tensor],
++        resolution: str,
++    ) -> None:
++        for source, prediction in predictions.items():
++            for group, cell_mask in groups.items():
++                mask = cell_mask[:, None]
++                intersection = (prediction & target & mask).sum(dim=(0, 2, 3))
++                union = ((prediction | target) & mask).sum(dim=(0, 2, 3))
++                counts = self.counts[source][resolution][group]
++                counts["intersection"] += intersection.cpu()
++                counts["union"] += union.cpu()
++
++    def result(self) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
++        results: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
++        for source, resolutions in self.counts.items():
++            results[source] = {}
++            for resolution, groups in resolutions.items():
++                results[source][resolution] = {}
++                for group, counts in groups.items():
++                    intersection = counts["intersection"]
++                    union = counts["union"]
++                    iou = intersection / union.clamp_min(1)
++                    object_valid = union[:OBJECT_CHANNELS] > 0
++                    region_valid = union[OBJECT_CHANNELS:] > 0
++                    results[source][resolution][group] = {
++                        "object_miou": float(
++                            iou[:OBJECT_CHANNELS][object_valid].mean()
++                        ),
++                        "region_miou": float(
++                            iou[OBJECT_CHANNELS:][region_valid].mean()
++                        ),
++                    }
++        return results
++
++
++def _compose_refined(
++    output: torch.Tensor,
++    p0: torch.Tensor,
++    observed: torch.Tensor,
++) -> torch.Tensor:
++    composed = output.clone()
++    observed = observed[:, None]
++    composed[:, :OBJECT_CHANNELS] = (
++        observed * output[:, :OBJECT_CHANNELS]
++        + (~observed) * p0[:, :OBJECT_CHANNELS]
++    )
++    return composed
++
++
++@torch.no_grad()
++def _validate(
++    model: CognitiveMapRefiner,
++    dataset: RefinerDataset,
++    args: Arguments,
++) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
++    model.eval()
++    metrics = _MetricAccumulator()
++    for batch in _loader(dataset, args, shuffle=False):
++        inputs = batch["x"].to(args.device, non_blocking=True)
++        output = model(inputs)
++        p0 = batch["p0"].to(args.device, non_blocking=True)
++        observed = batch["obs"].to(args.device, non_blocking=True)
++        refined = _compose_refined(output, p0, observed)
++        metrics.update(
++            p0,
++            refined,
++            batch["y"].to(args.device, non_blocking=True),
++            observed,
++            batch["route"].to(args.device, non_blocking=True),
++        )
++    return metrics.result()
++
++
++def _train_epoch(
++    model: CognitiveMapRefiner,
++    loader: DataLoader,
++    optimizer: AdamW,
++    scaler: torch.cuda.amp.GradScaler,
++    object_pos_weight: torch.Tensor,
++    device: str,
++) -> float:
++    model.train()
++    total_loss = 0.0
++    total_batches = 0
++    for batch in loader:
++        inputs = batch["x"].to(device, non_blocking=True)
++        target = batch["y"].to(device, non_blocking=True)
++        observed = batch["obs"].to(device, non_blocking=True)
++        optimizer.zero_grad(set_to_none=True)
++        with torch.cuda.amp.autocast():
++            output = model(inputs)
++        bce = F.binary_cross_entropy(output.float(), target, reduction="none")
++        weights = torch.ones_like(bce)
++        weights[:, :OBJECT_CHANNELS] = observed[:, None]
++        positive_weights = torch.ones_like(bce)
++        positive_weights[:, :OBJECT_CHANNELS] = torch.where(
++            target[:, :OBJECT_CHANNELS] > 0,
++            object_pos_weight[None, :, None, None],
++            1.0,
++        )
++        loss = (bce * weights * positive_weights).sum() / weights.sum()
++        scaler.scale(loss).backward()
++        scaler.step(optimizer)
++        scaler.update()
++        total_loss += float(loss.detach())
++        total_batches += 1
++    return total_loss / total_batches
++
++
++def main() -> None:
++    args = Arguments(underscores_to_dashes=True).parse_args()
++    random.seed(args.seed)
++    np.random.seed(args.seed)
++    torch.manual_seed(args.seed)
++    torch.cuda.manual_seed_all(args.seed)
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++
++    train_paths = trajectory_files(args.data_root / "train")
++    train_dataset = RefinerDataset(
++        train_paths,
++        seed=args.seed,
++    )
++    val_seen_dataset = RefinerDataset(
++        trajectory_files(args.data_root / "val_seen", teacher_only=True),
++        all_steps=True,
++    )
++    val_unseen_dataset = RefinerDataset(
++        trajectory_files(args.data_root / "val_unseen", teacher_only=True),
++        all_steps=True,
++    )
++    object_pos_weight = _object_pos_weight(
++        RefinerDataset(train_paths, all_steps=True), args
++    ).to(args.device)
++    print("object_pos_weight", object_pos_weight.cpu().tolist(), flush=True)
++
++    model = CognitiveMapRefiner().to(args.device)
++    optimizer = AdamW(model.parameters(), lr=args.lr)
++    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
++    scaler = torch.cuda.amp.GradScaler()
++    history: List[Dict] = []
++    best_score = -1.0
++    best_epoch = -1
++
++    for epoch in range(args.epochs):
++        train_dataset.set_epoch(epoch)
++        train_loss = _train_epoch(
++            model,
++            _loader(train_dataset, args, shuffle=True),
++            optimizer,
++            scaler,
++            object_pos_weight,
++            args.device,
++        )
++        scheduler.step()
++        val_seen = _validate(model, val_seen_dataset, args)
++        val_unseen = _validate(model, val_unseen_dataset, args)
++        score = val_unseen["refined"]["100x100"]["route_seen"]["object_miou"]
++        epoch_metrics = {
++            "epoch": epoch + 1,
++            "train_loss": train_loss,
++            "lr": scheduler.get_last_lr()[0],
++            "val_seen": val_seen,
++            "val_unseen": val_unseen,
++        }
++        history.append(epoch_metrics)
++        if score > best_score:
++            best_score = score
++            best_epoch = epoch + 1
++            torch.save(model.state_dict(), args.output_dir / "best.pt")
++        torch.save(model.state_dict(), args.output_dir / "last.pt")
++        metrics = {
++            "object_pos_weight": object_pos_weight.cpu().tolist(),
++            "best_epoch": best_epoch,
++            "best_val_unseen_route_seen_object_miou": best_score,
++            "epochs": history,
++        }
++        (args.output_dir / "metrics.json").write_text(
++            json.dumps(metrics, indent=2),
++            encoding="utf-8",
++        )
++        print(
++            f"epoch={epoch + 1} loss={train_loss:.6f} "
++            f"val_unseen_route_seen_object_miou={score:.6f}",
++            flush=True,
++        )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/vlnce_baselines/models/refiner/__init__.py b/vlnce_baselines/models/refiner/__init__.py
+new file mode 100644
+index 0000000..e121f7f
+--- /dev/null
++++ b/vlnce_baselines/models/refiner/__init__.py
+@@ -0,0 +1,5 @@
++"""Visual-evidence cognitive-map refiner."""
++
++from .model import CognitiveMapRefiner
++
++__all__ = ["CognitiveMapRefiner"]
+diff --git a/vlnce_baselines/models/refiner/dataset.py b/vlnce_baselines/models/refiner/dataset.py
+new file mode 100644
+index 0000000..093e74b
+--- /dev/null
++++ b/vlnce_baselines/models/refiner/dataset.py
+@@ -0,0 +1,110 @@
++"""Dataset for visual-evidence cognitive-map refinement."""
++
++from __future__ import annotations
++
++from pathlib import Path
++from typing import Dict, List, Sequence, Tuple
++
++import numpy as np
++import torch
++from torch.utils.data import Dataset
++
++GRID_SIZE = 100
++OBJECT_CHANNELS = 27
++MAP_CHANNELS = 37
++EVIDENCE_CHANNELS = 30
++
++
++def _scalar_path(value: np.ndarray) -> Path:
++    return Path(str(value.item()))
++
++
++def _unpack_step(step: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
++    sem = np.unpackbits(
++        np.asarray(step["sem"], dtype=np.uint8),
++        count=OBJECT_CHANNELS * GRID_SIZE * GRID_SIZE,
++    ).reshape(OBJECT_CHANNELS, GRID_SIZE, GRID_SIZE)
++    observed = np.unpackbits(
++        np.asarray(step["observed"], dtype=np.uint8),
++        count=GRID_SIZE * GRID_SIZE,
++    ).reshape(GRID_SIZE, GRID_SIZE)
++    free = np.unpackbits(
++        np.asarray(step["free"], dtype=np.uint8),
++        count=GRID_SIZE * GRID_SIZE,
++    ).reshape(GRID_SIZE, GRID_SIZE)
++    blocked = np.unpackbits(
++        np.asarray(step["blocked"], dtype=np.uint8),
++        count=GRID_SIZE * GRID_SIZE,
++    ).reshape(GRID_SIZE, GRID_SIZE)
++    evidence = np.concatenate(
++        (sem, observed[None], free[None], blocked[None]),
++        axis=0,
++    ).astype(np.float32)
++    return evidence, observed.astype(bool)
++
++
++class RefinerDataset(Dataset):
++    """Samples accumulated evidence at selected steps of collected trajectories."""
++
++    def __init__(
++        self,
++        trajectory_paths: Sequence[Path],
++        *,
++        steps_per_trajectory: int = 6,
++        all_steps: bool = False,
++        seed: int = 0,
++    ) -> None:
++        self.trajectory_paths = tuple(sorted(trajectory_paths))
++        self.steps_per_trajectory = steps_per_trajectory
++        self.all_steps = all_steps
++        self.seed = seed
++        self.samples: List[Tuple[Path, int]] = []
++        self.set_epoch(0)
++
++    def set_epoch(self, epoch: int) -> None:
++        rng = np.random.default_rng(self.seed + epoch)
++        samples: List[Tuple[Path, int]] = []
++        for path in self.trajectory_paths:
++            with np.load(path, allow_pickle=True) as trajectory:
++                num_steps = len(trajectory["steps"])
++            if self.all_steps or num_steps <= self.steps_per_trajectory:
++                indices = np.arange(num_steps)
++            else:
++                interior = rng.choice(
++                    np.arange(1, num_steps - 1),
++                    size=self.steps_per_trajectory - 2,
++                    replace=False,
++                )
++                indices = np.concatenate(([0], np.sort(interior), [num_steps - 1]))
++            samples.extend((path, int(index)) for index in indices)
++        self.samples = samples
++
++    def __len__(self) -> int:
++        return len(self.samples)
++
++    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
++        trajectory_path, step_index = self.samples[index]
++        with np.load(trajectory_path, allow_pickle=True) as trajectory:
++            p0_path = _scalar_path(trajectory["p0_path"])
++            gt_path = _scalar_path(trajectory["gt_path"])
++            step = trajectory["steps"][step_index]
++        with np.load(p0_path) as p0_data:
++            p0 = p0_data["grid"].astype(np.float32)
++        with np.load(gt_path) as gt_data:
++            target = gt_data["grid"].astype(np.float32)
++
++        evidence, observed = _unpack_step(step)
++        inputs = np.concatenate((p0, evidence), axis=0)
++        route = target.sum(axis=0) > 0
++        return {
++            "x": torch.from_numpy(inputs),
++            "y": torch.from_numpy(target),
++            "p0": torch.from_numpy(p0),
++            "obs": torch.from_numpy(observed),
++            "route": torch.from_numpy(route),
++        }
++
++
++def trajectory_files(split_dir: Path, teacher_only: bool = False) -> List[Path]:
++    pattern = "*_teacher.npz" if teacher_only else "*.npz"
++    return sorted(split_dir.rglob(pattern))
+diff --git a/vlnce_baselines/models/refiner/model.py b/vlnce_baselines/models/refiner/model.py
+new file mode 100644
+index 0000000..ef3f384
+--- /dev/null
++++ b/vlnce_baselines/models/refiner/model.py
+@@ -0,0 +1,70 @@
++"""UNet for refining a cognitive map with accumulated visual evidence."""
++
++from __future__ import annotations
++
++import torch
++from torch import nn
++from torch.nn import functional as F
++
++
++class _ConvBlock(nn.Module):
++    def __init__(self, in_channels: int, out_channels: int) -> None:
++        super().__init__()
++        self.layers = nn.Sequential(
++            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
++            nn.GroupNorm(8, out_channels),
++            nn.ReLU(inplace=True),
++            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
++            nn.GroupNorm(8, out_channels),
++            nn.ReLU(inplace=True),
++        )
++
++    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
++        return self.layers(inputs)
++
++
++class _UpBlock(nn.Module):
++    def __init__(self, in_channels: int, skip_channels: int) -> None:
++        super().__init__()
++        self.block = _ConvBlock(in_channels + skip_channels, skip_channels)
++
++    def forward(self, inputs: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
++        inputs = F.interpolate(
++            inputs,
++            size=skip.shape[-2:],
++            mode="bilinear",
++            align_corners=False,
++        )
++        return self.block(torch.cat((inputs, skip), dim=1))
++
++
++class CognitiveMapRefiner(nn.Module):
++    """Four-level UNet mapping P0 and visual evidence to 37 map channels."""
++
++    def __init__(
++        self,
++        in_channels: int = 67,
++        out_channels: int = 37,
++        base_width: int = 64,
++    ) -> None:
++        super().__init__()
++        widths = [base_width * (2**level) for level in range(4)]
++        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
++        self.encoder0 = _ConvBlock(in_channels, widths[0])
++        self.encoder1 = _ConvBlock(widths[0], widths[1])
++        self.encoder2 = _ConvBlock(widths[1], widths[2])
++        self.encoder3 = _ConvBlock(widths[2], widths[3])
++        self.decoder2 = _UpBlock(widths[3], widths[2])
++        self.decoder1 = _UpBlock(widths[2], widths[1])
++        self.decoder0 = _UpBlock(widths[1], widths[0])
++        self.output = nn.Conv2d(widths[0], out_channels, kernel_size=1)
++
++    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
++        level0 = self.encoder0(inputs)
++        level1 = self.encoder1(self.pool(level0))
++        level2 = self.encoder2(self.pool(level1))
++        level3 = self.encoder3(self.pool(level2))
++        decoded = self.decoder2(level3, level2)
++        decoded = self.decoder1(decoded, level1)
++        decoded = self.decoder0(decoded, level0)
++        return torch.sigmoid(self.output(decoded))
+-- 
+2.25.1
+

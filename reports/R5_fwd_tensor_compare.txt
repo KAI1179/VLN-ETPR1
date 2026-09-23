@@ -1,0 +1,18 @@
+inputs.pt direction_vectors (5, 5, 2) (5, 5, 2) True 0.0
+inputs.pt gmap_img_fts (1, 8, 768) (1, 8, 768) True 0.0
+inputs.pt gmap_masks (1, 8) (1, 8) True 0.0
+inputs.pt gmap_pair_dists (1, 8, 8) (1, 8, 8) True 0.0
+inputs.pt gmap_pos_fts (1, 8, 7) (1, 8, 7) True 0.0
+inputs.pt gmap_step_ids (1, 8) (1, 8) True 0.0
+inputs.pt gmap_task_embeddings (1, 8) (1, 8) True 0.0
+inputs.pt gmap_visited_masks (1, 8) (1, 8) True 0.0
+inputs.pt grid (5, 37, 100, 100) (5, 37, 100, 100) True 0.0
+inputs.pt start_direction_vector (5, 2) (5, 2) True 0.0
+inputs.pt start_position (5, 2) (5, 2) True 0.0
+inputs.pt txt_ids (1, 40) (1, 40) True 0.0
+inputs.pt txt_masks (1, 40) (1, 40) True 0.0
+inputs.pt txt_task_encoding (1, 40) (1, 40) True 0.0
+map_tokens.pt (5, 101, 768) (5, 101, 768) True 0.0
+map_token_masks.pt (5, 101) (5, 101) True 0.0
+language.pt (1, 40, 768) (1, 40, 768) True 0.0
+global_logits.pt (1, 8) (1, 8) True 0.0

@@ -29,3 +29,10 @@ __pycache__/
 skills
 outputs/
 slurm-*.out
+
+# tensor dumps / caches in reports
+*.pt
+*.pth
+*.npz
+reports/fwd_eq_*/
+reports/online_maps_*/

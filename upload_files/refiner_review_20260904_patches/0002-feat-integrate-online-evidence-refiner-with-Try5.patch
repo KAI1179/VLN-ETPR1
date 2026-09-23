@@ -1,0 +1,894 @@
+From 019e0c8f352d9628efa40076c464f354237657a6 Mon Sep 17 00:00:00 2001
+From: PRO-2684 <54608551+PRO-2684@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 08:15:40 -0400
+Subject: [PATCH 2/2] feat: integrate online evidence refiner with Try5
+
+---
+ prior/online_evidence.py                  | 111 ++++++
+ scripts/refiner/collect.py                | 411 ++++++++++++++++++++++
+ vlnce_baselines/common/environments.py    |  68 ++++
+ vlnce_baselines/config/default.py         |   1 +
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py | 149 ++++++++
+ 5 files changed, 740 insertions(+)
+ create mode 100644 prior/online_evidence.py
+ create mode 100644 scripts/refiner/collect.py
+
+diff --git a/prior/online_evidence.py b/prior/online_evidence.py
+new file mode 100644
+index 0000000..349f86f
+--- /dev/null
++++ b/prior/online_evidence.py
+@@ -0,0 +1,111 @@
++"""Accumulate online semantic evidence in the cognitive-map frame."""
++
++from __future__ import annotations
++
++import math
++
++import numpy as np
++
++
++class OnlineEvidence:
++    def __init__(
++        self,
++        origin_xz: tuple[float, float],
++        range_y: tuple[float, float],
++    ) -> None:
++        self.origin_xz = np.asarray(origin_xz, dtype=np.float64)
++        self.range_y = range_y
++        self.sem = np.zeros((27, 100, 100), dtype=bool)
++        self.observed = np.zeros((100, 100), dtype=bool)
++        self.free = np.zeros((100, 100), dtype=bool)
++        self.blocked = np.zeros((100, 100), dtype=bool)
++
++    def update(
++        self,
++        depth_m: np.ndarray,
++        sem_cat: np.ndarray,
++        sensor_pos: np.ndarray,
++        sensor_rot: np.ndarray,
++        hfov_deg: float,
++    ) -> None:
++        """Project and accumulate one metric depth/semantic view."""
++
++        valid = (depth_m >= 0.2) & (depth_m <= 10.0)
++        image_rows, image_cols = np.nonzero(valid)
++        depth = depth_m[image_rows, image_cols].astype(np.float64)
++
++        height, width = depth_m.shape
++        focal = (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
++        camera_points = np.column_stack(
++            (
++                (image_cols + 0.5 - width / 2.0) * depth / focal,
++                (height / 2.0 - image_rows - 0.5) * depth / focal,
++                -depth,
++            )
++        )
++        world_points = (
++            camera_points @ _quaternion_rotation_matrix(sensor_rot).T
++            + np.asarray(sensor_pos, dtype=np.float64)
++        )
++
++        on_level = (world_points[:, 1] >= self.range_y[0]) & (
++            world_points[:, 1] <= self.range_y[1]
++        )
++        world_points = world_points[on_level]
++        categories = sem_cat[image_rows, image_cols][on_level]
++        rows = np.floor((world_points[:, 0] - self.origin_xz[0]) / 0.5).astype(
++            np.int64
++        )
++        cols = np.floor((world_points[:, 2] - self.origin_xz[1]) / 0.5).astype(
++            np.int64
++        )
++
++        inside = (0 <= rows) & (rows < 100) & (0 <= cols) & (cols < 100)
++        rows = rows[inside]
++        cols = cols[inside]
++        categories = categories[inside]
++        point_heights = world_points[inside, 1] - self.range_y[0]
++
++        self.observed[rows, cols] = True
++        free = point_heights < 0.2
++        self.free[rows[free], cols[free]] = True
++        blocked = (point_heights >= 0.2) & (point_heights <= 1.6)
++        self.blocked[rows[blocked], cols[blocked]] = True
++        semantic = categories >= 0
++        self.sem[categories[semantic], rows[semantic], cols[semantic]] = True
++
++    def tensor(self) -> np.ndarray:
++        """Return semantic, observed, free, and blocked evidence as float32."""
++
++        return np.concatenate(
++            (
++                self.sem,
++                self.observed[None],
++                self.free[None],
++                self.blocked[None],
++            )
++        ).astype(np.float32)
++
++
++def _quaternion_rotation_matrix(quaternion_xyzw: np.ndarray) -> np.ndarray:
++    x, y, z, w = quaternion_xyzw
++    return np.asarray(
++        [
++            [
++                1.0 - 2.0 * (y * y + z * z),
++                2.0 * (x * y - z * w),
++                2.0 * (x * z + y * w),
++            ],
++            [
++                2.0 * (x * y + z * w),
++                1.0 - 2.0 * (x * x + z * z),
++                2.0 * (y * z - x * w),
++            ],
++            [
++                2.0 * (x * z - y * w),
++                2.0 * (y * z + x * w),
++                1.0 - 2.0 * (x * x + y * y),
++            ],
++        ],
++        dtype=np.float64,
++    )
+diff --git a/scripts/refiner/collect.py b/scripts/refiner/collect.py
+new file mode 100644
+index 0000000..bea8ff7
+--- /dev/null
++++ b/scripts/refiner/collect.py
+@@ -0,0 +1,411 @@
++#!/usr/bin/env python3
++"""Collect teacher and perturbed trajectories for cognitive-map refinement."""
++
++from __future__ import annotations
++
++import time
++from pathlib import Path
++from typing import List, Optional, Tuple
++
++import matplotlib.pyplot as plt
++import numpy as np
++import torch
++from habitat_baselines.common.obs_transformers import apply_obs_transforms_batch
++from habitat_baselines.utils.common import batch_obs
++from tap import Tap
++
++import habitat_extensions  # noqa: F401
++import vlnce_baselines  # noqa: F401
++from vlnce_baselines.config.default import get_config
++from vlnce_baselines.models.graph_utils import GraphMap
++from vlnce_baselines.models.etp_llm.navigation import (
++    llm_navigation_cognitive_map_raster_path,
++)
++from vlnce_baselines.models.etp_prior_gt.map_utils import cognitive_map_cache_path
++from vlnce_baselines.ss_trainer_ETP_LLM import RLTrainer
++
++
++class Arguments(Tap):
++    exp_config: Path = Path("run_r2r/iter_train.yaml")
++    output_dir: Path = Path("data/refiner")
++    report_dir: Path = Path("reports/refiner")
++    split: str = "train"
++    suffix: Optional[str] = None
++    limit: int = 100
++    num_environments: int = 4
++    gpu_device: int = 0
++    llm_cache_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++    llm_cache_dir: str = ""
++    gt_namespace: str = "gt.legacy.r1p5.direction5.v1"
++    pretrained_path: str = (
++        "pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt"
++    )
++    kinds: Tuple[str, ...] = ("teacher", "perturbed")
++
++
++def _config(args: Arguments):
++    config = get_config(str(args.exp_config))
++    config.defrost()
++    config.local_rank = 0
++    config.GPU_NUMBERS = 1
++    config.NUM_ENVIRONMENTS = args.num_environments
++    config.SIMULATOR_GPU_IDS = [args.gpu_device]
++    config.TORCH_GPU_IDS = [args.gpu_device]
++    config.TORCH_GPU_ID = args.gpu_device
++    config.TRAINER_NAME = "SS-ETP-LLM"
++    config.MODEL.policy_name = "LLMGridTry5Policy"
++    config.MODEL.task_type = "r2r"
++    config.MODEL.pretrained_path = args.pretrained_path
++    config.MODEL.MAP_ENCODER.enabled = True
++    config.MODEL.MAP_ENCODER.architecture = "try5"
++    config.MODEL.MAP_ENCODER.source = "llm_grid"
++    config.MODEL.MAP_ENCODER.llm_cache_model_key = args.llm_cache_model_key
++    config.MODEL.MAP_ENCODER.llm_cache_dir = args.llm_cache_dir
++    config.TASK_CONFIG.DATASET.SPLIT = args.split
++    config.TASK_CONFIG.DATASET.SUFFIX = (
++        "_90" if args.suffix is None and args.split == "train" else args.suffix or ""
++    )
++    config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.SHUFFLE = False
++    config.IL.waypoint_aug = False
++    RLTrainer._add_refiner_semantic_sensors(config.TASK_CONFIG)
++    config.SENSORS = config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS
++    config.freeze()
++    return config
++
++
++def _map_paths(args: Arguments, trainer: RLTrainer, episode):
++    cache_id = trainer._cognitive_map_cache_id(episode)
++    p0_path = llm_navigation_cognitive_map_raster_path(
++        episode.scene_id,
++        cache_id,
++        "r2r",
++        args.split,
++        cache_dir=args.llm_cache_dir or None,
++        model_key=args.llm_cache_model_key,
++    )
++    gt_path = cognitive_map_cache_path(
++        episode.scene_id,
++        cache_id,
++        namespace=args.gt_namespace,
++    )
++    return cache_id, p0_path, gt_path
++
++
++def _snapshot(evidence, pose):
++    return {
++        "pose": np.asarray(pose, dtype=np.float32),
++        "sem": np.packbits(evidence.sem),
++        "observed": np.packbits(evidence.observed),
++        "free": np.packbits(evidence.free),
++        "blocked": np.packbits(evidence.blocked),
++    }
++
++
++def _save_trajectory(
++    args: Arguments,
++    trainer: RLTrainer,
++    episode,
++    kind: str,
++    evidence,
++    steps,
++) -> Path:
++    cache_id, p0_path, gt_path = _map_paths(args, trainer, episode)
++    scene = Path(episode.scene_id).stem
++    output_path = args.output_dir / args.split / scene / f"{episode.episode_id}_{kind}.npz"
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    np.savez_compressed(
++        output_path,
++        scene_id=np.asarray(episode.scene_id),
++        episode_id=np.asarray(episode.episode_id),
++        cache_id=np.asarray(cache_id),
++        kind=np.asarray(kind),
++        origin_xz=np.asarray(evidence.origin_xz, dtype=np.float32),
++        range_y=np.asarray(evidence.range_y, dtype=np.float32),
++        p0_path=np.asarray(str(p0_path)),
++        gt_path=np.asarray(str(gt_path)),
++        steps=np.asarray(steps, dtype=object),
++    )
++    return output_path
++
++
++def _choose_actions(trainer, kind, teacher_actions, nav_inputs, no_vp_left, rngs, dev_left):
++    actions = []
++    for index, teacher_tensor in enumerate(teacher_actions):
++        teacher = int(teacher_tensor.item())
++        if teacher == -100 or no_vp_left[index]:
++            actions.append(0)
++            continue
++        if kind == "teacher" or (teacher == 0 and dev_left[index] == 0):
++            actions.append(teacher)
++            continue
++        alternative = [
++            action
++            for action, vp in enumerate(nav_inputs["gmap_vp_ids"][index])
++            if action != teacher and vp in trainer.gmaps[index].ghost_aug_pos
++        ]
++        if dev_left[index] > 0:
++            dev_left[index] -= 1
++            actions.append(int(rngs[index].choice(alternative)) if alternative else teacher)
++        elif rngs[index].random() < 0.25 and alternative:
++            actions.append(int(rngs[index].choice(alternative)))
++            dev_left[index] = int(rngs[index].integers(1, 5))
++        else:
++            actions.append(teacher)
++    return np.asarray(actions, dtype=np.int64)
++
++
++def _env_actions(trainer, actions, nav_inputs, no_vp_left, cur_vp, step):
++    result = []
++    use_tryout = (
++        trainer.config.IL.tryout
++        and not trainer.config.TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING
++    )
++    for index, gmap in enumerate(trainer.gmaps):
++        if actions[index] == 0 or step == trainer.max_len - 1 or no_vp_left[index]:
++            stop_vp = cur_vp[index]
++            stop_pos = gmap.node_pos[stop_vp]
++            result.append(
++                {
++                    "action": {
++                        "act": 0,
++                        "cur_vp": cur_vp[index],
++                        "stop_vp": stop_vp,
++                        "stop_pos": stop_pos,
++                        "back_path": None,
++                        "tryout": use_tryout,
++                    },
++                    "vis_info": None,
++                }
++            )
++            continue
++        ghost_vp = nav_inputs["gmap_vp_ids"][index][actions[index]]
++        ghost_pos = gmap.ghost_aug_pos[ghost_vp]
++        _, front_vp = gmap.front_to_ghost_dist(ghost_vp)
++        front_pos = gmap.node_pos[front_vp]
++        if trainer.config.IL.back_algo == "control":
++            back_path = [
++                (vp, gmap.node_pos[vp])
++                for vp in gmap.shortest_path[cur_vp[index]][front_vp]
++            ][1:]
++        else:
++            back_path = None
++        result.append(
++            {
++                "action": {
++                    "act": 4,
++                    "cur_vp": cur_vp[index],
++                    "front_vp": front_vp,
++                    "front_pos": front_pos,
++                    "ghost_vp": ghost_vp,
++                    "ghost_pos": ghost_pos,
++                    "back_path": back_path,
++                    "tryout": use_tryout,
++                },
++                "vis_info": None,
++            }
++        )
++        trainer._collect_prev_vp[index] = front_vp
++        if trainer.config.MODEL.consume_ghost:
++            gmap.delete_ghost(ghost_vp)
++    return result
++
++
++@torch.no_grad()
++def _collect_rollout(
++    args: Arguments,
++    trainer: RLTrainer,
++    kind: str,
++    remaining: int,
++) -> List[Path]:
++    trainer.envs.resume_all()
++    observations = trainer.envs.reset()
++    episodes = list(trainer.envs.current_episodes())
++    cognitive_maps = trainer._build_cognitive_maps(random_rotation_augmentation=False)
++    trainer._initialize_refiner_state(cognitive_maps)
++    trainer.gmaps = [
++        GraphMap(
++            True,
++            trainer.config.IL.loc_noise,
++            trainer.config.MODEL.merge_ghost,
++            0,
++        )
++        for _ in range(trainer.envs.num_envs)
++    ]
++    trainer._collect_prev_vp = [None] * trainer.envs.num_envs
++    records = [[] for _ in range(trainer.envs.num_envs)]
++    rngs = [np.random.default_rng(int(ep.episode_id)) for ep in episodes]
++    dev_left = [0] * trainer.envs.num_envs
++    written: List[Path] = []
++
++    for step in range(15):
++        evidence_states = trainer._update_online_evidence(observations)
++        for index, state in enumerate(evidence_states):
++            records[index].append(_snapshot(trainer.evidence[index], state["pose"]))
++
++        transformed = apply_obs_transforms_batch(
++            batch_obs(observations, trainer.device), trainer.obs_transforms
++        )
++        wp_outputs = trainer.policy.net(
++            mode="waypoint",
++            waypoint_predictor=trainer.waypoint_predictor,
++            observations=transformed,
++            in_train=False,
++        )
++        vp_inputs = trainer._vp_feature_variable(wp_outputs)
++        vp_inputs["mode"] = "panorama"
++        pano_embeds, pano_masks = trainer.policy.net(**vp_inputs)
++        avg_pano_embeds = torch.sum(
++            pano_embeds * pano_masks.unsqueeze(2), 1
++        ) / torch.sum(pano_masks, 1, keepdim=True)
++        cur_pos, cur_ori = trainer.get_pos_ori()
++        cur_vp, cand_vp, cand_pos = [], [], []
++        for index in range(trainer.envs.num_envs):
++            current, candidates, positions = trainer.gmaps[index].identify_node(
++                cur_pos[index],
++                cur_ori[index],
++                wp_outputs["cand_angles"][index],
++                wp_outputs["cand_distances"][index],
++            )
++            cur_vp.append(current)
++            cand_vp.append(candidates)
++            cand_pos.append(positions)
++        cand_real_pos = [
++            [
++                trainer.envs.call_at(
++                    index,
++                    "get_cand_real_pos",
++                    {"angle": angle, "forward": distance},
++                )
++                for angle, distance in zip(
++                    wp_outputs["cand_angles"][index],
++                    wp_outputs["cand_distances"][index],
++                )
++            ]
++            for index in range(trainer.envs.num_envs)
++        ]
++        for index in range(trainer.envs.num_envs):
++            trainer.gmaps[index].update_graph(
++                trainer._collect_prev_vp[index],
++                step + 1,
++                cur_vp[index],
++                cur_pos[index],
++                avg_pano_embeds[index],
++                cand_vp[index],
++                cand_pos[index],
++                pano_embeds[index][vp_inputs["nav_types"][index] == 1],
++                cand_real_pos[index],
++            )
++        nav_inputs = trainer._nav_gmap_variable(cur_vp, cur_pos, cur_ori, 1)
++        no_vp_left = nav_inputs.pop("no_vp_left")
++        teacher_actions = trainer._teacher_action_new(
++            nav_inputs["gmap_vp_ids"], no_vp_left, args.split == "train"
++        )
++        actions = _choose_actions(
++            trainer, kind, teacher_actions, nav_inputs, no_vp_left, rngs, dev_left
++        )
++        outputs = trainer.envs.step(
++            _env_actions(trainer, actions, nav_inputs, no_vp_left, cur_vp, step)
++        )
++        observations, _, dones, _ = [list(items) for items in zip(*outputs)]
++
++        for index in reversed(range(trainer.envs.num_envs)):
++            if not dones[index]:
++                continue
++            if len(written) < remaining:
++                written.append(
++                    _save_trajectory(
++                        args,
++                        trainer,
++                        episodes[index],
++                        kind,
++                        trainer.evidence[index],
++                        records[index],
++                    )
++                )
++            trainer.envs.pause_at(index)
++            observations.pop(index)
++            episodes.pop(index)
++            trainer.gmaps.pop(index)
++            trainer._collect_prev_vp.pop(index)
++            cognitive_maps.pop(index)
++            trainer.evidence.pop(index)
++            trainer.refiner_p0.pop(index)
++            trainer.refiner_semantic_luts.pop(index)
++            records.pop(index)
++            rngs.pop(index)
++            dev_left.pop(index)
++        if trainer.envs.num_envs == 0:
++            break
++    return written
++
++
++def _collect_kind(args: Arguments, kind: str) -> List[Path]:
++    trainer = RLTrainer(_config(args))
++    trainer._set_config()
++    observation_space, action_space = trainer._init_envs()
++    trainer._initialize_policy(
++        trainer.config,
++        False,
++        observation_space=observation_space,
++        action_space=action_space,
++    )
++    trainer.policy.eval()
++    trainer.waypoint_predictor.eval()
++    available = sum(trainer.envs.number_of_episodes)
++    target = available if args.limit < 0 else min(args.limit, available)
++    output_paths: List[Path] = []
++    started = time.perf_counter()
++    while len(output_paths) < target:
++        output_paths.extend(
++            _collect_rollout(args, trainer, kind, target - len(output_paths))
++        )
++    elapsed = time.perf_counter() - started
++    trainer.envs.close()
++    print(
++        f"kind={kind} episodes={len(output_paths)} seconds={elapsed:.2f} "
++        f"episodes_per_second={len(output_paths) / elapsed:.4f}",
++        flush=True,
++    )
++    return output_paths
++
++
++def _write_reports(paths: List[Path], output_dir: Path) -> None:
++    output_dir.mkdir(parents=True, exist_ok=True)
++    for trajectory_path in paths[:3]:
++        with np.load(trajectory_path, allow_pickle=True) as trajectory:
++            gt_path = Path(str(trajectory["gt_path"].item()))
++            step = trajectory["steps"][-1]
++        with np.load(gt_path) as target:
++            gt_object = target["grid"][:27].max(axis=0)
++        sem = np.unpackbits(
++            step["sem"], count=27 * 100 * 100
++        ).reshape(27, 100, 100)
++        observed = np.unpackbits(
++            step["observed"], count=100 * 100
++        ).reshape(100, 100)
++        figure, axes = plt.subplots(1, 3, figsize=(12, 4))
++        for axis, image, title in zip(
++            axes,
++            (gt_object, sem.max(axis=0), observed),
++            ("GT objects", "visual semantics", "observed"),
++        ):
++            axis.imshow(image)
++            axis.set_title(title)
++            axis.axis("off")
++        figure.tight_layout()
++        figure.savefig(output_dir / f"{trajectory_path.stem}.png")
++        plt.close(figure)
++
++
++def main() -> None:
++    args = Arguments(underscores_to_dashes=True).parse_args()
++    torch.cuda.set_device(args.gpu_device)
++    all_paths: List[Path] = []
++    kinds = args.kinds if args.split == "train" else ("teacher",)
++    for kind in kinds:
++        all_paths.extend(_collect_kind(args, kind))
++    _write_reports(all_paths, args.report_dir)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/vlnce_baselines/common/environments.py b/vlnce_baselines/common/environments.py
+index 59f2597..33e6c98 100755
+--- a/vlnce_baselines/common/environments.py
++++ b/vlnce_baselines/common/environments.py
+@@ -19,6 +19,8 @@ from scipy.spatial.transform import Rotation as R
+ import cv2
+ import os
+ 
++from prior.constants import MAPPED_OBJECT_NAMES, OBJECT_MAPPING
++
+ 
+ def quat_from_heading(heading, elevation=0):
+     array_h = np.array([0, heading, 0])
+@@ -100,6 +102,72 @@ class VLNCEDaggerEnv(habitat.RLEnv):
+         ori = np.array([*(agent_state.rotation.imag), agent_state.rotation.real])
+         return (pos, ori)
+ 
++    def get_refiner_episode_metadata(self):
++        sim = self._env.sim
++        agent_state = sim.get_agent_state()
++        start_y = float(agent_state.position[1])
++        level_ranges = [
++            (
++                float(level.aabb.center[1] - level.aabb.sizes[1] / 2.0),
++                float(level.aabb.center[1] + level.aabb.sizes[1] / 2.0),
++                level,
++            )
++            for level in sim.semantic_scene.levels
++        ]
++        level = next(
++            level
++            for min_y, max_y, level in level_ranges
++            if min_y <= start_y <= max_y
++        )
++        min_y = float(level.aabb.center[1] - level.aabb.sizes[1] / 2.0)
++        max_y = float(level.aabb.center[1] + level.aabb.sizes[1] / 2.0)
++        semantic_lut = {}
++        for obj in sim.semantic_scene.objects:
++            if obj is None or obj.category is None:
++                continue
++            semantic_id = int(obj.id.rsplit("_", 1)[-1])
++            raw_category = int(obj.category.index(mapping="mpcat40"))
++            if raw_category == 0:
++                mapped_category = 0
++            elif 0 < raw_category < len(OBJECT_MAPPING):
++                mapped_category = OBJECT_MAPPING[raw_category]
++            else:
++                mapped_category = MAPPED_OBJECT_NAMES.index("other")
++            semantic_lut[semantic_id] = mapped_category
++        return {
++            "start_position": np.asarray(agent_state.position, dtype=np.float32),
++            "range_y": np.asarray(
++                [min_y, max_y],
++                dtype=np.float32,
++            ),
++            "semantic_lut": semantic_lut,
++        }
++
++    def get_refiner_sensor_states(self, sensor_uuids):
++        agent_state = self._env.sim.get_agent_state()
++        sensor_states = {}
++        for sensor_uuid in sensor_uuids:
++            sensor_state = agent_state.sensor_states[sensor_uuid]
++            sensor_states[sensor_uuid] = (
++                np.asarray(sensor_state.position, dtype=np.float32),
++                np.asarray(
++                    [*(sensor_state.rotation.imag), sensor_state.rotation.real],
++                    dtype=np.float32,
++                ),
++            )
++        return {
++            "pose": np.concatenate(
++                [
++                    np.asarray(agent_state.position, dtype=np.float32),
++                    np.asarray(
++                        [*(agent_state.rotation.imag), agent_state.rotation.real],
++                        dtype=np.float32,
++                    ),
++                ]
++            ),
++            "sensor_states": sensor_states,
++        }
++
+     def get_observation_at(
+         self,
+         source_position: List[float],
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index b2d8f3d..81865af 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -213,6 +213,7 @@ _C.MODEL.MAP_ENCODER.llm_cache_model_key = ""
+ _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
+     ""  # optional cache whose available train episodes define the comparison population
+ )
++_C.MODEL.MAP_ENCODER.refiner_ckpt = ""
+ 
+ 
+ def purge_keys(config: CN, keys: List[str]) -> None:
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index fcb1717..f3d085f 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -48,6 +48,8 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
+     cached_cognitive_map_to_tensors,
+ )
+ from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
++from prior.online_evidence import OnlineEvidence
++from vlnce_baselines.models.refiner import CognitiveMapRefiner
+ 
+ 
+ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
+@@ -78,6 +80,28 @@ class RLTrainer(BaseVLNCETrainer):
+         )  #  * 0.97 transfered gt path got 0.96 spl
+         self.illegal_episodes_count = 0
+ 
++    def _refiner_enabled(self):
++        return bool(self.config.MODEL.MAP_ENCODER.refiner_ckpt)
++
++    @staticmethod
++    def _add_refiner_semantic_sensors(task_config):
++        camera_orientations = get_camera_orientations12()
++        sensor = task_config.SIMULATOR.SEMANTIC_SENSOR
++        sensor.WIDTH = 256
++        sensor.HEIGHT = 256
++        sensor.HFOV = 90
++        task_config.SIMULATOR.AGENT_0.SENSORS.append("SEMANTIC_SENSOR")
++        for action, orient in camera_orientations.items():
++            camera_template = f"SEMANTIC_{action}"
++            camera_config = deepcopy(sensor)
++            camera_config.WIDTH = 256
++            camera_config.HEIGHT = 256
++            camera_config.HFOV = 90
++            camera_config.ORIENTATION = orient
++            camera_config.UUID = camera_template.lower()
++            setattr(task_config.SIMULATOR, camera_template, camera_config)
++            task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
++
+     def _make_dirs(self):
+         if self.config.local_rank == 0:
+             self._make_ckpt_dir()
+@@ -130,6 +154,8 @@ class RLTrainer(BaseVLNCETrainer):
+                 task_config.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
+                 resize_config.append((camera_template.lower(), resizer_size))
+                 crop_config.append((camera_template.lower(), cropper_size))
++        if self._refiner_enabled():
++            self._add_refiner_semantic_sensors(task_config)
+         self.config.RL.POLICY.OBS_TRANSFORMS.RESIZER_PER_SENSOR.SIZES = resize_config
+         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = (
+             crop_config
+@@ -188,6 +214,14 @@ class RLTrainer(BaseVLNCETrainer):
+             self.config.freeze()
+             torch.cuda.set_device(self.device)
+ 
++    def eval(self):
++        if self._refiner_enabled():
++            self.config.defrost()
++            self._add_refiner_semantic_sensors(self.config.TASK_CONFIG)
++            self.config.SENSORS = self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS
++            self.config.freeze()
++        return super().eval()
++
+     def _init_envs(self):
+         # for DDP to load different data
+         self.config.defrost()
+@@ -267,6 +301,17 @@ class RLTrainer(BaseVLNCETrainer):
+         self.waypoint_predictor.to(self.device)
+         self.num_recurrent_layers = self.policy.net.num_recurrent_layers
+ 
++        if self._refiner_enabled():
++            self.refiner = CognitiveMapRefiner().to(self.device)
++            self.refiner.load_state_dict(
++                torch.load(
++                    self.config.MODEL.MAP_ENCODER.refiner_ckpt,
++                    map_location="cpu",
++                )
++            )
++            self.refiner.eval()
++            self.refiner.requires_grad_(False)
++
+         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
+         freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
+ 
+@@ -1047,6 +1092,86 @@ class RLTrainer(BaseVLNCETrainer):
+         ori = [x[1] for x in pos_ori]
+         return pos, ori
+ 
++    @staticmethod
++    def _refiner_sensor_uuids():
++        suffixes = [""] + [f"_{angle}" for angle in range(30, 360, 30)]
++        return [f"depth{suffix}" for suffix in suffixes]
++
++    def _initialize_refiner_state(self, cognitive_maps):
++        metadata = self.envs.call(
++            ["get_refiner_episode_metadata"] * self.envs.num_envs
++        )
++        self.evidence = []
++        self.refiner_p0 = []
++        self.refiner_semantic_luts = []
++        for cognitive_map, episode_metadata in zip(cognitive_maps, metadata):
++            p0 = cognitive_map["grid"].clone()
++            start_world = episode_metadata["start_position"]
++            start_local = cognitive_map["start_position"].numpy()
++            origin_xz = (
++                float(start_world[0] - start_local[0]),
++                float(start_world[2] - start_local[1]),
++            )
++            self.evidence.append(
++                OnlineEvidence(origin_xz, tuple(episode_metadata["range_y"]))
++            )
++            self.refiner_p0.append(p0)
++            self.refiner_semantic_luts.append(episode_metadata["semantic_lut"])
++
++    def _update_online_evidence(self, observations):
++        depth_uuids = self._refiner_sensor_uuids()
++        states = self.envs.call(
++            ["get_refiner_sensor_states"] * self.envs.num_envs,
++            [{"sensor_uuids": depth_uuids}] * self.envs.num_envs,
++        )
++        for env_index, (observation, state) in enumerate(zip(observations, states)):
++            semantic_lut = self.refiner_semantic_luts[env_index]
++            for depth_uuid in depth_uuids:
++                semantic_uuid = depth_uuid.replace("depth", "semantic", 1)
++                semantic_ids = np.asarray(observation[semantic_uuid])
++                semantic_categories = np.full(semantic_ids.shape, -1, dtype=np.int16)
++                for semantic_id in np.unique(semantic_ids):
++                    if int(semantic_id) in semantic_lut:
++                        semantic_categories[semantic_ids == semantic_id] = semantic_lut[
++                            int(semantic_id)
++                        ]
++                depth_m = np.asarray(observation[depth_uuid], dtype=np.float32)
++                if depth_m.ndim == 3:
++                    depth_m = depth_m[..., 0]
++                sensor_position, sensor_rotation = state["sensor_states"][depth_uuid]
++                self.evidence[env_index].update(
++                    depth_m * 10.0,
++                    semantic_categories,
++                    sensor_position,
++                    sensor_rotation,
++                    90.0,
++                )
++        return states
++
++    def _update_refined_cognitive_maps(self, observations, cognitive_maps):
++        self._update_online_evidence(observations)
++
++        p0 = torch.stack(self.refiner_p0[: self.envs.num_envs]).to(self.device)
++        evidence = torch.from_numpy(
++            np.stack(
++                [item.tensor() for item in self.evidence[: self.envs.num_envs]]
++            )
++        ).to(self.device)
++        with torch.no_grad():
++            output = self.refiner(torch.cat((p0, evidence), dim=1))
++        observed = torch.from_numpy(
++            np.stack(
++                [item.observed for item in self.evidence[: self.envs.num_envs]]
++            )
++        ).to(self.device)
++        refined = output.clone()
++        refined[:, :27] = (
++            observed[:, None] * output[:, :27]
++            + (~observed[:, None]) * p0[:, :27]
++        )
++        for cognitive_map, grid in zip(cognitive_maps, refined):
++            cognitive_map["grid"] = grid
++
+     def _prepare_map_inputs(
+         self,
+         nav_inputs,
+@@ -1231,6 +1356,7 @@ class RLTrainer(BaseVLNCETrainer):
+ 
+         self.envs.resume_all()
+         observations = self.envs.reset()
++        refiner_observations = observations
+ 
+         instr_max_len = self.config.IL.max_text_len
+         instr_pad_id = 1
+@@ -1257,6 +1383,11 @@ class RLTrainer(BaseVLNCETrainer):
+                 if ep.episode_id in self.stat_eps
+             ]
+             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
++            refiner_observations = [
++                observation
++                for index, observation in enumerate(refiner_observations)
++                if index not in env_to_pause
++            ]
+             if self.envs.num_envs == 0:
+                 return
+         if mode == "infer":
+@@ -1266,6 +1397,11 @@ class RLTrainer(BaseVLNCETrainer):
+                 if ep.episode_id in self.path_eps
+             ]
+             self.envs, batch = self._pause_envs(self.envs, batch, env_to_pause)
++            refiner_observations = [
++                observation
++                for index, observation in enumerate(refiner_observations)
++                if index not in env_to_pause
++            ]
+             if self.envs.num_envs == 0:
+                 return
+             curr_eps = self.envs.current_episodes()
+@@ -1312,6 +1448,8 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+         else:
+             cognitive_maps = None
++        if self._refiner_enabled() and cognitive_maps is not None:
++            self._initialize_refiner_state(cognitive_maps)
+ 
+         for stepk in range(self.max_len):
+             total_actions += self.envs.num_envs
+@@ -1391,6 +1529,12 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+             no_vp_left = nav_inputs.pop("no_vp_left")
+ 
++            if self._refiner_enabled() and cognitive_maps is not None:
++                self._update_refined_cognitive_maps(
++                    refiner_observations,
++                    cognitive_maps,
++                )
++
+             map_aux_loss = self._prepare_map_inputs(
+                 nav_inputs,
+                 txt_embeds,
+@@ -1614,6 +1758,10 @@ class RLTrainer(BaseVLNCETrainer):
+                         prev_vp.pop(i)
+                         if cognitive_maps is not None:
+                             cognitive_maps.pop(i)
++                        if self._refiner_enabled() and cognitive_maps is not None:
++                            self.evidence.pop(i)
++                            self.refiner_p0.pop(i)
++                            self.refiner_semantic_luts.pop(i)
+                         all_txt_ids = torch.cat(
+                             (all_txt_ids[:i], all_txt_ids[i + 1 :]), dim=0
+                         )
+@@ -1641,6 +1789,7 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+             batch = batch_obs(observations, self.device)
+             batch = apply_obs_transforms_batch(batch, self.obs_transforms)
++            refiner_observations = observations
+ 
+         if mode == "train":
+             loss = ml_weight * loss / total_actions
+-- 
+2.25.1
+
