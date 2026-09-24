@@ -55,6 +55,25 @@ The remaining three ablations are being rerun one at a time because their first 
 |---|---:|---:|---:|---:|---:|---:|---|
 | `gt_teacher_try5_val_unseen_z_on_llm_maps` | 49.48 | 37.52 | 62.04 | 5.004 | 12.56 | 6 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_on_llm_maps/eval_results/stats_ckpt_16000_val_unseen.json` |
 
+`nomap` completed:
+
+| run | SR | SPL | OSR | NE | stop error | result |
+|---|---:|---:|---:|---:|---:|---|
+| `gt_teacher_try5_val_unseen_z_nomap` | 57.04 | 40.15 | 69.60 | 4.407 | 12.56 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_nomap/eval_results/stats_ckpt_16000_val_unseen.json` |
+
+Step 1 summary:
+
+| run | SR | SPL | OSR | NE | stop error |
+|---|---:|---:|---:|---:|---:|
+| `none` | 73.84 | 63.38 | 77.49 | 3.294 | 3.64 |
+| `metadata_only` | 56.93 | 46.84 | 61.88 | 4.191 | 4.95 |
+| `raster_only` | 69.33 | 57.05 | 74.01 | 3.940 | 4.68 |
+| `no_direction` | 71.02 | 60.63 | 75.26 | 3.625 | 4.24 |
+| `llm` | 49.48 | 37.52 | 62.04 | 5.004 | 12.56 |
+| `nomap` | 57.04 | 40.15 | 69.60 | 4.407 | 12.56 |
+
+Gate G1: **satisfied** (`none` SR 73.84 >= 73). The first concurrent attempt for three runs failed with c10d port collisions; the serialized retries completed and their full tracebacks remain in the corresponding `eval.log` files.
+
 ## Step 2 — student GT-map evaluation
 
 Command (corrected interpreter):
