@@ -43,6 +43,12 @@ The remaining three ablations are being rerun one at a time because their first 
 |---|---:|---:|---:|---:|---:|---|
 | `gt_teacher_try5_val_unseen_z_raster_only` | 69.33 | 57.05 | 74.01 | 3.940 | 4.68 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_raster_only/eval_results/stats_ckpt_16000_val_unseen.json` |
 
+`no_direction` completed after the serialized retry:
+
+| run | SR | SPL | OSR | NE | stop error | result |
+|---|---:|---:|---:|---:|---:|---|
+| `gt_teacher_try5_val_unseen_z_no_direction` | 71.02 | 60.63 | 75.26 | 3.625 | 4.24 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_no_direction/eval_results/stats_ckpt_16000_val_unseen.json` |
+
 ## Step 2 — student GT-map evaluation
 
 Command (corrected interpreter):
