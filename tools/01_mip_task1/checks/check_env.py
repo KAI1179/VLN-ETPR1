@@ -180,7 +180,7 @@ def main() -> int:
         print()
         print("VERDICT: NOT USABLE —", "; ".join(fatal))
         print(
-            "  -> build a separate environment: tools/mip_task1/install_env.sh (conda python=3.11)"
+            "  -> build a separate environment: tools/01_mip_task1/install_env.sh (conda python=3.11)"
         )
         return 4
 

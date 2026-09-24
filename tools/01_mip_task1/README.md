@@ -1,4 +1,4 @@
-# tools/mip_task1 — MIP task book #1, run by a human, results returned through git
+# tools/01_mip_task1 — MIP task book #1, run by a human, results returned through git
 
 Claude cannot reach the research servers directly, so the loop is: Claude writes and pushes
 these scripts on the working branch; a human pulls the branch on a server that has the data
@@ -20,7 +20,7 @@ First ask whether an environment you already have can run MIP (read-only, clones
 
 ```bash
 conda activate <your-env>                                  # or PY=/path/to/python below
-WORKDIR=$HOME/agentic-nav bash tools/mip_task1/check_env.sh
+WORKDIR=$HOME/agentic-nav bash tools/01_mip_task1/check_env.sh
 ```
 
 It prints python/glibc/habitat_sim facts, the exact pip delta `requirements.txt` would cause in that
@@ -30,8 +30,8 @@ USABLE AFTER INSTALL (with the list of packages that would change), or NOT USABL
 Then build or fill an environment:
 
 ```bash
-WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh                    # new env: MIP/envs/mip (conda 3.11 > venv > uv)
-PY=/path/to/python WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh # or into an existing interpreter
+WORKDIR=$HOME/agentic-nav bash tools/01_mip_task1/install_env.sh                    # new env: MIP/envs/mip (conda 3.11 > venv > uv)
+PY=/path/to/python WORKDIR=$HOME/agentic-nav bash tools/01_mip_task1/install_env.sh # or into an existing interpreter
 ```
 
 `install_env.sh` ends by running `check_env.sh` on the result; a healthy environment says USABLE AS-IS
@@ -47,8 +47,8 @@ sources automatically. If none renders, send the whole `logs/ENV-check-*.log` ba
 ```bash
 tmux new -s mip
 cd ~/agentic-nav/ctl && git pull
-WORKDIR=$HOME/agentic-nav PY=$HOME/agentic-nav/MIP/envs/mip/bin/python bash tools/mip_task1/run_task1.sh   # A0–A7-2, B1–B4, C1, C3: no token cost
-bash tools/mip_task1/collect.sh && git push -u origin claude/trusting-brown-1hqo4c
+WORKDIR=$HOME/agentic-nav PY=$HOME/agentic-nav/MIP/envs/mip/bin/python bash tools/01_mip_task1/run_task1.sh   # A0–A7-2, B1–B4, C1, C3: no token cost
+bash tools/01_mip_task1/collect.sh && git push -u origin claude/trusting-brown-1hqo4c
 ```
 
 Step A2 of the run only verifies `PY`; it never installs anything.
@@ -71,7 +71,7 @@ A7-3 and C2 never run unless `RUN_PAID=1` and `MODEL_A7` are given.
 
 ## What comes back
 
-`collect.sh` copies into `docs/reports/mip_task1/server/<host>_<date>/`: the report, `rand100_ids.json`,
+`collect.sh` copies into `docs/reports/01_mip_task1/server/<host>_<date>/`: the report, `rand100_ids.json`,
 every run's `summary.json` / `stats.html` (A7, C2), `data_paths.env`, and trimmed logs. Commit and push;
 Claude reads them from the branch and writes the next task.
 

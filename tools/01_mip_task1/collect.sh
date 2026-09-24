@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 WORKDIR=${WORKDIR:-$HOME/agentic-nav}
 TAG=${TAG:-$(hostname)_$(date +%Y%m%d-%H%M)}
-DEST=$REPO_ROOT/docs/reports/mip_task1/server/$TAG
+DEST=$REPO_ROOT/docs/reports/01_mip_task1/server/$TAG
 mkdir -p "$DEST/logs"
 cp "$WORKDIR/reports/task1_report.md" "$DEST/"
 cp "$WORKDIR/reports/"*.json "$DEST/" 2>/dev/null || true
@@ -22,7 +22,7 @@ if [ -d "$WORKDIR/MIP/outputs" ]; then
 fi
 if [ -n "$newest" ] && [ -f "$newest/env_server.log" ]; then tail -200 "$newest/env_server.log" > "$DEST/logs/last_env_server.log"; fi
 cd "$REPO_ROOT"
-git add "docs/reports/mip_task1/server/$TAG"
+git add "docs/reports/01_mip_task1/server/$TAG"
 git commit -q -m "docs(reports): MIP task 1 server run $TAG" || { echo "commit failed or nothing to commit (is git user.name/user.email configured?)"; exit 1; }
 if [ "${AUTO_PUSH:-0}" = 1 ]; then git push -u origin "$(git rev-parse --abbrev-ref HEAD)"; else echo "now: git push -u origin $(git rev-parse --abbrev-ref HEAD)"; fi
 echo "collected into $DEST"

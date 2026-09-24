@@ -4,14 +4,14 @@
 
 执行环境说明：按用户要求，本任务不在本地服务器部署 CLI，而是在 Claude Code 云端容器中执行，
 以 GitHub 分支 `claude/trusting-brown-1hqo4c` 作为交付载体。容器是临时的（会话结束即回收），
-因此所有交付物都进入仓库目录 `docs/reports/mip_task1/`：
+因此所有交付物都进入仓库目录 `docs/reports/01_mip_task1/`：
 
 | 交付物 | 位置 |
 |---|---|
-| 本报告（`$REPORT`） | `docs/reports/mip_task1/task1_report.md` |
-| `rand100_ids.json` | `docs/reports/mip_task1/rand100_ids.json` |
-| 各步骤日志（截取） | `docs/reports/mip_task1/logs/` |
-| B1–B4、C1 所用脚本（可复现） | `docs/reports/mip_task1/scripts/` |
+| 本报告（`$REPORT`） | `docs/reports/01_mip_task1/task1_report.md` |
+| `rand100_ids.json` | `docs/reports/01_mip_task1/rand100_ids.json` |
+| 各步骤日志（截取） | `docs/reports/01_mip_task1/logs/` |
+| B1–B4、C1 所用脚本（可复现） | `docs/reports/01_mip_task1/scripts/` |
 | A7 / C2 的 `summary.json` | N/A：A7 第 (1) 项 FAIL，未产生 `summary.json`（见 A7、C2） |
 
 变量取值（容器内绝对路径）：
@@ -202,7 +202,7 @@ has viewpoint ids in reference_path? False
 ### B2 rand100 的内容 — PASS
 
 - rand100 是**独立的 episode 文件**（不是 id 列表）：`rand100.json.gz`（100 集，含 `instruction_vocab`）+ `rand100_gt.json.gz`（100 条 GT）。据 `splits/README.md`，选集继承自 SmartWay（与 OpenNav / AgenticNav 共用），2026-08-17 从官方 val_unseen 原样重建（同 id 同顺序）
-- `rand100_ids.json`：`docs/reports/mip_task1/rand100_ids.json`（容器内 `$WORKDIR/reports/rand100_ids.json`），100 × `[episode_id, trajectory_id, null]`；前 5 条 `(7,42) (11,57) (13,62) (40,155) (42,155)`
+- `rand100_ids.json`：`docs/reports/01_mip_task1/rand100_ids.json`（容器内 `$WORKDIR/reports/rand100_ids.json`），100 × `[episode_id, trajectory_id, null]`；前 5 条 `(7,42) (11,57) (13,62) (40,155) (42,155)`
 
 ### B3 FGR2R 与对应关系 — PASS
 
@@ -264,4 +264,4 @@ VLNCE    = $WORKDIR/MIP/splits/r2r/rand100/rand100.json.gz      # 代替不可�
 2. **C1 / C2 的 key 与模型**：是否提供 DashScope（国际站）或 OpenAI key；20 集成本探测用哪个支持图像的最便宜模型（候选：DashScope `qwen3-vl-plus`，litellm 无表价需自算；或 `harness=cc model=sonnet-5` 走订阅不产生 API 费用）。
 3. **B4 判据口径**：是否接受"水平距离 < 0.5 m（忽略约 1.38 m 相机高度差）"作为 O-进度的对齐规则；4 个含 navmesh 吸附偏差（≤1.28 m）的点如何处理。
 4. **是否调整云环境网络策略**（允许 `dl.fbaipublicfiles.com` / `drive.google.com`）以补做 B1 的 1839 总数核对。
-5. 交付物路径：本次放在 `docs/reports/mip_task1/`，是否需要移到别处或改放 `exp/` 分支。
+5. 交付物路径：本次放在 `docs/reports/01_mip_task1/`，是否需要移到别处或改放 `exp/` 分支。

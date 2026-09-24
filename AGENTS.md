@@ -26,6 +26,13 @@ The main agent shall act as the leader, decomposing and dispatching jobs to spec
 - Some APIs for `prior` are already cached, so do not cache again. Examples include `SceneSemanticBoxes.from_scene_id` and `ConnectivityEntry.map_for`.
 - Follow "Cyber Mysophobia" skill for new code and API design.
 
+## CLI task hand-back (scripts written here, run by a human on a server)
+
+- Number every task: tools live in `tools/NN_<slug>/`, results in `docs/reports/NN_<slug>/`
+  (`01_` = MIP environment and data check). Reports the human brings back go under
+  `docs/reports/NN_<slug>/server/<host>_<date>/`.
+- Communicate with the user in Chinese; repo files stay in English as above.
+
 ## Git workflow
 
 - Prefix experiment-specific branches with `exp/`, for example

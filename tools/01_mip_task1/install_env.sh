@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # install_env.sh — create (or fill) the python environment for MIP, then verify it.
-#   bash tools/mip_task1/install_env.sh                       # new env at $WORKDIR/MIP/envs/mip (conda 3.11 > venv > uv)
-#   PY=/path/to/python bash tools/mip_task1/install_env.sh    # install into an EXISTING interpreter instead
+#   bash tools/01_mip_task1/install_env.sh                       # new env at $WORKDIR/MIP/envs/mip (conda 3.11 > venv > uv)
+#   PY=/path/to/python bash tools/01_mip_task1/install_env.sh    # install into an EXISTING interpreter instead
 # Writes only under WORKDIR (plus the interpreter you point PY at). Retries pip at most twice.
 set -u -o pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+TOOL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKDIR=${WORKDIR:-$HOME/agentic-nav}
 MIP_DIR=${MIP_DIR:-$WORKDIR/MIP}
 ENV_DIR=${ENV_DIR:-$MIP_DIR/envs/mip}
@@ -39,6 +40,6 @@ if ! "$PY" -c "import habitat_sim; assert habitat_sim.__version__ == '0.3.3', ha
   echo "habitat_sim 0.3.3 not importable after install; see $logf (glibc: $(ldd --version | head -1); kernel: $(uname -r))"; exit 1
 fi
 echo "install ok; verifying with check_env.sh"
-PY=$PY WORKDIR=$WORKDIR MIP_DIR=$MIP_DIR bash "$REPO_ROOT/tools/mip_task1/check_env.sh"
+PY=$PY WORKDIR=$WORKDIR MIP_DIR=$MIP_DIR bash "$TOOL_DIR/check_env.sh"
 echo
-echo "to use this interpreter for the task: PY=$PY WORKDIR=$WORKDIR bash $REPO_ROOT/tools/mip_task1/run_task1.sh"
+echo "to use this interpreter for the task: PY=$PY WORKDIR=$WORKDIR bash $TOOL_DIR/run_task1.sh"

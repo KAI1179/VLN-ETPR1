@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # check_env.sh — can an EXISTING python environment run MIP? Read-only apart from the MIP clone.
-#   conda activate <env>; bash tools/mip_task1/check_env.sh            # checks `python` on PATH
-#   PY=/path/to/python bash tools/mip_task1/check_env.sh               # checks that interpreter
+#   conda activate <env>; bash tools/01_mip_task1/check_env.sh            # checks `python` on PATH
+#   PY=/path/to/python bash tools/01_mip_task1/check_env.sh               # checks that interpreter
 # Also records GPU / EGL facts. Exit code = checks/check_env.py's (0 as-is, 3 after install, 4 no, 5 unknown).
 set -u -o pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+TOOL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKDIR=${WORKDIR:-$HOME/agentic-nav}
 MIP_DIR=${MIP_DIR:-$WORKDIR/MIP}
 LOGDIR=$WORKDIR/logs
@@ -20,11 +21,11 @@ fi
   echo "egl vendors: $(ls /usr/share/glvnd/egl_vendor.d/ 2>&1 | tr '\n' ' ')"
   echo "== interpreter under test: $PY"
   [ -f "$WORKDIR/egl.env" ] && { echo "sourcing $WORKDIR/egl.env"; . "$WORKDIR/egl.env"; }
-  MIP_DIR=$MIP_DIR MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" "$REPO_ROOT/tools/mip_task1/checks/check_env.py" 2>&1 | tee "$LOGDIR/.check_env.last"
+  MIP_DIR=$MIP_DIR MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" "$TOOL_DIR/checks/check_env.py" 2>&1 | tee "$LOGDIR/.check_env.last"
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 4 ] && [ "$rc" -ne 5 ] && grep -q "render probe (EGL context, empty scene): FAIL" "$LOGDIR/.check_env.last"; then
     echo; echo "== render probe failed: running the EGL diagnosis (checks/egl_probe.py) — this tries several env combinations"
-    WORKDIR=$WORKDIR "$PY" "$REPO_ROOT/tools/mip_task1/checks/egl_probe.py"
+    WORKDIR=$WORKDIR "$PY" "$TOOL_DIR/checks/egl_probe.py"
   fi
   echo "exit code: $rc"
 } 2>&1 | tee "$logf"
