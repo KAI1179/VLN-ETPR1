@@ -1,0 +1,24 @@
+ANTHROPIC_API_KEY: unset
+OPENAI_API_KEY: unset
+DASHSCOPE_API_KEY: unset
+OPENROUTER_API_KEY: unset
+OLLAMA_URL: unset
+/opt/node22/bin/claude
+2.1.281 (Claude Code)
+litellm imported
+no provider keys found
+--- provider host reachability (egress policy)
+https://api.anthropic.com/v1/models                                    401
+https://api.openai.com/v1/models                                       000
+https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models          000
+https://dashscope.aliyuncs.com/compatible-mode/v1/models               000
+https://openrouter.ai/api/v1/models                                    000
+--- claude auth status
+{
+  "loggedIn": true,
+  "authMethod": "oauth_token",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/root/.claude/projects",
+  "configDirectory": "/root/.claude"
+}

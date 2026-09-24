@@ -1,0 +1,25 @@
+CONN: /home/user/VLN-ETPR1/precompute_img_features/connectivity | R2R_DISC: /home/user/agentic-nav/Fine-Grained-R2R/source/R2R-original/R2R_val_unseen.json | VLNCE episodes: /home/user/agentic-nav/MIP/splits/r2r/rand100/rand100.json.gz
+axis mappings tested: ['[x,z,y]*[1,-1,1]', '[x,z,y]', 'identity [x,y,z]', '[x,-z,y]']
+episodes with mean viewpoint->reference_path distance < 0.5 m under best axis mapping: 0 / 100
+best mapping histogram: {'[x,z,y]*[1,-1,1]': 100, '[x,z,y]': 0, 'identity [x,y,z]': 0, '[x,-z,y]': 0}
+episodes < 0.5 m per mapping: {'[x,z,y]*[1,-1,1]': 0, '[x,z,y]': 0, 'identity [x,y,z]': 0, '[x,-z,y]': 0}
+episodes where mapping[0] gives same-length, same-order path with max per-point error < 0.5 m: 0 / 100
+first 10: [(42, 6, 6, [1.49, 2.14, 3.76, 2.23], 'seq_diff'), (57, 5, 5, [1.39, 7.15, 5.28, 7.21], 'seq_diff'), (62, 6, 6, [1.39, 3.59, 3.38, 3.77], 'seq_diff'), (155, 7, 7, [1.38, 5.08, 4.56, 5.21], 'seq_diff'), (155, 7, 7, [1.38, 5.08, 4.56, 5.21], 'seq_diff'), (175, 7, 7, [1.39, 2.87, 2.72, 3.1], 'seq_diff'), (254, 7, 7, [1.37, 6.11, 4.46, 6.19], 'seq_diff'), (300, 7, 7, [1.43, 24.34, 18.25, 24.35], 'seq_diff'), (412, 6, 6, [1.36, 1.57, 1.46, 1.79], 'seq_diff'), (552, 6, 6, [1.4, 4.48, 3.55, 4.61], 'seq_diff')]
+all mean errors under mapping[0]: max = 1.68
+mp3d_z(first viewpoint) - habitat_y(start): mean 1.381 min 1.072 max 2.037 (camera height offset)
+episodes with len(R2R path) == len(reference_path): 100 / 100
+episodes with same length AND max per-point HORIZONTAL error < 0.5 m (same order): 96 / 100
+episodes with same length AND max per-point HORIZONTAL error < 0.05 m: 94 / 100
+max horizontal per-point error over all: 1.2837611800968085
+vertical offset mp3d_z(camera) - hab_y(floor): mean 1.382, per-point min 1.072, max 2.037
+order-free horizontal NN mean error < 0.5 m: 100 / 100
+first 8 rows (eid, tid, nvp, nref, same_len, max_horiz, mean_vert, min_vert, max_vert, nn_horiz):
+   (7, 42, 6, 6, True, 0.0, 1.495, 1.441, 1.514, 0.0)
+   (11, 57, 5, 5, True, 0.0, 1.393, 1.382, 1.402, 0.0)
+   (13, 62, 6, 6, True, 0.0, 1.388, 1.384, 1.391, 0.0)
+   (40, 155, 7, 7, True, 0.0, 1.385, 1.375, 1.391, 0.0)
+   (42, 155, 7, 7, True, 0.0, 1.385, 1.375, 1.391, 0.0)
+   (52, 175, 7, 7, True, 0.119, 1.386, 1.376, 1.399, 0.017)
+   (70, 254, 7, 7, True, 0.0, 1.374, 1.343, 1.395, 0.0)
+   (94, 300, 7, 7, True, 0.0, 1.433, 1.382, 1.502, 0.0)
+start_position vs first R2R viewpoint, horizontal: max 1.284 m; goal vs last viewpoint: max 1.284 m

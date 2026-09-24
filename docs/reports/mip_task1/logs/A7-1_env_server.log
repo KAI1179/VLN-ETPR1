@@ -1,0 +1,15 @@
+[envserver] EmbodiedScoreEnv on http://127.0.0.1:9200
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "GET /health HTTP/1.1" 200 -
+Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER
+WindowlessContext: Unable to create windowless context
+[envserver] EmbodiedScoreEnv on http://127.0.0.1:9200
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "GET /health HTTP/1.1" 200 -
+Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER
+WindowlessContext: Unable to create windowless context
+[envserver] EmbodiedScoreEnv on http://127.0.0.1:9200
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "GET /health HTTP/1.1" 200 -
+Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER
+WindowlessContext: Unable to create windowless context

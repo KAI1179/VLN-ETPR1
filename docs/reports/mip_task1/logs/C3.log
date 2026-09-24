@@ -1,0 +1,10 @@
+/bin/bash: line 1: nvidia-smi: command not found
+lspci gpu:
+lspci unavailable / no GPU
+no /dev/nvidia*
+--- pip list
+(system pip)
+--- HF cache
+no ~/.cache/huggingface/hub qwen weights
+--- ollama
+no ollama

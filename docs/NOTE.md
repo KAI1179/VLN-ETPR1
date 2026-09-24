@@ -926,3 +926,11 @@ Drop Rate By `max_new_tokens`:
 - OpenScene 与 Mosaic3D 均已在 checkpoint-specific permission gate 于 load/runtime 前 NO-GO；获授权的
   三个候选至此全部完成。OOOPS validated manifest SHA-256 为 `3d2fce62…779c3`，完整 package tree
   SHA-256 为 `c76c576c…8238`。
+
+## 09/24
+
+- MIP 环境与数据核查（CLI 任务书 #1）在云端容器完成可做部分：MIP 安装与单测通过；
+  rand100 ↔ FGR2R 的 trajectory_id 命中 100/100；R2R 视点与 CE `reference_path` 在
+  映射 `mp3d(x, y, z) = (hab_x, −hab_z, hab_y)` 下同长同序、水平误差 < 0.05 m 的有 94/100
+  （竖直恒差约 1.38 m 为相机高度）。A7 / C2 因无 MP3D、无 GPU/EGL、无 API key 未能执行。
+  详见 `docs/daily/2026-09-24.md` 与 `docs/reports/mip_task1/task1_report.md`。

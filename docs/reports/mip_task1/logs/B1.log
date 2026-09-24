@@ -1,0 +1,22 @@
+file: MIP/splits/r2r/rand100/rand100.json.gz
+top-level keys of file: ['instruction_vocab', 'episodes']
+n_episodes 100
+top-level keys: ['episode_id', 'trajectory_id', 'scene_id', 'start_position', 'start_rotation', 'info', 'goals', 'instruction', 'reference_path']
+episode_id 7
+trajectory_id 42
+scene_id mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb
+instruction keys: ['instruction_text', 'instruction_tokens']
+instruction_id: None
+instruction_text: Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where y
+reference_path len: 6 first: [-0.944907009601593, 0.04610800743103027, 5.948919773101807]
+goals: [{'position': [0.8591700196266174, 0.04610800743103027, -4.339749813079834], 'radius': 3.0}]
+start_position: [-0.944907009601593, 0.04610800743103027, 5.948919773101807] start_rotation: [-0.0, 0.0, 0.0, 1.0]
+info: {'geodesic_distance': 10.452263832092285}
+has viewpoint ids in reference_path? False
+all reference_path entries are 3-float lists? True
+scenes: 10 ['2azQ1b91cZZ', '8194nk5LbLH', 'EU6Fwq7SyZv', 'QUCTc6BB5sX', 'TbHJrupSAjP', 'X7HyMhZNoso', 'Z6MFQCViBuw', 'oLBMNvg9in8', 'x8F5xyUWy9e', 'zsNo4HB9uLZ'] ...
+ref path len stats: min/mean/max 4 5.85 7
+episode_id range: 7 1406
+trajectory_id unique: 97
+GT file: MIP/splits/r2r/rand100/rand100_gt.json.gz n keys 100 first key 7 value keys ['locations', 'actions', 'forward_steps']
+GT locations len 42 first [-0.944907009601593, 0.04610800743103027, 5.948919773101807] actions len 49 forward_steps 41

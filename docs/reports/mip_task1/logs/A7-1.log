@@ -1,0 +1,111 @@
+[std] partial episodes -> test run test_r2r_es_cc_fable-5_default_bareES
+[std] fake harness -> run fake_r2r_es_cc_fable-5_default_bareES
+[std] 1 env server(s) EmbodiedScoreEnv spawned on 9200-9200 (logs: /home/user/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES)
+[std] http://127.0.0.1:9200 healthy: EmbodiedScoreEnv
+[std] code snapshot -> code (identical, reused)
+[std] run=fake_r2r_es_cc_fable-5_default_bareES model=claude-fable-5 eps=0-0 workers=1 -> /home/user/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES
+Traceback (most recent call last):
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connectionpool.py", line 540, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connection.py", line 638, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/http/client.py", line 1415, in getresponse
+    response.begin()
+  File "/usr/lib/python3.11/http/client.py", line 330, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/http/client.py", line 299, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/adapters.py", line 645, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connectionpool.py", line 847, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/util/retry.py", line 510, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connectionpool.py", line 540, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/urllib3/connection.py", line 638, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/http/client.py", line 1415, in getresponse
+    response.begin()
+  File "/usr/lib/python3.11/http/client.py", line 330, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/http/client.py", line 299, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/user/agentic-nav/MIP/runner.py", line 1034, in <module>
+    main()
+  File "/home/user/agentic-nav/MIP/runner.py", line 986, in main
+    run(compose_app(experiment, overrides))
+  File "/home/user/agentic-nav/MIP/runner.py", line 960, in run
+    asyncio.run(Runner(adapter, arm, module_cls, app, callbacks, retry=retry).run(run_dir))
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/runner.py", line 664, in run
+    return await self._run(run_dir, servers)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/runner.py", line 794, in _run
+    await self.module_cls.setup_server(
+  File "/home/user/agentic-nav/MIP/core/shapes/base.py", line 97, in setup_server
+    out = await env.call("configure", line=cfg["dataset"], split=cfg["split"], **extra)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/core/envclient.py", line 31, in call
+    return await asyncio.to_thread(self.call_sync, name, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/core/envclient.py", line 26, in call_sync
+    resp = requests.post(f"{self.url}/{name}", json=kwargs, timeout=self.timeout_s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/sessions.py", line 592, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/sessions.py", line 706, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/requests/adapters.py", line 660, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+A7-1 exit code: 1

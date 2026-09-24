@@ -1,0 +1,24 @@
+Cloning into 'Fine-Grained-R2R'...
+FGR2R val_unseen files: ['/home/user/agentic-nav/Fine-Grained-R2R/data/FGR2R_val_unseen.json', '/home/user/agentic-nav/Fine-Grained-R2R/source/R2R-original/R2R_val_unseen.json', '/home/user/agentic-nav/Fine-Grained-R2R/source/output_subinstr/FGR2R_val_unseen.json']
+using: /home/user/agentic-nav/Fine-Grained-R2R/data/FGR2R_val_unseen.json
+n items 783
+keys: ['distance', 'scan', 'path_id', 'path', 'heading', 'instructions', 'new_instructions', 'chunk_view']
+path_id : 4332
+scan : 8194nk5LbLH
+instr_id : None
+instructions : ['Walk to the other end of the lobby and wait near the exit. ', 'Walk straight toward the bar with the chairs/stool. Turn left and go straight until you get to three tables with chairs. Turn left and wait near the couch. ', 'Go forward toward the windows. Go toward the the far couch, Stop next to th
+new_instructions : [[['walk', 'to', 'the', 'other', 'end', 'of', 'the', 'lobby'], ['and', 'wait', 'near', 'the', 'exit']], [['walk', 'straight', 'toward', 'the', 'bar', 'with', 'the', 'chair', '/', 'stool'], ['turn', 'left', 'and', 'go', 'straight', 'until', 'you', 'get', 'to', 'three', 'table', 'with', 'chair'], ['tu
+chunk_view : [[[1, 4], [4, 4]], [[1, 2], [2, 3], [3, 4]], [[1, 3], [3, 4], [4, 4]]]
+path : ['c9e8dc09263e4d0da77d16de0ecddd39', 'f33c718aaf2c41469389a87944442c62', 'ae91518ed77047b3bdeeca864cd04029', '6776097c17ed4b93aee61704eb32f06c']
+heading : 4.055
+distance : 10.86
+type(new_instructions): str | type(chunk_view): list
+new_instructions parsed: n_instr 3 sub-instr per instr [2, 3, 3]
+chunk_view parsed: n_instr 3 chunks per instr [2, 3, 3] first: [[1, 4], [4, 4]]
+path len: 4 -> chunk_view indices 1-based max: 4
+items where chunk_view/new_instructions shapes disagree or indices out of path range: 0
+R2R-original val_unseen n items 783 keys ['distance', 'scan', 'path_id', 'path', 'heading', 'instructions']
+path_id sets equal (FGR2R vs R2R original): True
+rand100 trajectory_ids found in FGR2R val_unseen: 100 / 100 (unique trajectory_ids in rand100: 97 )
+missing trajectory_ids: []
+rand100 trajectories with >1 episode (multiple instructions of same path): {155: 2, 788: 2, 4381: 2}
