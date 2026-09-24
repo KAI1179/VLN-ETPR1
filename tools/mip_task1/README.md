@@ -14,19 +14,44 @@ git clone -b claude/trusting-brown-1hqo4c https://github.com/KAI1179/VLN-ETPR1.g
 Everything the task writes goes under `~/agentic-nav` (`MIP/`, `Fine-Grained-R2R/`, `logs/`,
 `reports/`); the checkout `ctl/` is only the channel for scripts and results.
 
-## Run (inside tmux)
+## Step 1 — the python environment (human-verified, separate from the task run)
+
+First ask whether an environment you already have can run MIP (read-only, clones MIP if needed):
+
+```bash
+conda activate <your-env>                                  # or PY=/path/to/python below
+WORKDIR=$HOME/agentic-nav bash tools/mip_task1/check_env.sh
+```
+
+It prints python/glibc/habitat_sim facts, the exact pip delta `requirements.txt` would cause in that
+environment (new / upgrade / DOWNGRADE), an EGL render probe, and a verdict: USABLE AS-IS,
+USABLE AFTER INSTALL (with the list of packages that would change), or NOT USABLE.
+
+Then build or fill an environment:
+
+```bash
+WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh                    # new env: MIP/envs/mip (conda 3.11 > venv > uv)
+PY=/path/to/python WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh # or into an existing interpreter
+```
+
+`install_env.sh` ends by running `check_env.sh` on the result; a healthy environment says USABLE AS-IS.
+
+## Step 2 — run the task (inside tmux)
 
 ```bash
 tmux new -s mip
 cd ~/agentic-nav/ctl && git pull
-WORKDIR=$HOME/agentic-nav bash tools/mip_task1/run_task1.sh      # A0–A7-2, B1–B4, C1, C3: no token cost
+WORKDIR=$HOME/agentic-nav PY=$HOME/agentic-nav/MIP/envs/mip/bin/python bash tools/mip_task1/run_task1.sh   # A0–A7-2, B1–B4, C1, C3: no token cost
 bash tools/mip_task1/collect.sh && git push -u origin claude/trusting-brown-1hqo4c
 ```
+
+Step A2 of the run only verifies `PY`; it never installs anything.
 
 Knobs (all optional, as environment variables):
 
 | variable | meaning |
 |---|---|
+| `PY=/path/to/python` | the interpreter with MIP installed (default `$WORKDIR/MIP/envs/mip/bin/python`) |
 | `STEPS=A5,A6,A7` | run only these steps (default `all`); every step is idempotent and appends to the report |
 | `DATA_SEARCH_ROOTS="/path/a /path/b"` | where to look for `mp3d/`, `R2R_VLNCE_v1-3_preprocessed/`, `connectivity/` (default includes `~/code/ETP-R1-snapshot/ETP-R1/data`) |
 | `MP3D_DIR= VLNCE_DIR= CONN= R2R_DISC=` | explicit paths instead of searching |

@@ -3,12 +3,16 @@
 # server that has (ideally) MP3D scenes, a GPU and provider keys. Claude writes the script,
 # the human runs it, the results travel back through git (collect.sh).
 #
+# The python environment is NOT built here: run tools/mip_task1/install_env.sh first (or verify an
+# existing one with tools/mip_task1/check_env.sh) and point PY at its interpreter.
+#
 # Usage (run inside tmux; the whole thing is resumable, every step is idempotent):
-#   WORKDIR=$HOME/agentic-nav bash tools/mip_task1/run_task1.sh            # everything that needs no money
+#   WORKDIR=$HOME/agentic-nav PY=$HOME/agentic-nav/MIP/envs/mip/bin/python bash tools/mip_task1/run_task1.sh
 #   STEPS=A7,C2 RUN_PAID=1 MODEL_A7=<row> HARNESS_A7=mini bash tools/mip_task1/run_task1.sh
 #
 # Knobs (environment variables, all optional):
 #   WORKDIR            root for everything this script writes (default $HOME/agentic-nav)
+#   PY                 the interpreter with MIP installed (default $WORKDIR/MIP/envs/mip/bin/python)
 #   STEPS              comma list of steps (A0,A1,...,C3) or "all" (default)
 #   DATA_SEARCH_ROOTS  space-separated dirs searched for mp3d / vlnce / connectivity data
 #   MP3D_DIR VLNCE_DIR CONN R2R_DISC   explicit data paths (skip the search)
@@ -38,7 +42,7 @@ DATA_SEARCH_ROOTS=${DATA_SEARCH_ROOTS:-"$HOME/code/ETP-R1-snapshot/ETP-R1/data $
 MIP_DIR=$WORKDIR/MIP
 ENV_DIR=$MIP_DIR/envs/mip
 FGR2R_DIR=$WORKDIR/Fine-Grained-R2R
-PY=$ENV_DIR/bin/python
+PY=${PY:-$ENV_DIR/bin/python}
 export MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet
 export REPORTS_DIR
 
@@ -143,40 +147,25 @@ step_A1() {
   fi
 }
 
-# ── A2: python env + install ───────────────────────────────────────────────
-make_env() {
-  py_ok && return 0
-  if command -v conda > /dev/null 2>&1; then
-    retry 3 conda create -y -p "$ENV_DIR" python=3.11 && return 0
-  fi
-  if python3 -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-    python3 -m venv "$ENV_DIR" && "$PY" -m pip install -q --upgrade pip setuptools wheel && return 0
-  fi
-  if command -v uv > /dev/null 2>&1; then
-    uv venv --seed --python 3.11 "$ENV_DIR" && return 0
-  fi
-  return 1
-}
-
+# ── A2: verify the python environment (built separately by install_env.sh) ──
 step_A2() {
   local logf=$LOGDIR/A2.log
   [ -d "$MIP_DIR" ] || { record A2 SKIP "-" - "MIP not cloned (A1)"; return 1; }
-  if ! make_env >> "$logf" 2>&1; then
-    record A2 FAIL "conda create -p envs/mip python=3.11 | python3 -m venv envs/mip | uv venv" "$logf" "no usable interpreter 3.10-3.13 (need conda, a system python3 in range, or uv)"
-    return 1
-  fi
-  echo "interpreter: $("$PY" --version 2>&1) at $PY" >> "$logf"
-  if ! (cd "$MIP_DIR" && retry 3 "$PY" -m pip install -r requirements.txt) >> "$logf" 2>&1; then
-    { echo "glibc: $(ldd --version | head -1)"; echo "kernel: $(uname -r)"; } >> "$logf"
-    record A2 FAIL "pip install -r requirements.txt" "$logf" "install failed (glibc/kernel recorded above); not building from source per task book"
+  if ! py_ok; then
+    record A2 FAIL "PY=$PY" - "no interpreter at $PY: run tools/mip_task1/install_env.sh, or PY=<python> for an existing env (check it first with check_env.sh)"
     return 1
   fi
   local ver; ver=$("$PY" -c "import habitat_sim; print(habitat_sim.__version__)" 2>&1)
-  { echo "habitat_sim: $ver"; "$PY" -m pip list 2>/dev/null | grep -i -E "habitat|embodiedscore|litellm|hydra|omegaconf|mini-swe|claude-agent"; } >> "$logf"
-  if [ "$ver" = "0.3.3" ]; then
-    record A2 PASS "pip install -r requirements.txt; python -c 'import habitat_sim; print(habitat_sim.__version__)'" "$logf" "habitat_sim 0.3.3 in $ENV_DIR"
+  {
+    echo "interpreter: $PY ($("$PY" --version 2>&1))"
+    echo "habitat_sim: $ver"
+    "$PY" -m pip list 2>/dev/null | grep -i -E "habitat|embodiedscore|litellm|hydra|omegaconf|mini-swe|claude-agent"
+    ls "$LOGDIR"/A2-install.log "$LOGDIR"/ENV-check-*.log 2>/dev/null | sed 's/^/related log: /'
+  } > "$logf" 2>&1
+  if [ "$ver" = "0.3.3" ] && "$PY" -c "import embodiedscore_envs, litellm, hydra, minisweagent" 2>> "$logf"; then
+    record A2 PASS "python -c 'import habitat_sim, embodiedscore_envs, litellm, hydra, minisweagent'" "$logf" "habitat_sim 0.3.3 and the MIP stack import from $PY (installed by install_env.sh / verified by check_env.sh, logs listed above)"
   else
-    record A2 FAIL "python -c 'import habitat_sim'" "$logf" "habitat_sim import/version check failed: $ver"
+    record A2 FAIL "python -c 'import habitat_sim ...'" "$logf" "habitat_sim=$ver or a MIP package missing in $PY: run install_env.sh (PY=$PY to install into this env)"
     return 1
   fi
 }
