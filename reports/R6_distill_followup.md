@@ -18,7 +18,30 @@ GPU assignment and results pending. Only physical GPUs 0–3 are permitted; runs
 
 ## Step 2 — student GT-map evaluation
 
-Command and result pending.
+Command (corrected interpreter):
+
+```bash
+PYTHONPATH=. /home/xukai/anaconda3/envs/etpr1-py38/bin/python scripts/distill/check_pretrained_map_loading.py --dagger-ckpts data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter14000.pth /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth data/logs/checkpoints/s4_try5_refiner/ckpt.iter15000.pth 2>&1 | tee -a reports/step0_map_loading.txt
+```
+
+The checker reached the model-loading checks but failed. Raw output is in `reports/step0_map_loading.txt`.
+
+| Check | Result |
+|---|---:|
+| Checkpoint total tensors | 522 |
+| Pretrained `map_encoder.*` tensors | 37 |
+| Pretrained `bert.global_encoder.graph_map_attention.*` tensors | 6 |
+| `load_pretrained_map_modules=False` landed fusion tensors | 3/6 |
+| `load_pretrained_map_modules=False` residual projection norm | 15.3716 |
+| `load_pretrained_map_modules=True` strict navigation transfer | failed |
+
+The exact terminal exception was:
+
+```text
+RuntimeError: Pretrained graph_map_attention tensors were remapped but did not land in the navigation model: ['graph_map_attention.attention.in_proj_weight', 'graph_map_attention.attention.in_proj_bias', 'graph_map_attention.attention.out_proj.weight', 'graph_map_attention.attention.out_proj.bias', 'graph_map_attention.residual_projection.weight', 'graph_map_attention.residual_projection.bias']
+```
+
+Gate G0: **not satisfied** (not 6/6 and strict transfer failed). Per the task book, the loader variants are ineligible for step 4.
 
 ## Step 3 — paired CPU analysis
 
