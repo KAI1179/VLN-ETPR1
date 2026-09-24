@@ -48,6 +48,7 @@ run_py() { # <step> <script>
   (cd "$TOOL_DIR/py" && "$PY" "$script") > "$logf" 2>&1
   rc=$?
   case $rc in 0) st=PASS ;; 1) st=FAIL ;; 2) st=SKIP ;; *) st=ERROR ;; esac
+  grep -q "^Traceback" "$logf" && st=ERROR   # a crash exits 1 too; it is not a failed criterion
   if [ "$st" = ERROR ]; then
     { echo "$(grep -m1 '^## ' "$OUT/md/$step.md" 2>/dev/null || echo "## $step")"; echo; echo "ERROR (exit $rc), log \`$logf\`:"; echo '```'; tail -30 "$logf"; echo '```'; } > "$OUT/md/$step.md"
   fi
@@ -63,9 +64,11 @@ step_T20() {
   {
     echo "== before"; ls -la "$R2R_LINKS"
     [ -d "$CE_ORIG" ] || { echo "CE_ORIG missing: $CE_ORIG"; exit 3; }
+    shopt -s nullglob
     for src in "$CE_ORIG"/*; do
       name=$(basename "$src")
       [ "$name" = rand100 ] && continue
+      [ -r "$src" ] || { echo "not readable, skipped: $src"; continue; }
       ln -sfn "$src" "$R2R_LINKS/$name"
     done
     # links left from the _xlmr release that the original release does not have
@@ -79,6 +82,9 @@ step_T20() {
   local bad
   bad=$(for l in "$R2R_LINKS"/*; do n=$(basename "$l"); [ "$n" = rand100 ] && continue; case "$(readlink "$l")" in "$CE_ORIG"/*) ;; *) echo "$n";; esac; done)
   [ "$(readlink "$R2R_LINKS/rand100")" = "$MIP_DIR/splits/r2r/rand100" ] || bad="$bad rand100"
+  for need in train val_seen val_unseen; do
+    [ -r "$R2R_LINKS/$need/$need.json.gz" ] || bad="$bad $need(missing/unreadable)"
+  done
   [ -n "$bad" ] && st=FAIL
 
   # A7-(1) rerun: keep task 1's run aside, run fresh, compare
@@ -113,9 +119,29 @@ step_T20() {
   log "T2.0 -> $st (log $logf)"
 }
 
+# ── preflight: every input must be READABLE before anything is touched ─────
+preflight() {
+  local missing=() f
+  for f in "$CE_ORIG/train/train.json.gz" "$CE_ORIG/train/train_gt.json.gz" "$CE_ORIG/val_unseen/val_unseen.json.gz" "$CE_ORIG/val_unseen/val_unseen_gt.json.gz" \
+           "$FGR2R/FGR2R_train.json" "$FGR2R/FGR2R_val_unseen.json" "$R2R_DISC/R2R_train.json" "$R2R_DISC/R2R_val_unseen.json" \
+           "$RAND100/rand100.json.gz" "$RAND100/rand100_gt.json.gz"; do
+    if [ ! -r "$f" ] || ! head -c 1 "$f" > /dev/null 2>&1; then missing+=("$f"); fi
+  done
+  [ -r "$CONN" ] && compgen -G "$CONN/*_connectivity.json" > /dev/null || missing+=("$CONN/*_connectivity.json")
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo "PREFLIGHT FAILED — not readable by $(whoami):"; printf '  %s\n' "${missing[@]}"
+    echo "  ls -la of the first one's directory:"; ls -la "$(dirname "${missing[0]}")" 2>&1 | head -8 | sed 's/^/    /'
+    echo "Nothing was changed. Fix the permissions, or point the variable at a readable copy, e.g."
+    echo "  CE_ORIG=/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr bash $0"
+    return 1
+  fi
+  echo "preflight: all inputs readable (CE_ORIG=$CE_ORIG)"
+}
+
 want() { [[ ",$STEPS," == *",$1,"* ]]; }
 log "WORKDIR=$WORKDIR OUT=$OUT STEPS=$STEPS CLAUSE_TOL_M=$CLAUSE_TOL_M"
 [ -x "$PY" ] || { echo "no interpreter at $PY (task 1's install_env.sh builds it)"; exit 1; }
+preflight || exit 1
 want T2.0 && step_T20
 want T2.1 && run_py T2.1 t21_instr_index.py
 want T2.2 && run_py T2.2 t22_oracle.py
