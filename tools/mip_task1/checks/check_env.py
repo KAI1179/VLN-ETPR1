@@ -175,6 +175,15 @@ def main() -> int:
             hs,
         )
 
+    if fatal:
+        # off the wheel matrix: the pip delta is moot (requirements.txt itself needs >= 3.10)
+        print()
+        print("VERDICT: NOT USABLE —", "; ".join(fatal))
+        print(
+            "  -> build a separate environment: tools/mip_task1/install_env.sh (conda python=3.11)"
+        )
+        return 4
+
     mip_dir = Path(os.environ.get("MIP_DIR", "")).expanduser()
     changes: list[dict] = []
     if not (mip_dir / "requirements.txt").is_file():
