@@ -154,7 +154,7 @@ def gt_steps(
 
 
 def steps_from_polyline(
-    xz: Sequence[Sequence[float]], *, first_loc_index: int = 0
+    xz: Sequence[Sequence[float]] | np.ndarray, *, first_loc_index: int = 0
 ) -> list[AgentStep]:
     """Forward-only steps along a dense polyline, yaw = direction of motion (synthetic trajectories)."""
     p = np.asarray(xz, dtype=float)

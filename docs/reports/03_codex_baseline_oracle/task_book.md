@@ -84,7 +84,7 @@ python runner.py std_r2r_es_oracle  harness=codex model=gpt-5.5 oracle=all run.e
 
 报告：
 
-- 基线 20 集：SR / SPL / NE / OSR / nDTW；逐集 `end_reason` 与 `distance_to_goal`；每集中位时间、调用数、token；总壁钟；限流发生在第几集、恢复用时。
+- 基线 20 集在 oracleES arm 上以 `oracle=none` 跑（T3.5 证明其工具输出与 bareES 逐字节一致，且每步位姿写入 `live_i/poses.jsonl`；bareES 不记录位姿，T3.7(a) 需要轨迹）：SR / SPL / NE / OSR / nDTW；逐集 `end_reason` 与 `distance_to_goal`；每集中位时间、调用数、token；总壁钟；限流发生在第几集、恢复用时。
 - 与 MIP 同模型对照：mini + gpt-5.5 在全部 100 集上 52 / 44.24；AgenticNav 55；C²Nav 44。20 集只作健全性检查。MIP 公开注册表若有 codex + gpt-5.5 的数字一并列出。
 - 冒烟 3 集：在 `episode_*.jsonl` 里查模型的推理或工具调用是否引用了 `[ORACLE]` 行与俯视图，各截一段贴进报告。
 - 吞吐：记录 5 小时窗口内限流前完成的集数，估算每天能跑多少集。这是任务 #4 排期的依据。
@@ -102,7 +102,7 @@ python runner.py std_r2r_es_oracle  harness=codex model=gpt-5.5 oracle=all run.e
 
 **(b) 合成错分支召回。** 对 rand100 每条参考路径的每个拐点视点，沿 connectivity 取另一条邻接边构造 2–3 个视点的"错分支"轨迹接到 GT 前缀之后；回放 R1 / R6 / O-偏离 / O-承诺，报告触发率与触发延迟（以步计）。
 
-**(c) 回溯反放。** 仿真器里对 rand100 的 GT 轨迹批量测试"沿 GT 动作走到第 k 视点 → 反向重放原语回到第 j 视点"（k−j ∈ {1, 2, 3}）：报告到锚点位姿误差（水平距离、航向）、blocked 次数、步数；记录 MIP/EmbodiedScore 是否开启 `allow_sliding`。误差中位 > 0.5 m 则任务 #4 的回溯改为以航位位姿为目标的闭环回退。
+**(c) 回溯反放。** 仿真器里（MIP env server，客户端贪心跟随器沿 GT 路点走并记录原语）对 rand100 的 GT 轨迹批量测试"沿 GT 动作走到第 k 视点 → 反向重放原语回到第 j 视点"（k−j ∈ {1, 2, 3}）：报告到锚点位姿误差（水平距离、航向）、blocked 次数、步数；记录 MIP/EmbodiedScore 是否开启 `allow_sliding`。误差中位 > 0.5 m 则任务 #4 的回溯改为以航位位姿为目标的闭环回退。
 
 ---
 

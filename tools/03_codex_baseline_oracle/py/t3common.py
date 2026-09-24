@@ -34,7 +34,7 @@ _DEFAULTS = {
 for _k, _v in _DEFAULTS.items():
     os.environ.setdefault(_k, _v)
 
-from common import (  # task 2 module, path set above
+from common import (  # noqa: E402  # task 2 module, path set above
     ce_files,
     dump_json,
     env_float,

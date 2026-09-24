@@ -74,6 +74,7 @@ archive_run() { # <run dir> <name>  copies summary.json / stats.html / episode j
   [ -d "$d" ] || return 1
   mkdir -p "$dest"; cp "$d"/summary.json "$dest/" 2>/dev/null; cp "$d"/stats.html "$dest/" 2>/dev/null
   cp "$d"/episode_*.jsonl "$dest/" 2>/dev/null; cp "$d"/*.yaml "$d"/*.json "$dest/" 2>/dev/null
+  for l in "$d"/live_*/; do [ -d "$l" ] || continue; mkdir -p "$dest/$(basename "$l")"; cp "$l"/poses.jsonl "$l"/actions.log "$dest/$(basename "$l")/" 2>/dev/null; done
   { echo "run_dir $d"; echo "mip_commit $(cd "$MIP_DIR" && git rev-parse HEAD)"; echo "mip_branch $(cd "$MIP_DIR" && git rev-parse --abbrev-ref HEAD)";
     echo "codex_version $(codex --version 2>/dev/null | head -1)"; echo "model $CODEX_MODEL"; echo "date $(ts)"; } > "$dest/RUN_META.txt"
 }
@@ -150,7 +151,7 @@ step_T32() {
   : > "$logf"
   echo "cmd: python runner.py std_r2r_es_bareES harness=codex model=$CODEX_MODEL run.episodes=0 (GPU ${EMBODIEDSCORE_GPU_ID:-0})" >> "$logf"
   mip_run "$logf" std_r2r_es_bareES harness=codex model="$CODEX_MODEL" run.episodes=0; rc=$?
-  run=$(latest_run "codex/std_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t32_single
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*bareES*"); [ -n "$run" ] && archive_run "$run" t32_single
   [ $rc -eq 0 ] && [ -n "$run" ] || st=FAIL
   (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.2 "$OUT3/runs/t32_single" "$logf" "$rc") > "$md" 2>> "$logf" || st=FAIL
   finish T3.2 $st "$logf"
@@ -161,16 +162,18 @@ step_T33() {
   local logf=$LOGDIR/T3.3.log md=$OUT3/md/T3.3.md st=PASS rc1 rc2=- run
   [ "$RUN_PAID" = 1 ] || { { echo "## T3.3 20 集基线 + 3 集冒烟"; echo; echo "SKIP：需要 RUN_PAID=1。命令见任务书。"; } > "$md"; finish T3.3 SKIP "$logf"; return; }
   : > "$logf"
-  echo "cmd1: python runner.py std_r2r_es_bareES harness=codex model=$CODEX_MODEL run.episodes=$T33_EPISODES" >> "$logf"
+  # baseline on the oracleES arm with oracle=none: byte-identical tool outputs to bareES (T3.5 proves it) and poses logged
+  local cfg=std_r2r_es_oracle; [ -f "$MIP_DIR/exp_workspace/oracleES/configs/std_r2r_es_oracle.yaml" ] || { cfg=std_r2r_es_bareES; echo "oracleES missing: baseline on bareES (no poses)" >> "$logf"; }
+  echo "cmd1: BAREES_ORACLE=none python runner.py $cfg harness=codex model=$CODEX_MODEL oracle=none run.episodes=$T33_EPISODES" >> "$logf"
   date '+start %F %T' >> "$logf"
-  mip_run "$logf" std_r2r_es_bareES harness=codex model="$CODEX_MODEL" run.episodes="$T33_EPISODES"; rc1=$?
+  if [ "$cfg" = std_r2r_es_oracle ]; then BAREES_ORACLE=none mip_run "$logf" $cfg harness=codex model="$CODEX_MODEL" oracle=none run.episodes="$T33_EPISODES"; else mip_run "$logf" $cfg harness=codex model="$CODEX_MODEL" run.episodes="$T33_EPISODES"; fi; rc1=$?
   date '+end %F %T' >> "$logf"
-  run=$(latest_run "codex/std_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t33_baseline
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t33_baseline
   [ $rc1 -eq 0 ] && [ -n "$run" ] || st=FAIL
   if [ -f "$MIP_DIR/exp_workspace/bareES/configs/std_r2r_es_oracle.yaml" ]; then
     echo "cmd2: python runner.py std_r2r_es_oracle harness=codex model=$CODEX_MODEL oracle=all run.episodes=$T33_SMOKE_EPISODES" >> "$logf"
-    mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc2=$?
-    run=$(latest_run "codex/std_r2r_es_codex_${CODEX_MODEL}_*oracle*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
+    BAREES_ORACLE=all mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc2=$?
+    run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
   else
     echo "smoke skipped: std_r2r_es_oracle.yaml missing (T3.5 not applied)" >> "$logf"
   fi
