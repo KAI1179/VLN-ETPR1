@@ -1,0 +1,18 @@
+file: /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100.json.gz
+n_episodes 100
+top-level keys: ['episode_id', 'trajectory_id', 'scene_id', 'start_position', 'start_rotation', 'info', 'goals', 'instruction', 'reference_path']
+episode_id 7
+trajectory_id 42
+scene_id mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb
+instruction keys: ['instruction_text', 'instruction_tokens']
+instruction_id: None
+reference_path len: 6 first: [-0.944907009601593, 0.04610800743103027, 5.948919773101807]
+goals: [{'position': [0.8591700196266174, 0.04610800743103027, -4.339749813079834], 'radius': 3.0}]
+has viewpoint ids in reference_path? False
+all reference_path entries are 3-float lists? True
+reference_path len min/mean/max: 4 5.85 7
+unique scene_id: 10
+unique trajectory_id: 97
+episodes with instruction_id: 0
+GT file: /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100_gt.json.gz n keys 100 value keys ['locations', 'actions', 'forward_steps']
+GT locations len (first): 42

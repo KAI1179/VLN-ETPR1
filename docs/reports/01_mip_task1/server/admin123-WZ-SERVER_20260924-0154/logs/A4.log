@@ -1,0 +1,130 @@
+== config dirs
+exp_workspace/bareES/configs
+== models.yaml
+# models/models — the experiment's models table: model -> harness -> the harness-facing id (+ API routing params);
+# an absent harness = no seat. Every experiment file beside this folder loads it (defaults: - models: models) and
+# picks one row with `model=<name>` on the command line (agent.model = ${models[${model}][${harness.root}]}).
+# A row's key is the run-name segment. mini rows may add params: {temperature, max_tokens, …} (litellm kwargs).
+fable-5:
+  cc: {id: claude-fable-5}
+  mini: {id: claude-fable-5}
+opus-5:
+  cc: {id: claude-opus-5}
+  mini: {id: claude-opus-5}
+opus-4.8:
+  cc: {id: claude-opus-4-8}
+  mini: {id: claude-opus-4-8}
+sonnet-5:
+  cc: {id: claude-sonnet-5}
+  mini: {id: claude-sonnet-5}
+gpt-5.5:
+  codex: {id: gpt-5.5}
+  mini: {id: gpt-5.5}
+gpt-5.6:
+  codex: {id: gpt-5.6-sol, price: gpt-5.6}   # codex's name for it; price: its litellm table row
+  mini: {id: gpt-5.6}
+qwen3.5-4b:
+  mini: {id: ollama_chat/qwen3.5:4b-bf16-std}   # local ollama
+qwen3.5-9b:
+  mini: {id: ollama_chat/qwen3.5:9b-bf16-std}   # local ollama
+qwen3.5-plus:
+  mini: {id: openai/qwen3.5-plus, api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}   # litellm has no DashScope rates (its dashscope/ rows are empty) -> unpriced
+qwen3.6-plus:
+  mini: {id: openai/qwen3.6-plus, api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}   # litellm has no DashScope rates -> unpriced
+qwen3.7-plus:
+  mini: {id: openai/qwen3.7-plus, api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}   # litellm has no DashScope rates (its dashscope/ rows are empty) -> unpriced
+gpt-6:
+  codex: {id: gpt-6-astra}   # codex's slug for it (models_cache); run-name segment gpt-6 as in the 09-06 run
+== harness/mini.yaml
+# harness/mini — mini-swe-agent (core/harnesses/mini_swe.py): the open ReAct loop over the same bridge (BridgeToolSet).
+# This folder is the experiment's Hydra harness group: a file beside it picks one with `harness=<name>`
+# (defaults: - harness: ???). root = the run-name segment, output_dir = outputs/<dir>; every other key is a
+# constructor kwarg of the adapter (harness.<key>=… overrides one from the command line).
+_target_: core.harnesses.mini_swe.MiniSweAdapter
+root: mini
+output_dir: mini-swe-agent
+cost_limit: 5.0
+image_window: 0
+drop_params: true
+model_kwargs: {}  # litellm completion kwargs for every model on this seat (temperature / max_tokens / top_p …); models/models.yaml <name>: mini: {id, params} lays a model's own on top
+== api_base / keys in code
+./INSTALL.md:27:claude          # log in once (subscription); the runner strips ANTHROPIC_API_KEY so sessions never bill via API
+./INSTALL.md:31:mini-SWE-agent needs the provider key in the shell: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+./INSTALL.md:32:`DASHSCOPE_API_KEY` (qwen rows) or `OLLAMA_URL` (local rows). Rows: `exp_workspace/bareES/configs/models/models.yaml`.
+./core/pricing.py:1:"""pricing — one billing 口径 for every harness: tokens x litellm's list price.
+./core/pricing.py:16:  by ``add_litellm_usage`` / ``add_anthropic_usage`` as the calls happen
+./core/pricing.py:22:- OpenAI-chat / litellm ``usage``: ``prompt_tokens`` (cached and cache-write
+./core/pricing.py:26:``rates_for`` reads ``litellm.model_cost`` (the same table litellm bills
+./core/pricing.py:59:def add_litellm_usage(ledger: dict[str, Any], model: str, usage: Any) -> None:
+./core/pricing.py:60:    """One litellm / OpenAI-chat response's ``usage`` into the ledger."""
+./core/pricing.py:141:        add_litellm_usage(ledger, model, usage)
+./core/pricing.py:162:    """The five per-token rates for a model from ``litellm.model_cost``:
+./core/pricing.py:166:        import litellm
+./core/pricing.py:169:    table = litellm.model_cost
+./core/pricing.py:173:        # a litellm routing prefix (anthropic/…, openai/…) is not a table key;
+./core/pricing.py:181:        return None  # a row with no rates (dashscope/… placeholders) is no price
+./core/harnesses/claude_sdk.py:5:Claude subscription; a stray ANTHROPIC_API_KEY would silently switch billing
+./core/harnesses/claude_sdk.py:10:launches runner.py — prepare() then leaves ANTHROPIC_API_KEY in place and the
+./core/harnesses/claude_sdk.py:129:        self._gateway = None  # litellm gateway (cross-API seats only)
+./core/harnesses/claude_sdk.py:134:            # litellm kwargs); the Agent SDK has none — refuse, never ignore
+./core/harnesses/claude_sdk.py:140:        # env-var wiring (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN). The
+./core/harnesses/claude_sdk.py:141:        # litellm gateway of a cross-API seat, or the scripted fake endpoint
+./core/harnesses/claude_sdk.py:156:            if os.environ.get("ANTHROPIC_API_KEY"):
+./core/harnesses/claude_sdk.py:158:                    "[claudecode] CODING_AGENT_ALLOW_API_KEY=1 — keeping ANTHROPIC_API_KEY, sessions bill via API"
+./core/harnesses/claude_sdk.py:160:                self.inherent["auth"] = "provider API key (litellm-free direct billing)"
+./core/harnesses/claude_sdk.py:163:                    "[claudecode] CODING_AGENT_ALLOW_API_KEY=1 but ANTHROPIC_API_KEY is unset — "
+./core/harnesses/claude_sdk.py:166:        elif os.environ.pop("ANTHROPIC_API_KEY", None):
+./core/harnesses/claude_sdk.py:168:                "[claudecode] ANTHROPIC_API_KEY was set — removed so sessions use subscription auth "
+./core/harnesses/claude_sdk.py:183:            for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+./core/harnesses/mini/model.py:1:"""Nav-tools model — mini-swe-agent's litellm model speaking our toolset.
+./core/harnesses/mini/model.py:6:content parts pass through litellm to each provider's format — the same
+./core/harnesses/mini/model.py:23:import litellm
+./core/harnesses/mini/model.py:26:from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+./core/harnesses/mini/model.py:29:from core.pricing import add_litellm_usage
+./core/harnesses/mini/model.py:47:class NavToolsModelConfig(LitellmModelConfig):
+./core/harnesses/mini/model.py:55:class NavToolsModel(LitellmModel):
+./core/harnesses/mini/model.py:60:        self._litellm_tools = [
+./core/harnesses/mini/model.py:74:            resp = litellm.completion(
+./core/harnesses/mini/model.py:77:                tools=self._litellm_tools,
+./core/harnesses/mini/model.py:80:            add_litellm_usage(self.billing, self.config.model_name, getattr(resp, "usage", None))
+./core/harnesses/mini/model.py:82:        except litellm.exceptions.AuthenticationError as e:
+./core/harnesses/mini/model.py:83:            e.message += " Set the provider API key (e.g. ANTHROPIC_API_KEY) in the environment."
+./core/harnesses/mini_swe.py:7:codex seats — the harness carries no tools. litellm bills through the
+./core/harnesses/mini_swe.py:39:# serving_audit in finalize, provider.default_api_base in _knobs.
+./core/harnesses/mini_swe.py:63:        # ``model_kwargs``: litellm completion kwargs for every model on this
+./core/harnesses/mini_swe.py:73:            "auth": "provider API key (litellm billing)",
+./core/harnesses/mini_swe.py:98:        # no key, no serving stack; litellm is pointed at it in _knobs. (The
+./core/harnesses/mini_swe.py:99:        # litellm gateway of a cross-API seat means nothing here: mini speaks
+./core/harnesses/mini_swe.py:100:        # litellm itself.)
+./core/harnesses/mini_swe.py:129:        """Locally served model: an explicit api_base (ollama / vLLM / any
+./core/harnesses/mini_swe.py:130:        OpenAI-compatible server) or a local litellm route prefix."""
+./core/harnesses/mini_swe.py:131:        return bool(extra.get("api_base")) or any(
+./core/harnesses/mini_swe.py:143:        # chains (a DashScope key riding OPENAI_API_KEY still resolves)
+./core/harnesses/mini_swe.py:150:                "litellm needs it (API billing)"
+./core/harnesses/mini_swe.py:165:        if ctx.extra.get("api_base"):
+./core/harnesses/mini_swe.py:166:            model_kwargs["api_base"] = ctx.extra["api_base"]
+./core/harnesses/mini_swe.py:171:                    # the vendor's CANONICAL variable is set (DASHSCOPE_API_KEY
+./core/harnesses/mini_swe.py:173:                    # OPENAI_API_KEY. Only-legacy-set shells keep the
+./core/harnesses/mini_swe.py:177:            # local providers carry a default endpoint (ollama: OLLAMA_URL —
+./core/harnesses/mini_swe.py:178:            # litellm must talk to the SAME server the adapter pinned; vllm:
+./core/harnesses/mini_swe.py:181:            if provider is not None and provider.default_api_base:
+./core/harnesses/mini_swe.py:182:                model_kwargs["api_base"] = provider.default_api_base
+./core/harnesses/mini_swe.py:184:            # the run's effort (top-level `effort`) as litellm's generic
+./core/harnesses/mini_swe.py:186:            # litellm maps it onto a thinking budget. "default" sends nothing.
+./core/harnesses/mini_swe.py:194:            model_kwargs.update(self._gateway.litellm_kwargs())
+./core/harnesses/mini_swe.py:200:            # local servers have no litellm price entry — a hard cost lookup
+./core/harnesses/mini_swe.py:280:            usage={"billing": model.billing},  # per call, per model id (core.pricing); cost_usd = litellm's own meter
+./core/harnesses/codex_cli.py:114:        self._gateway = None  # litellm gateway (cross-API seats only)
+./core/harnesses/codex_cli.py:128:        # model_provider (openai-chat wire) — the litellm gateway of a
+./core/config_hint.py:100:    model_kwargs (litellm completion kwargs for every model on the seat)."""
+./core/config_hint.py:110:    params beside it (api_base / api_gateway / gateway_route …) and its
+./core/config_hint.py:112:    mini (litellm kwargs, over harness.model_kwargs); cc and codex refuse
+./core/config_hint.py:156:    api_gateway: Optional[str] = None  # noqa: UP045  # null | fake (| litellm, from a models-table row)
+./core/callbacks/cost.py:2:for every harness: the tokens the provider reported x litellm's list price
+./core/callbacks/cost.py:4:Code's CLI-settled ``total_cost_usd``, litellm's meter under mini), is
+./core/callbacks/cost.py:18:— ollama, no API bill; ``unpriced`` — an API model litellm has no row for
+./core/callbacks/cost.py:39:    python -m core.callbacks.cost <run_dir> [--price <model>=<litellm key> …]
+./core/callbacks/cost.py:86:            print(f"[std] cost: no litellm price for {missing} — usd left null "
+./core/callbacks/cost.py:87:                  f"(models table: add `price: <litellm key>` to the row)")
+./core/callbacks/cost.py:178:        # a models-table row's `price: <litellm key>` names the table row for
+./core/callbacks/cost.py:179:        # an id litellm does not know under that name (codex's gpt-5.6-sol …)

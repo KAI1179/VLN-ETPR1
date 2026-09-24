@@ -1,0 +1,13 @@
+total 8
+drwxrwxr-x 2 xukai xukai 4096 Sep 24 01:44 .
+drwxrwxr-x 3 xukai xukai 4096 Sep 24 01:27 ..
+lrwxrwxrwx 1 xukai xukai   51 Sep 24 01:44 rand100 -> /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+
+total 132
+drwxrwxr-x 2 xukai xukai  4096 Sep 24 00:17 .
+drwxrwxr-x 5 xukai xukai  4096 Sep 24 00:17 ..
+-rw-rw-r-- 1 xukai xukai 56066 Sep 24 00:17 rand100_gt.json.gz
+-rw-rw-r-- 1 xukai xukai 67871 Sep 24 00:17 rand100.json.gz
+
+scenes/mp3d -> /data/xukai/mp3d
+mp3d scan dirs: 90

@@ -1,0 +1,225 @@
+[std] partial episodes -> test run test_r2r_es_cc_fable-5_default_bareES
+[std] fake harness -> run fake_r2r_es_cc_fable-5_default_bareES
+[std] 1 env server(s) EmbodiedScoreEnv spawned on 9200-9200 (logs: /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES)
+[std] http://127.0.0.1:9200 healthy: EmbodiedScoreEnv
+[std] code snapshot -> code
+[std] run=fake_r2r_es_cc_fable-5_default_bareES model=claude-fable-5 eps=0-0 workers=1 -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES
+[std] episode 0 starting on http://127.0.0.1:9200
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+[09/24/26 01:27:58] INFO     Processing request of type            server.py:720
+                             ListToolsRequest                                   
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+[std] episode 0 done: success=0.0 spl=0.0 dtg=10.23 steps=4.0
+[std] run complete -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES/summary.json
+[std] run stats: {"vram_peak_mib": 19542}
+{
+  "episode_count": 1,
+  "distance_to_goal": 10.2291,
+  "success": 0.0,
+  "spl": 0.0,
+  "ndtw": 0.1977,
+  "path_length": 0.25,
+  "oracle_success": 0.0,
+  "steps_taken": 4.0,
+  "step_count": 4.0,
+  "env_steps": 4.0,
+  "stop_rate": 1.0
+}
+[09/24/26 01:27:58] INFO     Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings      category.py:224
+                             should be plotted as numbers, cast to the appropriate data type before plotting.                                                 
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings      category.py:224
+                             should be plotted as numbers, cast to the appropriate data type before plotting.                                                 
+[std] stats report -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES/stats.html
+exit code: 0
+== run dir: /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES
+code
+code_state.json
+config.yaml
+env_server.log
+episode_0.jsonl
+live_0
+raw
+stats.html
+stats.json
+summary.json
+workdir_0
+== summary.json
+{
+  "run_name": "fake_r2r_es_cc_fable-5_default_bareES",
+  "cell": "fake_r2r_es_cc_fable-5_default_bareES",
+  "harness": "fake",
+  "harness_inherent": {
+    "auth": "none (scripted)",
+    "thinking": "none",
+    "turn_cap": "script length",
+    "vision_context": "none \u2014 images are received and discarded",
+    "context_control": false,
+    "context_label": "fake"
+  },
+  "config": {
+    "dataset": "vlnce-r2r",
+    "split": "rand100",
+    "episodes": "0-99",
+    "max_turns": 200,
+    "rgb_resolution": 512,
+    "step_budget": 500,
+    "episode_timeout": 2400,
+    "require": [
+      "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+    ],
+    "env_fields": [
+      "rgb_resolution"
+    ],
+    "auto_observe": false,
+    "wp_server": null,
+    "model": "claude-fable-5",
+    "effort": "default",
+    "bare": true,
+    "extra": {}
+  },
+  "servers": [
+    "http://127.0.0.1:9200"
+  ],
+  "run_stats": {
+    "vram_peak_mib": 19542
+  },
+  "aggregate": {
+    "episode_count": 1,
+    "distance_to_goal": 10.2291,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.1977,
+    "path_length": 0.25,
+    "oracle_success": 0.0,
+    "steps_taken": 4.0,
+    "step_count": 4.0,
+    "env_steps": 4.0,
+    "stop_rate": 1.0
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "episode_id": "7",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+      "metrics": {
+        "distance_to_goal": 10.22914981842041,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.19772746501969857,
+        "path_length": 0.24999983608722687,
+        "oracle_success": 0.0,
+        "steps_taken": 4.0,
+        "step_count": 4
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 1,
+          "step": 2
+        },
+        "env_steps": 4,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": 3,
+        "usage": null,
+        "total_cost_usd": null,
+        "script_calls": 3,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.0,
+          "source": "fake",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": null,
+          "billing": null,
+          "price": null,
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 0.9
+    }
+  ],
+  "cost": {
+    "total": 0.0,
+    "mean": 0.0,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "priced_episodes": 1,
+    "sources": {
+      "fake": 1
+    },
+    "tokens": null,
+    "price": null,
+    "by_issuing_tool": {},
+    "budget_usd": null,
+    "stopped_by_budget": false
+  },
+  "provenance": {
+    "task": "r2r",
+    "env_key": "es",
+    "arm": "bareES",
+    "env": "EmbodiedScoreEnv",
+    "shape": "es.nav",
+    "module": "core.shapes.es:EsNav",
+    "harness": "fake",
+    "callbacks": [
+      "CodeSnapshot",
+      "JsonlLogger",
+      "RawLogger",
+      "CostLogger",
+      "VramSampler",
+      "StatsReport"
+    ],
+    "code_sha256": "3f7a302b8c095da8d46758390090d3c238dd2ec7965374a877e332f2465e7de4",
+    "git": {
+      "head": "1da7f1d04bd177b4d4f524d153e3f7aa76fbe67d",
+      "branch": "main",
+      "dirty": []
+    },
+    "snapshot": "code"
+  },
+  "writers": {
+    "code/": "CodeSnapshot",
+    "code_state.json": "CodeSnapshot",
+    "provenance.code_sha256": "CodeSnapshot",
+    "provenance.git": "CodeSnapshot",
+    "provenance.snapshot": "CodeSnapshot",
+    "episode_{i}.jsonl": "JsonlLogger",
+    "raw/episode_{i}.jsonl": "RawLogger",
+    "agent.cost": "CostLogger",
+    "cost": "CostLogger",
+    "run_stats.vram_peak_mib": "VramSampler",
+    "stats.json": "StatsReport",
+    "stats.html": "StatsReport"
+  }
+}== episode_0.jsonl: 13 lines
+{"t": 0.0, "kind": "episode_meta", "index": 0, "episode_id": "7", "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb", "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait."}
+{"t": 0.27, "kind": "session_inputs", "cell": "fake_r2r_es_cc_fable-5_default_bareES", "harness": "fake", "model": "claude-fable-5", "system_prompt": "You are controlling a robot in a real indoor environment (a photorealistic 3D scan of a building). You interact only through these tools:\n\n- observe(): look through the robot's forward-facing camera (returns an RGB image).\n- step(actions): execut
+{"t": 0.68, "kind": "system_init", "model": "fake", "tools": ["observe", "step"]}
+{"t": 0.68, "kind": "bridge_status", "status": "connected"}
+{"t": 0.68, "kind": "tool_use", "id": "fake-0-0", "name": "mcp__env__observe", "input": {}}
+== stats.html numbers
+1.5 s
+== env_server.log tail
+[envserver] EmbodiedScoreEnv on http://127.0.0.1:9200
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "POST /configure HTTP/1.1" 200 -
+[envserver] "POST /place HTTP/1.1" 200 -
+[envserver] "POST /observe HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /evaluate HTTP/1.1" 200 -
