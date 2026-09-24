@@ -224,6 +224,17 @@ _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
 )
 _C.MODEL.MAP_ENCODER.refiner_ckpt = ""
 _C.MODEL.MAP_ENCODER.eval_map_source = "refiner"
+# Load pretrained map_encoder.* and bert.global_encoder.graph_map_attention.* from
+# MODEL.pretrained_path into the navigation policy. False reproduces the historical
+# behaviour where both modules start from CLIP/zero init in every DAgger run.
+_C.MODEL.MAP_ENCODER.load_pretrained_map_modules = True
+# Map-channel ablation applied in _prepare_map_inputs:
+#   none | metadata_only (zero raster) | raster_only (zero all metadata)
+#   | no_direction (zero the five route direction vectors only)
+_C.MODEL.MAP_ENCODER.map_ablation = "none"
+# Multiply start_position before the map encoder (online GT maps store grid
+# cells = 2x metres; cached GT/LLM maps store metres).
+_C.MODEL.MAP_ENCODER.start_position_scale = 1.0
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

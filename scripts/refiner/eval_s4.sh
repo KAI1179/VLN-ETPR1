@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
 REPORT_PATH="${REPO_ROOT}/reports/refiner/S4_progress.md"
 
 DRY_RUN_ARGS=()
@@ -59,6 +59,7 @@ COMMAND=(
     MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
     "${REFINER_ARGS[@]}"
     MODEL.pretrained_path "${PRETRAINED_CKPT}"
+    MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_PRETRAINED_MAP_MODULES:-False}"
 )
 
 cd "${REPO_ROOT}"

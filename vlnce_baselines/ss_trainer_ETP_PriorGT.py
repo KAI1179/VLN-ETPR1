@@ -1323,6 +1323,23 @@ class RLTrainer(BaseVLNCETrainer):
                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
             ]
         ).to(self.device)
+        start_position_scale = float(getattr(map_cfg, "start_position_scale", 1.0))
+        if start_position_scale != 1.0:
+            start_positions = start_positions * start_position_scale
+        ablation = getattr(map_cfg, "map_ablation", "none")
+        if ablation == "metadata_only":
+            cognitive_crops = torch.zeros_like(cognitive_crops)
+        elif ablation == "raster_only":
+            map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
+            start_direction_vectors = torch.zeros_like(start_direction_vectors)
+            start_positions = torch.zeros_like(start_positions)
+        elif ablation == "no_direction":
+            map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
+        elif ablation != "none":
+            raise ValueError(
+                "MODEL.MAP_ENCODER.map_ablation must be one of none, "
+                f"metadata_only, raster_only, no_direction; got {ablation!r}"
+            )
         map_tokens, map_token_masks = self.policy.net(
             mode="map_encoding",
             cognitive_crops=cognitive_crops,

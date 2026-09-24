@@ -1,5 +1,8 @@
 import torch
 
+PRETRAIN_FUSION_PREFIX = "bert.global_encoder.graph_map_attention."
+NAV_FUSION_PREFIX = "bert.graph_map_attention."
+
 
 def get_tokenizer(args):
     from transformers import AutoTokenizer
@@ -22,7 +25,11 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
     model_class = GlocalTextPathNavCMT
 
     model_name_or_path = config.pretrained_path
+    load_map_modules = bool(
+        getattr(config.MAP_ENCODER, "load_pretrained_map_modules", True)
+    )
     new_ckpt_weights = {}
+    remapped_fusion = {}
     keywords = [
         "graph_query_text",
         "graph_attentioned_txt_embeds_transform",
@@ -35,6 +42,13 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
                 new_ckpt_weights[k[7:]] = v
             if any(key in k for key in keywords):
                 new_ckpt_weights["bert." + k] = v
+            elif load_map_modules and k.startswith(PRETRAIN_FUSION_PREFIX):
+                # Pretraining stores the fusion inside GlobalMapEncoder; the
+                # navigation model owns it at the top level. Without this remap
+                # the pretrained fusion is silently dropped as "unused".
+                nav_key = NAV_FUSION_PREFIX + k[len(PRETRAIN_FUSION_PREFIX) :]
+                new_ckpt_weights[nav_key] = v
+                remapped_fusion[nav_key[len("bert.") :]] = v
             else:
                 new_ckpt_weights[k] = v
 
@@ -76,4 +90,33 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
         config=vis_config,
         state_dict=new_ckpt_weights,
     )
+    _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path)
     return visual_model
+
+
+def _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path):
+    """Fail loudly if remapped pretrained fusion tensors did not land."""
+    if not remapped_fusion:
+        print(
+            "  graph_map_attention: no pretrained tensors loaded "
+            "(checkpoint has none or load_pretrained_map_modules=False); "
+            "fusion starts from random attention + zero residual projection"
+        )
+        return
+    fusion_state = visual_model.graph_map_attention.state_dict()
+    mismatched = [
+        key
+        for key, value in remapped_fusion.items()
+        if key not in fusion_state
+        or fusion_state[key].shape != value.shape
+        or not torch.equal(fusion_state[key].cpu(), value.cpu())
+    ]
+    if mismatched:
+        raise RuntimeError(
+            "Pretrained graph_map_attention tensors were remapped but did not "
+            f"land in the navigation model: {mismatched}"
+        )
+    print(
+        f"  graph_map_attention: loaded {len(remapped_fusion)} pretrained tensors "
+        f"from {model_name_or_path}"
+    )

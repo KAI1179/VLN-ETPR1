@@ -9,6 +9,8 @@ The author's R1Policy.py and etp/ directory are not modified.
 """
 
 from copy import deepcopy
+import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -24,6 +26,7 @@ from habitat_baselines.rl.ppo.policy import Net
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
+from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 from vlnce_baselines.models.encoders.resnet_encoders import (
     VlnResnetDepthEncoder,
     CLIPEncoder,
@@ -33,6 +36,8 @@ from vlnce_baselines.models.policy import ILPolicy
 from vlnce_baselines.waypoint_pred.utils import nms
 from vlnce_baselines.models.utils import angle_feature_torch
 import math
+
+MAP_ENCODER_PREFIX = "map_encoder."
 
 
 @baseline_registry.register_policy
@@ -168,6 +173,43 @@ class ETP_PriorGT(Net):
             print(
                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
             )
+            if getattr(map_cfg, "load_pretrained_map_modules", True):
+                self._load_pretrained_map_encoder(
+                    getattr(model_config, "pretrained_path", None)
+                )
+
+    def _load_pretrained_map_encoder(self, pretrained_path):
+        """Load map_encoder.* from the pretraining checkpoint, strictly.
+
+        Historically nothing loaded these tensors: the map encoder started from
+        CLIP init in every DAgger run even when pretraining had trained it.
+        """
+        if not pretrained_path or not os.path.isfile(pretrained_path):
+            print("  map_encoder: no pretrained_path file; keeping CLIP init")
+            return
+        checkpoint = torch.load(pretrained_path, map_location="cpu")
+        state_dict = checkpoint
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        module_state = {}
+        for key, value in state_dict.items():
+            if key.startswith("module."):
+                key = key[len("module.") :]
+            if key.startswith(MAP_ENCODER_PREFIX):
+                module_state[key[len(MAP_ENCODER_PREFIX) :]] = value
+        if not module_state:
+            print(
+                f"  map_encoder: no map_encoder.* tensors in {pretrained_path}; "
+                "keeping CLIP init"
+            )
+            return
+        load_complete_state_dict(
+            self.map_encoder, module_state, Path(pretrained_path), "map_encoder"
+        )
+        print(
+            f"  map_encoder: loaded {len(module_state)} pretrained tensors "
+            f"from {pretrained_path}"
+        )
 
     @property
     def output_size(self):
