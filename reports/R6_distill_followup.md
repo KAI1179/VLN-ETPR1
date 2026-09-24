@@ -14,7 +14,14 @@ The literal command from the task book was attempted first. It failed before imp
 
 ## Step 1 — teacher map ablations and LLM map controls
 
-GPU assignment and results pending. Only physical GPUs 0–3 are permitted; runs will be batched if all four are occupied.
+All six target result files were absent. The first batch (`none`, `metadata_only`, `raster_only`, `no_direction`) was launched with `CUDA_VISIBLE_DEVICES=0,1,2,3`, one process per GPU, using the required `nohup ... > /dev/null 2>&1 &` form. All four processes exited immediately and produced empty `eval.log` files. A foreground diagnostic of `none` captured the complete failure in the command output and showed:
+
+```text
+RuntimeError: The client socket has failed to connect to any network address of (localhost, 29400). The client socket cannot be initialized to connect to localhost:29400 (errno: 1 - Operation not permitted).
+torch.distributed.elastic.rendezvous.api.RendezvousConnectionError: The connection to the C10d store has failed. See inner exception for details.
+```
+
+This is the container's network permission on the c10d rendezvous, so the four runs are being retried with the command execution permission needed for localhost rendezvous. No GPU outside 0–3 is used.
 
 ## Step 2 — student GT-map evaluation
 
