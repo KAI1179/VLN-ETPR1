@@ -72,6 +72,14 @@ def host_facts() -> None:
         ),
     )
     print("vendor jsons:", sorted(glob.glob(f"{VENDOR_DIR}/*.json")) or "none")
+    dirs = os.environ.get("__EGL_VENDOR_LIBRARY_DIRS")
+    if dirs:
+        # glvnd then looks ONLY there (conda's base env sets it to its own share/glvnd, usually empty)
+        found = [j for d in dirs.split(":") for j in glob.glob(f"{d}/*.json")]
+        print(
+            f"  !! __EGL_VENDOR_LIBRARY_DIRS overrides the search path; jsons there: {found or 'NONE'} -> "
+            "this hides /usr/share/glvnd/egl_vendor.d; fix: unset it, or set __EGL_VENDOR_LIBRARY_FILENAMES"
+        )
     for j in glob.glob(f"{VENDOR_DIR}/*.json"):
         print(f"  {j}: {Path(j).read_text().strip()}")
     for name in (
