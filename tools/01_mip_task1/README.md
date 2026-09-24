@@ -59,7 +59,7 @@ Knobs (all optional, as environment variables):
 |---|---|
 | `PY=/path/to/python` | the interpreter with MIP installed (default `$WORKDIR/MIP/envs/mip/bin/python`) |
 | `STEPS=A5,A6,A7` | run only these steps (default `all`); every step is idempotent and appends to the report |
-| `DATA_SEARCH_ROOTS="/path/a /path/b"` | where to look for `mp3d/`, `R2R_VLNCE_v1-3_preprocessed/`, `connectivity/` (default includes `~/code/ETP-R1-snapshot/ETP-R1/data`) |
+| `DATA_SEARCH_ROOTS="/path/a /path/b"` | where to look for `mp3d/`, `R2R_VLNCE_v1-3_preprocessed/`, `connectivity/` (default includes `~/code/ETP-R1-main/data` and `~/code/ETP-R1-snapshot/ETP-R1/data`) |
 | `MP3D_DIR= VLNCE_DIR= CONN= R2R_DISC=` | explicit paths instead of searching |
 | `RUN_PAID=1 MODEL_A7=<row> HARNESS_A7=<cc\|mini>` | enables A7-3 (1 episode) and C2 (20 episodes); both spend tokens and are skipped otherwise |
 | `PROXY_URL=http://127.0.0.1:37890` | tried automatically when the shell has no proxy and github is unreachable |
