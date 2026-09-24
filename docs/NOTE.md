@@ -933,4 +933,6 @@ Drop Rate By `max_new_tokens`:
   rand100 ↔ FGR2R 的 trajectory_id 命中 100/100；R2R 视点与 CE `reference_path` 在
   映射 `mp3d(x, y, z) = (hab_x, −hab_z, hab_y)` 下同长同序、水平误差 < 0.05 m 的有 94/100
   （竖直恒差约 1.38 m 为相机高度）。A7 / C2 因无 MP3D、无 GPU/EGL、无 API key 未能执行。
+  服务器（admin123-WZ-SERVER，8×4090）上 A7-1/A7-2 通过，完整 val_unseen 1839 集核对完成；
+  免费部分全部闭合，付费的 A7-3 / C2 待定模型 API。
   详见 `docs/daily/2026-09-24.md` 与 `docs/reports/01_mip_task1/task1_report.md`。

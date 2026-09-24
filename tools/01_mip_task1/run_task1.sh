@@ -233,7 +233,7 @@ step_A5() {
   fi
   {
     echo "search roots: ${roots[*]}"
-    echo "MP3D_DIR=${MP3D_DIR:-<not found>}"; [ -n "$MP3D_DIR" ] && echo "  scans with glb: $(find "$MP3D_DIR" -maxdepth 2 -name '*.glb' 2>/dev/null | wc -l), navmesh: $(find "$MP3D_DIR" -maxdepth 2 -name '*.navmesh' 2>/dev/null | wc -l)"
+    echo "MP3D_DIR=${MP3D_DIR:-<not found>}"; [ -n "$MP3D_DIR" ] && echo "  scans with glb: $(find -L "$MP3D_DIR" -maxdepth 2 -name '*.glb' 2>/dev/null | wc -l), navmesh: $(find -L "$MP3D_DIR" -maxdepth 2 -name '*.navmesh' 2>/dev/null | wc -l) (symlinked scan dirs followed)"
     echo "VLNCE_DIR=${VLNCE_DIR:-<not found>}"; [ -n "$VLNCE_DIR" ] && ls "$VLNCE_DIR"
     echo "candidates named R2R_VLNCE* under the roots (for the record):"; for r in "${roots[@]}"; do [ -d "$r" ] && find -L "$r" -maxdepth 6 -type d -name "R2R_VLNCE*" 2>/dev/null; done | head -10
     echo "CONN=${CONN:-<not found>}"; [ -n "$CONN" ] && echo "  files: $(ls "$CONN" | grep -c _connectivity.json)"
