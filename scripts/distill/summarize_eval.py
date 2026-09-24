@@ -135,7 +135,7 @@ def paired_table(a: Dict[int, dict], b: Dict[int, dict], a_name: str, b_name: st
 
 
 def main() -> None:
-    args = Args().parse_args()
+    args = Args(underscores_to_dashes=True).parse_args()
     pattern = args.glob or default_pattern(args, args.run_name)
     results = load_results(pattern)
     if not results:
