@@ -1,0 +1,23 @@
+Traceback (most recent call last):
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t21_instr_index.py", line 145, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t21_instr_index.py", line 79, in main
+    index, notes = index_split(split)
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t21_instr_index.py", line 43, in index_split
+    for e in ce_episodes(split):
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/common.py", line 72, in ce_episodes
+    return load_json(ce_files(split)[0])["episodes"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/common.py", line 42, in load_json
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/gzip.py", line 58, in open
+    binary_file = GzipFile(filename, gz_mode, compresslevel)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/gzip.py", line 174, in __init__
+    fileobj = self.myfileobj = builtins.open(filename, mode or 'rb')
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-3_preprocessed/val_unseen/val_unseen.json.gz'

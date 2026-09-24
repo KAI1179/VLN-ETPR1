@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t24_budget.py", line 169, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t24_budget.py", line 37, in main
+    oracle, gt = load_oracle(split), ce_gt(split)
+                 ^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/common.py", line 259, in load_oracle
+    return load_json(out_dir() / f"oracle_progress_{split}.json")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/common.py", line 44, in load_json
+    with open(path, encoding="utf-8") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/xukai/code/agentic-nav/oracles/oracle_progress_train.json'

@@ -1,0 +1,65 @@
+== before
+total 36
+drwxrwxr-x 2 xukai xukai 4096 Sep 24 02:07 .
+drwxrwxr-x 3 xukai xukai 4096 Sep 24 01:27 ..
+lrwxrwxrwx 1 xukai xukai   94 Sep 24 02:07 embeddings.json.gz -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/embeddings.json.gz
+lrwxrwxrwx 1 xukai xukai   83 Sep 24 02:07 envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/envdrop
+lrwxrwxrwx 1 xukai xukai   95 Sep 24 02:07 joint_train_envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/joint_train_envdrop
+lrwxrwxrwx 1 xukai xukai   51 Sep 24 02:07 rand100 -> /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+lrwxrwxrwx 1 xukai xukai   80 Sep 24 02:07 test -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/test
+lrwxrwxrwx 1 xukai xukai   81 Sep 24 02:07 train -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train
+lrwxrwxrwx 1 xukai xukai   84 Sep 24 02:07 val_seen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen
+lrwxrwxrwx 1 xukai xukai   86 Sep 24 02:07 val_unseen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen
+removing stale link * -> /data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-3_preprocessed/*
+removing stale link embeddings.json.gz -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/embeddings.json.gz
+removing stale link envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/envdrop
+removing stale link joint_train_envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/joint_train_envdrop
+removing stale link test -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/test
+removing stale link train -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train
+removing stale link val_seen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen
+removing stale link val_unseen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen
+== after
+total 8
+drwxrwxr-x 2 xukai xukai 4096 Sep 24 03:03 .
+drwxrwxr-x 3 xukai xukai 4096 Sep 24 01:27 ..
+lrwxrwxrwx 1 xukai xukai   51 Sep 24 02:07 rand100 -> /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+[std] partial episodes -> test run test_r2r_es_cc_fable-5_default_bareES
+[std] fake harness -> run fake_r2r_es_cc_fable-5_default_bareES
+[std] 1 env server(s) EmbodiedScoreEnv spawned on 9200-9200 (logs: /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES)
+[std] http://127.0.0.1:9200 healthy: EmbodiedScoreEnv
+[std] code snapshot -> code
+[std] run=fake_r2r_es_cc_fable-5_default_bareES model=claude-fable-5 eps=0-0 workers=1 -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES
+[std] episode 0 starting on http://127.0.0.1:9200
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+[09/24/26 03:03:54] INFO     Processing request of type            server.py:720
+                             ListToolsRequest                                   
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+                    INFO     Processing request of type            server.py:720
+                             CallToolRequest                                    
+[std] episode 0 done: success=0.0 spl=0.0 dtg=10.23 steps=4.0
+[std] run complete -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES/summary.json
+[std] run stats: {"vram_peak_mib": 21128}
+{
+  "episode_count": 1,
+  "distance_to_goal": 10.2291,
+  "success": 0.0,
+  "spl": 0.0,
+  "ndtw": 0.1977,
+  "path_length": 0.25,
+  "oracle_success": 0.0,
+  "steps_taken": 4.0,
+  "step_count": 4.0,
+  "env_steps": 4.0,
+  "stop_rate": 1.0
+}
+[09/24/26 03:03:55] INFO     Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings      category.py:224
+                             should be plotted as numbers, cast to the appropriate data type before plotting.                                                 
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings      category.py:224
+                             should be plotted as numbers, cast to the appropriate data type before plotting.                                                 
+[std] stats report -> /home/xukai/code/agentic-nav/MIP/outputs/fake/fake_r2r_es_cc_fable-5_default_bareES/stats.html

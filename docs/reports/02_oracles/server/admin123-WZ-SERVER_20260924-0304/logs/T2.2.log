@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t22_oracle.py", line 229, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t22_oracle.py", line 200, in main
+    data, _ = build_split(split)
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/t22_oracle.py", line 107, in build_split
+    index = load_json(out_dir() / f"ce_instr_index_{split}.json")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xukai/code/agentic-nav/ctl/tools/02_oracles/py/common.py", line 44, in load_json
+    with open(path, encoding="utf-8") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/xukai/code/agentic-nav/oracles/ce_instr_index_rand100.json'
