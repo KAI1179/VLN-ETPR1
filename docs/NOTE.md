@@ -936,3 +936,7 @@ Drop Rate By `max_new_tokens`:
   服务器（admin123-WZ-SERVER，8×4090）上 A7-1/A7-2 通过，完整 val_unseen 1839 集核对完成；
   免费部分全部闭合，付费的 A7-3 / C2 待定模型 API。
   详见 `docs/daily/2026-09-24.md` 与 `docs/reports/01_mip_task1/task1_report.md`。
+- O-进度 oracle 与矛盾规则 v0（CLI 任务书 #2，零 API）：R2R-CE ↔ R2R 指令序号 k 全部精确恢复；
+  FGR2R 子句区间可直接映射到 CE `reference_path`；子句起点判定需 0.5 m 容差（原规则终点命中仅 64%）。
+  val_unseen GT 误报率校准得到 v0 默认：R1 = P99 子句长度预算、R5 = (0.5, 2.0)、R6 = 半径 1.0 m / 间隔 10 步。
+  详见 `docs/reports/02_oracles/task2_report.md`。

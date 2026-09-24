@@ -72,6 +72,7 @@ def main() -> int:
     r6_ep = {g: 0 for g in R6_GRID}
     r6_steps = {g: 0 for g in R6_GRID}
     n_ep = n_steps = n_locs = offtrack_eps = 0
+    offtrack_ids: list[dict[str, Any]] = []
     for ep in oracle["episodes"]:
         g = gt.get(str(ep["episode_id"]))
         if g is None:
@@ -80,7 +81,12 @@ def main() -> int:
         track = ClauseTrack(ep, tol_m=tol, offtrack_m=offtrack_m)
         locs = hab_xz(g["locations"])
         r = replay(track, locs)
-        offtrack_eps += any(h.offtrack for h in r.hits)
+        if any(h.offtrack for h in r.hits):
+            offtrack_eps += 1
+            offtrack_ids.append({
+                "episode_id": ep["episode_id"],
+                "max_dist_m": round(max(h.dist for h in r.hits), 3),
+            })
         n_steps += len(r.step_len)
         n_locs += len(locs)
         types = [ep["clauses"][c]["type"] for c in r.step_clause]
@@ -131,6 +137,7 @@ def main() -> int:
         "n_episodes": n_ep,
         "n_steps": n_steps,
         "offtrack_episodes": offtrack_eps,
+        "offtrack_episode_ids": offtrack_ids,
         "R1": r1_table,
         "R2": "not applicable on GT replays (no satisfy() calls)",
         "R5": {
@@ -199,6 +206,11 @@ def main() -> int:
         ),
         "",
     ]
+    lines += (
+        [f"offtrack episode 明细（GT 上即触发 O-偏离 v0）：{offtrack_ids}", ""]
+        if offtrack_ids
+        else []
+    )
     lines += ["**R2 顺序违反**：GT 回放中不适用（没有 satisfy 调用），跳过。", ""]
     r5_rows = [
         [k, f"{100 * v['episode_fp']:.2f}%", v["short"], v["long"]]
@@ -221,7 +233,7 @@ def main() -> int:
         "",
     ]
     lines += [
-        "**v0 默认值**（episode 误报率 < 5% 的档中最敏感的一档）：",
+        "**v0 默认值**（episode 误报率 < 5% 的档中最紧的一档；紧度顺序 R1: P90 > P95 > P99，R5: (0.5,2.0) > (0.4,2.5) > (0.3,3.0)，R6: (1.0,5) > (1.0,10) > (0.5,5) > (0.5,10)）：",
         "",
         md_table(
             ["规则", "v0 默认"], [[k, v or "无满足档"] for k, v in chosen.items()]
