@@ -49,6 +49,12 @@ The remaining three ablations are being rerun one at a time because their first 
 |---|---:|---:|---:|---:|---:|---|
 | `gt_teacher_try5_val_unseen_z_no_direction` | 71.02 | 60.63 | 75.26 | 3.625 | 4.24 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_no_direction/eval_results/stats_ckpt_16000_val_unseen.json` |
 
+`llm` completed after the serialized retry:
+
+| run | SR | SPL | OSR | NE | stop error | cache missing | result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `gt_teacher_try5_val_unseen_z_on_llm_maps` | 49.48 | 37.52 | 62.04 | 5.004 | 12.56 | 6 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_on_llm_maps/eval_results/stats_ckpt_16000_val_unseen.json` |
+
 ## Step 2 — student GT-map evaluation
 
 Command (corrected interpreter):
