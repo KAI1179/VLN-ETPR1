@@ -29,13 +29,16 @@ from common import (
 SWEEP = (0.0, 0.25, 0.5, 1.0)
 
 
-def replay_split(oracle: dict, gt: dict, tol: float, offtrack_m: float) -> dict:
+def replay_split(
+    oracle: dict, gt: dict, tol: float, offtrack_m: float, tol_mode: str = "all"
+) -> dict:
+    """tol_mode is passed to ClauseTrack; "all" keeps task 2's behaviour (task 3 uses "final_only")."""
     per_ep, fails = [], {"non_monotone": [], "final_miss": [], "offtrack": []}
     for ep in oracle["episodes"]:
         eid = str(ep["episode_id"])
         if eid not in gt:
             continue
-        track = ClauseTrack(ep, tol_m=tol, offtrack_m=offtrack_m)
+        track = ClauseTrack(ep, tol_m=tol, offtrack_m=offtrack_m, tol_mode=tol_mode)
         locs = hab_xz(gt[eid]["locations"])
         raw = track.replay(locs, monotone=False)
         idx = [h.raw_idx for h in raw]
@@ -79,6 +82,7 @@ def replay_split(oracle: dict, gt: dict, tol: float, offtrack_m: float) -> dict:
     n = len(per_ep)
     return {
         "tol_m": tol,
+        "tol_mode": tol_mode,
         "n": n,
         "monotone_share": sum(e["monotone_raw"] for e in per_ep) / n
         if n

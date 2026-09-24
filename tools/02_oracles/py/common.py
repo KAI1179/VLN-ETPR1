@@ -114,10 +114,19 @@ _ENTER = re.compile(r"\b(enter|go into|walk into|into the)\b")
 _PASS = re.compile(r"\b(pass|past|go by)\b")
 _TURN = re.compile(r"\b(turn|veer|bear)\b")
 _MOVE_VERB = re.compile(r"\b(walk|go|head|continue|proceed|move)\b")
+# turn-keyword rule versions: "v0" = task 2 as run; "v1" = task 3 (T3.0-2) adds left | right.
+# The exclusion (a move verb in the same clause) is the same for both.
+TURN_RULES: dict[str, re.Pattern[str]] = {
+    "v0": _TURN,
+    "v1": re.compile(r"\b(turn|veer|bear|left|right)\b"),
+}
 
 
-def classify(text: str) -> str:
-    """Keyword type of a clause; the first matching rule wins (task book T2.2 rule 5)."""
+def classify(text: str, *, turn_rule: str = "v0") -> str:
+    """Keyword type of a clause; the first matching rule wins (task book T2.2 rule 5).
+
+    turn_rule selects the turn keyword list (TURN_RULES); the default keeps task 2's behaviour.
+    """
     t = normalize(text)
     if _STOP.search(t):
         return "stop_at"
@@ -125,7 +134,7 @@ def classify(text: str) -> str:
         return "enter"
     if _PASS.search(t):
         return "pass"
-    if _TURN.search(t) and not _MOVE_VERB.search(t):
+    if TURN_RULES[turn_rule].search(t) and not _MOVE_VERB.search(t):
         return "turn"
     return "move"
 
@@ -179,11 +188,23 @@ class ClauseHit:
     offtrack: bool  # dist > offtrack threshold
 
 
+CLAUSE_TOL_MODES = ("all", "final_only")
+
+
 class ClauseTrack:
-    """Pre-computed polyline of one oracle episode, for fast repeated projection."""
+    """Pre-computed polyline of one oracle episode, for fast repeated projection.
+
+    tol_mode "all" (task 2 as run): every clause start counts as reached tol_m early.
+    tol_mode "final_only" (task 3, T3.0-1): intermediate clause starts are strict (0 m); only a
+    final clause of zero length gets tol_m, because GT stops 0.25-0.5 m short of the goal.
+    """
 
     def __init__(
-        self, oracle_ep: dict[str, Any], tol_m: float = 0.0, offtrack_m: float = 3.0
+        self,
+        oracle_ep: dict[str, Any],
+        tol_m: float = 0.0,
+        offtrack_m: float = 3.0,
+        tol_mode: str = "all",
     ) -> None:
         self.xz = np.asarray(oracle_ep["ref_path_xz"], dtype=float)
         self.cum = np.asarray(oracle_ep["cum_arclen_m"], dtype=float)
@@ -194,6 +215,16 @@ class ClauseTrack:
         self.n_clauses = len(self.starts)
         self.tol_m = tol_m
         self.offtrack_m = offtrack_m
+        if tol_mode not in CLAUSE_TOL_MODES:
+            raise ValueError(f"tol_mode must be one of {CLAUSE_TOL_MODES}, got {tol_mode!r}")
+        self.tol_mode = tol_mode
+        if tol_mode == "all":
+            self._tol = np.full(self.n_clauses, tol_m, dtype=float)
+        else:
+            self._tol = np.zeros(self.n_clauses, dtype=float)
+            last = oracle_ep["clauses"][-1] if oracle_ep["clauses"] else None
+            if last is not None and last["ref_range_0b"][0] == last["ref_range_0b"][1]:
+                self._tol[-1] = tol_m
         a, b = self.xz[:-1], self.xz[1:]
         self._a = a
         self._ab = b - a
@@ -220,7 +251,7 @@ class ClauseTrack:
         p = np.asarray(agent_xz, dtype=float)
         s, dist = self.project(p)
         # the largest clause whose start is <= s: shared endpoints resolve to the larger index
-        hits = np.nonzero(self.starts <= s + self.tol_m)[0]
+        hits = np.nonzero(self.starts - self._tol <= s)[0]
         raw = int(hits[-1]) if hits.size else 0
         idx = max(raw, prev_idx) if monotone else raw
         return ClauseHit(
@@ -247,11 +278,12 @@ def current_clause(
     monotone: bool = True,
     tol_m: float = 0.0,
     offtrack_m: float = 3.0,
+    tol_mode: str = "all",
 ) -> tuple[int, bool]:
     """Task-book signature: (idx, offtrack). Builds a ClauseTrack each call; use ClauseTrack for loops."""
-    h = ClauseTrack(oracle_ep, tol_m=tol_m, offtrack_m=offtrack_m).locate(
-        agent_xz, prev_idx, monotone
-    )
+    h = ClauseTrack(
+        oracle_ep, tol_m=tol_m, offtrack_m=offtrack_m, tol_mode=tol_mode
+    ).locate(agent_xz, prev_idx, monotone)
     return h.idx, h.offtrack
 
 
