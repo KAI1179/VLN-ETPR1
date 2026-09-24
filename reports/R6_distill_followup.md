@@ -23,6 +23,14 @@ torch.distributed.elastic.rendezvous.api.RendezvousConnectionError: The connecti
 
 This is the container's network permission on the c10d rendezvous, so the four runs are being retried with the command execution permission needed for localhost rendezvous. No GPU outside 0–3 is used.
 
+The `none` run completed in the first held batch:
+
+| run | SR | SPL | OSR | NE | stop error | result |
+|---|---:|---:|---:|---:|---:|---|
+| `gt_teacher_try5_val_unseen_z_none` | 73.84 | 63.38 | 77.49 | 3.294 | 3.64 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_none/eval_results/stats_ckpt_16000_val_unseen.json` |
+
+The remaining three ablations are being rerun one at a time because their first concurrent attempts ended with the c10d rendezvous traceback recorded in their `eval.log` files.
+
 ## Step 2 — student GT-map evaluation
 
 Command (corrected interpreter):
