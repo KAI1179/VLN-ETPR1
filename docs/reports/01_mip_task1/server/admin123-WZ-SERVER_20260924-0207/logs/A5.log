@@ -1,0 +1,34 @@
+search roots: /home/xukai/code/ETP-R1-main/data /home/xukai/code/ETP-R1-snapshot/ETP-R1/data /home/xukai/run/ETP-R1/data /home/xukai/data /data /home/xukai/datasets /home/xukai/code/agentic-nav
+MP3D_DIR=/home/xukai/code/ETP-R1-main/data/scene_datasets/mp3d
+  scans with glb: 0, navmesh: 0
+VLNCE_DIR=/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr
+check_seg.py
+embeddings.json.gz
+envdrop
+joint_train_envdrop
+test
+train
+train_segmentation.py
+val_seen
+val_unseen
+xlmr_convert.py
+candidates named R2R_VLNCE* under the roots (for the record):
+/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr
+/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr
+/data/xukai/etp-r1-snapshot/ETP-R1/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr
+/data/xukai/download_checkpoint/extra_files/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr
+/data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-3
+/data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-2_preprocessed
+/data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-2_preprocessed_BERTidx
+/data/xukai/data/scene_datasets/datasets/R2R_VLNCE_v1-3_preprocessed
+/data/houjiewen/g3d-lf/VLN-3DFF/data/datasets/R2R_VLNCE_v1-3
+/data/houjiewen/g3d-lf/VLN-3DFF/data/datasets/R2R_VLNCE_v1-2_preprocessed
+CONN=/data/xukai/vln-duet/datasets/R2R/connectivity
+  files: 1381
+R2R_DISC=/home/xukai/code/agentic-nav/Fine-Grained-R2R/source/R2R-original/R2R_val_unseen.json
+rand100 (ships with MIP): /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+total 132
+drwxrwxr-x 2 xukai xukai  4096 Sep 24 00:17 .
+drwxrwxr-x 5 xukai xukai  4096 Sep 24 00:17 ..
+-rw-rw-r-- 1 xukai xukai 56066 Sep 24 00:17 rand100_gt.json.gz
+-rw-rw-r-- 1 xukai xukai 67871 Sep 24 00:17 rand100.json.gz

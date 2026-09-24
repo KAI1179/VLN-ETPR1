@@ -1,0 +1,20 @@
+total 36
+drwxrwxr-x 2 xukai xukai 4096 Sep 24 02:07 .
+drwxrwxr-x 3 xukai xukai 4096 Sep 24 01:27 ..
+lrwxrwxrwx 1 xukai xukai   94 Sep 24 02:07 embeddings.json.gz -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/embeddings.json.gz
+lrwxrwxrwx 1 xukai xukai   83 Sep 24 02:07 envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/envdrop
+lrwxrwxrwx 1 xukai xukai   95 Sep 24 02:07 joint_train_envdrop -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/joint_train_envdrop
+lrwxrwxrwx 1 xukai xukai   51 Sep 24 02:07 rand100 -> /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+lrwxrwxrwx 1 xukai xukai   80 Sep 24 02:07 test -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/test
+lrwxrwxrwx 1 xukai xukai   81 Sep 24 02:07 train -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/train
+lrwxrwxrwx 1 xukai xukai   84 Sep 24 02:07 val_seen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen
+lrwxrwxrwx 1 xukai xukai   86 Sep 24 02:07 val_unseen -> /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen
+
+total 132
+drwxrwxr-x 2 xukai xukai  4096 Sep 24 00:17 .
+drwxrwxr-x 5 xukai xukai  4096 Sep 24 00:17 ..
+-rw-rw-r-- 1 xukai xukai 56066 Sep 24 00:17 rand100_gt.json.gz
+-rw-rw-r-- 1 xukai xukai 67871 Sep 24 00:17 rand100.json.gz
+
+scenes/mp3d -> /home/xukai/code/ETP-R1-main/data/scene_datasets/mp3d
+mp3d scan dirs: 90

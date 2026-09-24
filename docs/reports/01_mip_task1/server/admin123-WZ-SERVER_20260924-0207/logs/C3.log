@@ -1,0 +1,16 @@
+name, memory.total [MiB], count
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+NVIDIA GeForce RTX 4090, 24564 MiB, 8
+== pip
+sentence-transformers             5.5.1
+torch                             2.12.0
+transformers                      5.11.0
+== hf cache qwen
+none
+== ollama

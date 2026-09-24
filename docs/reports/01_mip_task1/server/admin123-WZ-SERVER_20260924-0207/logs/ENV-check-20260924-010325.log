@@ -1,0 +1,21 @@
+== host
+admin123-WZ-SERVER
+name, memory.total [MiB], driver_version
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+egl vendors: 10_nvidia.json 50_mesa.json 
+== interpreter under test: /home/xukai/code/agentic-nav/MIP/envs/mip/bin/python
+interpreter: /home/xukai/code/agentic-nav/MIP/envs/mip/bin/python
+python: 3.11.16 | platform: x86_64 Linux
+glibc: 2.31
+conda env: /home/xukai/anaconda3 | venv: -
+habitat_sim: 0.3.3 | /home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/habitat_sim/__init__.py
+pip: 26.2
+pip delta for requirements.txt (habitat wheel excluded): 0 new, 0 upgrades, 0 downgrades, 1 reinstalls
+  reinstall: embodiedscore-envs 0.0.1 (editable reinstall)
+render probe (EGL context, empty scene): FAIL (exit 1: Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context)
+
+VERDICT: USABLE AS-IS — nothing to install
+exit code: 0

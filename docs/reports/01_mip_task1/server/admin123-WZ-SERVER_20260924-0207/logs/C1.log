@@ -1,0 +1,10 @@
+ANTHROPIC_API_KEY: unset
+OPENAI_API_KEY: unset
+DASHSCOPE_API_KEY: unset
+DASHSCOPE_INTL_API_KEY: unset
+OPENROUTER_API_KEY: unset
+OLLAMA_URL: unset
+claude: none 
+codex: /home/xukai/.nvm/versions/node/v24.18.0/bin/codex codex-cli 0.153.2
+ollama: none
+no provider keys found

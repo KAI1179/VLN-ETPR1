@@ -1,0 +1,11 @@
+[envserver] EmbodiedScoreEnv on http://127.0.0.1:9200
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "GET /health HTTP/1.1" 200 -
+[envserver] "POST /configure HTTP/1.1" 200 -
+[envserver] "POST /place HTTP/1.1" 200 -
+[envserver] "POST /observe HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /step HTTP/1.1" 200 -
+[envserver] "POST /evaluate HTTP/1.1" 200 -

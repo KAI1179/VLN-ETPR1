@@ -1,0 +1,4 @@
+s..........                                                              [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_callbacks.py:31: no recorded claude-sdk run to replay
+10 passed, 1 skipped in 2.62s

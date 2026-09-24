@@ -1,0 +1,18 @@
+file: /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz
+n_episodes 1839
+top-level keys: ['episode_id', 'trajectory_id', 'scene_id', 'start_position', 'start_rotation', 'info', 'goals', 'instruction', 'reference_path']
+episode_id 1
+trajectory_id 15
+scene_id mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb
+instruction keys: ['instruction_text', 'instruction_tokens']
+instruction_id: None
+reference_path len: 6 first: [15.068599700927734, 0.17162801325321198, -4.4848198890686035]
+goals: [{'position': [13.04640007019043, 0.17162801325321198, 1.8739700317382812], 'radius': 3.0}]
+has viewpoint ids in reference_path? False
+all reference_path entries are 3-float lists? True
+reference_path len min/mean/max: 4 5.87 7
+unique scene_id: 11
+unique trajectory_id: 613
+episodes with instruction_id: 0
+GT file: /home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen_gt.json.gz n keys 1839 value keys ['locations', 'actions', 'forward_steps']
+GT locations len (first): 22
