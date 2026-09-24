@@ -1,0 +1,5 @@
+['/home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100.json.gz', '/home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100_gt.json.gz']
+/home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100.json.gz n = 100 (episode file; other keys: ['instruction_vocab'] )
+first 5: [(7, 42, None), (11, 57, None), (13, 62, None), (40, 155, None), (42, 155, None)]
+wrote /home/xukai/code/agentic-nav/reports/rand100_ids.json with 100 entries
+/home/xukai/code/agentic-nav/MIP/splits/r2r/rand100/rand100_gt.json.gz type dict n = 100 (GT file keyed by episode_id; sample key: 7 )

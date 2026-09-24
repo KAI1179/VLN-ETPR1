@@ -1,0 +1,13 @@
+search roots: /home/xukai/code/ETP-R1-main/data /home/xukai/code/ETP-R1-snapshot/ETP-R1/data /home/xukai/run/ETP-R1/data /home/xukai/data /data /home/xukai/datasets /home/xukai/code/agentic-nav
+MP3D_DIR=/data/xukai/mp3d
+  scans with glb: 90, navmesh: 90
+VLNCE_DIR=<not found>
+CONN=/data/xukai/VLN-GOAT/datasets/R2R/connectivity
+  files: 90
+R2R_DISC=/home/xukai/code/agentic-nav/Fine-Grained-R2R/source/R2R-original/R2R_val_unseen.json
+rand100 (ships with MIP): /home/xukai/code/agentic-nav/MIP/splits/r2r/rand100
+total 132
+drwxrwxr-x 2 xukai xukai  4096 Sep 24 00:17 .
+drwxrwxr-x 5 xukai xukai  4096 Sep 24 00:17 ..
+-rw-rw-r-- 1 xukai xukai 56066 Sep 24 00:17 rand100_gt.json.gz
+-rw-rw-r-- 1 xukai xukai 67871 Sep 24 00:17 rand100.json.gz

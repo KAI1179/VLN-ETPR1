@@ -1,0 +1,79 @@
+== host
+admin123-WZ-SERVER
+name, memory.total [MiB], driver_version
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+NVIDIA GeForce RTX 4090, 24564 MiB, 570.133.20
+egl vendors: 10_nvidia.json 50_mesa.json 
+== interpreter under test: /home/xukai/code/agentic-nav/MIP/envs/mip/bin/python
+interpreter: /home/xukai/code/agentic-nav/MIP/envs/mip/bin/python
+python: 3.11.16 | platform: x86_64 Linux
+glibc: 2.31
+conda env: /home/xukai/anaconda3 | venv: -
+habitat_sim: 0.3.3 | /home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/habitat_sim/__init__.py
+pip: 26.2
+pip delta for requirements.txt (habitat wheel excluded): 0 new, 0 upgrades, 0 downgrades, 1 reinstalls
+  reinstall: embodiedscore-envs 0.0.1 (editable reinstall)
+render probe (EGL context, empty scene): FAIL (exit 1: Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context)
+
+VERDICT: USABLE AS-IS — nothing to install
+
+== render probe failed: running the EGL diagnosis (checks/egl_probe.py) — this tries several env combinations
+
+== host
+DISPLAY=<unset>
+WAYLAND_DISPLAY=<unset>
+XDG_SESSION_TYPE=tty
+__EGL_VENDOR_LIBRARY_FILENAMES=<unset>
+__EGL_VENDOR_LIBRARY_DIRS=/home/xukai/anaconda3/share/glvnd/egl_vendor.d
+EGL_PLATFORM=<unset>
+CUDA_VISIBLE_DEVICES=<unset>
+NVIDIA_DRIVER_CAPABILITIES=<unset>
+LD_LIBRARY_PATH=/opt/ros/noetic/lib:/usr/local/cuda-11.5/lib64
+container: cgroup:0::/init.scope
+vendor jsons: ['/usr/share/glvnd/egl_vendor.d/10_nvidia.json', '/usr/share/glvnd/egl_vendor.d/50_mesa.json']
+  /usr/share/glvnd/egl_vendor.d/50_mesa.json: {
+    "file_format_version" : "1.0.0",
+    "ICD" : {
+        "library_path" : "libEGL_mesa.so.0"
+    }
+}
+  /usr/share/glvnd/egl_vendor.d/10_nvidia.json: {
+    "file_format_version" : "1.0.0",
+    "ICD" : {
+        "library_path" : "libEGL_nvidia.so.0"
+    }
+}
+find_library(EGL): libEGL.so.1
+find_library(EGL_nvidia): libEGL_nvidia.so.0
+find_library(EGL_mesa): libEGL_mesa.so.0
+find_library(GLdispatch): libGLdispatch.so.0
+find_library(nvidia-eglcore): libnvidia-eglcore.so.570.133.20
+find_library(cuda): libcuda.so.1
+nvidia egl libs: ['/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0', '/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.570.133.20', '/usr/lib/x86_64-linux-gnu/libnvidia-eglcore.so.570.133.20']
+
+== libEGL variants
+system libEGL: libEGL.so.1
+habitat-bundled libEGL: /home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/habitat_sim.libs/libEGL-48f73270.so.1.1.0
+  compiled-in vendor search paths: ['/etc/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d']
+
+== EGL via libEGL.so.1
+client extensions: <none> (eglGetError=0x3000)
+device enumeration supported: False | platform_device: False
+default display: EGL_NO_DISPLAY (eglGetError=0x300c)  <- this is the error habitat reports
+
+== EGL via /home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/habitat_sim.libs/libEGL-48f73270.so.1.1.0
+client extensions: <none> (eglGetError=0x3000)
+device enumeration supported: False | platform_device: False
+default display: EGL_NO_DISPLAY (eglGetError=0x300c)  <- this is the error habitat reports
+
+== habitat_sim render attempts (empty scene, 64x64)
+  as-is                                  gpu_device_id=0: FAIL Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context
+  as-is                                  gpu_device_id=1: FAIL Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context
+  as-is                                  gpu_device_id=2: FAIL Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context
+  as-is                                  gpu_device_id=3: FAIL Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER | WindowlessContext: Unable to create windowless context
+  nvidia vendor json                     gpu_device_id=0: OK (64, 64, 4)
+
+RESULT: 'nvidia vendor json' renders (gpu_device_id=0). Wrote /home/xukai/code/agentic-nav/egl.env; run_task1.sh sources it automatically.
+exit code: 0
