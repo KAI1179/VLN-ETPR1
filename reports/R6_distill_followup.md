@@ -31,6 +31,12 @@ The `none` run completed in the first held batch:
 
 The remaining three ablations are being rerun one at a time because their first concurrent attempts ended with the c10d rendezvous traceback recorded in their `eval.log` files.
 
+`metadata_only` completed after the serialized retry:
+
+| run | SR | SPL | OSR | NE | stop error | result |
+|---|---:|---:|---:|---:|---:|---|
+| `gt_teacher_try5_val_unseen_z_metadata_only` | 56.93 | 46.84 | 61.88 | 4.191 | 4.95 | `data/logs/checkpoints/gt_teacher_try5_val_unseen_z_metadata_only/eval_results/stats_ckpt_16000_val_unseen.json` |
+
 ## Step 2 — student GT-map evaluation
 
 Command (corrected interpreter):
