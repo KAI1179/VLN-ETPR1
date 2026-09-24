@@ -16,10 +16,13 @@ for f in "$WORKDIR"/logs/*.log; do
   if [ "$(wc -l < "$f")" -gt 400 ]; then { head -200 "$f"; echo "... [truncated, $(wc -l < "$f") lines] ..."; tail -200 "$f"; } > "$DEST/logs/$(basename "$f")"; else cp "$f" "$DEST/logs/"; fi
 done
 # the env server log of the newest MIP run, useful when A7 failed
-newest=$(find "$WORKDIR/MIP/outputs" -mindepth 2 -maxdepth 2 -type d -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
-[ -n "${newest:-}" ] && [ -f "$newest/env_server.log" ] && tail -200 "$newest/env_server.log" > "$DEST/logs/last_env_server.log"
+newest=""
+if [ -d "$WORKDIR/MIP/outputs" ]; then
+  newest=$(find "$WORKDIR/MIP/outputs" -mindepth 2 -maxdepth 2 -type d -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)
+fi
+if [ -n "$newest" ] && [ -f "$newest/env_server.log" ]; then tail -200 "$newest/env_server.log" > "$DEST/logs/last_env_server.log"; fi
 cd "$REPO_ROOT"
 git add "docs/reports/mip_task1/server/$TAG"
-git commit -q -m "docs(reports): MIP task 1 server run $TAG" || echo "nothing to commit"
+git commit -q -m "docs(reports): MIP task 1 server run $TAG" || { echo "commit failed or nothing to commit (is git user.name/user.email configured?)"; exit 1; }
 if [ "${AUTO_PUSH:-0}" = 1 ]; then git push -u origin "$(git rev-parse --abbrev-ref HEAD)"; else echo "now: git push -u origin $(git rev-parse --abbrev-ref HEAD)"; fi
 echo "collected into $DEST"
