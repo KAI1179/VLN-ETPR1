@@ -1,0 +1,327 @@
+From ef203bea5d27e48011b68002fc120ed3aa8a9ca1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 24 Sep 2026 16:36:40 +0000
+Subject: [PATCH] Add auto-resume launcher for LLM-pretrained-init distillation
+
+run_dagger_distill_llmpt.sh starts the GT-teacher distillation student from
+model_step_460000.pt and resumes from the latest ckpt.iter*.pth when one
+exists (IL.load_from_ckpt + IL.is_requeue). eval_run.sh evaluates any
+LLM-Grid Try5 run's checkpoint into the layout the analysis scripts read.
+The R7 task book describes the automated execution and monitoring.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/eval_run.sh                 |  74 ++++++++++++
+ scripts/distill/run_dagger_distill_llmpt.sh | 120 ++++++++++++++++++++
+ upload_files/R7_distill_llmpt_task_book.md  |  90 +++++++++++++++
+ 3 files changed, 284 insertions(+)
+ create mode 100755 scripts/distill/eval_run.sh
+ create mode 100755 scripts/distill/run_dagger_distill_llmpt.sh
+ create mode 100644 upload_files/R7_distill_llmpt_task_book.md
+
+diff --git a/scripts/distill/eval_run.sh b/scripts/distill/eval_run.sh
+new file mode 100755
+index 0000000..90bd54f
+--- /dev/null
++++ b/scripts/distill/eval_run.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++# Evaluate one DAgger checkpoint of any LLM-Grid Try5 run on R2R val_unseen.
++#
++# Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]
++# Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several processes),
++#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen).
++# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>/eval_results/
++# (the layout summarize_eval.py and paired_analysis.py read).
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++
++if [[ $# -lt 2 || $# -gt 3 ]]; then
++    echo "Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]" >&2
++    exit 2
++fi
++RUN_NAME="$1"; ITER="$2"
++PRETRAINED_CKPT="${3:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
++CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
++IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
++GPU_NUMBERS="${#_gpu_list[@]}"
++GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
++NUM_ENVS="${NUM_ENVS:-4}"
++BACK_ALGO="${BACK_ALGO:-control}"
++SPLIT="${SPLIT:-val_unseen}"
++
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
++EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}"
++EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}.log"
++RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
++[[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
++
++MAP_LOAD_ARGS=()
++if grep -q "load_pretrained_map_modules" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
++    MAP_LOAD_ARGS=(MODEL.MAP_ENCODER.load_pretrained_map_modules False)
++fi
++
++cd "${REPO_ROOT}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node="${GPU_NUMBERS}" \
++    "${REPO_ROOT}/run.py" \
++    --exp_name "${EVAL_NAME}" \
++    --run-type eval \
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
++    SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
++    TASK_CONFIG.SEED 100 \
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
++    NUM_ENVIRONMENTS "${NUM_ENVS}" \
++    EVAL.SPLIT "${SPLIT}" EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
++    IL.back_algo "${BACK_ALGO}" \
++    TRAINER_NAME SS-ETP-LLM \
++    MODEL.policy_name LLMGridTry5Policy \
++    MODEL.MAP_ENCODER.enabled True \
++    MODEL.MAP_ENCODER.architecture try5 \
++    MODEL.MAP_ENCODER.source llm_grid \
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree \
++    MODEL.MAP_ENCODER.refiner_ckpt "" \
++    "${MAP_LOAD_ARGS[@]}" \
++    MODEL.elevation_axis "${ELEVATION_AXIS:-y}" \
++    MODEL.pretrained_path "${PRETRAINED_CKPT}" 2>&1 | tee "${EVAL_LOG}"
++
++"${PYTHON}" - "${RESULT_JSON}" "${RUN_NAME}" "${ITER}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"\n{sys.argv[2]} iter {sys.argv[3]} | SR {m['success']*100:.2f} | SPL {m['spl']*100:.2f} | "
++      f"OSR {m['oracle_success']*100:.2f} | NE {m['distance_to_goal']:.3f} | "
++      f"stop_err {(m['oracle_success']-m['success'])*100:.2f} | cache_missing {int(m.get('llm_cache_missing_count',0))}")
++PY
++echo "Metrics: ${RESULT_JSON}"
+diff --git a/scripts/distill/run_dagger_distill_llmpt.sh b/scripts/distill/run_dagger_distill_llmpt.sh
+new file mode 100755
+index 0000000..415d724
+--- /dev/null
++++ b/scripts/distill/run_dagger_distill_llmpt.sh
+@@ -0,0 +1,120 @@
++#!/usr/bin/env bash
++# GT-teacher distillation with the student initialised from the LLM-Grid
++# pretraining checkpoint (model_step_460000.pt), with automatic resume.
++#
++# Usage: bash scripts/distill/run_dagger_distill_llmpt.sh [--dry-run]
++#
++# Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
++# continues from the latest one (IL.load_from_ckpt True + IL.is_requeue True
++# restores weights, optimizer, scheduler and iteration); otherwise it starts
++# from the pretraining checkpoint. Re-running this script after a crash is
++# therefore always safe.
++#
++# Env overrides: ITERS (20000), LOAD_MAP (auto|True|False; auto = True when the
++# MODEL.MAP_ENCODER.load_pretrained_map_modules key exists), ELEVATION_AXIS (y),
++# CUDA_VISIBLE_DEVICES (0-7), MASTER_PORT (29500).
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
++RUN_NAME="dagger_distill_gt_teacher_llmpt"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++GT_TEACHER_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
++GT_TEACHER_NAMESPACE="gt.online121c369.r1p5.direction5.v1"
++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
++
++DRY_RUN_ARGS=()
++if [[ "${1:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++elif [[ $# -ne 0 ]]; then
++    echo "Usage: bash scripts/distill/run_dagger_distill_llmpt.sh [--dry-run]" >&2
++    exit 2
++fi
++
++cd "${REPO_ROOT}"
++mkdir -p "${RUN_DIR}"
++
++# Resume decision.
++RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
++LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
++if [[ -n "${LATEST_CKPT}" ]]; then
++    RESUME_ARGS=(IL.load_from_ckpt True IL.is_requeue True)
++    echo "Resuming from ${LATEST_CKPT}"
++else
++    echo "Fresh start from ${PRETRAINED_CKPT}"
++fi
++
++# Pretrained map-module loading: only pass the key when the config defines it
++# (patch 0001 applied); LOAD_MAP=auto -> True in that case.
++MAP_LOAD_ARGS=()
++if grep -q "load_pretrained_map_modules" vlnce_baselines/config/default.py; then
++    LOAD_MAP_VALUE="${LOAD_MAP:-True}"
++    [[ "${LOAD_MAP_VALUE}" == "auto" ]] && LOAD_MAP_VALUE=True
++    MAP_LOAD_ARGS=(MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP_VALUE}")
++else
++    LOAD_MAP_VALUE="unavailable"
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --nproc_per_node=8 --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS '[0,1,2,3,4,5,6,7]'
++    TORCH_GPU_IDS '[0,1,2,3,4,5,6,7]'
++    GPU_NUMBERS 8
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS 4
++    CHECKPOINT_INTERVAL 1000
++    ONLY_LAST_SAVEALL False
++    IL.iters "${ITERS:-20000}"
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 1400
++    IL.warmup_iters 300
++    IL.min_lr_ratio 1.0
++    "${RESUME_ARGS[@]}"
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    "${MAP_LOAD_ARGS[@]}"
++    MODEL.elevation_axis "${ELEVATION_AXIS:-y}"
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled True
++    IL.distill_weight 1.0
++    IL.distill_temperature 1.0
++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
++    IL.gt_teacher_elevation_axis z
++)
++
++{
++    echo "launch_time=$(date -Is)"
++    echo "git_commit=$(git rev-parse HEAD)"
++    echo "resume_from=${LATEST_CKPT:-none}"
++    echo "load_pretrained_map_modules=${LOAD_MAP_VALUE}"
++    echo "elevation_axis=${ELEVATION_AXIS:-y}"
++    echo "iters=${ITERS:-20000}"
++} >> "${RUN_DIR}/launch_info.txt"
++
++echo "Log: ${LOG_PATH}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee -a "${LOG_PATH}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++fi
+diff --git a/upload_files/R7_distill_llmpt_task_book.md b/upload_files/R7_distill_llmpt_task_book.md
+new file mode 100644
+index 0000000..0487731
+--- /dev/null
++++ b/upload_files/R7_distill_llmpt_task_book.md
+@@ -0,0 +1,90 @@
++# 任务书 R7：LLM 地图预训练初始化的教师蒸馏（自动执行，支持断点续训）
++
++仓库：`/home/xukai/code/ETP-R1-snapshot/ETP-R1`，分支 `exp/refiner`。
++环境：`/home/xukai/anaconda3/envs/etpr1-py38`。
++
++实验：学生从 LLM-Grid 预训练 checkpoint `model_step_460000.pt` 初始化，用冻结 GT 教师
++（`try-5-r1p5-dagger.iter16000.pth`，namespace `gt.online121c369.r1p5.direction5.v1`）做
++动作层 KL 蒸馏 DAgger。与已完成的 `dagger_distill_gt_teacher` 唯一的设计差异是初始化
++checkpoint（387500 → 460000）；若 `load_pretrained_map_modules` 可用，则预训练的
++`map_encoder` 与 fusion 权重也会真正加载（历史行为是被静默丢弃）。
++
++## 不需要改代码，不需要切换 commit
++
++- 保持 `exp/refiner` 当前 HEAD。`93f53da` 之后的补丁 0001–0003（若 R6 已应用）只影响
++  `_prepare_map_inputs` 的可选 flag 和 loader（默认开关），训练语义不变。
++- 续训机制是现成的：`IL.load_from_ckpt True` + `IL.is_requeue True` 会读取
++  `CHECKPOINT_FOLDER` 中最新的 `ckpt.iter*.pth`，恢复 weights/optimizer/scheduler/iteration
++  （`ss_trainer_ETP_PriorGT.py` `_get_latest_iter_checkpoint` 与 `_initialize_policy`）。
++  launcher `scripts/distill/run_dagger_distill_llmpt.sh` 自动判断：目录里有 checkpoint 就续训，
++  没有就从预训练开始。**崩溃后重新执行同一条命令即可续训。**
++
++## 硬约束
++
++- 不修改任何源码。不 kill、不干扰任何已在运行的 `torchrun`。
++- 若 `nvidia-smi` 显示已有 `dagger_distill_gt_teacher_*`（R6 第 4 步）训练在跑，**不要启动**，
++  在报告里写明并停止，由用户决定。
++- 8 张卡显存占用均 < 2 GB 才启动训练；否则每 10 分钟轮询，最多等 6 小时，超时写报告停止。
++- 每个动作和结果追加到 `reports/R7_distill_llmpt.md` 并 `git commit`。
++
++## 准备
++
++```bash
++cd /home/xukai/code/ETP-R1-snapshot/ETP-R1
++git log --oneline -6                      # 记录 HEAD；确认在 exp/refiner
++git fetch origin claude/awesome-ride-axuad6
++git checkout origin/claude/awesome-ride-axuad6 -- scripts/distill/patches
++ls scripts/distill/run_dagger_distill_llmpt.sh 2>/dev/null || git am scripts/distill/patches/0004-*.patch
++# 0004 只新增文件，无论 0001–0003 是否已应用都能 am；若 0001–0003 尚未应用，也一并 am（可选，建议应用）
++chmod +x scripts/distill/*.sh
++```
++
++若 `load_pretrained_map_modules` 已存在（`grep -q load_pretrained_map_modules vlnce_baselines/config/default.py`）：
++
++```bash
++python scripts/distill/check_pretrained_map_loading.py \
++  --pretrained /home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt \
++  2>&1 | tee reports/r7_step0_460000_loading.txt
++```
++
++- `map_encoder strict load OK` 且 `True: 6/6 landed` → 用默认 `LOAD_MAP=True` 启动。
++- 任一失败 → 用 `LOAD_MAP=False` 启动，并在报告中记录失败原文。
++
++## 启动（dry-run 先行）
++
++```bash
++bash scripts/distill/run_dagger_distill_llmpt.sh --dry-run    # 生成 config.yaml，检查无报错
++nohup bash scripts/distill/run_dagger_distill_llmpt.sh > /dev/null 2>&1 &
++```
++
++（如需 `LOAD_MAP=False`，在两条命令前加该环境变量。）
++记录 `data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/launch_info.txt` 内容到报告。
++
++## 监控与续训
++
++每 10 分钟检查一次，直到 `train.log` 出现 `iter 20000:` 或最终 checkpoint `ckpt.iter20000.pth`：
++
++1. `pgrep -f "exp_name dagger_distill_gt_teacher_llmpt"` 为空且未完成 → 训练中断。
++   看 `train.log` 最后 200 行：
++   - NCCL/EGL/CUDA 初始化类错误、`Killed`、显存被其它进程挤占 → 等 8 卡空闲后重新执行
++     `nohup bash scripts/distill/run_dagger_distill_llmpt.sh > /dev/null 2>&1 &`（自动续训），
++     在报告记录中断 iteration 与原因。最多重启 3 次。
++   - Python traceback（`AssertionError`、`FileNotFoundError`、`KeyError` 等）→ 不重启，
++     把 traceback 写入报告并停止。
++2. 每次出现新的 `iter N:` 日志行，把 `student_ce / distill_loss / teacher_ce / IL_loss` 追加到报告的曲线表。
++   健康判据：`teacher_ce` 从一开始就明显低于 `student_ce`；无 `nan`。
++3. 每当出现 `ckpt.iter{N}.pth` 且 N ∈ {4000, 6000, 8000, 10000, 12000, 14000, 16000, 20000}，
++   并且有一张空闲卡（显存 < 2 GB，且不是训练占用的 8 张）时：
++   ```bash
++   CUDA_VISIBLE_DEVICES=<空闲卡> nohup bash scripts/distill/eval_run.sh dagger_distill_gt_teacher_llmpt N > /dev/null 2>&1 &
++   ```
++   没有空闲卡时把待评测的 N 记录下来，训练结束后补评。评测结果用
++   `python scripts/distill/summarize_eval.py --run-name dagger_distill_gt_teacher_llmpt --markdown-out reports/r7_eval_summary.md`
++   汇总并贴进报告。
++
++## 交付
++
++`reports/R7_distill_llmpt.md`：HEAD、补丁状态、loader 检查结果、`launch_info.txt`、每 1000 iter
++的损失表、每次中断/重启记录、评测汇总表、与 `dagger_distill_gt_teacher` 同 iter 的对照
++（`summarize_eval.py --run-name dagger_distill_gt_teacher_llmpt --baseline-run dagger_distill_gt_teacher`）。
++全部 commit 到 `exp/refiner`。
+-- 
+2.43.0
+
