@@ -198,14 +198,14 @@ step_A4() {
 }
 
 # ── A5: find data ──────────────────────────────────────────────────────────
-find_first_dir() { # <name> <predicate-glob-inside> roots...
+find_first_dir() { # <name-glob> <predicate-glob-inside> roots...  (follows symlinks; exact name first)
   local name=$1 inner=$2; shift 2; local r d
   for r in "$@"; do
     [ -d "$r" ] || continue
     while IFS= read -r d; do
       [ -n "$d" ] || continue
       if [ -z "$inner" ] || compgen -G "$d/$inner" > /dev/null; then echo "$d"; return 0; fi
-    done < <(find "$r" -maxdepth 6 -type d -name "$name" 2>/dev/null)
+    done < <(find -L "$r" -maxdepth 6 -type d -name "$name" 2>/dev/null | awk '{ print length($0) " " $0 }' | sort -n | cut -d' ' -f2-)
   done
   return 1
 }
@@ -216,7 +216,10 @@ step_A5() {
   # shellcheck disable=SC2206
   local roots=($DATA_SEARCH_ROOTS "$WORKDIR")
   MP3D_DIR=${MP3D_DIR:-$(find_first_dir mp3d "*/*.glb" "${roots[@]}")}
+  # exact name first, then variants such as R2R_VLNCE_v1-3_preprocessed_xlmr (same episodes, other tokens)
   VLNCE_DIR=${VLNCE_DIR:-$(find_first_dir "R2R_VLNCE_v1-3_preprocessed" "val_unseen/val_unseen.json.gz" "${roots[@]}")}
+  VLNCE_DIR=${VLNCE_DIR:-$(find_first_dir "R2R_VLNCE_v1-3_preprocessed*" "val_unseen/val_unseen.json.gz" "${roots[@]}")}
+  VLNCE_DIR=${VLNCE_DIR:-$(find_first_dir "R2R_VLNCE_v1-*" "val_unseen/val_unseen.json.gz" "${roots[@]}")}
   CONN=${CONN:-$(find_first_dir connectivity "*_connectivity.json" "${roots[@]}" "$REPO_ROOT/precompute_img_features")}
   if [ -z "${R2R_DISC:-}" ]; then
     local r; for r in "${roots[@]}" "$FGR2R_DIR/source/R2R-original"; do
@@ -232,6 +235,7 @@ step_A5() {
     echo "search roots: ${roots[*]}"
     echo "MP3D_DIR=${MP3D_DIR:-<not found>}"; [ -n "$MP3D_DIR" ] && echo "  scans with glb: $(find "$MP3D_DIR" -maxdepth 2 -name '*.glb' 2>/dev/null | wc -l), navmesh: $(find "$MP3D_DIR" -maxdepth 2 -name '*.navmesh' 2>/dev/null | wc -l)"
     echo "VLNCE_DIR=${VLNCE_DIR:-<not found>}"; [ -n "$VLNCE_DIR" ] && ls "$VLNCE_DIR"
+    echo "candidates named R2R_VLNCE* under the roots (for the record):"; for r in "${roots[@]}"; do [ -d "$r" ] && find -L "$r" -maxdepth 6 -type d -name "R2R_VLNCE*" 2>/dev/null; done | head -10
     echo "CONN=${CONN:-<not found>}"; [ -n "$CONN" ] && echo "  files: $(ls "$CONN" | grep -c _connectivity.json)"
     echo "R2R_DISC=${R2R_DISC:-<not found; the B3 FGR2R clone ships source/R2R-original/R2R_val_unseen.json>}"
     echo "rand100 (ships with MIP): $MIP_DIR/splits/r2r/rand100"; ls -la "$MIP_DIR/splits/r2r/rand100" 2>/dev/null
