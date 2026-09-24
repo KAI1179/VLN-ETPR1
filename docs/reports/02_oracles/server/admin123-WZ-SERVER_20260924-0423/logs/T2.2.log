@@ -1,0 +1,94 @@
+## T2.2 oracle
+
+### rand100
+
+| n | skipped | clauses min / median / max | zero-length clauses | non-contiguous | alignment | max point offset P50 / P95 / max (m) |
+|---|---|---|---|---|---|---|
+| 100 | 0 | 1 / 4 / 6 | 54 | 0 | {'index': 100} | 0.000 / 0.130 / 1.284 |
+
+clause count per episode: {1: 2, 2: 17, 3: 29, 4: 28, 5: 14, 6: 10}
+
+| type | stop_at | enter | pass | turn | move |
+|---|---|---|---|---|---|
+| n | 90 | 48 | 22 | 34 | 171 |
+| share | 24.7% | 13.2% | 6.0% | 9.3% | 46.8% |
+
+#### rand100 抽查 10 条（seed 0）
+
+```
+episode 516  path 2071  k=2  ref points 5  arclen 9.64 m
+  [0] pass     vp[1, 2] ref[0, 1]   1.84 m  walk past the sink and through the open door
+  [1] move     vp[2, 3] ref[1, 2]   3.50 m  make a hard left at the close brown and frost glass french door and then a hard right
+  [2] pass     vp[3, 5] ref[2, 4]   4.31 m  walk past the kitchen
+  [3] stop_at  vp[5, 5] ref[4, 4]   0.00 m  and wait near the sofa end table
+episode 1301  path 5067  k=1  ref points 6  arclen 9.89 m
+  [0] enter    vp[1, 6] ref[0, 5]   9.89 m  walk forward and enter the next room
+  [1] stop_at  vp[6, 6] ref[5, 5]   0.00 m  stop at the door on the far side
+episode 550  path 2233  k=0  ref points 7  arclen 17.89 m
+  [0] move     vp[1, 2] ref[0, 1]   3.99 m  take the leftmost door
+  [1] pass     vp[2, 4] ref[1, 3]   5.06 m  walk past the large painting to your left
+  [2] move     vp[4, 5] ref[3, 4]   2.40 m  take a left
+  [3] stop_at  vp[5, 7] ref[4, 6]   6.44 m  and wait in the doorway
+episode 52  path 175  k=0  ref points 7  arclen 15.96 m
+  [0] move     vp[1, 3] ref[0, 2]   5.11 m  take a right at the large clock
+  [1] move     vp[3, 7] ref[2, 6]  10.85 m  and travel straight through the kitchen when you see the thermostat on the wall you be right next to the washroom
+episode 348  path 1345  k=2  ref points 6  arclen 10.97 m
+  [0] move     vp[1, 2] ref[0, 1]   1.03 m  go up the stair
+  [1] move     vp[2, 4] ref[1, 3]   5.57 m  and take a left
+  [2] move     vp[4, 5] ref[3, 4]   1.74 m  walk towards the couch and chair in the sitting area
+  [3] move     vp[5, 6] ref[4, 5]   2.63 m  walk through the sitting area
+  [4] stop_at  vp[6, 6] ref[5, 5]   0.00 m  and stop in front of the first door to the balcony on your left
+episode 698  path 2834  k=1  ref points 5  arclen 6.17 m
+  [0] move     vp[1, 2] ref[0, 1]   1.86 m  head out of the shower and out of the bathroom
+  [1] move     vp[2, 3] ref[1, 2]   1.89 m  go toward the bedroom
+  [2] move     vp[3, 4] ref[2, 3]   1.06 m  go in the bedroom
+  [3] stop_at  vp[4, 5] ref[3, 4]   1.35 m  and stop at the side of the bed
+episode 655  path 2695  k=0  ref points 6  arclen 11.04 m
+  [0] move     vp[1, 2] ref[0, 1]   2.13 m  leave the bedroom
+  [1] enter    vp[2, 4] ref[1, 3]   3.72 m  turn left into the hallway opposite the bookshelf
+  [2] move     vp[4, 5] ref[3, 4]   1.93 m  go to the end of the hallway
+  [3] move     vp[5, 6] ref[4, 5]   3.26 m  go left to the white couch
+episode 531  path 2154  k=2  ref points 6  arclen 6.99 m
+  [0] move     vp[1, 1] ref[0, 0]   0.00 m  exit closet
+  [1] pass     vp[1, 2] ref[0, 1]   1.04 m  and walk past bed
+  [2] move     vp[2, 4] ref[1, 3]   3.46 m  walk out open bedroom door
+  [3] stop_at  vp[4, 6] ref[3, 5]   2.49 m  and wait at top of stair landing
+episode 403  path 1627  k=0  ref points 5  arclen 8.91 m
+  [0] move     vp[1, 3] ref[0, 2]   3.87 m  turn right to walk through the right doorway
+  [1] move     vp[3, 4] ref[2, 3]   1.95 m  walk through the left doorway
+  [2] stop_at  vp[4, 5] ref[3, 4]   3.08 m  stop at the entrance to the dining room
+episode 643  path 2665  k=0  ref points 7  arclen 10.77 m
+  [0] move     vp[1, 2] ref[0, 1]   1.69 m  take a sharp left
+  [1] move     vp[2, 6] ref[1, 5]   6.31 m  walk under the chandelier
+  [2] stop_at  vp[6, 7] ref[5, 6]   2.77 m  and wait next to the billiards table
+```
+
+### val_unseen
+
+| n | skipped | clauses min / median / max | zero-length clauses | non-contiguous | alignment | max point offset P50 / P95 / max (m) |
+|---|---|---|---|---|---|---|
+| 1839 | 0 | 1 / 3 / 9 | 951 | 0 | {'index': 1839} | 0.000 / 0.019 / 1.284 |
+
+clause count per episode: {1: 43, 2: 352, 3: 538, 4: 469, 5: 261, 6: 114, 7: 40, 8: 17, 9: 5}
+
+| type | stop_at | enter | pass | turn | move |
+|---|---|---|---|---|---|
+| n | 1589 | 946 | 608 | 624 | 2920 |
+| share | 23.8% | 14.1% | 9.1% | 9.3% | 43.7% |
+
+### train
+
+| n | skipped | clauses min / median / max | zero-length clauses | non-contiguous | alignment | max point offset P50 / P95 / max (m) |
+|---|---|---|---|---|---|---|
+| 10809 | 10 | 1 / 4 / 14 | 6685 | 0 | {'index': 10809} | 0.000 / 0.087 / 1.587 |
+
+clause count per episode: {1: 274, 2: 1914, 3: 3074, 4: 2834, 5: 1647, 6: 712, 7: 242, 8: 71, 9: 21, 10: 11, 11: 5, 12: 3, 14: 1}
+
+| type | stop_at | enter | pass | turn | move |
+|---|---|---|---|---|---|
+| n | 9304 | 5690 | 3902 | 3766 | 17171 |
+| share | 23.4% | 14.3% | 9.8% | 9.5% | 43.1% |
+
+skipped (first 10): {'271': 'k=3 beyond FGR2R lists (3, 3)', '323': 'k=3 beyond FGR2R lists (3, 3)', '369': 'k=3 beyond FGR2R lists (3, 3)', '511': 'k=3 beyond FGR2R lists (3, 3)', '881': 'k=3 beyond FGR2R lists (3, 3)', '1149': 'k=3 beyond FGR2R lists (3, 3)', '1228': 'k=3 beyond FGR2R lists (3, 3)', '1232': 'k=3 beyond FGR2R lists (3, 3)', '1287': 'k=3 beyond FGR2R lists (3, 3)', '1318': 'k=3 beyond FGR2R lists (3, 3)'}
+
+判据（rand100 100 条全部生成）：满足

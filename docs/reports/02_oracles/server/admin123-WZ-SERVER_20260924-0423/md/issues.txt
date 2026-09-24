@@ -1,0 +1,2 @@
+T2.2: train: 10 episodes skipped, 0 aligned by nearest point (path and reference_path lengths differ)
+T2.3: the task book's rule (tol = 0) reaches the last clause in only 64% of GT replays: GT stops 0.25-0.5 m short of the goal, where the zero-length final clause starts. Default CLAUSE_TOL_M = 0.5 (100% final hits, 99% monotone). Accept the tolerance?

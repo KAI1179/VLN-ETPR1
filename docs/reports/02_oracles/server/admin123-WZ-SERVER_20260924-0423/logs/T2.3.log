@@ -1,0 +1,19 @@
+## T2.3 GT 回放自检
+
+rand100 GT `locations` (one point per 0.25 m forward step), offtrack threshold 3.0 m.
+
+| CLAUSE_TOL_M | n | raw idx monotone (target ≥95%) | final idx = last (target 100%) | offtrack episodes (target 0) | max dist to path P95 (m) |
+|---|---|---|---|---|---|
+| 0.0 | 100 | 100.0% | 64.0% | 0 | 0.440 |
+| 0.25 | 100 | 100.0% | 64.0% | 0 | 0.440 |
+| 0.5 (chosen) | 100 | 99.0% | 100.0% | 0 | 0.440 |
+| 1.0 | 100 | 99.0% | 100.0% | 0 | 0.440 |
+
+`CLAUSE_TOL_M` lets a clause start count as reached when the projected arc length is within that many metres of it. The task book's rule is tol = 0.
+
+不满足条目 — non_monotone（tol=0.5，1 条）:
+```
+{'episode_id': 232, 'first_drops(step,from,to)': [(26, 4, 3)]}
+```
+
+判据（tol=0.5）：全部满足
