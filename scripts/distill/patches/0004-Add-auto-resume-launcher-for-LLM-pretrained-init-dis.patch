@@ -1,4 +1,4 @@
-From ef203bea5d27e48011b68002fc120ed3aa8a9ca1 Mon Sep 17 00:00:00 2001
+From 5c6894b364a99c7528647344adabb598919b83fd Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 24 Sep 2026 16:36:40 +0000
 Subject: [PATCH] Add auto-resume launcher for LLM-pretrained-init distillation
@@ -14,8 +14,8 @@ Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
 ---
  scripts/distill/eval_run.sh                 |  74 ++++++++++++
  scripts/distill/run_dagger_distill_llmpt.sh | 120 ++++++++++++++++++++
- upload_files/R7_distill_llmpt_task_book.md  |  90 +++++++++++++++
- 3 files changed, 284 insertions(+)
+ upload_files/R7_distill_llmpt_task_book.md  | 107 +++++++++++++++++
+ 3 files changed, 301 insertions(+)
  create mode 100755 scripts/distill/eval_run.sh
  create mode 100755 scripts/distill/run_dagger_distill_llmpt.sh
  create mode 100644 upload_files/R7_distill_llmpt_task_book.md
@@ -228,10 +228,10 @@ index 0000000..415d724
 +fi
 diff --git a/upload_files/R7_distill_llmpt_task_book.md b/upload_files/R7_distill_llmpt_task_book.md
 new file mode 100644
-index 0000000..0487731
+index 0000000..446016c
 --- /dev/null
 +++ b/upload_files/R7_distill_llmpt_task_book.md
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,107 @@
 +# 任务书 R7：LLM 地图预训练初始化的教师蒸馏（自动执行，支持断点续训）
 +
 +仓库：`/home/xukai/code/ETP-R1-snapshot/ETP-R1`，分支 `exp/refiner`。
@@ -284,25 +284,42 @@ index 0000000..0487731
 +- `map_encoder strict load OK` 且 `True: 6/6 landed` → 用默认 `LOAD_MAP=True` 启动。
 +- 任一失败 → 用 `LOAD_MAP=False` 启动，并在报告中记录失败原文。
 +
-+## 启动（dry-run 先行）
++## 阶段划分
++
++本任务书分两个阶段，由两条独立指令触发。**训练由用户在 tmux 中手动启动，agent 不启动训练。**
++
++- 阶段 A「准备」：应用补丁、检查 loader、dry-run、检查 GPU、汇报。到此停止。
++- 阶段 B「监控」：用户启动训练后再触发；只做监控、续训判断、评测与汇报。
++
++## 阶段 A：准备（不启动训练）
++
++1. 完成上面的「准备」小节（补丁、可选的 loader 检查）。
++2. dry-run，确认 config 能解析、无报错，并记录生成的 config 路径：
++   ```bash
++   bash scripts/distill/run_dagger_distill_llmpt.sh --dry-run
++   ```
++   若 loader 检查失败，改用 `LOAD_MAP=False bash scripts/distill/run_dagger_distill_llmpt.sh --dry-run`。
++3. 记录 `nvidia-smi` 快照与当前正在运行的 `torchrun` 进程（`pgrep -af torchrun`）。
++4. 在 `reports/R7_distill_llmpt.md` 写"阶段 A 完成"段落：HEAD、补丁状态、loader 检查结论、
++   建议的启动命令（含是否需要 `LOAD_MAP=False`）、GPU 占用情况。commit。**停止，不启动训练。**
++
++用户随后在 tmux 中手动执行（agent 不执行）：
 +
 +```bash
-+bash scripts/distill/run_dagger_distill_llmpt.sh --dry-run    # 生成 config.yaml，检查无报错
-+nohup bash scripts/distill/run_dagger_distill_llmpt.sh > /dev/null 2>&1 &
++tmux new -s r7
++cd /home/xukai/code/ETP-R1-snapshot/ETP-R1
++bash scripts/distill/run_dagger_distill_llmpt.sh        # 崩溃后重跑同一命令即续训
 +```
 +
-+（如需 `LOAD_MAP=False`，在两条命令前加该环境变量。）
-+记录 `data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/launch_info.txt` 内容到报告。
-+
-+## 监控与续训
++## 阶段 B：监控与续训（用户启动训练后触发）
 +
 +每 10 分钟检查一次，直到 `train.log` 出现 `iter 20000:` 或最终 checkpoint `ckpt.iter20000.pth`：
 +
 +1. `pgrep -f "exp_name dagger_distill_gt_teacher_llmpt"` 为空且未完成 → 训练中断。
 +   看 `train.log` 最后 200 行：
-+   - NCCL/EGL/CUDA 初始化类错误、`Killed`、显存被其它进程挤占 → 等 8 卡空闲后重新执行
-+     `nohup bash scripts/distill/run_dagger_distill_llmpt.sh > /dev/null 2>&1 &`（自动续训），
-+     在报告记录中断 iteration 与原因。最多重启 3 次。
++   - NCCL/EGL/CUDA 初始化类错误、`Killed`、显存被其它进程挤占 → 在报告中记录中断 iteration
++     与原因，并写明"重新执行 `bash scripts/distill/run_dagger_distill_llmpt.sh` 即可续训"；
++     **不要自行重启**，等待用户在 tmux 中重跑。
 +   - Python traceback（`AssertionError`、`FileNotFoundError`、`KeyError` 等）→ 不重启，
 +     把 traceback 写入报告并停止。
 +2. 每次出现新的 `iter N:` 日志行，把 `student_ce / distill_loss / teacher_ce / IL_loss` 追加到报告的曲线表。
