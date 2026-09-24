@@ -44,6 +44,9 @@ ENV_DIR=$MIP_DIR/envs/mip
 FGR2R_DIR=$WORKDIR/Fine-Grained-R2R
 PY=${PY:-$ENV_DIR/bin/python}
 export MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet
+# EGL settings found by checks/egl_probe.py (via check_env.sh), if any
+# shellcheck disable=SC1091
+[ -f "$WORKDIR/egl.env" ] && . "$WORKDIR/egl.env"
 export REPORTS_DIR
 
 mkdir -p "$WORKDIR" "$REPORTS_DIR" "$LOGDIR"
@@ -288,7 +291,7 @@ run_mip() { # <logfile> <runner args...>; retries once with the EGL vendor overr
   (cd "$MIP_DIR" && timeout 7200 "$PY" runner.py "$@") > "$logf" 2>&1
   local rc=$?
   if [ $rc -ne 0 ] && grep -q -i -E "EGL|OpenGL|display" "$logf" "$(newest_run_dir)/env_server.log" 2>/dev/null; then
-    if [ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ]; then
+    if [ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
       echo "== EGL error: retrying with __EGL_VENDOR_LIBRARY_FILENAMES=10_nvidia.json" >> "$logf"
       (cd "$MIP_DIR" && __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json timeout 7200 "$PY" runner.py "$@") >> "$logf" 2>&1
       rc=$?

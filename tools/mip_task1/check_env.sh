@@ -19,8 +19,14 @@ fi
   echo "== host"; hostname; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv 2>&1 | head -5
   echo "egl vendors: $(ls /usr/share/glvnd/egl_vendor.d/ 2>&1 | tr '\n' ' ')"
   echo "== interpreter under test: $PY"
-  MIP_DIR=$MIP_DIR MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" "$REPO_ROOT/tools/mip_task1/checks/check_env.py"
-  echo "exit code: ${PIPESTATUS[0]:-$?}"
+  [ -f "$WORKDIR/egl.env" ] && { echo "sourcing $WORKDIR/egl.env"; . "$WORKDIR/egl.env"; }
+  MIP_DIR=$MIP_DIR MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" "$REPO_ROOT/tools/mip_task1/checks/check_env.py" 2>&1 | tee "$LOGDIR/.check_env.last"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 4 ] && [ "$rc" -ne 5 ] && grep -q "render probe (EGL context, empty scene): FAIL" "$LOGDIR/.check_env.last"; then
+    echo; echo "== render probe failed: running the EGL diagnosis (checks/egl_probe.py) — this tries several env combinations"
+    WORKDIR=$WORKDIR "$PY" "$REPO_ROOT/tools/mip_task1/checks/egl_probe.py"
+  fi
+  echo "exit code: $rc"
 } 2>&1 | tee "$logf"
 rc=$(grep "^exit code:" "$logf" | tail -1 | sed 's/exit code: //')
 echo "log: $logf"

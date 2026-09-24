@@ -34,7 +34,13 @@ WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh                   
 PY=/path/to/python WORKDIR=$HOME/agentic-nav bash tools/mip_task1/install_env.sh # or into an existing interpreter
 ```
 
-`install_env.sh` ends by running `check_env.sh` on the result; a healthy environment says USABLE AS-IS.
+`install_env.sh` ends by running `check_env.sh` on the result; a healthy environment says USABLE AS-IS
+**and** `render probe ... OK`. When the render probe fails, `check_env.sh` automatically runs
+`checks/egl_probe.py`: it prints the EGL facts (vendor JSONs, client extensions, EGL devices, for the
+system libEGL and for the one bundled in the habitat wheel) and tries several environment combinations
+(`__EGL_VENDOR_LIBRARY_FILENAMES`, `DISPLAY` unset, `LD_PRELOAD` of the system libEGL, mesa surfaceless,
+`gpu_device_id` 0–3). The first one that renders is written to `$WORKDIR/egl.env`, which `run_task1.sh`
+sources automatically. If none renders, send the whole `logs/ENV-check-*.log` back.
 
 ## Step 2 — run the task (inside tmux)
 
