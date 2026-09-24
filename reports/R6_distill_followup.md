@@ -10,7 +10,7 @@
 
 ## Step 0 — pretrained map loading (CPU)
 
-Command and result pending.
+The literal command from the task book was attempted first. It failed before importing the checker because the default Python 3.13 NumPy extension requires `GLIBCXX_3.4.29`, which is unavailable in the system `libstdc++.so.6`. The complete traceback is in `reports/step0_map_loading.txt`. The task book names `/home/xukai/anaconda3/envs/etpr1-py38`, so the same command is being retried with that interpreter.
 
 ## Step 1 — teacher map ablations and LLM map controls
 
