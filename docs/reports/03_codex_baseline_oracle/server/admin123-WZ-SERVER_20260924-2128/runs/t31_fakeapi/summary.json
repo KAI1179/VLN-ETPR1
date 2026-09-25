@@ -1,0 +1,188 @@
+{
+  "run_name": "fakeapi_r2r_es_codex_gpt-5.5_default_bareES",
+  "cell": "fakeapi_r2r_es_codex_gpt-5.5_default_bareES",
+  "harness": "codex",
+  "harness_inherent": {
+    "auth": "none (fake endpoint, no billing)",
+    "thinking": "reasoning tokens counted, content unreadable",
+    "turn_cap": "broadcast only (no codex-side hard cap)",
+    "vision_context": "codex-managed (unaudited)",
+    "context_control": false,
+    "context_label": "codex-managed-unaudited",
+    "tool_surface": "codex code mode: MCP tools deferred, called from the JS exec tool",
+    "codex_version": "codex-cli 0.156.1",
+    "api_gateway": {
+      "backend": "fake-wire (scripted moves, no model)",
+      "auth": "none (fake endpoint, no billing)",
+      "port": 4121,
+      "task": "r2r",
+      "script": "default"
+    }
+  },
+  "config": {
+    "dataset": "vlnce-r2r",
+    "split": "rand100",
+    "episodes": "0-99",
+    "max_turns": 200,
+    "rgb_resolution": 512,
+    "step_budget": 500,
+    "episode_timeout": 2400,
+    "require": [
+      "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+    ],
+    "env_fields": [
+      "rgb_resolution"
+    ],
+    "auto_observe": false,
+    "wp_server": null,
+    "model": "gpt-5.5",
+    "effort": "default",
+    "bare": true,
+    "extra": {
+      "api_gateway": "fake",
+      "gateway_task": "r2r"
+    }
+  },
+  "servers": [
+    "http://127.0.0.1:9200"
+  ],
+  "run_stats": {
+    "vram_peak_mib": 5878
+  },
+  "aggregate": {
+    "episode_count": 1,
+    "distance_to_goal": 10.4523,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.184,
+    "path_length": 0.0,
+    "oracle_success": 0.0,
+    "steps_taken": 0.0,
+    "step_count": 0.0,
+    "env_steps": 0.0,
+    "stop_rate": 0.0
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "episode_id": "7",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+      "metrics": {
+        "distance_to_goal": 10.452263832092285,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.18399963144284742,
+        "path_length": 0.0,
+        "oracle_success": 0.0,
+        "steps_taken": 0.0,
+        "step_count": 0
+      },
+      "agent": {
+        "tool_calls": {},
+        "env_steps": 0,
+        "end_reason": null,
+        "called_stop": false,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d601-4744-7bf2-befa-723d69c734b8",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.0,
+          "source": "fake",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 0,
+            "cache_read": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 0
+          },
+          "billing": {
+            "gpt-5.5": {
+              "input": 0,
+              "cache_read": 0,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 0
+            }
+          },
+          "price": null,
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 4.4
+    }
+  ],
+  "cost": {
+    "total": 0.0,
+    "mean": 0.0,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "priced_episodes": 1,
+    "sources": {
+      "fake": 1
+    },
+    "tokens": {
+      "input": 0,
+      "cache_read": 0,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "output": 0
+    },
+    "price": null,
+    "by_issuing_tool": {},
+    "budget_usd": null,
+    "stopped_by_budget": false
+  },
+  "provenance": {
+    "task": "r2r",
+    "env_key": "es",
+    "arm": "bareES",
+    "env": "EmbodiedScoreEnv",
+    "shape": "es.nav",
+    "module": "core.shapes.es:EsNav",
+    "harness": "codex",
+    "callbacks": [
+      "CodeSnapshot",
+      "JsonlLogger",
+      "RawLogger",
+      "CostLogger",
+      "VramSampler",
+      "StatsReport"
+    ],
+    "code_sha256": "3f7a302b8c095da8d46758390090d3c238dd2ec7965374a877e332f2465e7de4",
+    "git": {
+      "head": "aac454c0efc7200ae243899adeb4e92dad1d6268",
+      "branch": "e0-oracle",
+      "dirty": []
+    },
+    "snapshot": "code"
+  },
+  "writers": {
+    "code/": "CodeSnapshot",
+    "code_state.json": "CodeSnapshot",
+    "provenance.code_sha256": "CodeSnapshot",
+    "provenance.git": "CodeSnapshot",
+    "provenance.snapshot": "CodeSnapshot",
+    "episode_{i}.jsonl": "JsonlLogger",
+    "raw/episode_{i}.jsonl": "RawLogger",
+    "agent.cost": "CostLogger",
+    "cost": "CostLogger",
+    "run_stats.vram_peak_mib": "VramSampler",
+    "stats.json": "StatsReport",
+    "stats.html": "StatsReport"
+  }
+}

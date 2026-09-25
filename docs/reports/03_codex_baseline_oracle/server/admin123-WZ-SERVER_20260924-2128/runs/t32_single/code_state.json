@@ -1,0 +1,16 @@
+{
+  "launches": [
+    {
+      "ts": "2026-09-24 20:40:09",
+      "cell": "test_r2r_es_codex_gpt-5.5_default_bareES",
+      "episodes": "0",
+      "git": {
+        "head": "aac454c0efc7200ae243899adeb4e92dad1d6268",
+        "branch": "e0-oracle",
+        "dirty": []
+      },
+      "code_sha256": "3f7a302b8c095da8d46758390090d3c238dd2ec7965374a877e332f2465e7de4",
+      "snapshot": "code"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+episode 0: 12 trials
+episode 1: 9 trials
+episode 2: 12 trials
+episode 3: 15 trials
+episode 4: 15 trials
+episode 5: 15 trials
+episode 6: 15 trials
+episode 7: 15 trials
+episode 8: 12 trials
+episode 9: 12 trials
+episode 10: 9 trials
+episode 11: 15 trials
+episode 12: 12 trials
+episode 13: 15 trials
+episode 14: 9 trials
+episode 15: 15 trials
+episode 16: 15 trials
+episode 17: 9 trials
+episode 18: 9 trials
+episode 19: 15 trials
+## T3.7(c) 回溯反放（GT 轨迹，仿真器）
+
+episode 20 个，试验 255 次，其中 walk_failed 9。
+反放规则：转身 180° → 反序重放（左右互换、前进保持）→ 再转身 180°。bareES 身体预设 allow_sliding=True（ES STANDARD）。
+
+| k−j | n | 到锚点误差 P50 / P90 (m) | 航向误差 P50 (°) | 段内原语 P50 | 反放步数 P50 | 阻塞前进次数均值 |
+|---|---|---|---|---|---|---|
+| 1 | 102 | 0.00 / 0.17 | 0 | 12 | 36 | 0.00 |
+| 2 | 82 | 0.00 / 0.39 | 0 | 25 | 49 | 0.00 |
+| 3 | 62 | 0.00 / 0.45 | 0 | 37 | 61 | 0.00 |
+
+全部试验到锚点误差中位 0.00 m（判据 ≤ 0.5 m）。开环反放可用。
