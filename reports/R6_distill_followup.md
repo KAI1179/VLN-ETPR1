@@ -76,34 +76,48 @@ Gate G1: **satisfied** (`none` SR 73.84 >= 73). The first concurrent attempt for
 
 ## Step 2 — student GT-map evaluation
 
-Command (corrected interpreter):
+The first literal launch of `p0 10000` failed before evaluation because the process lacked the EGL environment:
 
 ```bash
-PYTHONPATH=. /home/xukai/anaconda3/envs/etpr1-py38/bin/python scripts/distill/check_pretrained_map_loading.py --dagger-ckpts data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter14000.pth /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth data/logs/checkpoints/s4_try5_refiner/ckpt.iter15000.pth 2>&1 | tee -a reports/step0_map_loading.txt
+CUDA_VISIBLE_DEVICES=0 bash scripts/distill/eval_student_gt_full.sh p0 10000
 ```
 
-The checker reached the model-loading checks but failed. Raw output is in `reports/step0_map_loading.txt`.
+The exact traceback is in `data/logs/checkpoints/dagger_distill_gt_teacher/eval_iter10000_p0.log`; the key lines were `Platform::WindowlessEglApplication::tryCreateContext(): cannot get default EGL display: EGL_BAD_PARAMETER`, `WindowlessContext: Unable to create windowless context`, and a subsequent `ConnectionResetError: [Errno 104] Connection reset by peer`.
 
-| Check | Result |
-|---|---:|
-| Checkpoint total tensors | 522 |
-| Pretrained `map_encoder.*` tensors | 37 |
-| Pretrained `bert.global_encoder.graph_map_attention.*` tensors | 6 |
-| `load_pretrained_map_modules=False` landed fusion tensors | 3/6 |
-| `load_pretrained_map_modules=False` residual projection norm | 15.3716 |
-| `load_pretrained_map_modules=True` strict navigation transfer | failed |
+The retry commands add the required EGL variables and are serialized on GPU 0:
 
-The exact terminal exception was:
-
-```text
-RuntimeError: Pretrained graph_map_attention tensors were remapped but did not land in the navigation model: ['graph_map_attention.attention.in_proj_weight', 'graph_map_attention.attention.in_proj_bias', 'graph_map_attention.attention.out_proj.weight', 'graph_map_attention.attention.out_proj.bias', 'graph_map_attention.residual_projection.weight', 'graph_map_attention.residual_projection.bias']
+```bash
+env CUDA_VISIBLE_DEVICES=0 __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0 bash scripts/distill/eval_student_gt_full.sh p0 10000
+env CUDA_VISIBLE_DEVICES=0 __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0 bash scripts/distill/eval_student_gt_full.sh gt_full 10000
+env CUDA_VISIBLE_DEVICES=0 __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0 bash scripts/distill/eval_student_gt_full.sh gt_full 14000
 ```
 
-Gate G0: **not satisfied** (not 6/6 and strict transfer failed). Per the task book, the loader variants are ineligible for step 4.
+Completed result files:
+
+| mode / iter | result JSON | SR | SPL | NE | OSR |
+|---|---|---:|---:|---:|---:|
+| `p0` / 10000 | `data/logs/checkpoints/dagger_distill_gt_teacher_eval_iter10000_p0/eval_results/stats_ckpt_10000_val_unseen.json` | 65.63 | 54.14 | 3.892 | 72.16 |
+| `gt_full` / 10000 | `data/logs/checkpoints/dagger_distill_gt_teacher_eval_iter10000_gt_full/eval_results/stats_ckpt_10000_val_unseen.json` | 65.52 | 54.12 | 3.870 | 72.00 |
+| `gt_full` / 14000 | `data/logs/checkpoints/dagger_distill_gt_teacher_eval_iter14000_val_unseen/eval_results/stats_ckpt_14000_val_unseen.json` | 63.62 | 53.08 | 4.005 | 69.60 |
 
 ## Step 3 — paired CPU analysis
 
-Command and result pending.
+Commands:
+
+```bash
+PYTHONPATH=. /home/xukai/anaconda3/envs/etpr1-py38/bin/python scripts/distill/paired_analysis.py --run-a dagger_distill_gt_teacher --iter-a 10000 --run-b dagger_distill_gt_teacher --iter-b 14000 --markdown-out reports/paired_10k_vs_14k.md
+PYTHONPATH=. /home/xukai/anaconda3/envs/etpr1-py38/bin/python scripts/distill/paired_analysis.py --run-a dagger_distill_gt_teacher --iter-a 8000 --run-b dagger_distill_gt_teacher --iter-b 10000 --markdown-out reports/paired_8k_vs_10k.md
+PYTHONPATH=. /home/xukai/anaconda3/envs/etpr1-py38/bin/python scripts/distill/summarize_eval.py --markdown-out reports/distill_eval_summary.md
+```
+
+The paired outputs report:
+
+| comparison | ΔSR (95% CI) | McNemar p | net O→S | net N→reach |
+|---|---:|---:|---:|---:|
+| 10000 → 14000 | -1.47 pp ([-2.28,-0.57]) | 0.0678 | +7 (+0.38 pp) | -39 (-2.12 pp) |
+| 8000 → 10000 | +1.36 pp ([-0.58,+2.99]) | 0.0967 | -13 (-0.71 pp) | +36 (+1.96 pp) |
+
+Full transition tables and metric CIs are in `reports/paired_10k_vs_14k.md` and `reports/paired_8k_vs_10k.md`; the checkpoint summary is `reports/distill_eval_summary.md`.
 
 ## Step 4 — eight-GPU training decision
 

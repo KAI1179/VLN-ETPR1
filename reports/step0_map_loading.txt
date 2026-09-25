@@ -1,3 +1,16 @@
+[pretrained] /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt
+  total tensors: 522
+  bert.global_encoder.graph_map_attention.*: 6 tensors
+  map_encoder.*: 37 tensors
+  pretrained fusion residual_projection.weight norm: 15.3506
+Traceback (most recent call last):
+  File "scripts/distill/check_pretrained_map_loading.py", line 161, in <module>
+    main()
+  File "scripts/distill/check_pretrained_map_loading.py", line 155, in main
+    check_nav_model_transfer(args, state)
+  File "scripts/distill/check_pretrained_map_loading.py", line 72, in check_nav_model_transfer
+    from vlnce_baselines.config.default import get_config
+ModuleNotFoundError: No module named 'vlnce_baselines'
 Traceback (most recent call last):
   File "/home/xukai/anaconda3/lib/python3.13/site-packages/numpy/_core/__init__.py", line 22, in <module>
     from . import multiarray
@@ -54,3 +67,109 @@ Traceback (most recent call last):
 ImportError: Error importing numpy: you should not try to import numpy from
         its source directory; please exit the numpy source tree, and relaunch
         your python interpreter from there.
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+Matplotlib created a temporary cache directory at /tmp/matplotlib-t4o1a3is because the default path (/home/xukai/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+You are using a model of type xlm-roberta to instantiate a model of type . This is not supported for all configurations of models and can yield errors.
+Some weights of the model checkpoint at None were not used when initializing GlocalTextPathNavCMT: ['map_encoder.spatial_token_norm.weight', 'map_encoder.token_transformer.layers.1.norm2.weight', 'mlm_head.predictions.transform.LayerNorm.weight', 'map_encoder.spatial_token_norm.bias', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.norm2.bias', 'map_encoder.token_transformer.layers.0.linear2.weight', 'map_encoder.metadata_encoder.1.bias', 'mlm_head.predictions.decoder.weight', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_weight', 'map_encoder.token_transformer.layers.1.linear2.bias', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_weight', 'bert.global_encoder.graph_map_attention.residual_projection.weight', 'map_encoder.output_norm.weight', 'map_encoder.token_transformer.layers.1.norm1.bias', 'bert.global_encoder.graph_map_attention.attention.out_proj.weight', 'map_encoder.output_norm.bias', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.bias', 'bert.global_encoder.graph_map_attention.attention.out_proj.bias', 'map_encoder.metadata_encoder.0.weight', 'map_encoder.token_transformer.layers.1.norm2.bias', 'map_encoder.category_projection.weight', 'bert.global_encoder.graph_map_attention.attention.in_proj_weight', 'bert.global_encoder.graph_map_attention.attention.in_proj_bias', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_bias', 'map_encoder.metadata_encoder.3.bias', 'map_encoder.token_transformer.layers.0.linear1.bias', 'map_encoder.token_transformer.layers.0.linear1.weight', 'map_encoder.token_transformer.layers.1.norm1.weight', 'map_encoder.token_transformer.layers.1.linear1.bias', 'map_encoder.spatial_tokenizer.weight', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.bias', 'map_encoder.metadata_encoder.3.weight', 'map_encoder.spatial_tokenizer.bias', 'mlm_head.predictions.transform.LayerNorm.bias', 'map_encoder.metadata_encoder.1.weight', 'mlm_head.predictions.transform.dense.bias', 'map_encoder.token_transformer.layers.0.norm1.bias', 'map_encoder.token_transformer.layers.0.norm2.weight', 'mlm_head.predictions.transform.dense.weight', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_bias', 'map_encoder.token_transformer.layers.0.norm1.weight', 'mlm_head.predictions.bias', 'map_encoder.metadata_encoder.0.bias', 'bert.global_encoder.graph_map_attention.residual_projection.bias', 'map_encoder.token_transformer.layers.1.linear2.weight', 'map_encoder.token_transformer.layers.1.linear1.weight', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.linear2.bias']
+- This IS expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+You are using a model of type xlm-roberta to instantiate a model of type . This is not supported for all configurations of models and can yield errors.
+Some weights of the model checkpoint at None were not used when initializing GlocalTextPathNavCMT: ['map_encoder.spatial_token_norm.weight', 'map_encoder.token_transformer.layers.1.norm2.weight', 'mlm_head.predictions.transform.LayerNorm.weight', 'map_encoder.spatial_token_norm.bias', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.norm2.bias', 'map_encoder.token_transformer.layers.0.linear2.weight', 'map_encoder.metadata_encoder.1.bias', 'mlm_head.predictions.decoder.weight', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_weight', 'map_encoder.token_transformer.layers.1.linear2.bias', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_weight', 'map_encoder.output_norm.weight', 'map_encoder.token_transformer.layers.1.norm1.bias', 'map_encoder.output_norm.bias', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.bias', 'map_encoder.metadata_encoder.0.weight', 'map_encoder.token_transformer.layers.1.norm2.bias', 'map_encoder.category_projection.weight', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_bias', 'map_encoder.metadata_encoder.3.bias', 'map_encoder.token_transformer.layers.0.linear1.bias', 'map_encoder.token_transformer.layers.0.linear1.weight', 'map_encoder.token_transformer.layers.1.norm1.weight', 'map_encoder.token_transformer.layers.1.linear1.bias', 'map_encoder.spatial_tokenizer.weight', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.bias', 'map_encoder.metadata_encoder.3.weight', 'map_encoder.spatial_tokenizer.bias', 'mlm_head.predictions.transform.LayerNorm.bias', 'map_encoder.metadata_encoder.1.weight', 'mlm_head.predictions.transform.dense.bias', 'map_encoder.token_transformer.layers.0.norm1.bias', 'map_encoder.token_transformer.layers.0.norm2.weight', 'mlm_head.predictions.transform.dense.weight', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_bias', 'map_encoder.token_transformer.layers.0.norm1.weight', 'mlm_head.predictions.bias', 'map_encoder.metadata_encoder.0.bias', 'map_encoder.token_transformer.layers.1.linear2.weight', 'map_encoder.token_transformer.layers.1.linear1.weight', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.linear2.bias']
+- This IS expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+[pretrained] /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt
+  total tensors: 522
+  bert.global_encoder.graph_map_attention.*: 6 tensors
+  map_encoder.*: 37 tensors
+  pretrained fusion residual_projection.weight norm: 15.3506
+LANG EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+PANO EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+  graph_map_attention: no pretrained tensors loaded (checkpoint has none or load_pretrained_map_modules=False); fusion starts from random attention + zero residual projection
+[nav model] load_pretrained_map_modules=False: 3/6 pretrained fusion tensors landed; residual_projection norm in nav model = 15.3716
+LANG EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+PANO EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+Traceback (most recent call last):
+  File "scripts/distill/check_pretrained_map_loading.py", line 161, in <module>
+    main()
+  File "scripts/distill/check_pretrained_map_loading.py", line 155, in main
+    check_nav_model_transfer(args, state)
+  File "scripts/distill/check_pretrained_map_loading.py", line 85, in check_nav_model_transfer
+    model = get_vlnbert_models(config=config.MODEL)
+  File "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py", line 93, in get_vlnbert_models
+    _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path)
+  File "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py", line 115, in _verify_fusion_transfer
+    raise RuntimeError(
+RuntimeError: Pretrained graph_map_attention tensors were remapped but did not land in the navigation model: ['graph_map_attention.attention.in_proj_weight', 'graph_map_attention.attention.in_proj_bias', 'graph_map_attention.attention.out_proj.weight', 'graph_map_attention.attention.out_proj.bias', 'graph_map_attention.residual_projection.weight', 'graph_map_attention.residual_projection.bias']
