@@ -1,6 +1,6 @@
 # Task 3 Report
 
-对应《CLI 任务书 #3（v1）：codex 基线实测、oracle 注入与矛盾规则真阳性检验》。合并版，2026-09-25。
+对应《CLI 任务书 #3（v1）：codex 基线实测、oracle 注入与矛盾规则真阳性检验》。合并版，2026-09-25（含第二、三轮：`server/admin123-WZ-SERVER_20260924-2128/`、`server/admin123-WZ-SERVER_20260925-0005/`）。
 服务器运行：`server/admin123-WZ-SERVER_20260924-2023/`（脚本生成的分步原件 `task3_report.md`、`md/`、JSON 产物、日志、运行归档 `runs/`、轨迹 `traj/`）。
 MIP fork 分支 `e0-oracle`，commit `26dcc76`（基于 `1da7f1d`）；codex-cli 0.156.1，ChatGPT 订阅登录；主模型 gpt-5.5。
 
@@ -9,35 +9,33 @@ MIP fork 分支 `e0-oracle`，commit `26dcc76`（基于 `1da7f1d`）；codex-cli
 | T3.0 | PASS | final_only/0.5 m 容差：单调 100% / 终点 100% / offtrack 0；turn 加 left/right 后 turn 占比 9.3% → 14.4%（val_unseen）；v0 参数 R1=P99（2.72%）、R5 只过长侧 >2.0×（0.22%）、R6 1.0 m/10 前进步（2.66%） |
 | T3.4 | PASS | 代码地图在仓库（`mip_code_map.md`），服务器 MIP commit 与之一致 |
 | T3.5 | PASS | oracleES arm 建成；6 个条件 fake dry-run 全部注入成功；GT 单测 100/100；`none` 与 bareES 指标、tool_calls 一致（工具记录只差时间戳，脚本已改为忽略） |
-| T3.1 | FAIL → 已修 | codex 已登录；`api=fake` 跑失败，原因是 oracleES 复制了 bareES 的实验配置，实验名 `std_r2r_es_bareES` 出现两份，runner 拒绝。修复：oracleES 只保留 `std_r2r_es_oracle.yaml`（1811b75） |
-| T3.2 | FAIL → 已修 | 同一原因 |
-| T3.3 | PASS（有污染） | 20 集 gpt-5.5 基线：SR 30 / SPL 18.2 / NE 6.09 / OSR 45 / nDTW 36.9；其中 5 集（索引 2,3,5,6,11）因 OpenAI 侧"Selected model is at capacity"/流断开导致 codex 退出，被记为失败；有效 15 集 SR 40（6/15）。冒烟因路径 bug 未跑（已修，新增 `T3.3s`） |
+| T3.1 | PASS（第二轮） | codex-cli 0.156.1 订阅登录；`api=fake` 通过。首轮失败原因：oracleES 复制了 bareES 的实验配置导致实验名歧义，已修（1811b75） |
+| T3.2 | PASS（第二轮） | 单集 372 s，输入 token 10.3 万，stop_called，NE 5.42 m |
+| T3.3 | PASS（第三轮补齐） | 首轮 5 集（索引 2,3,5,6,11）死于 OpenAI 侧 "Selected model is at capacity"，T3.3r 以 `run.resume=true` 填回后 20 集干净基线：**SR 40 / SPL 23.2 / NE 4.50 / OSR 55 / nDTW 43.1**，end_reason 18 stop_called + 2 step_budget_exhausted。冒烟 T3.3s：3 集 oracle=all，154 条 `[ORACLE]` 记录进入工具结果，SR 1/3、OSR 3/3 |
 | T3.6 | PASS | 承诺 oracle 选定 θ=30°、d=1.0 m：val_unseen GT 误报 1.31%（episode）/ 0.84%（拐点）；MP3D 语义标注 `.house`/`_semantic.ply` 各 90 个 |
-| T3.7a | PASS（结论需改） | 真实轨迹 20 条（失败 14 / 成功 6）：R6 在成功集误触发 100%，"任一规则"误触发 100%；见下 |
+| T3.7a | PASS（结论需改） | 补齐后 20 条真实轨迹（失败 12 / 成功 8）：R6 在成功集误触发 8/8，R1 5/8，R5 5/8；见下 |
 | T3.7b | PASS | 合成错分支 294 条：承诺 oracle 召回 84%、任一规则 89%、偏离 55%、R6 25%、R1 15%；GT 前缀零误触发（R1 除外，9 次） |
 | T3.7c | PASS | 回溯反放 255 次：到锚点误差中位 0.00 m，P90 0.17/0.39/0.45 m（k−j=1/2/3），航向误差 0°，阻塞 0；开环反放可用 |
 
-## T3.3 基线：codex + gpt-5.5，20 集
+## T3.3 基线：codex + gpt-5.5，20 集（补齐后）
 
-有效 15 集（去掉 5 集供应商错误）：成功 6，SR 40%；MIP 发表的 mini-swe-agent + gpt-5.5 在全部 100 集上是 52 / 44.24。20 集不能下结论，但两点值得记：
+SR 40 / SPL 23.2 / NE 4.50 m / OSR 55 / nDTW 43.1（8/20）。MIP 发表的 mini-swe-agent + gpt-5.5 在全部 100 集上是 52 / 44.24。20 集的 95% 区间约 [22, 61]，与 52 不矛盾；SPL 差距（23 vs 44）更值得注意：codex 座位下路径明显更长（中位 235 步，2 集耗尽 500 步）。是否为 codex harness 或模型侧变化，要等 100 集再判断（用户意见：先跑完再说）。
 
-- 时间与 token：每集中位壁钟 358 s（含错误集），输入 token 中位 9.1 万、最大 40.8 万（500 步耗尽的集），cache_read 合计 4335 万。三小时内无限流；供应商侧"容量不足"是主要中断原因，MIP 的重试只认 rate-limit 字样，不认 "at capacity"。
-- 失败形态：13 集 stop_called 中 7 集是失败停止（NE 3.9–17.3 m），2 集 500 步耗尽，3 集 OSR=1 但未成功停止（ep 13、116、207：曾进入 3 m 内又离开或没停）。这与 MIP 的 A/B/C 类分布一致。
-
-处理：新增 `STEPS=T3.3r RUN_PAID=1`，按索引 2,3,5,6,11 以 `run.resume=true` 填回同一 run；`STEPS=T3.3s` 补跑 3 集 oracle=all 冒烟。
+- 时间与 token：每集中位壁钟 339 s，输入 token 中位 9.2 万，cache_read 合计 5342 万；三小时内无限流。供应商侧 "at capacity" 是主要中断原因（首轮 5/20），MIP 的重试只认 rate-limit 字样；T3.3r 按索引 `run.resume=true` 补跑可用（注意 Hydra 要求逗号列表加引号）。
+- 失败形态：12 集失败里 10 集 stop_called（NE 3.1–17.3 m，即错误停止或错分支后停止），2 集耗尽预算；4 集 OSR=1 但未成功停止。与 MIP 的 A/B/C 类分布一致。
 
 ## T3.7(a) 的真正结论：GT 上校准的误报率不迁移到真实轨迹
 
 任务 #2 在 GT 上把 R1/R5/R6 的误报压到 < 5%，但在 20 条真实智能体轨迹上：
 
-| 规则 | 失败集召回 | 成功集误触发 |
+| 规则 | 失败集召回（12） | 成功集误触发（8） |
 |---|---|---|
-| R1（P99） | 7/14 | 3/6 |
-| R5（>2.0×） | 7/14 | 3/6 |
-| R6（1.0 m / 10 步） | 10/14 | 6/6 |
-| O-偏离（>3 m，GT 信号） | 7/14 | 1/6 |
-| 承诺 oracle（GT 信号） | 6/14 | 2/6 |
-| 任一 | 10/14 | 6/6 |
+| R1（P99） | 9 | 5 |
+| R5（>2.0×） | 8 | 5 |
+| R6（1.0 m / 10 步） | 11 | 8 |
+| O-偏离（>3 m，GT 信号） | 7 | 2 |
+| 承诺 oracle（GT 信号） | 6 | 4 |
+| 任一 | 11 | 8 |
 
 原因很直接：成功的智能体轨迹本身就绕路、回头、反复观察（成功集步数 47–476，GT 中位约 30 步），R6 的"10 步前 1 m 内"对任何原地转向再前进的行为都会响，R1 的子句预算对走了 2–3 倍路程但最终到达的集也会响。脚本里"召回 ≥ 50% 即通过"的判据只看了 TPR，不成立；正确读法是：**v0 的 R1/R5/R6 不能作为拒绝执行的硬门控**。合成错分支上承诺 oracle 84% 的召回说明"分支偏离"这个信号本身有区分力，但它现在用的是 GT 切向；无 GT 时需要验证器判断"当前朝向是否还朝着子句地标"。
 
@@ -53,8 +51,8 @@ MIP fork 分支 `e0-oracle`，commit `26dcc76`（基于 `1da7f1d`）；codex-cli
 - `none` 条件：指标与 tool_calls 与 bareES 一致；工具记录逐条一致（时间戳除外，脚本已忽略）。
 - codex 座位在 fake 端点下的 jsonl 含 `tool_use`/`tool_result`，code mode 不丢事件；真实运行的 20 集同样有完整事件流（每集 7–20 次 tool_use）。
 
-## 需要人决定的事
+## 决定（2026-09-25）
 
-1. 是否接受把矛盾触发改为"规则疑似 + 验证器确认"的两级结构（上面第 1 条）。这会让验证器成为方法的必需部件，也就是每个 commit 后要多一次 gpt-5.5 独立调用。
-2. 基线补跑：`STEPS=T3.3r,T3.3s,T3.1,T3.2 RUN_PAID=1` 约 6 集 + 1 集，是否现在跑。
-3. 15 集有效基线 SR 40 低于 MIP 的 52（mini harness）。是否要用 `harness=mini` + OPENAI key 对齐 MIP 主表，还是接受 codex 座位作为本项目的固定基线（同座位比较仍然成立）。
+1. 用户接受两级触发：里程计/结构规则只产生"疑似"，拒绝执行必须经验证器确认。已写入提案 v1 §九（9.4 后的"v1.1 触发结构"）与任务书 #4。
+2. 基线已补齐（T3.3r），冒烟已通过（T3.3s）。
+3. codex 座位 20 集 SR 40 vs MIP mini 座位 52：先把 100 集跑完再判断是否加 mini 臂。
