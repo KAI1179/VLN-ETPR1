@@ -158,3 +158,5 @@ Local check of the orchestrator's parts (this container has no simulator): `t35_
 Extra steps added after the first server run: `STEPS=T3.3s` (3-episode `oracle=all` smoke alone) and `STEPS=T3.3r`
 (re-run, with `run.resume=true` into the same run, the baseline episodes that died on a provider-side error such as
 "Selected model is at capacity" — MIP scores those 0 instead of excluding them; `py/t33_failed_indices.py` lists them).
+
+Variant runs: `CODEX_MODEL=<models.yaml row> CODEX_EFFORT=<low|medium|high|xhigh> ARCHIVE_TAG=_<tag>` (e.g. `CODEX_MODEL=gpt-5.6 CODEX_EFFORT=low ARCHIVE_TAG=_gpt56low STEPS=T3.3 T33_EPISODES=0-9 T33_SMOKE=0 RUN_PAID=1`); the tag keeps the archives (`runs/t33_baseline<tag>`, `traj<tag>`) apart from the gpt-5.5 baseline. `effort=` is only passed when CODEX_EFFORT is not `default`.

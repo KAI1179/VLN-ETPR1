@@ -29,6 +29,9 @@ export CONN=${CONN:-/data/xukai/VLN-GOAT/datasets/R2R/connectivity}
 export RAND100=${RAND100:-$WORKDIR/MIP/splits/r2r/rand100}
 export MIP_DIR=${MIP_DIR:-$WORKDIR/MIP}
 export CODEX_MODEL=${CODEX_MODEL:-gpt-5.5}
+export CODEX_EFFORT=${CODEX_EFFORT:-default}   # codex reasoning effort seat: default | low | medium | high | xhigh
+export ARCHIVE_TAG=${ARCHIVE_TAG:-}            # suffix for run archives / traj dir, e.g. _gpt56low, so variants never overwrite the gpt-5.5 baseline
+export T33_SMOKE=${T33_SMOKE:-1}
 export CODEX_VERSION=${CODEX_VERSION:-}
 export RUN_PAID=${RUN_PAID:-0}
 export T33_EPISODES=${T33_EPISODES:-0-19}
@@ -37,7 +40,7 @@ export HTTPS_PROXY=${HTTPS_PROXY:-http://127.0.0.1:37890}
 export ALL_PROXY=${ALL_PROXY:-$HTTPS_PROXY}
 export NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
 STEPS=${STEPS:-T3.0,T3.4,T3.5,T3.1,T3.2,T3.3,T3.6,T3.7a,T3.7b,T3.7c}
-mkdir -p "$OUT3/md" "$OUT3/runs" "$OUT3/traj" "$LOGDIR"
+mkdir -p "$OUT3/md" "$OUT3/runs" "$OUT3/traj$ARCHIVE_TAG" "$LOGDIR"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" >&2; }
@@ -62,9 +65,10 @@ run_py() { # <step> <script> [args...]
 }
 mip_run() { # <logfile> <runner args...>   (runs from MIP_DIR with the EGL fix; returns runner's exit code)
   local logf=$1; shift
+  local eff=(); [ "$CODEX_EFFORT" != default ] && eff=("effort=$CODEX_EFFORT")
   # shellcheck disable=SC1091
   [ -f "$WORKDIR/egl.env" ] && . "$WORKDIR/egl.env"
-  (cd "$MIP_DIR" && MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" runner.py "$@") >> "$logf" 2>&1
+  (cd "$MIP_DIR" && MAGNUM_LOG=quiet HABITAT_SIM_LOG=quiet "$PY" runner.py "$@" "${eff[@]}") >> "$logf" 2>&1
 }
 latest_run() { # <outputs subdir glob>  -> newest run dir with a summary.json
   ls -td "$MIP_DIR"/outputs/$1 2>/dev/null | while read -r d; do [ -f "$d/summary.json" ] && { echo "$d"; break; }; done
@@ -76,7 +80,7 @@ archive_run() { # <run dir> <name>  copies summary.json / stats.html / episode j
   cp "$d"/episode_*.jsonl "$dest/" 2>/dev/null; cp "$d"/*.yaml "$d"/*.json "$dest/" 2>/dev/null
   for l in "$d"/live_*/; do [ -d "$l" ] || continue; mkdir -p "$dest/$(basename "$l")"; cp "$l"/poses.jsonl "$l"/actions.log "$dest/$(basename "$l")/" 2>/dev/null; done
   { echo "run_dir $d"; echo "mip_commit $(cd "$MIP_DIR" && git rev-parse HEAD)"; echo "mip_branch $(cd "$MIP_DIR" && git rev-parse --abbrev-ref HEAD)";
-    echo "codex_version $(codex --version 2>/dev/null | head -1)"; echo "model $CODEX_MODEL"; echo "date $(ts)"; } > "$dest/RUN_META.txt"
+    echo "codex_version $(codex --version 2>/dev/null | head -1)"; echo "model $CODEX_MODEL"; echo "effort $CODEX_EFFORT"; echo "date $(ts)"; } > "$dest/RUN_META.txt"
 }
 ratelimit_grep() { grep -i -c -E "rate.?limit|usage.?limit|too many requests|429" "$1" 2>/dev/null || echo 0; }
 
@@ -151,9 +155,9 @@ step_T32() {
   : > "$logf"
   echo "cmd: python runner.py std_r2r_es_bareES harness=codex model=$CODEX_MODEL run.episodes=0 (GPU ${EMBODIEDSCORE_GPU_ID:-0})" >> "$logf"
   mip_run "$logf" std_r2r_es_bareES harness=codex model="$CODEX_MODEL" run.episodes=0; rc=$?
-  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*bareES*"); [ -n "$run" ] && archive_run "$run" t32_single
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*bareES*"); [ -n "$run" ] && archive_run "$run" t32_single$ARCHIVE_TAG
   [ $rc -eq 0 ] && [ -n "$run" ] || st=FAIL
-  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.2 "$OUT3/runs/t32_single" "$logf" "$rc") > "$md" 2>> "$logf" || st=FAIL
+  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.2 "$OUT3/runs/t32_single$ARCHIVE_TAG" "$logf" "$rc") > "$md" 2>> "$logf" || st=FAIL
   finish T3.2 $st "$logf"
 }
 
@@ -168,18 +172,18 @@ step_T33() {
   date '+start %F %T' >> "$logf"
   if [ "$cfg" = std_r2r_es_oracle ]; then BAREES_ORACLE=none mip_run "$logf" $cfg harness=codex model="$CODEX_MODEL" oracle=none run.episodes="$T33_EPISODES"; else mip_run "$logf" $cfg harness=codex model="$CODEX_MODEL" run.episodes="$T33_EPISODES"; fi; rc1=$?
   date '+end %F %T' >> "$logf"
-  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t33_baseline
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t33_baseline$ARCHIVE_TAG
   [ $rc1 -eq 0 ] && [ -n "$run" ] || st=FAIL
-  if [ -f "$MIP_DIR/exp_workspace/oracleES/configs/std_r2r_es_oracle.yaml" ]; then
+  if [ "$T33_SMOKE" = 1 ] && [ -f "$MIP_DIR/exp_workspace/oracleES/configs/std_r2r_es_oracle.yaml" ]; then
     echo "cmd2: python runner.py std_r2r_es_oracle harness=codex model=$CODEX_MODEL oracle=all run.episodes=$T33_SMOKE_EPISODES" >> "$logf"
     BAREES_ORACLE=all mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc2=$?
-    run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
+    run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all$ARCHIVE_TAG
   else
     echo "smoke skipped: std_r2r_es_oracle.yaml missing (T3.5 not applied)" >> "$logf"
   fi
   # trajectories for T3.7a (needs the pose fields T3.5's injector logs; falls back to whatever the jsonl carries)
-  (cd "$TOOL_DIR/py" && "$PY" t33_export_traj.py "$OUT3/runs/t33_baseline" "$OUT3/traj") >> "$logf" 2>&1 || echo "traj export failed" >> "$logf"
-  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3 "$OUT3/runs/t33_baseline" "$logf" "$rc1" "$OUT3/runs/t33_smoke_all" "$rc2") > "$md" 2>> "$logf" || st=FAIL
+  (cd "$TOOL_DIR/py" && "$PY" t33_export_traj.py "$OUT3/runs/t33_baseline$ARCHIVE_TAG" "$OUT3/traj$ARCHIVE_TAG") >> "$logf" 2>&1 || echo "traj export failed" >> "$logf"
+  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3 "$OUT3/runs/t33_baseline$ARCHIVE_TAG" "$logf" "$rc1" "$OUT3/runs/t33_smoke_all$ARCHIVE_TAG" "$rc2") > "$md" 2>> "$logf" || st=FAIL
   finish T3.3 $st "$logf"
 }
 
@@ -189,26 +193,26 @@ step_T33S() { # smoke only (3 episodes, oracle=all), after T3.5 has been applied
   [ "$RUN_PAID" = 1 ] || { { echo "## T3.3s 冒烟"; echo; echo "SKIP：需要 RUN_PAID=1。"; } > "$md"; finish T3.3s SKIP "$logf"; return; }
   : > "$logf"
   BAREES_ORACLE=all mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc=$?
-  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
-  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3s "$OUT3/runs/t33_smoke_all" "$logf" "$rc" "$OUT3/runs/t33_smoke_all" "$rc") > "$md" 2>> "$logf"
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all$ARCHIVE_TAG
+  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3s "$OUT3/runs/t33_smoke_all$ARCHIVE_TAG" "$logf" "$rc" "$OUT3/runs/t33_smoke_all$ARCHIVE_TAG" "$rc") > "$md" 2>> "$logf"
   [ $rc -eq 0 ] && finish T3.3s PASS "$logf" || finish T3.3s FAIL "$logf"
 }
 step_T33R() { # re-run the baseline episodes that died on a provider-side error (capacity / stream), filling the same run
   local logf=$LOGDIR/T3.3r.log md=$OUT3/md/T3.3r.md rc idx run name
-  idx=$(cd "$TOOL_DIR/py" && "$PY" t33_failed_indices.py "$OUT3/runs/t33_baseline")
+  idx=$(cd "$TOOL_DIR/py" && "$PY" t33_failed_indices.py "$OUT3/runs/t33_baseline$ARCHIVE_TAG")
   [ -n "$idx" ] || { { echo "## T3.3r 重跑"; echo; echo "没有因供应商错误中止的 episode。"; } > "$md"; finish T3.3r SKIP "$logf"; return; }
   [ "$RUN_PAID" = 1 ] || { { echo "## T3.3r 重跑"; echo; echo "SKIP：需要 RUN_PAID=1。待重跑索引：$idx"; } > "$md"; finish T3.3r SKIP "$logf"; return; }
   name=$(sed -n 's/^run_dir .*\/\([^/]*\)$/\1/p' "$OUT3/runs/t33_baseline/RUN_META.txt")
   : > "$logf"; echo "re-run indices $idx into run $name (run.resume=true keeps the other records)" >> "$logf"
   BAREES_ORACLE=none mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=none run.name="$name" run.resume=true "run.episodes='$idx'"; rc=$?  # quoted: a bare comma list is a Hydra sweep
-  run=$MIP_DIR/outputs/codex/$name; [ -d "$run" ] && archive_run "$run" t33_baseline
-  (cd "$TOOL_DIR/py" && "$PY" t33_export_traj.py "$OUT3/runs/t33_baseline" "$OUT3/traj") >> "$logf" 2>&1
-  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3r "$OUT3/runs/t33_baseline" "$logf" "$rc") > "$md" 2>> "$logf"
+  run=$MIP_DIR/outputs/codex/$name; [ -d "$run" ] && archive_run "$run" t33_baseline$ARCHIVE_TAG
+  (cd "$TOOL_DIR/py" && "$PY" t33_export_traj.py "$OUT3/runs/t33_baseline$ARCHIVE_TAG" "$OUT3/traj$ARCHIVE_TAG") >> "$logf" 2>&1
+  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3r "$OUT3/runs/t33_baseline$ARCHIVE_TAG" "$logf" "$rc") > "$md" 2>> "$logf"
   sed -i "1s/.*/## T3.3r 供应商错误重跑（索引 $idx）后的 20 集基线/" "$md"
   [ $rc -eq 0 ] && finish T3.3r PASS "$logf" || finish T3.3r FAIL "$logf"
 }
 step_T36()  { run_py T3.6 t36_commit_oracle.py; }
-step_T37a() { run_py T3.7a t37a_rule_roc.py "$OUT3/traj"; }
+step_T37a() { run_py T3.7a t37a_rule_roc.py "$OUT3/traj$ARCHIVE_TAG"; }
 step_T37b() { run_py T3.7b t37b_synthetic_branch.py; }
 step_T37c() {
   [ -f "$TOOL_DIR/py/t37c_backtrack.py" ] || { { echo "## T3.7c"; echo; echo "t37c_backtrack.py 尚未提供。"; } > "$OUT3/md/T3.7c.md"; finish T3.7c SKIP -; return; }
@@ -218,7 +222,7 @@ step_T37c() {
 }
 
 want() { [[ ",$STEPS," == *",$1,"* ]]; }
-log "WORKDIR=$WORKDIR OUT3=$OUT3 STEPS=$STEPS CODEX_MODEL=$CODEX_MODEL RUN_PAID=$RUN_PAID"
+log "WORKDIR=$WORKDIR OUT3=$OUT3 STEPS=$STEPS CODEX_MODEL=$CODEX_MODEL CODEX_EFFORT=$CODEX_EFFORT ARCHIVE_TAG=$ARCHIVE_TAG RUN_PAID=$RUN_PAID"
 [ -x "$PY" ] || { echo "no interpreter at $PY (task 1's install_env.sh builds it)"; exit 1; }
 [ -f "$OUT/oracle_progress_rand100.json" ] || { echo "task 2 outputs missing in $OUT (run tools/02_oracles first)"; exit 1; }
 want T3.0  && step_T30
