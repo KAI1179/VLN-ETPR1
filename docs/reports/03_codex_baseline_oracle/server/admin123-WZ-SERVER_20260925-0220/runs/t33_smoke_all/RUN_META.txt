@@ -1,0 +1,6 @@
+run_dir /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-all
+mip_commit aac454c0efc7200ae243899adeb4e92dad1d6268
+mip_branch e0-oracle
+codex_version codex-cli 0.156.1
+model gpt-5.5
+date 2026-09-24 21:06:33

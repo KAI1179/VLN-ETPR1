@@ -1,0 +1,47 @@
+[std] partial episodes -> test run test_r2r_es_codex_gpt-5.5_default_oracle-all
+[std] 1 env server(s) EmbodiedScoreEnv spawned on 9200-9200 (logs: /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-all)
+[std] http://127.0.0.1:9200 healthy: EmbodiedScoreEnv
+[std] code snapshot -> code
+[std] run=test_r2r_es_codex_gpt-5.5_default_oracle-all model=gpt-5.5 eps=0-2 workers=1 -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-all
+[std] episode 0 starting on http://127.0.0.1:9200
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+[std] episode 0 done: success=1.0 spl=1.0 dtg=2.33 steps=93.0
+[std] episode 1 starting on http://127.0.0.1:9200
+[std] episode 1 done: success=0.0 spl=0.0 dtg=5.14 steps=137.0
+[std] episode 2 starting on http://127.0.0.1:9200
+[std] episode 2 done: success=0.0 spl=0.0 dtg=4.3 steps=499.0
+[std] run complete -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-all/summary.json
+[std] run stats: {"vram_peak_mib": 7245}
+{
+  "episode_count": 3,
+  "distance_to_goal": 3.9246,
+  "success": 0.3333,
+  "spl": 0.3333,
+  "ndtw": 0.2714,
+  "path_length": 26.3169,
+  "oracle_success": 1.0,
+  "steps_taken": 243.0,
+  "step_count": 243.0,
+  "env_steps": 243.0,
+  "stop_rate": 1.0
+}
+[09/24/26 21:06:32] INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+                    INFO     Using categorical units to plot a list of strings that are all parsable as floats or  category.py:224
+                             dates. If these strings should be plotted as numbers, cast to the appropriate data                   
+                             type before plotting.                                                                                
+[std] stats report -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-all/stats.html

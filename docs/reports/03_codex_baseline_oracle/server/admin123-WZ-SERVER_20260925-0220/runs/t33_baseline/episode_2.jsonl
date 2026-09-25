@@ -1,0 +1,118 @@
+{"t": 0.0, "kind": "episode_meta", "index": 2, "episode_id": "13", "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb", "instruction": "Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink."}
+{"t": 0.28, "kind": "session_inputs", "cell": "test_r2r_es_codex_gpt-5.5_default_oracle-none", "harness": "codex", "model": "gpt-5.5", "system_prompt": "You are controlling a robot in a real indoor environment (a photorealistic 3D scan of a building). You interact only through these tools:\n\n- observe(): look through the robot's forward-facing camera (returns an RGB image).\n- step(actions): execute movement actions in order. 0 = STOP (permanently ends the episode \u2014 declares you have reached the goal), 1 = move forward 0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees, 4 = tilt the camera up 30 degrees, 5 = tilt the camera down 30 degrees (tilt changes the camera pitch only, not your position or heading).\n\nYour task is to follow this navigation instruction to its endpoint:\n\n\"Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink.\"\n\nRules:\n- Alternate observing and stepping: look, decide where the instruction wants you to go next, move, look again.\n- You have a budget of 500 movement actions.\n- You succeed only if you issue action 0 (STOP) while within 3 meters of the instruction's endpoint. STOP is permanent \u2014 issue it only when you believe you are at the goal.\n- Turning in place (e.g. step([2,2,2,2,2,2])) is a cheap way to look around when unsure.\n- Tilt changes persist until you change them again; level the camera again before moving on, and check your camera pitch before interpreting a view.\n- Work autonomously until you stop; nobody can answer questions.\n", "first_prompt": "Begin navigating. Call observe() first to see where you are.", "tool_schemas": [{"name": "observe", "description": "Look through the robot's forward-facing camera. Returns the current egocentric RGB view. Pure read \u2014 does not advance the simulator or consume step budget.", "input_schema": {"properties": {}, "title": "observeArguments", "type": "object"}}, {"name": "step", "description": "Execute a sequence of movement actions, in order.\n\nActions: 0 = STOP (permanently ENDS the episode \u2014 issue it only when you believe the robot is within 3 meters of the goal), 1 = move forward 0.25 m, 2 = turn left 15 degrees, 3 = turn right 15 degrees, 4 = tilt the camera up 30 degrees, 5 = tilt the camera down 30 degrees (tilt changes the camera pitch only, not your position or heading; pitch is clamped to \u00b160\u00b0).\n\nExecutes sequentially and halts early if the episode ends. Returns how many actions ran, total steps taken, remaining budget, and whether the episode is over. The camera view changes after stepping \u2014 call observe() to see the result.", "input_schema": {"properties": {"actions": {"items": {"type": "integer"}, "title": "Actions", "type": "array"}}, "required": ["actions"], "title": "stepArguments", "type": "object"}}], "effort": "medium", "options": {"argv": ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "model = \"gpt-5.5\"", "-c", "model_reasoning_effort = \"medium\"", "-c", "model_reasoning_summary = \"detailed\"", "-c", "mcp_servers.env.command = \"/home/xukai/code/agentic-nav/MIP/envs/mip/bin/python\"", "-c", "mcp_servers.env.args = [\"/home/xukai/code/agentic-nav/MIP/exp_workspace/oracleES/mcp/bridge.py\"]", "-c", "mcp_servers.env.env = { BAREES_SERVER_URL = \"http://127.0.0.1:9200\", BAREES_TASK = \"nav\", BAREES_ACTIONS = \"6\", BAREES_STEP_BUDGET = \"500\", BAREES_TURN_BUDGET = \"0\", BAREES_BARE = \"1\", BAREES_AUTO_OBSERVE = \"0\", BAREES_LIVE_DIR = \"/home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_oracle-none/live_2\", BAREES_ORACLE = \"none\", BAREES_ORACLE_JSON = \"/home/xukai/code/agentic-nav/task3/oracle_by_index_rand100.json\", BAREES_ORACLE_MASK_FINAL = \"1\", BAREES_ORACLE_PARAMS = \"/home/xukai/code/agentic-nav/task3/rules_v0.json\", BAREES_EPISODE_INDEX = \"2\", EH_EXECUTOR = \"codex\" }", "-c", "mcp_servers.env.default_tools_approval_mode = \"approve\"", "-c", "project_doc_max_bytes = 0"], "sandbox": "read-only", "system_prompt_note": "<codex builtin>"}}
+{"t": 0.99, "kind": "system_init", "thread_id": "01a0d67a-1ef1-7b91-9406-29712810711b", "model": "gpt-5.5"}
+{"t": 8.06, "kind": "assistant_text", "text": "I\u2019ll start by checking what navigation tools are available, then I\u2019ll alternate camera observations and movement decisions until I\u2019m confident we\u2019re at the sink."}
+{"t": 10.06, "kind": "tool_use", "id": "item_1", "name": "mcp__env__observe", "input": {}}
+{"t": 10.11, "kind": "tool_result", "tool_use_id": "item_1", "texts": ["<image elided>"]}
+{"t": 12.14, "kind": "thinking", "chars": 36, "text": "**Adjusting camera angle from wall**"}
+{"t": 12.65, "kind": "assistant_text", "text": "The first view is almost entirely a close blank wall, so I\u2019m going to rotate in place to get oriented before committing to forward motion."}
+{"t": 12.98, "kind": "tool_use", "id": "item_4", "name": "mcp__env__step", "input": {"actions": [3, 3, 3, 3, 3, 3]}}
+{"t": 13.03, "kind": "tool_result", "tool_use_id": "item_4", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 6,\n  \"steps_remaining_approx\": 494,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 15.15, "kind": "tool_use", "id": "item_5", "name": "mcp__env__observe", "input": {}}
+{"t": 15.22, "kind": "tool_result", "tool_use_id": "item_5", "texts": ["<image elided>"]}
+{"t": 18.0, "kind": "thinking", "chars": 38, "text": "**Planning path through kitchen area**"}
+{"t": 18.8, "kind": "assistant_text", "text": "Now we\u2019re lined up with the dining table on the right and the kitchen beyond it, which matches the route. I\u2019ll advance along this aisle toward the kitchen opening."}
+{"t": 19.08, "kind": "tool_use", "id": "item_8", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1, 1]}}
+{"t": 19.12, "kind": "tool_result", "tool_use_id": "item_8", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 12,\n  \"steps_remaining_approx\": 488,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 21.42, "kind": "tool_use", "id": "item_9", "name": "mcp__env__observe", "input": {}}
+{"t": 21.5, "kind": "tool_result", "tool_use_id": "item_9", "texts": ["<image elided>"]}
+{"t": 23.89, "kind": "thinking", "chars": 49, "text": "**Assessing kitchen layout near island and sink**"}
+{"t": 24.28, "kind": "assistant_text", "text": "The kitchen counters and stove area are clearer ahead/right. I\u2019m staying just left of the island so we pass through the kitchen without clipping the table or counter."}
+{"t": 24.58, "kind": "tool_use", "id": "item_12", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1]}}
+{"t": 24.62, "kind": "tool_result", "tool_use_id": "item_12", "texts": ["{\n  \"executed\": 5,\n  \"requested\": 5,\n  \"steps_taken_total\": 17,\n  \"steps_remaining_approx\": 483,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 27.99, "kind": "tool_use", "id": "item_13", "name": "mcp__env__observe", "input": {}}
+{"t": 28.05, "kind": "tool_result", "tool_use_id": "item_13", "texts": ["<image elided>"]}
+{"t": 32.84, "kind": "thinking", "chars": 47, "text": "**Planning kitchen sink placement near island**"}
+{"t": 33.32, "kind": "assistant_text", "text": "I can see the main counter run and the island; the instruction wants us through the kitchen, past counters and stove, ending at the sink. I\u2019m going to angle right into the kitchen work aisle."}
+{"t": 33.67, "kind": "tool_use", "id": "item_16", "name": "mcp__env__step", "input": {"actions": [3, 3, 1, 1, 1, 1]}}
+{"t": 33.71, "kind": "tool_result", "tool_use_id": "item_16", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 23,\n  \"steps_remaining_approx\": 477,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 35.9, "kind": "tool_use", "id": "item_17", "name": "mcp__env__observe", "input": {}}
+{"t": 35.97, "kind": "tool_result", "tool_use_id": "item_17", "texts": ["<image elided>"]}
+{"t": 40.32, "kind": "thinking", "chars": 75, "text": "**Assessing kitchen island layout**\n**Planning route around island column**"}
+{"t": 41.46, "kind": "assistant_text", "text": "We\u2019re at the kitchen proper now. The island has a cooktop/stove area on it, and the sink is likely along the island or the counter run, so I\u2019ll move carefully along the work aisle rather than stopping too early."}
+{"t": 41.75, "kind": "tool_use", "id": "item_20", "name": "mcp__env__step", "input": {"actions": [3, 1, 1, 1]}}
+{"t": 41.78, "kind": "tool_result", "tool_use_id": "item_20", "texts": ["{\n  \"executed\": 4,\n  \"requested\": 4,\n  \"steps_taken_total\": 27,\n  \"steps_remaining_approx\": 473,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 43.59, "kind": "tool_use", "id": "item_21", "name": "mcp__env__observe", "input": {}}
+{"t": 43.66, "kind": "tool_result", "tool_use_id": "item_21", "texts": ["<image elided>"]}
+{"t": 46.57, "kind": "thinking", "chars": 36, "text": "**Planning kitchen navigation path**"}
+{"t": 47.52, "kind": "assistant_text", "text": "The cooktop is immediately to my left on the island and the long counter run is ahead/right. I\u2019m going to follow this aisle forward along the appliances, scanning for the sink basin."}
+{"t": 47.83, "kind": "tool_use", "id": "item_24", "name": "mcp__env__step", "input": {"actions": [2, 2, 2, 1, 1, 1, 1]}}
+{"t": 47.88, "kind": "tool_result", "tool_use_id": "item_24", "texts": ["{\n  \"executed\": 7,\n  \"requested\": 7,\n  \"steps_taken_total\": 34,\n  \"steps_remaining_approx\": 466,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 50.45, "kind": "tool_use", "id": "item_25", "name": "mcp__env__observe", "input": {}}
+{"t": 50.52, "kind": "tool_result", "tool_use_id": "item_25", "texts": ["<image elided>"]}
+{"t": 54.4, "kind": "thinking", "chars": 97, "text": "**Assessing kitchen island layout and sink location**\n**Locating sink near right countertop end**"}
+{"t": 55.13, "kind": "assistant_text", "text": "I\u2019ve passed the visible stove/cooktop area on the island. The sink isn\u2019t obvious yet, so I\u2019m continuing along the kitchen length and will check the counter line from closer range."}
+{"t": 55.42, "kind": "tool_use", "id": "item_28", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1]}}
+{"t": 55.45, "kind": "tool_result", "tool_use_id": "item_28", "texts": ["{\n  \"executed\": 4,\n  \"requested\": 4,\n  \"steps_taken_total\": 38,\n  \"steps_remaining_approx\": 462,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 57.29, "kind": "tool_use", "id": "item_29", "name": "mcp__env__observe", "input": {}}
+{"t": 57.44, "kind": "tool_result", "tool_use_id": "item_29", "texts": ["<image elided>"]}
+{"t": 60.33, "kind": "thinking", "chars": 35, "text": "**Turning to inspect counter area**"}
+{"t": 60.36, "kind": "tool_use", "id": "item_31", "name": "mcp__env__step", "input": {"actions": [3, 3, 3, 3, 3, 3]}}
+{"t": 60.4, "kind": "tool_result", "tool_use_id": "item_31", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 44,\n  \"steps_remaining_approx\": 456,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 61.96, "kind": "tool_use", "id": "item_32", "name": "mcp__env__observe", "input": {}}
+{"t": 62.02, "kind": "tool_result", "tool_use_id": "item_32", "texts": ["<image elided>"]}
+{"t": 65.34, "kind": "thinking", "chars": 32, "text": "**Turning left to face counter**"}
+{"t": 65.46, "kind": "tool_use", "id": "item_34", "name": "mcp__env__step", "input": {"actions": [2, 2, 2, 2]}}
+{"t": 65.48, "kind": "tool_result", "tool_use_id": "item_34", "texts": ["{\n  \"executed\": 4,\n  \"requested\": 4,\n  \"steps_taken_total\": 48,\n  \"steps_remaining_approx\": 452,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 66.98, "kind": "tool_use", "id": "item_35", "name": "mcp__env__observe", "input": {}}
+{"t": 67.05, "kind": "tool_result", "tool_use_id": "item_35", "texts": ["<image elided>"]}
+{"t": 70.52, "kind": "thinking", "chars": 38, "text": "**Planning movement toward sink area**"}
+{"t": 71.07, "kind": "assistant_text", "text": "The long counter is now in view, with the stove clearly behind us/alongside. I\u2019m tracing the counter toward its far end, where the sink and faucet should be."}
+{"t": 71.4, "kind": "tool_use", "id": "item_38", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1]}}
+{"t": 71.43, "kind": "tool_result", "tool_use_id": "item_38", "texts": ["{\n  \"executed\": 5,\n  \"requested\": 5,\n  \"steps_taken_total\": 53,\n  \"steps_remaining_approx\": 447,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 73.17, "kind": "tool_use", "id": "item_39", "name": "mcp__env__observe", "input": {}}
+{"t": 73.25, "kind": "tool_result", "tool_use_id": "item_39", "texts": ["<image elided>"]}
+{"t": 78.31, "kind": "thinking", "chars": 45, "text": "**Planning camera reposition to locate sink**"}
+{"t": 78.36, "kind": "tool_use", "id": "item_41", "name": "mcp__env__step", "input": {"actions": [3, 3, 3]}}
+{"t": 78.39, "kind": "tool_result", "tool_use_id": "item_41", "texts": ["{\n  \"executed\": 3,\n  \"requested\": 3,\n  \"steps_taken_total\": 56,\n  \"steps_remaining_approx\": 444,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 80.59, "kind": "tool_use", "id": "item_42", "name": "mcp__env__observe", "input": {}}
+{"t": 80.67, "kind": "tool_result", "tool_use_id": "item_42", "texts": ["<image elided>"]}
+{"t": 85.87, "kind": "thinking", "chars": 47, "text": "**Adjusting orientation to align counter left**"}
+{"t": 85.91, "kind": "tool_use", "id": "item_44", "name": "mcp__env__step", "input": {"actions": [2, 2, 2, 2, 2, 2]}}
+{"t": 85.95, "kind": "tool_result", "tool_use_id": "item_44", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 62,\n  \"steps_remaining_approx\": 438,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 88.06, "kind": "tool_use", "id": "item_45", "name": "mcp__env__observe", "input": {}}
+{"t": 88.14, "kind": "tool_result", "tool_use_id": "item_45", "texts": ["<image elided>"]}
+{"t": 93.0, "kind": "thinking", "chars": 71, "text": "**Analyzing kitchen island layout**\n**Advancing toward island far end**"}
+{"t": 93.79, "kind": "assistant_text", "text": "The sink is still hidden by the island geometry from this angle. I\u2019m circling toward the far end of the island, which is the most likely sink position after the cooktop section."}
+{"t": 94.06, "kind": "tool_use", "id": "item_48", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1]}}
+{"t": 94.1, "kind": "tool_result", "tool_use_id": "item_48", "texts": ["{\n  \"executed\": 4,\n  \"requested\": 4,\n  \"steps_taken_total\": 66,\n  \"steps_remaining_approx\": 434,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 96.35, "kind": "tool_use", "id": "item_49", "name": "mcp__env__observe", "input": {}}
+{"t": 96.42, "kind": "tool_result", "tool_use_id": "item_49", "texts": ["<image elided>"]}
+{"t": 99.24, "kind": "thinking", "chars": 36, "text": "**Planning turn to face island end**"}
+{"t": 99.3, "kind": "tool_use", "id": "item_51", "name": "mcp__env__step", "input": {"actions": [1, 1, 3, 3, 3]}}
+{"t": 99.34, "kind": "tool_result", "tool_use_id": "item_51", "texts": ["{\n  \"executed\": 5,\n  \"requested\": 5,\n  \"steps_taken_total\": 71,\n  \"steps_remaining_approx\": 429,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 101.19, "kind": "tool_use", "id": "item_52", "name": "mcp__env__observe", "input": {}}
+{"t": 101.28, "kind": "tool_result", "tool_use_id": "item_52", "texts": ["<image elided>"]}
+{"t": 104.53, "kind": "thinking", "chars": 44, "text": "**Planning movement toward far end counter**"}
+{"t": 104.66, "kind": "tool_use", "id": "item_54", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1, 1]}}
+{"t": 104.71, "kind": "tool_result", "tool_use_id": "item_54", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 77,\n  \"steps_remaining_approx\": 423,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 106.76, "kind": "tool_use", "id": "item_55", "name": "mcp__env__observe", "input": {}}
+{"t": 106.84, "kind": "tool_result", "tool_use_id": "item_55", "texts": ["<image elided>"]}
+{"t": 109.98, "kind": "thinking", "chars": 40, "text": "**Planning closer inspection near sink**"}
+{"t": 110.11, "kind": "tool_use", "id": "item_57", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1]}}
+{"t": 110.14, "kind": "tool_result", "tool_use_id": "item_57", "texts": ["{\n  \"executed\": 4,\n  \"requested\": 4,\n  \"steps_taken_total\": 81,\n  \"steps_remaining_approx\": 419,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 112.09, "kind": "tool_use", "id": "item_58", "name": "mcp__env__observe", "input": {}}
+{"t": 112.32, "kind": "tool_result", "tool_use_id": "item_58", "texts": ["<image elided>"]}
+{"t": 115.69, "kind": "thinking", "chars": 37, "text": "**Navigating past stove toward sink**"}
+{"t": 116.16, "kind": "assistant_text", "text": "Now I\u2019m alongside the counter: the stove/cooktop is visibly just ahead, so I\u2019m continuing past it toward the remaining counter section where the sink should be."}
+{"t": 116.5, "kind": "tool_use", "id": "item_61", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1]}}
+{"t": 116.55, "kind": "tool_result", "tool_use_id": "item_61", "texts": ["{\n  \"executed\": 5,\n  \"requested\": 5,\n  \"steps_taken_total\": 86,\n  \"steps_remaining_approx\": 414,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 118.61, "kind": "tool_use", "id": "item_62", "name": "mcp__env__observe", "input": {}}
+{"t": 118.69, "kind": "tool_result", "tool_use_id": "item_62", "texts": ["<image elided>"]}
+{"t": 121.85, "kind": "thinking", "chars": 36, "text": "**Advancing past stove toward sink**"}
+{"t": 122.12, "kind": "tool_use", "id": "item_64", "name": "mcp__env__step", "input": {"actions": [1, 1, 1, 1, 1, 1]}}
+{"t": 122.16, "kind": "tool_result", "tool_use_id": "item_64", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 92,\n  \"steps_remaining_approx\": 408,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 124.46, "kind": "tool_use", "id": "item_65", "name": "mcp__env__observe", "input": {}}
+{"t": 124.55, "kind": "tool_result", "tool_use_id": "item_65", "texts": ["<image elided>"]}
+{"t": 128.36, "kind": "thinking", "chars": 38, "text": "**Planning left turn to inspect sink**"}
+{"t": 128.51, "kind": "tool_use", "id": "item_67", "name": "mcp__env__step", "input": {"actions": [2, 2, 2, 2, 2, 2]}}
+{"t": 128.55, "kind": "tool_result", "tool_use_id": "item_67", "texts": ["{\n  \"executed\": 6,\n  \"requested\": 6,\n  \"steps_taken_total\": 98,\n  \"steps_remaining_approx\": 402,\n  \"episode_over\": false,\n  \"end_reason\": null\n}"]}
+{"t": 132.37, "kind": "tool_use", "id": "item_68", "name": "mcp__env__observe", "input": {}}
+{"t": 132.44, "kind": "tool_result", "tool_use_id": "item_68", "texts": ["<image elided>"]}
+{"t": 135.51, "kind": "thinking", "chars": 46, "text": "**Confirming position near sink and stopping**"}
+{"t": 136.16, "kind": "assistant_text", "text": "The sink is clearly visible to the left of the refrigerator, and we\u2019re within a few steps of it after passing the stove. I\u2019m stopping here at the sink endpoint."}
+{"t": 136.34, "kind": "tool_use", "id": "item_71", "name": "mcp__env__step", "input": {"actions": [0]}}
+{"t": 136.35, "kind": "tool_result", "tool_use_id": "item_71", "texts": ["{\n  \"executed\": 1,\n  \"requested\": 1,\n  \"steps_taken_total\": 99,\n  \"steps_remaining_approx\": 401,\n  \"episode_over\": true,\n  \"end_reason\": \"stop_called\"\n}"]}
+{"t": 138.87, "kind": "assistant_text", "text": "Reached the sink and stopped successfully."}
+{"t": 140.11, "kind": "result", "result": {"usage": {"input_tokens": 797958, "cached_input_tokens": 710528, "cache_write_input_tokens": 0, "output_tokens": 2881, "reasoning_output_tokens": 1444}, "cost_usd": null, "turns": null, "error": null, "thread_id": "01a0d67a-1ef1-7b91-9406-29712810711b", "exit_code": 0}}
+{"t": 140.11, "kind": "episode_metrics", "metrics": {"distance_to_goal": 3.508983850479126, "success": 0.0, "spl": 0.0, "ndtw": 0.664759969331442, "path_length": 10.841675989329815, "oracle_success": 0.0, "steps_taken": 99.0, "step_count": 99}}

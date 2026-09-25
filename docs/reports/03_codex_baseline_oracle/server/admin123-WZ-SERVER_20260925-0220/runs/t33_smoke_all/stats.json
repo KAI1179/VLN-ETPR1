@@ -1,0 +1,277 @@
+{
+ "run_name": "test_r2r_es_codex_gpt-5.5_default_oracle-all",
+ "cell": "test_r2r_es_codex_gpt-5.5_default_oracle-all",
+ "harness": "codex",
+ "config": {
+  "dataset": "vlnce-r2r",
+  "split": "rand100",
+  "episodes": "0-99",
+  "max_turns": 200,
+  "rgb_resolution": 512,
+  "step_budget": 500,
+  "episode_timeout": 2400,
+  "require": [
+   "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+  ],
+  "env_fields": [
+   "rgb_resolution"
+  ],
+  "auto_observe": false,
+  "wp_server": null,
+  "model": "gpt-5.5",
+  "effort": "default",
+  "bare": true,
+  "extra": {}
+ },
+ "aggregate": {
+  "episode_count": 3,
+  "distance_to_goal": 3.9246,
+  "success": 0.3333,
+  "spl": 0.3333,
+  "ndtw": 0.2714,
+  "path_length": 26.3169,
+  "oracle_success": 1.0,
+  "steps_taken": 243.0,
+  "step_count": 243.0,
+  "env_steps": 243.0,
+  "stop_rate": 1.0
+ },
+ "outcomes": {
+  "?": 3
+ },
+ "scored_episodes": 3,
+ "excluded_episodes": 0,
+ "cost": {
+  "total": 4.093,
+  "mean": 1.3643,
+  "median": 0.7455,
+  "min": 0.5433,
+  "max": 2.8042,
+  "by_issuing_tool": {}
+ },
+ "turns": null,
+ "env_steps": {
+  "total": 729,
+  "mean": 243.0,
+  "median": 137,
+  "min": 93,
+  "max": 499
+ },
+ "steps_per_turn": null,
+ "usd_per_turn": null,
+ "actions_total": {
+  "STOP": 3,
+  "FWD": 359,
+  "LEFT": 209,
+  "RIGHT": 158
+ },
+ "step_batch_size": {
+  "total": 729.0,
+  "mean": 9.5921,
+  "median": 8.0,
+  "min": 1.0,
+  "max": 40.0
+ },
+ "wall_min": {
+  "total": 19.6,
+  "mean": 6.5333,
+  "median": 3.5,
+  "min": 2.0,
+  "max": 14.1
+ },
+ "episodes": [
+  {
+   "index": 0,
+   "goal": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+   "scene": "x8F5xyUWy9e",
+   "error": null,
+   "subtype": null,
+   "turns": null,
+   "api_calls": null,
+   "tool_calls": {
+    "observe": 12,
+    "step": 12
+   },
+   "env_steps": 93,
+   "called_stop": true,
+   "cost_usd": 0.5433,
+   "usd_per_turn": null,
+   "steps_per_turn": null,
+   "images_received": null,
+   "tokens": null,
+   "step_batches": [
+    8,
+    10,
+    10,
+    4,
+    12,
+    11,
+    12,
+    6,
+    11,
+    4,
+    4,
+    1
+   ],
+   "actions": {
+    "STOP": 1,
+    "FWD": 68,
+    "LEFT": 14,
+    "RIGHT": 10
+   },
+   "metrics": {
+    "distance_to_goal": 2.334825038909912,
+    "success": 1.0,
+    "spl": 1.0,
+    "ndtw": 0.6539896071028272,
+    "path_length": 10.362135231494904,
+    "oracle_success": 1.0,
+    "steps_taken": 93.0,
+    "step_count": 93
+   },
+   "wall_min": 2.0
+  },
+  {
+   "index": 1,
+   "goal": "Walk across the floor and wait the archway.",
+   "scene": "2azQ1b91cZZ",
+   "error": null,
+   "subtype": null,
+   "turns": null,
+   "api_calls": null,
+   "tool_calls": {
+    "observe": 16,
+    "step": 17
+   },
+   "env_steps": 137,
+   "called_stop": true,
+   "cost_usd": 0.7455,
+   "usd_per_turn": null,
+   "steps_per_turn": null,
+   "images_received": null,
+   "tokens": null,
+   "step_batches": [
+    8,
+    8,
+    8,
+    8,
+    8,
+    6,
+    8,
+    32,
+    2,
+    4,
+    24,
+    1,
+    4,
+    8,
+    3,
+    4,
+    1
+   ],
+   "actions": {
+    "STOP": 1,
+    "FWD": 75,
+    "LEFT": 51,
+    "RIGHT": 10
+   },
+   "metrics": {
+    "distance_to_goal": 5.1418890953063965,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.15008824696726916,
+    "path_length": 18.583781510591507,
+    "oracle_success": 1.0,
+    "steps_taken": 137.0,
+    "step_count": 137
+   },
+   "wall_min": 3.5
+  },
+  {
+   "index": 2,
+   "goal": "Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink.",
+   "scene": "zsNo4HB9uLZ",
+   "error": null,
+   "subtype": null,
+   "turns": null,
+   "api_calls": null,
+   "tool_calls": {
+    "observe": 47,
+    "step": 47
+   },
+   "env_steps": 499,
+   "called_stop": true,
+   "cost_usd": 2.8042,
+   "usd_per_turn": null,
+   "steps_per_turn": null,
+   "images_received": null,
+   "tokens": null,
+   "step_batches": [
+    6,
+    10,
+    8,
+    8,
+    6,
+    6,
+    16,
+    6,
+    12,
+    12,
+    12,
+    6,
+    6,
+    20,
+    6,
+    12,
+    6,
+    6,
+    6,
+    20,
+    12,
+    6,
+    6,
+    3,
+    11,
+    20,
+    6,
+    8,
+    22,
+    3,
+    8,
+    6,
+    8,
+    12,
+    6,
+    12,
+    14,
+    6,
+    6,
+    16,
+    12,
+    11,
+    14,
+    40,
+    32,
+    8,
+    1
+   ],
+   "actions": {
+    "STOP": 1,
+    "FWD": 216,
+    "LEFT": 144,
+    "RIGHT": 138
+   },
+   "metrics": {
+    "distance_to_goal": 4.297040939331055,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.010169658677628353,
+    "path_length": 50.00478205550462,
+    "oracle_success": 1.0,
+    "steps_taken": 499.0,
+    "step_count": 499
+   },
+   "wall_min": 14.1
+  }
+ ]
+}

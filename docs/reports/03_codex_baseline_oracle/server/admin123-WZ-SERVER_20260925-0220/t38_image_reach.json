@@ -1,0 +1,107 @@
+[
+ {
+  "code": "754",
+  "shape": "triangle",
+  "colour": "blue",
+  "answer": "CODE=754 SHAPE=triangle COLOUR=blue",
+  "got": "754",
+  "code_ok": true,
+  "shape_ok": true,
+  "colour_ok": true,
+  "mcp_tool_call_items": 2,
+  "usage": {
+   "input_tokens": 40320,
+   "cached_input_tokens": 22656,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 81,
+   "reasoning_output_tokens": 21
+  },
+  "exit": 0,
+  "errors": [],
+  "stderr_tail": ""
+ },
+ {
+  "code": "872",
+  "shape": "square",
+  "colour": "red",
+  "answer": "CODE=872 SHAPE=square COLOUR=red",
+  "got": "872",
+  "code_ok": true,
+  "shape_ok": true,
+  "colour_ok": true,
+  "mcp_tool_call_items": 2,
+  "usage": {
+   "input_tokens": 40682,
+   "cached_input_tokens": 21632,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 109,
+   "reasoning_output_tokens": 49
+  },
+  "exit": 0,
+  "errors": [],
+  "stderr_tail": ""
+ },
+ {
+  "code": "167",
+  "shape": "triangle",
+  "colour": "green",
+  "answer": "CODE=167 SHAPE=triangle COLOUR=green",
+  "got": "167",
+  "code_ok": true,
+  "shape_ok": true,
+  "colour_ok": true,
+  "mcp_tool_call_items": 2,
+  "usage": {
+   "input_tokens": 40368,
+   "cached_input_tokens": 30848,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 105,
+   "reasoning_output_tokens": 45
+  },
+  "exit": 0,
+  "errors": [],
+  "stderr_tail": ""
+ },
+ {
+  "code": "574",
+  "shape": "triangle",
+  "colour": "red",
+  "answer": "CODE=574 SHAPE=triangle COLOUR=red",
+  "got": "574",
+  "code_ok": true,
+  "shape_ok": true,
+  "colour_ok": true,
+  "mcp_tool_call_items": 2,
+  "usage": {
+   "input_tokens": 40334,
+   "cached_input_tokens": 22656,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 88,
+   "reasoning_output_tokens": 28
+  },
+  "exit": 0,
+  "errors": [],
+  "stderr_tail": ""
+ },
+ {
+  "code": "722",
+  "shape": "square",
+  "colour": "red",
+  "answer": "CODE=722 SHAPE=square COLOUR=red",
+  "got": "722",
+  "code_ok": true,
+  "shape_ok": true,
+  "colour_ok": true,
+  "mcp_tool_call_items": 2,
+  "usage": {
+   "input_tokens": 40322,
+   "cached_input_tokens": 22656,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 82,
+   "reasoning_output_tokens": 23
+  },
+  "exit": 0,
+  "errors": [],
+  "stderr_tail": ""
+ }
+]
