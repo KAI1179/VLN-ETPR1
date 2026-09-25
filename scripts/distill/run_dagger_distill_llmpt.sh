@@ -10,7 +10,7 @@
 # from the pretraining checkpoint. Re-running this script after a crash is
 # therefore always safe.
 #
-# Env overrides: ITERS (20000), LOAD_MAP (auto|True|False; auto = True when the
+# Env overrides: ITERS (20000), NUM_ENVS (4 per process), LOAD_MAP (auto|True|False; auto = True when the
 # MODEL.MAP_ENCODER.load_pretrained_map_modules key exists), ELEVATION_AXIS (y),
 # CUDA_VISIBLE_DEVICES (0-7), MASTER_PORT (29500).
 set -euo pipefail
@@ -18,6 +18,12 @@ set -euo pipefail
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+# GPU layout is derived from CUDA_VISIBLE_DEVICES: N visible cards -> N processes
+# with logical ids 0..N-1. NUM_ENVS is the per-process environment count.
+IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
+GPU_NUMBERS="${#_gpu_list[@]}"
+GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
+NUM_ENVS="${NUM_ENVS:-4}"
 RUN_NAME="dagger_distill_gt_teacher_llmpt"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -59,17 +65,17 @@ else
 fi
 
 COMMAND=(
-    "${TORCHRUN}" --nproc_per_node=8 --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
+    "${TORCHRUN}" --nproc_per_node="${GPU_NUMBERS}" --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
     --exp_name "${RUN_NAME}"
     --run-type dagger
     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
     "${DRY_RUN_ARGS[@]}"
-    SIMULATOR_GPU_IDS '[0,1,2,3,4,5,6,7]'
-    TORCH_GPU_IDS '[0,1,2,3,4,5,6,7]'
-    GPU_NUMBERS 8
+    SIMULATOR_GPU_IDS "${GPU_IDS}"
+    TORCH_GPU_IDS "${GPU_IDS}"
+    GPU_NUMBERS "${GPU_NUMBERS}"
     TASK_CONFIG.SEED 100
     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-    NUM_ENVIRONMENTS 4
+    NUM_ENVIRONMENTS "${NUM_ENVS}"
     CHECKPOINT_INTERVAL 1000
     ONLY_LAST_SAVEALL False
     IL.iters "${ITERS:-20000}"
@@ -109,6 +115,7 @@ COMMAND=(
     echo "load_pretrained_map_modules=${LOAD_MAP_VALUE}"
     echo "elevation_axis=${ELEVATION_AXIS:-y}"
     echo "iters=${ITERS:-20000}"
+    echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"
 } >> "${RUN_DIR}/launch_info.txt"
 
 echo "Log: ${LOG_PATH}"
