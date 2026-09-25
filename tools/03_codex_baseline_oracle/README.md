@@ -154,3 +154,7 @@ when launching an oracle run (`run_task3.sh` does).
 
 Local check of the orchestrator's parts (this container has no simulator): `t35_make_arm.py` on a scratch MIP clone,
 `t35_unittest.py` 100/100, `t37a_rule_roc.py` on synthetic trajectories, `t3x_run_report.py` on a task-1 summary.json.
+
+Extra steps added after the first server run: `STEPS=T3.3s` (3-episode `oracle=all` smoke alone) and `STEPS=T3.3r`
+(re-run, with `run.resume=true` into the same run, the baseline episodes that died on a provider-side error such as
+"Selected model is at capacity" — MIP scores those 0 instead of excluding them; `py/t33_failed_indices.py` lists them).
