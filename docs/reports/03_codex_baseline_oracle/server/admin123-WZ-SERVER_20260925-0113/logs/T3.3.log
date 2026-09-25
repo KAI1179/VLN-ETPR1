@@ -1,0 +1,67 @@
+cmd1: BAREES_ORACLE=none python runner.py std_r2r_es_oracle harness=codex model=gpt-5.6 oracle=none run.episodes=0-9
+start 2026-09-25 00:14:20
+[std] partial episodes -> test run test_r2r_es_codex_gpt-5.6_low_oracle-none
+[std] 1 env server(s) EmbodiedScoreEnv spawned on 9200-9200 (logs: /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.6_low_oracle-none)
+[std] http://127.0.0.1:9200 healthy: EmbodiedScoreEnv
+[std] code snapshot -> code
+[std] run=test_r2r_es_codex_gpt-5.6_low_oracle-none model=gpt-5.6-sol eps=0-9 workers=1 -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.6_low_oracle-none
+[std] episode 0 starting on http://127.0.0.1:9200
+/home/xukai/code/agentic-nav/MIP/envs/mip/lib/python3.11/site-packages/pydantic_settings/sources/utils.py:47: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+  warnings.warn(
+[std] episode 0 done: success=1.0 spl=1.0 dtg=1.21 steps=54.0
+[std] episode 1 starting on http://127.0.0.1:9200
+[std] episode 1 done: success=0.0 spl=0.0 dtg=3.11 steps=17.0
+[std] episode 2 starting on http://127.0.0.1:9200
+[std] episode 2 done: success=1.0 spl=0.9159460424384873 dtg=0.9 steps=118.0
+[std] episode 3 starting on http://127.0.0.1:9200
+[std] episode 3 done: success=0.0 spl=0.0 dtg=14.41 steps=495.0
+[std] episode 4 starting on http://127.0.0.1:9200
+[std] episode 4 done: success=1.0 spl=0.3036364014931242 dtg=1.47 steps=455.0
+[std] episode 5 starting on http://127.0.0.1:9200
+[std] episode 5 done: success=0.0 spl=0.0 dtg=13.64 steps=102.0
+[std] episode 6 starting on http://127.0.0.1:9200
+[std] episode 6 done: success=0.0 spl=0.0 dtg=10.3 steps=294.0
+[std] episode 7 starting on http://127.0.0.1:9200
+[std] episode 7 done: success=0.0 spl=0.0 dtg=22.19 steps=251.0
+[std] episode 8 starting on http://127.0.0.1:9200
+[std] episode 8 done: success=0.0 spl=0.0 dtg=5.63 steps=0
+[std] episode 9 starting on http://127.0.0.1:9200
+[std] episode 9 done: success=0.0 spl=0.0 dtg=5.0 steps=200.0
+[std] run complete -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.6_low_oracle-none/summary.json
+[std] run stats: {"vram_peak_mib": 20599}
+{
+  "episode_count": 9,
+  "distance_to_goal": 8.0267,
+  "success": 0.3333,
+  "spl": 0.2466,
+  "ndtw": 0.3693,
+  "path_length": 23.4893,
+  "oracle_success": 0.3333,
+  "steps_taken": 220.6667,
+  "step_count": 220.6667,
+  "env_steps": 220.6667,
+  "stop_rate": 0.8889
+}
+[09/25/26 00:46:26] INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+                    INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+                    INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+                    INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+[09/25/26 00:46:27] INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+                    INFO     Using categorical units to plot a list of strings that are all parsable as    category.py:224
+                             floats or dates. If these strings should be plotted as numbers, cast to the                  
+                             appropriate data type before plotting.                                                       
+[std] stats report -> /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.6_low_oracle-none/stats.html
+end 2026-09-25 00:46:30
+smoke skipped: std_r2r_es_oracle.yaml missing (T3.5 not applied)
+episode 116 (index 8): no poses.jsonl (bareES arm logs no pose; use oracleES oracle=none)
+exported 9 trajectories to /home/xukai/code/agentic-nav/task3/traj_gpt56low

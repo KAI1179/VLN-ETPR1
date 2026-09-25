@@ -1,0 +1,135 @@
+{
+ "run_name": "test_r2r_es_codex_gpt-5.5_default_bareES",
+ "cell": "test_r2r_es_codex_gpt-5.5_default_bareES",
+ "harness": "codex",
+ "config": {
+  "dataset": "vlnce-r2r",
+  "split": "rand100",
+  "episodes": "0-99",
+  "max_turns": 200,
+  "rgb_resolution": 512,
+  "step_budget": 500,
+  "episode_timeout": 2400,
+  "require": [
+   "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+  ],
+  "env_fields": [
+   "rgb_resolution"
+  ],
+  "auto_observe": false,
+  "wp_server": null,
+  "model": "gpt-5.5",
+  "effort": "default",
+  "bare": true,
+  "extra": {}
+ },
+ "aggregate": {
+  "episode_count": 1,
+  "distance_to_goal": 5.4199,
+  "success": 0.0,
+  "spl": 0.0,
+  "ndtw": 0.6016,
+  "path_length": 5.6296,
+  "oracle_success": 0.0,
+  "steps_taken": 70.0,
+  "step_count": 70.0,
+  "env_steps": 70.0,
+  "stop_rate": 1.0
+ },
+ "outcomes": {
+  "?": 1
+ },
+ "scored_episodes": 1,
+ "excluded_episodes": 0,
+ "cost": {
+  "total": 0.7433,
+  "mean": 0.7433,
+  "median": 0.7433,
+  "min": 0.7433,
+  "max": 0.7433,
+  "by_issuing_tool": {}
+ },
+ "turns": null,
+ "env_steps": {
+  "total": 70,
+  "mean": 70.0,
+  "median": 70,
+  "min": 70,
+  "max": 70
+ },
+ "steps_per_turn": null,
+ "usd_per_turn": null,
+ "actions_total": {
+  "STOP": 1,
+  "FWD": 34,
+  "LEFT": 30,
+  "RIGHT": 5
+ },
+ "step_batch_size": {
+  "total": 70.0,
+  "mean": 5.8333,
+  "median": 6.0,
+  "min": 1.0,
+  "max": 12.0
+ },
+ "wall_min": {
+  "total": 6.2,
+  "mean": 6.2,
+  "median": 6.2,
+  "min": 6.2,
+  "max": 6.2
+ },
+ "episodes": [
+  {
+   "index": 0,
+   "goal": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+   "scene": "x8F5xyUWy9e",
+   "error": null,
+   "subtype": null,
+   "turns": null,
+   "api_calls": null,
+   "tool_calls": {
+    "observe": 12,
+    "step": 12
+   },
+   "env_steps": 70,
+   "called_stop": true,
+   "cost_usd": 0.7433,
+   "usd_per_turn": null,
+   "steps_per_turn": null,
+   "images_received": null,
+   "tokens": null,
+   "step_batches": [
+    8,
+    8,
+    6,
+    3,
+    8,
+    12,
+    6,
+    6,
+    6,
+    2,
+    4,
+    1
+   ],
+   "actions": {
+    "STOP": 1,
+    "FWD": 34,
+    "LEFT": 30,
+    "RIGHT": 5
+   },
+   "metrics": {
+    "distance_to_goal": 5.419922351837158,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.6016279260409777,
+    "path_length": 5.629594027996063,
+    "oracle_success": 0.0,
+    "steps_taken": 70.0,
+    "step_count": 70
+   },
+   "wall_min": 6.2
+  }
+ ]
+}

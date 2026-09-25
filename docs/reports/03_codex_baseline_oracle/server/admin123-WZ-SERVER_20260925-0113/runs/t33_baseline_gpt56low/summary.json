@@ -1,0 +1,809 @@
+{
+  "run_name": "test_r2r_es_codex_gpt-5.6_low_oracle-none",
+  "cell": "test_r2r_es_codex_gpt-5.6_low_oracle-none",
+  "harness": "codex",
+  "harness_inherent": {
+    "auth": "ChatGPT subscription (codex login)",
+    "thinking": "reasoning tokens counted, content unreadable",
+    "turn_cap": "broadcast only (no codex-side hard cap)",
+    "vision_context": "codex-managed (unaudited)",
+    "context_control": false,
+    "context_label": "codex-managed-unaudited",
+    "tool_surface": "codex code mode: MCP tools deferred, called from the JS exec tool",
+    "codex_version": "codex-cli 0.156.1"
+  },
+  "config": {
+    "dataset": "vlnce-r2r",
+    "split": "rand100",
+    "episodes": "0-99",
+    "max_turns": 200,
+    "rgb_resolution": 512,
+    "step_budget": 500,
+    "episode_timeout": 2400,
+    "require": [
+      "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+    ],
+    "env_fields": [
+      "rgb_resolution"
+    ],
+    "auto_observe": false,
+    "wp_server": null,
+    "model": "gpt-5.6-sol",
+    "effort": "low",
+    "bare": true,
+    "extra": {
+      "price": "gpt-5.6"
+    }
+  },
+  "servers": [
+    "http://127.0.0.1:9200"
+  ],
+  "run_stats": {
+    "vram_peak_mib": 20599
+  },
+  "aggregate": {
+    "episode_count": 9,
+    "distance_to_goal": 8.0267,
+    "success": 0.3333,
+    "spl": 0.2466,
+    "ndtw": 0.3693,
+    "path_length": 23.4893,
+    "oracle_success": 0.3333,
+    "steps_taken": 220.6667,
+    "step_count": 220.6667,
+    "env_steps": 220.6667,
+    "stop_rate": 0.8889
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "episode_id": "7",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+      "metrics": {
+        "distance_to_goal": 1.2056403160095215,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.8858951727825783,
+        "path_length": 9.702817156910896,
+        "oracle_success": 1.0,
+        "steps_taken": 54.0,
+        "step_count": 54
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 9,
+          "step": 9
+        },
+        "env_steps": 54,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 378003,
+          "cached_input_tokens": 354432,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1555,
+          "reasoning_output_tokens": 496
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6c5-96b6-77c2-9d22-1bece2e71c21",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.267157,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 23571,
+            "cache_read": 354432,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 1555
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 23571,
+              "cache_read": 354432,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 1555
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 68.0
+    },
+    {
+      "index": 1,
+      "episode_id": "11",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk across the floor and wait the archway.",
+      "metrics": {
+        "distance_to_goal": 3.1130216121673584,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.8153125873920409,
+        "path_length": 4.0,
+        "oracle_success": 0.0,
+        "steps_taken": 17.0,
+        "step_count": 17
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 3,
+          "step": 3
+        },
+        "env_steps": 17,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 137682,
+          "cached_input_tokens": 119424,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 528,
+          "reasoning_output_tokens": 156
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6c6-c9f5-7c73-b9b4-350077d0c23c",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.131362,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 18258,
+            "cache_read": 119424,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 528
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 18258,
+              "cache_read": 119424,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 528
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 34.3
+    },
+    {
+      "index": 2,
+      "episode_id": "13",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink.",
+      "metrics": {
+        "distance_to_goal": 0.9014517068862915,
+        "success": 1.0,
+        "spl": 0.9159460424384873,
+        "ndtw": 0.728718528311475,
+        "path_length": 13.14233335852623,
+        "oracle_success": 1.0,
+        "steps_taken": 118.0,
+        "step_count": 118
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 18,
+          "step": 18
+        },
+        "env_steps": 118,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 425215,
+          "cached_input_tokens": 395520,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2196,
+          "reasoning_output_tokens": 616
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6c7-5b9b-74f2-a58c-e9b50fa24e0d",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.320908,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 29695,
+            "cache_read": 395520,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 2196
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 29695,
+              "cache_read": 395520,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 2196
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 113.0
+    },
+    {
+      "index": 3,
+      "episode_id": "40",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk into the kitchen area. Walk by the sink and oven. Walk straight into the hallway. turn right into the little room. Turn left and walk into the bedroom. Stop by the corner of the bed.",
+      "metrics": {
+        "distance_to_goal": 14.408849716186523,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.005003064190155745,
+        "path_length": 55.06585780531168,
+        "oracle_success": 0.0,
+        "steps_taken": 495.0,
+        "step_count": 495
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 46,
+          "step": 46
+        },
+        "env_steps": 495,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 2785276,
+          "cached_input_tokens": 2635136,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 6152,
+          "reasoning_output_tokens": 1268
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6c9-1adb-73b3-bfc0-10e8cc3527b4",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 1.777654,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 150140,
+            "cache_read": 2635136,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 6152
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 150140,
+              "cache_read": 2635136,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 6152
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 457.6
+    },
+    {
+      "index": 4,
+      "episode_id": "42",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk towards the kitchen area. Keep walking along the kitchen area towards the doorway. Turn right and exit the kitchen area walking across the small living room area and into the bedroom to you left.",
+      "metrics": {
+        "distance_to_goal": 1.4746160507202148,
+        "success": 1.0,
+        "spl": 0.3036364014931242,
+        "ndtw": 0.07331580334677668,
+        "path_length": 49.27741081640124,
+        "oracle_success": 1.0,
+        "steps_taken": 455.0,
+        "step_count": 455
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 42,
+          "step": 42
+        },
+        "env_steps": 455,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 2469921,
+          "cached_input_tokens": 2343808,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 6237,
+          "reasoning_output_tokens": 1714
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6d0-11a4-7482-9d3c-e28a81ad0a0c",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 1.566715,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 126113,
+            "cache_read": 2343808,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 6237
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 126113,
+              "cache_read": 2343808,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 6237
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 369.9
+    },
+    {
+      "index": 5,
+      "episode_id": "52",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Take a right at the large clock and travel straight through the kitchen, when you see the thermostat on the wall you are right next to the washroom.",
+      "metrics": {
+        "distance_to_goal": 13.64314079284668,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.2797153046720386,
+        "path_length": 11.824277833104134,
+        "oracle_success": 0.0,
+        "steps_taken": 102.0,
+        "step_count": 102
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 12,
+          "step": 12
+        },
+        "env_steps": 102,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 514588,
+          "cached_input_tokens": 482304,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1794,
+          "reasoning_output_tokens": 411
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6d5-b677-7832-a29b-5cd4eaa12ef3",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.357938,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 32284,
+            "cache_read": 482304,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 1794
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 32284,
+              "cache_read": 482304,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 1794
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 109.4
+    },
+    {
+      "index": 6,
+      "episode_id": "70",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Go through living room, through the door on the to the right, through the den, through the dining to, to the outdoor foyer. Stop before going outside.",
+      "metrics": {
+        "distance_to_goal": 10.304522514343262,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.09943723285691124,
+        "path_length": 27.727387620601803,
+        "oracle_success": 0.0,
+        "steps_taken": 294.0,
+        "step_count": 294
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 28,
+          "step": 28
+        },
+        "env_steps": 294,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 712315,
+          "cached_input_tokens": 674944,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3398,
+          "reasoning_output_tokens": 876
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6d7-8ad3-7e50-b935-83cec0940e2f",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.487422,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 37371,
+            "cache_read": 674944,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 3398
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 37371,
+              "cache_read": 674944,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 3398
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 128.5
+    },
+    {
+      "index": 7,
+      "episode_id": "94",
+      "scene_id": "data/scene_datasets/mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Walk forward, take a left around the corner and walk all the way to the end of the hallway, and stop at the door before the bedroom.",
+      "metrics": {
+        "distance_to_goal": 22.1857852935791,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.0182687794340059,
+        "path_length": 18.011808715760708,
+        "oracle_success": 0.0,
+        "steps_taken": 251.0,
+        "step_count": 251
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 24,
+          "step": 25
+        },
+        "env_steps": 251,
+        "end_reason": null,
+        "called_stop": false,
+        "num_turns": null,
+        "usage": {},
+        "total_cost_usd": null,
+        "thread_id": "01a0d6d9-a843-7eb3-a5b1-c1767a33305e",
+        "exit_code": 1,
+        "task_shape": "nav",
+        "cost": {
+          "usd": null,
+          "source": "unmetered",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": null,
+          "billing": null,
+          "price": null,
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 368.8,
+      "error": "codex exited 1"
+    },
+    {
+      "index": 8,
+      "episode_id": "116",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "you are in a closet, walk forward, turn right to walk out of closet into a bed room. turn right and see bath room, walk into bathroom and wait near the tub and sink.",
+      "metrics": {
+        "distance_to_goal": 5.625521659851074,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.46475361047363095,
+        "path_length": 0.0,
+        "oracle_success": 0.0,
+        "steps_taken": 0.0,
+        "step_count": 0
+      },
+      "agent": {
+        "tool_calls": {},
+        "env_steps": 0,
+        "end_reason": null,
+        "called_stop": false,
+        "num_turns": null,
+        "usage": {},
+        "total_cost_usd": null,
+        "thread_id": "01a0d6df-6af8-7130-b792-eba9e541172f",
+        "exit_code": 1,
+        "task_shape": "nav",
+        "cost": {
+          "usd": null,
+          "source": "unmetered",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": null,
+          "billing": null,
+          "price": null,
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 31.4,
+      "error": "codex exited 1"
+    },
+    {
+      "index": 9,
+      "episode_id": "140",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk through the doorway to the right of the dining room table then go through the doorway by the flower pot.  Take the doorway directly left of the staircase and wait there.",
+      "metrics": {
+        "distance_to_goal": 5.003707408905029,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.41844337428134154,
+        "path_length": 22.651599377393723,
+        "oracle_success": 0.0,
+        "steps_taken": 200.0,
+        "step_count": 200
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 28,
+          "step": 28
+        },
+        "env_steps": 200,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 1406953,
+          "cached_input_tokens": 1331968,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3963,
+          "reasoning_output_tokens": 1135
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d6df-dfae-7d33-8ba8-186027f81106",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.911987,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 74985,
+            "cache_read": 1331968,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 3963
+          },
+          "billing": {
+            "gpt-5.6-sol": {
+              "input": 74985,
+              "cache_read": 1331968,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 3963
+            }
+          },
+          "price": {
+            "gpt-5.6-sol": {
+              "key": "gpt-5.6",
+              "input": 4e-06,
+              "cache_read": 4e-07,
+              "cache_write_5m": 5e-06,
+              "cache_write_1h": 8e-06,
+              "cache_write_1h_rule": "2x_input",
+              "output": 2e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 196.2
+    }
+  ],
+  "cost": {
+    "total": 5.8211,
+    "mean": 0.7276,
+    "median": 0.4874,
+    "min": 0.1314,
+    "max": 1.7777,
+    "priced_episodes": 8,
+    "sources": {
+      "priced": 8,
+      "unmetered": 2
+    },
+    "tokens": {
+      "input": 492417,
+      "cache_read": 8337536,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "output": 25823
+    },
+    "price": {
+      "gpt-5.6-sol": {
+        "key": "gpt-5.6",
+        "input": 4e-06,
+        "cache_read": 4e-07,
+        "cache_write_5m": 5e-06,
+        "cache_write_1h": 8e-06,
+        "cache_write_1h_rule": "2x_input",
+        "output": 2e-05
+      }
+    },
+    "by_issuing_tool": {},
+    "budget_usd": null,
+    "stopped_by_budget": false
+  },
+  "provenance": {
+    "task": "r2r",
+    "env_key": "es",
+    "arm": "oracleES",
+    "env": "EmbodiedScoreEnv",
+    "shape": "es.nav",
+    "module": "core.shapes.es:EsNav",
+    "harness": "codex",
+    "callbacks": [
+      "CodeSnapshot",
+      "JsonlLogger",
+      "RawLogger",
+      "CostLogger",
+      "VramSampler",
+      "StatsReport"
+    ],
+    "code_sha256": "69589148e650a580e6f6cdfa92354193139beb7befdd76219124bc8e8bdbf755",
+    "git": {
+      "head": "aac454c0efc7200ae243899adeb4e92dad1d6268",
+      "branch": "e0-oracle",
+      "dirty": []
+    },
+    "snapshot": "code"
+  },
+  "writers": {
+    "code/": "CodeSnapshot",
+    "code_state.json": "CodeSnapshot",
+    "provenance.code_sha256": "CodeSnapshot",
+    "provenance.git": "CodeSnapshot",
+    "provenance.snapshot": "CodeSnapshot",
+    "episode_{i}.jsonl": "JsonlLogger",
+    "raw/episode_{i}.jsonl": "RawLogger",
+    "agent.cost": "CostLogger",
+    "cost": "CostLogger",
+    "run_stats.vram_peak_mib": "VramSampler",
+    "stats.json": "StatsReport",
+    "stats.html": "StatsReport"
+  }
+}

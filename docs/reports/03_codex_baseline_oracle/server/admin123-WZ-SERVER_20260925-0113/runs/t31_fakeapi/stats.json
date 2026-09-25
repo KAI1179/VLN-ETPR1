@@ -1,0 +1,101 @@
+{
+ "run_name": "fakeapi_r2r_es_codex_gpt-5.5_default_bareES",
+ "cell": "fakeapi_r2r_es_codex_gpt-5.5_default_bareES",
+ "harness": "codex",
+ "config": {
+  "dataset": "vlnce-r2r",
+  "split": "rand100",
+  "episodes": "0-99",
+  "max_turns": 200,
+  "rgb_resolution": 512,
+  "step_budget": 500,
+  "episode_timeout": 2400,
+  "require": [
+   "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+  ],
+  "env_fields": [
+   "rgb_resolution"
+  ],
+  "auto_observe": false,
+  "wp_server": null,
+  "model": "gpt-5.5",
+  "effort": "default",
+  "bare": true,
+  "extra": {
+   "api_gateway": "fake",
+   "gateway_task": "r2r"
+  }
+ },
+ "aggregate": {
+  "episode_count": 1,
+  "distance_to_goal": 10.4523,
+  "success": 0.0,
+  "spl": 0.0,
+  "ndtw": 0.184,
+  "path_length": 0.0,
+  "oracle_success": 0.0,
+  "steps_taken": 0.0,
+  "step_count": 0.0,
+  "env_steps": 0.0,
+  "stop_rate": 0.0
+ },
+ "outcomes": {
+  "?": 1
+ },
+ "scored_episodes": 1,
+ "excluded_episodes": 0,
+ "cost": {
+  "by_issuing_tool": {}
+ },
+ "turns": null,
+ "env_steps": {
+  "total": 0,
+  "mean": 0.0,
+  "median": 0,
+  "min": 0,
+  "max": 0
+ },
+ "steps_per_turn": null,
+ "usd_per_turn": null,
+ "actions_total": {},
+ "step_batch_size": null,
+ "wall_min": {
+  "total": 0.1,
+  "mean": 0.1,
+  "median": 0.1,
+  "min": 0.1,
+  "max": 0.1
+ },
+ "episodes": [
+  {
+   "index": 0,
+   "goal": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+   "scene": "x8F5xyUWy9e",
+   "error": null,
+   "subtype": null,
+   "turns": null,
+   "api_calls": null,
+   "tool_calls": {},
+   "env_steps": 0,
+   "called_stop": false,
+   "cost_usd": 0.0,
+   "usd_per_turn": null,
+   "steps_per_turn": null,
+   "images_received": null,
+   "tokens": null,
+   "step_batches": [],
+   "actions": {},
+   "metrics": {
+    "distance_to_goal": 10.452263832092285,
+    "success": 0.0,
+    "spl": 0.0,
+    "ndtw": 0.18399963144284742,
+    "path_length": 0.0,
+    "oracle_success": 0.0,
+    "steps_taken": 0.0,
+    "step_count": 0
+   },
+   "wall_min": 0.1
+  }
+ ]
+}
