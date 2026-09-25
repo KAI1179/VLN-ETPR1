@@ -1,0 +1,162 @@
+From aa4695e9ead039821a2c11e5b5a69a59453b3b23 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 01:32:51 +0000
+Subject: [PATCH] Eval launchers: free rendezvous port and EGL environment
+
+torchrun --standalone on torch 2.1 binds port 29400, so concurrent evals
+collided during R6. Pick a free port per launch (MASTER_PORT overrides)
+and export the EGL vendor dir; eval_student_gt_full.sh also exports the
+LD_PRELOAD that eval_s4.sh needs.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/eval_dagger_distill.sh      | 7 ++++++-
+ scripts/distill/eval_run.sh                 | 7 ++++++-
+ scripts/distill/eval_student_gt_full.sh     | 2 ++
+ scripts/distill/eval_teacher_ablation.sh    | 7 ++++++-
+ scripts/distill/eval_teacher_on_llm_maps.sh | 7 ++++++-
+ scripts/refiner/eval_s4.sh                  | 7 ++++++-
+ 6 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/scripts/distill/eval_dagger_distill.sh b/scripts/distill/eval_dagger_distill.sh
+index f0adad2..c740457 100755
+--- a/scripts/distill/eval_dagger_distill.sh
++++ b/scripts/distill/eval_dagger_distill.sh
+@@ -13,6 +13,11 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# evals collide; pick a free port instead (override with MASTER_PORT).
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ 
+ DRY_RUN_ARGS=()
+ if [[ "${1:-}" == "--dry-run" ]]; then
+@@ -54,7 +59,7 @@ if [[ ${#DRY_RUN_ARGS[@]} -eq 0 && ! -f "${CKPT_PATH}" ]]; then
+ fi
+ 
+ COMMAND=(
+-    "${TORCHRUN}" --standalone --nproc_per_node="${GPU_NUMBERS}" "${REPO_ROOT}/run.py"
++    "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" "${REPO_ROOT}/run.py"
+     --exp_name "${EVAL_NAME}"
+     --run-type eval
+     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+diff --git a/scripts/distill/eval_run.sh b/scripts/distill/eval_run.sh
+index 90bd54f..a30ec22 100755
+--- a/scripts/distill/eval_run.sh
++++ b/scripts/distill/eval_run.sh
+@@ -11,6 +11,11 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# evals collide; pick a free port instead (override with MASTER_PORT).
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ 
+ if [[ $# -lt 2 || $# -gt 3 ]]; then
+     echo "Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]" >&2
+@@ -41,7 +46,7 @@ fi
+ cd "${REPO_ROOT}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+     __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
+-    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node="${GPU_NUMBERS}" \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" \
+     "${REPO_ROOT}/run.py" \
+     --exp_name "${EVAL_NAME}" \
+     --run-type eval \
+diff --git a/scripts/distill/eval_student_gt_full.sh b/scripts/distill/eval_student_gt_full.sh
+index f8e5ecc..34aa05c 100755
+--- a/scripts/distill/eval_student_gt_full.sh
++++ b/scripts/distill/eval_student_gt_full.sh
+@@ -15,6 +15,8 @@ RUN_NAME="${3:-dagger_distill_gt_teacher}"
+ case "${MODE}" in p0|gt_full|gt_seen) ;; *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
+ 
+ cd "${REPO_ROOT}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++export LD_PRELOAD="${LD_PRELOAD:-/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0}"
+ # The distill runs were initialised from the GT-line pretraining checkpoint;
+ # keep pretrained_path consistent (it only seeds shapes before ckpt load).
+ env PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}" \
+diff --git a/scripts/distill/eval_teacher_ablation.sh b/scripts/distill/eval_teacher_ablation.sh
+index a349324..656d915 100755
+--- a/scripts/distill/eval_teacher_ablation.sh
++++ b/scripts/distill/eval_teacher_ablation.sh
+@@ -13,6 +13,11 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# evals collide; pick a free port instead (override with MASTER_PORT).
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ TEACHER_PRETRAINED="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
+ TEACHER_DAGGER="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
+ TEACHER_NAMESPACE="gt.online121c369.r1p5.direction5.v1"
+@@ -28,7 +33,7 @@ mkdir -p "$(dirname "${LOG_PATH}")"
+ cd "${REPO_ROOT}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+     __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
+-    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node=1 \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node=1 \
+     "${REPO_ROOT}/run.py" \
+     --exp_name "${RUN_NAME}" \
+     --run-type eval \
+diff --git a/scripts/distill/eval_teacher_on_llm_maps.sh b/scripts/distill/eval_teacher_on_llm_maps.sh
+index d7a7571..a17892b 100755
+--- a/scripts/distill/eval_teacher_on_llm_maps.sh
++++ b/scripts/distill/eval_teacher_on_llm_maps.sh
+@@ -12,6 +12,11 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# evals collide; pick a free port instead (override with MASTER_PORT).
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ TEACHER_PRETRAINED="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
+ TEACHER_DAGGER="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
+ LLM_CACHE_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+@@ -41,7 +46,7 @@ mkdir -p "$(dirname "${LOG_PATH}")"
+ cd "${REPO_ROOT}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+     __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
+-    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node=1 \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node=1 \
+     "${REPO_ROOT}/run.py" \
+     --exp_name "${RUN_NAME}" \
+     --run-type eval \
+diff --git a/scripts/refiner/eval_s4.sh b/scripts/refiner/eval_s4.sh
+index 80403d1..e7772c3 100755
+--- a/scripts/refiner/eval_s4.sh
++++ b/scripts/refiner/eval_s4.sh
+@@ -4,6 +4,11 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# evals collide; pick a free port instead (override with MASTER_PORT).
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+ REPORT_PATH="${REPO_ROOT}/reports/refiner/S4_progress.md"
+ 
+@@ -36,7 +41,7 @@ if [[ -n "${REFINER_CKPT}" && "${MAP_SOURCE}" == "refiner" ]]; then
+ fi
+ 
+ COMMAND=(
+-    "${TORCHRUN}" --standalone --nproc_per_node=1 "${REPO_ROOT}/run.py"
++    "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node=1 "${REPO_ROOT}/run.py"
+     --exp_name "${EVAL_NAME}"
+     --run-type eval
+     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+-- 
+2.43.0
+
