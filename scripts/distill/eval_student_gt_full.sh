@@ -15,6 +15,8 @@ RUN_NAME="${3:-dagger_distill_gt_teacher}"
 case "${MODE}" in p0|gt_full|gt_seen) ;; *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
 
 cd "${REPO_ROOT}"
+export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+export LD_PRELOAD="${LD_PRELOAD:-/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0}"
 # The distill runs were initialised from the GT-line pretraining checkpoint;
 # keep pretrained_path consistent (it only seeds shapes before ckpt load).
 env PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}" \

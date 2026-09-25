@@ -13,6 +13,11 @@ set -euo pipefail
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
+# evals collide; pick a free port instead (override with MASTER_PORT).
+free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
+RDZV_PORT="${MASTER_PORT:-$(free_port)}"
+export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
 
 DRY_RUN_ARGS=()
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -54,7 +59,7 @@ if [[ ${#DRY_RUN_ARGS[@]} -eq 0 && ! -f "${CKPT_PATH}" ]]; then
 fi
 
 COMMAND=(
-    "${TORCHRUN}" --standalone --nproc_per_node="${GPU_NUMBERS}" "${REPO_ROOT}/run.py"
+    "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" "${REPO_ROOT}/run.py"
     --exp_name "${EVAL_NAME}"
     --run-type eval
     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
