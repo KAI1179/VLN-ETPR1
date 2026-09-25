@@ -38,6 +38,9 @@ def build(
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # the runner resolves an experiment NAME across exp_workspace/*: a second std_*_bareES.yaml would make it ambiguous
+    for f in (dst / "configs").glob("std_*.yaml"):
+        f.unlink()
     shutil.copy(ARM_SRC / "oracle_inject.py", dst / "mcp" / "oracle_inject.py")
     shutil.copy(HERE / "oracles.py", dst / "mcp" / "oracles.py")
 
@@ -101,7 +104,7 @@ def build(
 
     # ── config: the oracle seat ──
     cp = dst / "configs" / "std_r2r_es_oracle.yaml"
-    c = (dst / "configs" / "std_r2r_es_bareES.yaml").read_text()
+    c = (src / "configs" / "std_r2r_es_bareES.yaml").read_text()
     head_end = c.index("defaults:")
     c = (
         "# std_r2r_es_oracle — bareES + ground-truth oracle hints in the tool results (task book #3, T3.5). Seat: oracle=<none | progress |\n"

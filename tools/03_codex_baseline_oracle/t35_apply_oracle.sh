@@ -72,7 +72,8 @@ def results(p):
     for ln in (p / "episode_0.jsonl").read_text().splitlines():
         r = json.loads(ln)
         if r.get("kind") == "tool_result":
-            out.append(json.dumps(r.get("content") or r.get("text") or r, sort_keys=True))
+            r = {k: v for k, v in r.items() if k != "t"}  # wall-clock stamp differs run to run
+            out.append(json.dumps(r, sort_keys=True))
     return out
 ra, rb = results(a), results(b)
 print("metrics+tool_calls identical:", same_metrics)

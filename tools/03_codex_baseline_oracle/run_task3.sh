@@ -170,7 +170,7 @@ step_T33() {
   date '+end %F %T' >> "$logf"
   run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*"); [ -n "$run" ] && archive_run "$run" t33_baseline
   [ $rc1 -eq 0 ] && [ -n "$run" ] || st=FAIL
-  if [ -f "$MIP_DIR/exp_workspace/bareES/configs/std_r2r_es_oracle.yaml" ]; then
+  if [ -f "$MIP_DIR/exp_workspace/oracleES/configs/std_r2r_es_oracle.yaml" ]; then
     echo "cmd2: python runner.py std_r2r_es_oracle harness=codex model=$CODEX_MODEL oracle=all run.episodes=$T33_SMOKE_EPISODES" >> "$logf"
     BAREES_ORACLE=all mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc2=$?
     run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
@@ -184,6 +184,15 @@ step_T33() {
 }
 
 # ── T3.6 / T3.7 ─────────────────────────────────────────────────────────────
+step_T33S() { # smoke only (3 episodes, oracle=all), after T3.5 has been applied
+  local logf=$LOGDIR/T3.3s.log md=$OUT3/md/T3.3s.md rc run
+  [ "$RUN_PAID" = 1 ] || { { echo "## T3.3s 冒烟"; echo; echo "SKIP：需要 RUN_PAID=1。"; } > "$md"; finish T3.3s SKIP "$logf"; return; }
+  : > "$logf"
+  BAREES_ORACLE=all mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=all run.episodes="$T33_SMOKE_EPISODES"; rc=$?
+  run=$(latest_run "codex/*_r2r_es_codex_${CODEX_MODEL}_*oracle-all*"); [ -n "$run" ] && archive_run "$run" t33_smoke_all
+  (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3s "$OUT3/runs/t33_smoke_all" "$logf" "$rc" "$OUT3/runs/t33_smoke_all" "$rc") > "$md" 2>> "$logf"
+  [ $rc -eq 0 ] && finish T3.3s PASS "$logf" || finish T3.3s FAIL "$logf"
+}
 step_T36()  { run_py T3.6 t36_commit_oracle.py; }
 step_T37a() { run_py T3.7a t37a_rule_roc.py "$OUT3/traj"; }
 step_T37b() { run_py T3.7b t37b_synthetic_branch.py; }
@@ -204,6 +213,7 @@ want T3.5  && step_T35
 want T3.1  && step_T31
 want T3.2  && step_T32
 want T3.3  && step_T33
+want T3.3s && step_T33S
 want T3.6  && step_T36
 want T3.7a && step_T37a
 want T3.7b && step_T37b
