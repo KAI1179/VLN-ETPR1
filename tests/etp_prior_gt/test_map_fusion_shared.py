@@ -60,3 +60,16 @@ def test_try5_fusion_does_not_update_map_tokens():
     )
 
     assert updated_map_tokens is None
+
+
+def test_try5_fusion_runs_in_fp32_under_autocast():
+    fusion = GraphMapCrossAttention(hidden_size=16, num_heads=4, dropout=0.0)
+    gmap_embeds = torch.randn(1, 3, 16, dtype=torch.bfloat16)
+    map_tokens = torch.randn(1, 5, 16, dtype=torch.bfloat16)
+    map_token_masks = torch.ones(1, 5, dtype=torch.bool)
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        fused, _ = fusion(gmap_embeds, None, map_tokens, map_token_masks)
+
+    assert fused.dtype == torch.float32
+    assert torch.isfinite(fused).all()

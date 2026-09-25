@@ -4,6 +4,16 @@ import torch
 import torch.nn as nn
 
 
+def _fp32(tensor: torch.Tensor):
+    """Disable autocast on the tensor's device.
+
+    Pretraining ran the map fusion in fp32; DAgger rollouts run under fp16
+    autocast.  Keeping the trained fusion in fp32 stops its activations from
+    overflowing the fp16 range (the first symptom is NaN action probabilities).
+    """
+    return torch.autocast(device_type=tensor.device.type, enabled=False)
+
+
 class GraphMapCrossAttention(nn.Module):
     """Try5 one-way map-token fusion: graph nodes attend to fixed map tokens."""
 
@@ -31,14 +41,17 @@ class GraphMapCrossAttention(nn.Module):
         if map_tokens is None:
             return gmap_embeds, None
 
-        map_context, _ = self.attention(
-            gmap_embeds,
-            map_tokens,
-            map_tokens,
-            key_padding_mask=self._map_key_padding_mask(map_token_masks),
-            need_weights=False,
-        )
-        return gmap_embeds + self.residual_projection(map_context), None
+        with _fp32(gmap_embeds):
+            gmap_embeds = gmap_embeds.float()
+            map_tokens = map_tokens.float()
+            map_context, _ = self.attention(
+                gmap_embeds,
+                map_tokens,
+                map_tokens,
+                key_padding_mask=self._map_key_padding_mask(map_token_masks),
+                need_weights=False,
+            )
+            return gmap_embeds + self.residual_projection(map_context), None
 
 
 class BidirectionalMapTokenFusion(nn.Module):
@@ -90,28 +103,33 @@ class BidirectionalMapTokenFusion(nn.Module):
         if map_tokens is None:
             return gmap_embeds, None
 
-        graph_key_padding_mask = self._graph_key_padding_mask(gmap_embeds, gmap_masks)
-        map_context, _ = self.map_from_graph_attention(
-            map_tokens,
-            gmap_embeds,
-            gmap_embeds,
-            key_padding_mask=graph_key_padding_mask,
-            need_weights=False,
-        )
-        updated_map_tokens = map_tokens + self.map_residual_projection(map_context)
+        with _fp32(gmap_embeds):
+            gmap_embeds = gmap_embeds.float()
+            map_tokens = map_tokens.float()
+            graph_key_padding_mask = self._graph_key_padding_mask(
+                gmap_embeds, gmap_masks
+            )
+            map_context, _ = self.map_from_graph_attention(
+                map_tokens,
+                gmap_embeds,
+                gmap_embeds,
+                key_padding_mask=graph_key_padding_mask,
+                need_weights=False,
+            )
+            updated_map_tokens = map_tokens + self.map_residual_projection(map_context)
 
-        map_key_padding_mask = self._map_key_padding_mask(map_token_masks)
-        graph_context, _ = self.graph_from_map_attention(
-            gmap_embeds,
-            updated_map_tokens,
-            updated_map_tokens,
-            key_padding_mask=map_key_padding_mask,
-            need_weights=False,
-        )
-        updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(
-            graph_context
-        )
-        return updated_gmap_embeds, updated_map_tokens
+            map_key_padding_mask = self._map_key_padding_mask(map_token_masks)
+            graph_context, _ = self.graph_from_map_attention(
+                gmap_embeds,
+                updated_map_tokens,
+                updated_map_tokens,
+                key_padding_mask=map_key_padding_mask,
+                need_weights=False,
+            )
+            updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(
+                graph_context
+            )
+            return updated_gmap_embeds, updated_map_tokens
 
 
 def build_map_token_fusion(

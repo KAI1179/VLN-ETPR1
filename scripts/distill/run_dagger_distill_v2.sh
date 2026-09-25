@@ -94,8 +94,13 @@ COMMAND=(
 
 mkdir -p "${RUN_DIR}"
 cd "${REPO_ROOT}"
+
+# Name the first module that emits NaN/+inf during the first N policy forwards
+# (the hooks remove themselves afterwards; 0 disables them).
+ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
 echo "Variant: ${VARIANT} (elevation_axis=${ELEVATION_AXIS}, load_pretrained_map_modules=${LOAD_MAP}, iters=${ITERS:-12000})"
 echo "Log: ${LOG_PATH}"
 env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+    ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS}" \
     PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
 if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then echo "Dry run complete"; fi

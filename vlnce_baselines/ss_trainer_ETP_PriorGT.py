@@ -49,6 +49,10 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     cached_cognitive_map_to_tensors,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from vlnce_baselines.models.etp_prior_gt.nan_guard import (
+    NonFiniteOutputGuard,
+    assert_finite_parameters,
+)
 from prior.online_evidence import OnlineEvidence
 from vlnce_baselines.models.refiner import CognitiveMapRefiner
 
@@ -530,6 +534,27 @@ class RLTrainer(BaseVLNCETrainer):
             f"Agent parameters: {params / 1e6:.2f} MB. Trainable: {params_t / 1e6:.2f} MB."
         )
         logger.info("Finished setting up policy.")
+
+        # Fail fast on non-finite weights; optionally name the first module that
+        # emits NaN/+inf during the first ETP_NAN_DEBUG_STEPS policy forwards.
+        assert_finite_parameters(self.policy, "student policy")
+        if self.gt_teacher is not None:
+            assert_finite_parameters(self.gt_teacher, "gt teacher")
+        nan_debug_steps = int(os.environ.get("ETP_NAN_DEBUG_STEPS", "0"))
+        if nan_debug_steps > 0:
+            student_net = (
+                self.policy.net.module
+                if isinstance(self.policy.net, DDP)
+                else self.policy.net
+            )
+            self._nan_guard = NonFiniteOutputGuard(
+                student_net, "student policy", nan_debug_steps
+            )
+            if self.local_rank < 1:
+                logger.info(
+                    "[nan-guard] watching student policy outputs for the first "
+                    f"{nan_debug_steps} forwards"
+                )
 
         return start_iter
 

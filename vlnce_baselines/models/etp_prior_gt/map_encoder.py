@@ -232,7 +232,26 @@ class EmbeddingGridMapEncoder(nn.Module):
             start_direction_vectors,
             start_positions,
         )
+        # Pretraining ran the map encoder in fp32; DAgger rollouts run under
+        # fp16 autocast.  The spatial tokenizer sums 512x10x10 products per
+        # token, so the trained encoder stays in fp32 to avoid fp16 overflow.
+        with torch.autocast(device_type=cognitive_crop.device.type, enabled=False):
+            return self._encode(
+                cognitive_crop.float(),
+                trajectory_keypoints.float(),
+                start_direction_vectors.float(),
+                start_positions.float(),
+                batch_size,
+            )
 
+    def _encode(
+        self,
+        cognitive_crop: torch.Tensor,
+        trajectory_keypoints: torch.Tensor,
+        start_direction_vectors: torch.Tensor,
+        start_positions: torch.Tensor,
+        batch_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # cognitive_crop: (B, 37, 100, 100) -> embedding_map: (B, 512, 100, 100).
         embedding_map = self.category_projection(cognitive_crop)
         spatial_tokens = self.spatial_tokenizer(

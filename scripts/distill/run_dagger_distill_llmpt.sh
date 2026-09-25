@@ -49,6 +49,10 @@ elif [[ $# -ne 0 ]]; then
 fi
 
 cd "${REPO_ROOT}"
+
+# Name the first module that emits NaN/+inf during the first N policy forwards
+# (the hooks remove themselves afterwards; 0 disables them).
+ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
 mkdir -p "${RUN_DIR}"
 
 # Resume decision.
@@ -124,10 +128,12 @@ COMMAND=(
     echo "elevation_axis=${ELEVATION_AXIS:-y}"
     echo "iters=${ITERS:-20000}"
     echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"
+    echo "nan_debug_steps=${ETP_NAN_DEBUG_STEPS}"
 } >> "${RUN_DIR}/launch_info.txt"
 
 echo "Log: ${LOG_PATH}"
 env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+    ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS}" \
     PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee -a "${LOG_PATH}"
 
 if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
