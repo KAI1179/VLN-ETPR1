@@ -200,7 +200,7 @@ step_T33R() { # re-run the baseline episodes that died on a provider-side error 
   [ "$RUN_PAID" = 1 ] || { { echo "## T3.3r 重跑"; echo; echo "SKIP：需要 RUN_PAID=1。待重跑索引：$idx"; } > "$md"; finish T3.3r SKIP "$logf"; return; }
   name=$(sed -n 's/^run_dir .*\/\([^/]*\)$/\1/p' "$OUT3/runs/t33_baseline/RUN_META.txt")
   : > "$logf"; echo "re-run indices $idx into run $name (run.resume=true keeps the other records)" >> "$logf"
-  BAREES_ORACLE=none mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=none run.name="$name" run.resume=true run.episodes="$idx"; rc=$?
+  BAREES_ORACLE=none mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=none run.name="$name" run.resume=true "run.episodes='$idx'"; rc=$?  # quoted: a bare comma list is a Hydra sweep
   run=$MIP_DIR/outputs/codex/$name; [ -d "$run" ] && archive_run "$run" t33_baseline
   (cd "$TOOL_DIR/py" && "$PY" t33_export_traj.py "$OUT3/runs/t33_baseline" "$OUT3/traj") >> "$logf" 2>&1
   (cd "$TOOL_DIR/py" && "$PY" t3x_run_report.py T3.3r "$OUT3/runs/t33_baseline" "$logf" "$rc") > "$md" 2>> "$logf"
