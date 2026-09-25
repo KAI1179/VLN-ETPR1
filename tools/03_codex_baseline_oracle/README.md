@@ -160,3 +160,5 @@ Extra steps added after the first server run: `STEPS=T3.3s` (3-episode `oracle=a
 "Selected model is at capacity" — MIP scores those 0 instead of excluding them; `py/t33_failed_indices.py` lists them).
 
 Variant runs: `CODEX_MODEL=<models.yaml row> CODEX_EFFORT=<low|medium|high|xhigh> ARCHIVE_TAG=_<tag>` (e.g. `CODEX_MODEL=gpt-5.6 CODEX_EFFORT=low ARCHIVE_TAG=_gpt56low STEPS=T3.3 T33_EPISODES=0-9 T33_SMOKE=0 RUN_PAID=1`); the tag keeps the archives (`runs/t33_baseline<tag>`, `traj<tag>`) apart from the gpt-5.5 baseline. `effort=` is only passed when CODEX_EFFORT is not `default`.
+
+`STEPS=T3.8` (image-reach probe): `py/t38_image_reach.py` runs `codex exec --json` with MIP's exact overrides against a one-tool MCP server (`py/t38_probe_bridge.py`) whose observe() returns a synthetic image with a 3-digit code; PASS when the code is read in >= 80% of `T38_TRIALS` (5). `T38_CODEX_BIN="npx @openai/codex@0.152.0"` is not supported directly (single binary expected); install that version alongside and point T38_CODEX_BIN at it.

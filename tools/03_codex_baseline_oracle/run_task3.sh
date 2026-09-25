@@ -211,6 +211,7 @@ step_T33R() { # re-run the baseline episodes that died on a provider-side error 
   sed -i "1s/.*/## T3.3r 供应商错误重跑（索引 $idx）后的 20 集基线/" "$md"
   [ $rc -eq 0 ] && finish T3.3r PASS "$logf" || finish T3.3r FAIL "$logf"
 }
+step_T38()  { run_py T3.8 t38_image_reach.py; }   # codex exec probes: a few short calls of quota
 step_T36()  { run_py T3.6 t36_commit_oracle.py; }
 step_T37a() { run_py T3.7a t37a_rule_roc.py "$OUT3/traj$ARCHIVE_TAG"; }
 step_T37b() { run_py T3.7b t37b_synthetic_branch.py; }
@@ -237,4 +238,5 @@ want T3.6  && step_T36
 want T3.7a && step_T37a
 want T3.7b && step_T37b
 want T3.7c && step_T37c
+want T3.8  && step_T38
 log "done. report: $OUT3/task3_report.md — then: bash $TOOL_DIR/collect.sh && git push"
