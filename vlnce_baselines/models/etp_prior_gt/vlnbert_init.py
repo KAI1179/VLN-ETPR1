@@ -103,7 +103,12 @@ def _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path):
             "fusion starts from random attention + zero residual projection"
         )
         return
-    fusion_state = visual_model.graph_map_attention.state_dict()
+    # remapped_fusion keys are model-level ("graph_map_attention.attention...").
+    fusion_state = {
+        key: value
+        for key, value in visual_model.state_dict().items()
+        if key.startswith("graph_map_attention.")
+    }
     mismatched = [
         key
         for key, value in remapped_fusion.items()
