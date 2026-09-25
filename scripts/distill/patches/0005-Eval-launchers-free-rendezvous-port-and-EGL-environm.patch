@@ -1,4 +1,4 @@
-From aa4695e9ead039821a2c11e5b5a69a59453b3b23 Mon Sep 17 00:00:00 2001
+From 56e29442461437479c42759f1a5f94f0e057422f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 01:32:51 +0000
 Subject: [PATCH] Eval launchers: free rendezvous port and EGL environment
@@ -20,14 +20,14 @@ Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
  6 files changed, 32 insertions(+), 5 deletions(-)
 
 diff --git a/scripts/distill/eval_dagger_distill.sh b/scripts/distill/eval_dagger_distill.sh
-index f0adad2..c740457 100755
+index f0adad2..deeb882 100755
 --- a/scripts/distill/eval_dagger_distill.sh
 +++ b/scripts/distill/eval_dagger_distill.sh
 @@ -13,6 +13,11 @@ set -euo pipefail
  REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
  PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
  TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-+# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 +# evals collide; pick a free port instead (override with MASTER_PORT).
 +free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
 +RDZV_PORT="${MASTER_PORT:-$(free_port)}"
@@ -45,14 +45,14 @@ index f0adad2..c740457 100755
      --run-type eval
      --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
 diff --git a/scripts/distill/eval_run.sh b/scripts/distill/eval_run.sh
-index 90bd54f..a30ec22 100755
+index 90bd54f..95cefdb 100755
 --- a/scripts/distill/eval_run.sh
 +++ b/scripts/distill/eval_run.sh
 @@ -11,6 +11,11 @@ set -euo pipefail
  REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
  PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
  TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-+# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 +# evals collide; pick a free port instead (override with MASTER_PORT).
 +free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
 +RDZV_PORT="${MASTER_PORT:-$(free_port)}"
@@ -83,14 +83,14 @@ index f8e5ecc..34aa05c 100755
  # keep pretrained_path consistent (it only seeds shapes before ckpt load).
  env PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}" \
 diff --git a/scripts/distill/eval_teacher_ablation.sh b/scripts/distill/eval_teacher_ablation.sh
-index a349324..656d915 100755
+index a349324..9ad9ca0 100755
 --- a/scripts/distill/eval_teacher_ablation.sh
 +++ b/scripts/distill/eval_teacher_ablation.sh
 @@ -13,6 +13,11 @@ set -euo pipefail
  REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
  PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
  TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-+# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 +# evals collide; pick a free port instead (override with MASTER_PORT).
 +free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
 +RDZV_PORT="${MASTER_PORT:-$(free_port)}"
@@ -108,14 +108,14 @@ index a349324..656d915 100755
      --exp_name "${RUN_NAME}" \
      --run-type eval \
 diff --git a/scripts/distill/eval_teacher_on_llm_maps.sh b/scripts/distill/eval_teacher_on_llm_maps.sh
-index d7a7571..a17892b 100755
+index d7a7571..5fac71c 100755
 --- a/scripts/distill/eval_teacher_on_llm_maps.sh
 +++ b/scripts/distill/eval_teacher_on_llm_maps.sh
 @@ -12,6 +12,11 @@ set -euo pipefail
  REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
  PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
  TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-+# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 +# evals collide; pick a free port instead (override with MASTER_PORT).
 +free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
 +RDZV_PORT="${MASTER_PORT:-$(free_port)}"
@@ -133,14 +133,14 @@ index d7a7571..a17892b 100755
      --exp_name "${RUN_NAME}" \
      --run-type eval \
 diff --git a/scripts/refiner/eval_s4.sh b/scripts/refiner/eval_s4.sh
-index 80403d1..e7772c3 100755
+index 80403d1..df66152 100755
 --- a/scripts/refiner/eval_s4.sh
 +++ b/scripts/refiner/eval_s4.sh
 @@ -4,6 +4,11 @@ set -euo pipefail
  REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
  PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
  TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-+# torchrun --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" binds a fixed rendezvous port on torch 2.1, so concurrent
++# torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 +# evals collide; pick a free port instead (override with MASTER_PORT).
 +free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
 +RDZV_PORT="${MASTER_PORT:-$(free_port)}"
