@@ -13,7 +13,15 @@ set -euo pipefail
 
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
 TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
-CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+# Default to every GPU nvidia-smi can see instead of assuming eight cards.
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    _n="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "${_n}" -gt 0 ]]; then
+        CUDA_VISIBLE_DEVICES="$(seq -s, 0 $((_n - 1)))"
+    else
+        CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+    fi
+fi
 # GPU layout is derived from CUDA_VISIBLE_DEVICES: N visible cards -> N processes
 # with logical ids 0..N-1. NUM_ENVS is the per-process environment count.
 IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
