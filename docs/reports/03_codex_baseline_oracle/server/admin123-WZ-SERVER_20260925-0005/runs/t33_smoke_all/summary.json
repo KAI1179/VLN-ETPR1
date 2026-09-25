@@ -1,0 +1,349 @@
+{
+  "run_name": "test_r2r_es_codex_gpt-5.5_default_oracle-all",
+  "cell": "test_r2r_es_codex_gpt-5.5_default_oracle-all",
+  "harness": "codex",
+  "harness_inherent": {
+    "auth": "ChatGPT subscription (codex login)",
+    "thinking": "reasoning tokens counted, content unreadable",
+    "turn_cap": "broadcast only (no codex-side hard cap)",
+    "vision_context": "codex-managed (unaudited)",
+    "context_control": false,
+    "context_label": "codex-managed-unaudited",
+    "tool_surface": "codex code mode: MCP tools deferred, called from the JS exec tool",
+    "codex_version": "codex-cli 0.156.1"
+  },
+  "config": {
+    "dataset": "vlnce-r2r",
+    "split": "rand100",
+    "episodes": "0-99",
+    "max_turns": 200,
+    "rgb_resolution": 512,
+    "step_budget": 500,
+    "episode_timeout": 2400,
+    "require": [
+      "data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz"
+    ],
+    "env_fields": [
+      "rgb_resolution"
+    ],
+    "auto_observe": false,
+    "wp_server": null,
+    "model": "gpt-5.5",
+    "effort": "default",
+    "bare": true,
+    "extra": {}
+  },
+  "servers": [
+    "http://127.0.0.1:9200"
+  ],
+  "run_stats": {
+    "vram_peak_mib": 7245
+  },
+  "aggregate": {
+    "episode_count": 3,
+    "distance_to_goal": 3.9246,
+    "success": 0.3333,
+    "spl": 0.3333,
+    "ndtw": 0.2714,
+    "path_length": 26.3169,
+    "oracle_success": 1.0,
+    "steps_taken": 243.0,
+    "step_count": 243.0,
+    "env_steps": 243.0,
+    "stop_rate": 1.0
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "episode_id": "7",
+      "scene_id": "data/scene_datasets/mp3d/x8F5xyUWy9e/x8F5xyUWy9e.glb",
+      "instruction": "Go straight past the pool. Walk between the bar and chairs.  Stop when you get to the corner of the bar.  That's where you will wait.",
+      "metrics": {
+        "distance_to_goal": 2.334825038909912,
+        "success": 1.0,
+        "spl": 1.0,
+        "ndtw": 0.6539896071028272,
+        "path_length": 10.362135231494904,
+        "oracle_success": 1.0,
+        "steps_taken": 93.0,
+        "step_count": 93
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 12,
+          "step": 12
+        },
+        "env_steps": 93,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 515510,
+          "cached_input_tokens": 463360,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1697,
+          "reasoning_output_tokens": 1065
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d607-49c7-72b3-8e25-49d789b9f4bd",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.54334,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 52150,
+            "cache_read": 463360,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 1697
+          },
+          "billing": {
+            "gpt-5.5": {
+              "input": 52150,
+              "cache_read": 463360,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 1697
+            }
+          },
+          "price": {
+            "gpt-5.5": {
+              "key": "gpt-5.5",
+              "input": 5e-06,
+              "cache_read": 5e-07,
+              "cache_write_5m": 0.0,
+              "cache_write_1h": 0.0,
+              "cache_write_1h_rule": "none",
+              "output": 3e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 122.8
+    },
+    {
+      "index": 1,
+      "episode_id": "11",
+      "scene_id": "data/scene_datasets/mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk across the floor and wait the archway.",
+      "metrics": {
+        "distance_to_goal": 5.1418890953063965,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.15008824696726916,
+        "path_length": 18.583781510591507,
+        "oracle_success": 1.0,
+        "steps_taken": 137.0,
+        "step_count": 137
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 16,
+          "step": 17
+        },
+        "env_steps": 137,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 773987,
+          "cached_input_tokens": 716288,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3296,
+          "reasoning_output_tokens": 2409
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d609-5710-7493-beb1-a65b10ef8c5d",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 0.745519,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 57699,
+            "cache_read": 716288,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 3296
+          },
+          "billing": {
+            "gpt-5.5": {
+              "input": 57699,
+              "cache_read": 716288,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 3296
+            }
+          },
+          "price": {
+            "gpt-5.5": {
+              "key": "gpt-5.5",
+              "input": 5e-06,
+              "cache_read": 5e-07,
+              "cache_write_5m": 0.0,
+              "cache_write_1h": 0.0,
+              "cache_write_1h_rule": "none",
+              "output": 3e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 212.9
+    },
+    {
+      "index": 2,
+      "episode_id": "13",
+      "scene_id": "data/scene_datasets/mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk passed the dining table and continue towards the kitchen. Walk through the kitchen passed the counters and stove and stop near the sink.",
+      "metrics": {
+        "distance_to_goal": 4.297040939331055,
+        "success": 0.0,
+        "spl": 0.0,
+        "ndtw": 0.010169658677628353,
+        "path_length": 50.00478205550462,
+        "oracle_success": 1.0,
+        "steps_taken": 499.0,
+        "step_count": 499
+      },
+      "agent": {
+        "tool_calls": {
+          "observe": 47,
+          "step": 47
+        },
+        "env_steps": 499,
+        "end_reason": "stop_called",
+        "called_stop": true,
+        "num_turns": null,
+        "usage": {
+          "input_tokens": 3520979,
+          "cached_input_tokens": 3332480,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 6514,
+          "reasoning_output_tokens": 3874
+        },
+        "total_cost_usd": null,
+        "thread_id": "01a0d60c-a799-78a3-b834-652496862369",
+        "exit_code": 0,
+        "task_shape": "nav",
+        "cost": {
+          "usd": 2.804155,
+          "source": "priced",
+          "settled_usd": null,
+          "delta_pct": null,
+          "tokens": {
+            "input": 188499,
+            "cache_read": 3332480,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "output": 6514
+          },
+          "billing": {
+            "gpt-5.5": {
+              "input": 188499,
+              "cache_read": 3332480,
+              "cache_write_5m": 0,
+              "cache_write_1h": 0,
+              "output": 6514
+            }
+          },
+          "price": {
+            "gpt-5.5": {
+              "key": "gpt-5.5",
+              "input": 5e-06,
+              "cache_read": 5e-07,
+              "cache_write_5m": 0.0,
+              "cache_write_1h": 0.0,
+              "cache_write_1h_rule": "none",
+              "output": 3e-05
+            }
+          },
+          "api_calls": 0,
+          "by_tool": null,
+          "usd_per_turn": null
+        }
+      },
+      "wall_sec": 845.7
+    }
+  ],
+  "cost": {
+    "total": 4.093,
+    "mean": 1.3643,
+    "median": 0.7455,
+    "min": 0.5433,
+    "max": 2.8042,
+    "priced_episodes": 3,
+    "sources": {
+      "priced": 3
+    },
+    "tokens": {
+      "input": 298348,
+      "cache_read": 4512128,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "output": 11507
+    },
+    "price": {
+      "gpt-5.5": {
+        "key": "gpt-5.5",
+        "input": 5e-06,
+        "cache_read": 5e-07,
+        "cache_write_5m": 0.0,
+        "cache_write_1h": 0.0,
+        "cache_write_1h_rule": "none",
+        "output": 3e-05
+      }
+    },
+    "by_issuing_tool": {},
+    "budget_usd": null,
+    "stopped_by_budget": false
+  },
+  "provenance": {
+    "task": "r2r",
+    "env_key": "es",
+    "arm": "oracleES",
+    "env": "EmbodiedScoreEnv",
+    "shape": "es.nav",
+    "module": "core.shapes.es:EsNav",
+    "harness": "codex",
+    "callbacks": [
+      "CodeSnapshot",
+      "JsonlLogger",
+      "RawLogger",
+      "CostLogger",
+      "VramSampler",
+      "StatsReport"
+    ],
+    "code_sha256": "69589148e650a580e6f6cdfa92354193139beb7befdd76219124bc8e8bdbf755",
+    "git": {
+      "head": "aac454c0efc7200ae243899adeb4e92dad1d6268",
+      "branch": "e0-oracle",
+      "dirty": []
+    },
+    "snapshot": "code"
+  },
+  "writers": {
+    "code/": "CodeSnapshot",
+    "code_state.json": "CodeSnapshot",
+    "provenance.code_sha256": "CodeSnapshot",
+    "provenance.git": "CodeSnapshot",
+    "provenance.snapshot": "CodeSnapshot",
+    "episode_{i}.jsonl": "JsonlLogger",
+    "raw/episode_{i}.jsonl": "RawLogger",
+    "agent.cost": "CostLogger",
+    "cost": "CostLogger",
+    "run_stats.vram_peak_mib": "VramSampler",
+    "stats.json": "StatsReport",
+    "stats.html": "StatsReport"
+  }
+}

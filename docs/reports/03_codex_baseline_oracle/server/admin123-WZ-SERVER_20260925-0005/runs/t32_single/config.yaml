@@ -1,0 +1,173 @@
+harness:
+  _target_: core.harnesses.codex_cli.CodexCliAdapter
+  root: codex
+  output_dir: codex
+  effort: medium
+  model_reasoning_summary: detailed
+  tools_approval_mode: approve
+  project_doc_max_bytes: 0
+  sandbox: read-only
+  probe_reasoning_effort: low
+  probe_timeout_s: 45
+  max_buffer_size: 33554432
+models:
+  fable-5:
+    cc:
+      id: claude-fable-5
+    mini:
+      id: claude-fable-5
+  opus-5:
+    cc:
+      id: claude-opus-5
+    mini:
+      id: claude-opus-5
+  opus-4.8:
+    cc:
+      id: claude-opus-4-8
+    mini:
+      id: claude-opus-4-8
+  sonnet-5:
+    cc:
+      id: claude-sonnet-5
+    mini:
+      id: claude-sonnet-5
+  gpt-5.5:
+    codex:
+      id: gpt-5.5
+    mini:
+      id: gpt-5.5
+  gpt-5.6:
+    codex:
+      id: gpt-5.6-sol
+      price: gpt-5.6
+    mini:
+      id: gpt-5.6
+  qwen3.5-4b:
+    mini:
+      id: ollama_chat/qwen3.5:4b-bf16-std
+  qwen3.5-9b:
+    mini:
+      id: ollama_chat/qwen3.5:9b-bf16-std
+  qwen3.5-plus:
+    mini:
+      id: openai/qwen3.5-plus
+      api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen3.6-plus:
+    mini:
+      id: openai/qwen3.6-plus
+      api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen3.7-plus:
+    mini:
+      id: openai/qwen3.7-plus
+      api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  gpt-6:
+    codex:
+      id: gpt-6-astra
+api:
+  api_gateway: null
+task_key: r2r
+env_key: es
+harness_key: codex
+model: gpt-5.5
+model_key: gpt-5.5
+effort: default
+prefix: std
+suffix: ''
+task:
+  family: nav
+  dataset: vlnce-r2r
+  split: rand100
+  episodes: 0-99
+  max_turns: 200
+  rgb_resolution: 512
+  step_budget: 500
+  episode_timeout: 2400
+  require:
+  - data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz
+env:
+  _target_: exp_workspace.bareES.mcp.env.EmbodiedScoreEnv
+  variant: standard
+  python: null
+  port: 9200
+  env_fields:
+  - rgb_resolution
+  body: {}
+  shapes:
+    express: core.shapes.es.EsExpress
+    goat: core.shapes.es.EsGoat
+    objnav: core.shapes.es.EsObjNav
+    eqa: core.shapes.es.EsEqa
+    nav: core.shapes.es.EsNav
+agent:
+  arm:
+    _target_: core.arm.Arm
+    dir: exp_workspace/bareES
+    word: bareES
+    prompts: prompts.py
+    bare: true
+    auto_observe: false
+    surface:
+      env_prefix: BAREES
+      env_map:
+        SERVER_URL: server_url
+        TASK: es_task
+        ACTIONS: es_actions
+        STEP_BUDGET: step_budget
+        TURN_BUDGET: turn_budget
+        BARE: bare
+        AUTO_OBSERVE: auto_observe
+        LIVE_DIR: live_dir
+  harness:
+    _target_: core.harnesses.codex_cli.CodexCliAdapter
+    root: codex
+    output_dir: codex
+    effort: medium
+    model_reasoning_summary: detailed
+    tools_approval_mode: approve
+    project_doc_max_bytes: 0
+    sandbox: read-only
+    probe_reasoning_effort: low
+    probe_timeout_s: 45
+    max_buffer_size: 33554432
+  model:
+    id: gpt-5.5
+  api:
+    api_gateway: null
+run:
+  name: test_r2r_es_codex_gpt-5.5_default_bareES
+  dir: /home/xukai/code/agentic-nav/MIP/outputs/codex/test_r2r_es_codex_gpt-5.5_default_bareES
+  episodes: 0
+  servers: null
+  wp_server: null
+  resume: false
+  dry_run: false
+  budget_usd: null
+  note: null
+  retry:
+    max_attempts: 6
+    base_backoff_s: 30.0
+    max_backoff_s: 300.0
+  server_timeout_s: 600
+  client_timeout_s: 600
+  callbacks:
+  - _target_: core.callbacks.snapshot.CodeSnapshot
+  - _target_: core.callbacks.jsonl.JsonlLogger
+  - _target_: core.callbacks.raw.RawLogger
+  - _target_: core.callbacks.cost.CostLogger
+  - _target_: core.callbacks.vram.VramSampler
+  - _target_: core.callbacks.stats.StatsReport
+run_cfg:
+  dataset: vlnce-r2r
+  split: rand100
+  episodes: 0-99
+  max_turns: 200
+  rgb_resolution: 512
+  step_budget: 500
+  episode_timeout: 2400
+  require:
+  - data/embodiedscore/datasets/vlnce/R2R_VLNCE_v1-3_preprocessed/rand100/rand100.json.gz
+  env_fields:
+  - rgb_resolution
+  auto_observe: false
+  wp_server: null
+  extra: {}
