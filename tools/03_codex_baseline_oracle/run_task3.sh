@@ -202,7 +202,7 @@ step_T33R() { # re-run the baseline episodes that died on a provider-side error 
   idx=$(cd "$TOOL_DIR/py" && "$PY" t33_failed_indices.py "$OUT3/runs/t33_baseline$ARCHIVE_TAG")
   [ -n "$idx" ] || { { echo "## T3.3r 重跑"; echo; echo "没有因供应商错误中止的 episode。"; } > "$md"; finish T3.3r SKIP "$logf"; return; }
   [ "$RUN_PAID" = 1 ] || { { echo "## T3.3r 重跑"; echo; echo "SKIP：需要 RUN_PAID=1。待重跑索引：$idx"; } > "$md"; finish T3.3r SKIP "$logf"; return; }
-  name=$(sed -n 's/^run_dir .*\/\([^/]*\)$/\1/p' "$OUT3/runs/t33_baseline/RUN_META.txt")
+  name=$(sed -n 's/^run_dir .*\/\([^/]*\)$/\1/p' "$OUT3/runs/t33_baseline$ARCHIVE_TAG/RUN_META.txt")
   : > "$logf"; echo "re-run indices $idx into run $name (run.resume=true keeps the other records)" >> "$logf"
   BAREES_ORACLE=none mip_run "$logf" std_r2r_es_oracle harness=codex model="$CODEX_MODEL" oracle=none run.name="$name" run.resume=true "run.episodes='$idx'"; rc=$?  # quoted: a bare comma list is a Hydra sweep
   run=$MIP_DIR/outputs/codex/$name; [ -d "$run" ] && archive_run "$run" t33_baseline$ARCHIVE_TAG
