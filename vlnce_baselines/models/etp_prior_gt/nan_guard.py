@@ -8,43 +8,55 @@ execution order) whose output contained NaN or +inf, so a NaN that surfaces as
 is allowed because attention and action masks legitimately use it.  The hooks
 remove themselves after ``max_calls`` root forwards, so a run that proves
 finite pays nothing afterwards.
+
+Outputs may mix devices (the waypoint predictor returns CPU and GPU tensors),
+so flags are only ever stacked per device: one sync per device per forward.
 """
 
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
+
+
+def _float_tensors(value: Any) -> List[torch.Tensor]:
+    if isinstance(value, torch.Tensor):
+        if value.is_floating_point() and value.numel() > 0:
+            return [value]
+        return []
+    if isinstance(value, (tuple, list)):
+        children = list(value)
+    elif isinstance(value, dict):
+        children = list(value.values())
+    else:
+        return []
+    return [tensor for child in children for tensor in _float_tensors(child)]
+
+
+def _resolve(flags: List[torch.Tensor]) -> List[bool]:
+    """Read 0-dim bool flags with one device sync per device."""
+    by_device: Dict[torch.device, List[int]] = {}
+    for index, flag in enumerate(flags):
+        by_device.setdefault(flag.device, []).append(index)
+    values = [False] * len(flags)
+    for indices in by_device.values():
+        stacked = torch.stack([flags[index] for index in indices]).tolist()
+        for index, value in zip(indices, stacked):
+            values[index] = bool(value)
+    return values
 
 
 def assert_finite_parameters(module: nn.Module, name: str) -> None:
     named = list(module.named_parameters())
     if not named:
         return
-    flags = torch.stack([torch.isfinite(param).all() for _, param in named])
-    bad = [pname for (pname, _), ok in zip(named, flags.tolist()) if not ok]
+    finite = _resolve([torch.isfinite(param).all() for _, param in named])
+    bad = [pname for (pname, _), ok in zip(named, finite) if not ok]
     if bad:
         raise RuntimeError(
             f"[nan-guard] {name}: {len(bad)} non-finite parameter tensors, "
             f"first: {bad[:5]}"
         )
-
-
-def _nan_or_posinf(value: Any) -> Optional[torch.Tensor]:
-    """0-dim bool tensor: any float tensor inside ``value`` holds NaN or +inf."""
-    if isinstance(value, torch.Tensor):
-        if not value.is_floating_point() or value.numel() == 0:
-            return None
-        return torch.isnan(value).any() | torch.isposinf(value).any()
-    if isinstance(value, (tuple, list)):
-        children = value
-    elif isinstance(value, dict):
-        children = list(value.values())
-    else:
-        return None
-    parts = [flag for flag in map(_nan_or_posinf, children) if flag is not None]
-    if not parts:
-        return None
-    return torch.stack(parts).any()
 
 
 class NonFiniteOutputGuard:
@@ -55,7 +67,8 @@ class NonFiniteOutputGuard:
             raise ValueError(f"max_calls must be positive, got {max_calls}")
         self._name = name
         self._remaining = max_calls
-        self._pending: List[Tuple[str, str, torch.Tensor]] = []
+        # (module label, class name, one flag per float tensor in the output)
+        self._pending: List[Tuple[str, str, List[torch.Tensor]]] = []
         self._handles: List[Any] = []
         for module_name, module in root.named_modules():
             label = module_name or "<root>"
@@ -69,19 +82,27 @@ class NonFiniteOutputGuard:
 
     def _recorder(self, label: str) -> Callable[[nn.Module, Any, Any], None]:
         def hook(module: nn.Module, inputs: Any, output: Any) -> None:
-            flag = _nan_or_posinf(output)
-            if flag is not None:
-                self._pending.append((label, type(module).__name__, flag))
+            flags = [
+                torch.isnan(tensor).any() | torch.isposinf(tensor).any()
+                for tensor in _float_tensors(output)
+            ]
+            if flags:
+                self._pending.append((label, type(module).__name__, flags))
 
         return hook
 
     def _check_root(self, module: nn.Module, inputs: Any, output: Any) -> None:
         pending, self._pending = self._pending, []
         if pending:
-            # One device sync per root forward instead of one per submodule.
-            flags = torch.stack([flag for _, _, flag in pending]).tolist()
-            for (label, class_name, _), bad in zip(pending, flags):
+            owners = [
+                entry_index
+                for entry_index, (_, _, flags) in enumerate(pending)
+                for _ in flags
+            ]
+            values = _resolve([flag for _, _, flags in pending for flag in flags])
+            for entry_index, bad in zip(owners, values):
                 if bad:
+                    label, class_name, _ = pending[entry_index]
                     self.remove()
                     raise RuntimeError(
                         f"[nan-guard] {self._name}: first non-finite (NaN/+inf) "

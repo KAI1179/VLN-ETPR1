@@ -72,3 +72,32 @@ def test_guard_removes_hooks_after_max_calls():
 def test_guard_rejects_non_positive_budget():
     with pytest.raises(ValueError):
         NonFiniteOutputGuard(_model(0.0), "toy", max_calls=0)
+
+
+class MixedOutput(nn.Module):
+    """Mimics waypoint mode: a dict mixing float, int and nested tensors."""
+
+    def __init__(self, poison_value: float):
+        super().__init__()
+        self.value = poison_value
+
+    def forward(self, x):
+        return {
+            "logits": x,
+            "ids": torch.zeros(2, dtype=torch.long),
+            "nested": (
+                x * 2.0,
+                [x.masked_fill(torch.ones_like(x, dtype=torch.bool), self.value)],
+            ),
+        }
+
+
+def test_guard_walks_nested_dict_outputs_with_non_float_entries():
+    model = nn.Sequential(nn.Linear(4, 4), MixedOutput(0.0))
+    guard = NonFiniteOutputGuard(model, "toy", max_calls=2)
+    model(torch.randn(2, 4))
+    assert guard.active
+
+    model[1].value = float("nan")
+    with pytest.raises(RuntimeError, match=r"came from 1 \(MixedOutput\)"):
+        model(torch.randn(2, 4))
