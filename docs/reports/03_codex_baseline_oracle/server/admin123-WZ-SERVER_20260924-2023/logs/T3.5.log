@@ -1,0 +1,7 @@
+MIP base commit 1da7f1d, branch e0-oracle
+[t35] oracleES built at /home/xukai/code/agentic-nav/MIP/exp_workspace/oracleES; config /home/xukai/code/agentic-nav/MIP/exp_workspace/oracleES/configs/std_r2r_es_oracle.yaml; table /home/xukai/code/agentic-nav/task3/oracle_by_index_rand100.json (100 episodes)
+e0-oracle commit 26dcc76; bareES untouched: yes
+unit test: [t35 unittest] 100/100 episodes pass (progress 0->n-1 monotone, no offtrack, no commit)
+/home/xukai/code/agentic-nav/ctl/tools/03_codex_baseline_oracle/t35_apply_oracle.sh: line 37: outputs/codex/fakeapi_r2r_es_codex_gpt-5.5_default_oracle-none/live_0/poses.jsonl: No such file or directory
+/home/xukai/code/agentic-nav/ctl/tools/03_codex_baseline_oracle/t35_apply_oracle.sh: line 37: outputs/codex/fakeapi_r2r_es_codex_gpt-5.5_default_oracle-all/live_0/poses.jsonl: No such file or directory
+none vs bareES: metrics+tool_calls identical: True tool_result records identical: False (3 vs 3) first diff at record 0  bare  : {"images": 1, "kind": "tool_result", "t": 0.74, "texts": [], "tool_use_id": "fake-0-0"}  oracle: {"images": 1, "kind": "tool_result", "t": 0.77, "texts": [], "tool_use_id": "fake-0-0"} 

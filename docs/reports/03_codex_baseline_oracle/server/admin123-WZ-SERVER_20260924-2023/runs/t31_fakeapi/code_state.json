@@ -1,0 +1,16 @@
+{
+  "launches": [
+    {
+      "ts": "2026-09-24 12:35:33",
+      "cell": "fakeapi_r2r_es_codex_gpt-5.5_default_oracle-all",
+      "episodes": "0",
+      "git": {
+        "head": "26dcc76cf073697085a7a156139f93d50501a5fd",
+        "branch": "e0-oracle",
+        "dirty": []
+      },
+      "code_sha256": "099dedb8c50029c20e81ebef32337bfa5d4ee84e1ae5e73b70d55561206740d7",
+      "snapshot": "code"
+    }
+  ]
+}

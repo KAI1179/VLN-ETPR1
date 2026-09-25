@@ -1,0 +1,2 @@
+cmd: python runner.py std_r2r_es_bareES harness=codex model=gpt-5.5 run.episodes=0 (GPU 0)
+[std] 'std_r2r_es_bareES': 2 experiment file(s) under /home/xukai/code/agentic-nav/MIP/exp_workspace — pass a path

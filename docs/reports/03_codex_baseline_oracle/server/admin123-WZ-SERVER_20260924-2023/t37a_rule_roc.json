@@ -1,0 +1,745 @@
+{
+ "n_traj": 20,
+ "configs": {
+  "v0": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -12,
+      "p90": 66.4
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -17,
+      "p90": -3.0
+     }
+    }
+   }
+  },
+  "R1=P99": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -12,
+      "p90": 66.4
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -17,
+      "p90": -3.0
+     }
+    }
+   }
+  },
+  "R6=(0.5,5)": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -34,
+      "p90": 57.4
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -34,
+      "p90": -3.0
+     }
+    }
+   }
+  },
+  "R6=(0.5,10)": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.6428571428571429,
+     "fpr": 1.0,
+     "n_tp": 9,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 46,
+      "p90": 119.8
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.6428571428571429,
+     "fpr": 1.0,
+     "n_tp": 9,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -17,
+      "p90": 0.0
+     }
+    }
+   }
+  },
+  "R6=(1.0,5)": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.7857142857142857,
+     "fpr": 1.0,
+     "n_tp": 11,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -35,
+      "p90": 30.8
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.7857142857142857,
+     "fpr": 1.0,
+     "n_tp": 11,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -35,
+      "p90": -3.0
+     }
+    }
+   }
+  },
+  "R6=(1.0,10)": {
+   "n": 20,
+   "n_fail": 14,
+   "n_success": 6,
+   "rules": {
+    "R1": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 60,
+      "p90": 123.4
+     }
+    },
+    "R5": {
+     "tpr": 0.5,
+     "fpr": 0.5,
+     "n_tp": 7,
+     "n_fp": 3,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 403,
+      "p90": 462.2
+     }
+    },
+    "R6": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -12,
+      "p90": 66.4
+     }
+    },
+    "offtrack": {
+     "tpr": 0.5,
+     "fpr": 0.16666666666666666,
+     "n_tp": 7,
+     "n_fp": 1,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": 0,
+      "p90": 0.0
+     }
+    },
+    "commit": {
+     "tpr": 0.42857142857142855,
+     "fpr": 0.3333333333333333,
+     "n_tp": 6,
+     "n_fp": 2,
+     "delay_vs_first_offroute_steps": {
+      "n": 5,
+      "p50": -18,
+      "p90": -9.8
+     }
+    },
+    "any": {
+     "tpr": 0.7142857142857143,
+     "fpr": 1.0,
+     "n_tp": 10,
+     "n_fp": 6,
+     "delay_vs_first_offroute_steps": {
+      "n": 7,
+      "p50": -17,
+      "p90": -3.0
+     }
+    }
+   }
+  }
+ },
+ "episodes": [
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": null,
+    "offtrack": null,
+    "commit": null,
+    "any": null
+   },
+   "first_off": null,
+   "n_steps": 17,
+   "path_m": 3.75,
+   "episode_id": "11",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 179,
+    "R5": 499,
+    "R6": 62,
+    "offtrack": 119,
+    "commit": 62,
+    "any": 62
+   },
+   "first_off": 119,
+   "n_steps": 500,
+   "path_m": 45.05424345104084,
+   "episode_id": "116",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 57,
+    "offtrack": null,
+    "commit": 46,
+    "any": 46
+   },
+   "first_off": null,
+   "n_steps": 82,
+   "path_m": 11.178117494809896,
+   "episode_id": "13",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 348,
+    "R5": 475,
+    "R6": 75,
+    "offtrack": 401,
+    "commit": null,
+    "any": 75
+   },
+   "first_off": 401,
+   "n_steps": 476,
+   "path_m": 21.467650219825835,
+   "episode_id": "140",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 37,
+    "offtrack": null,
+    "commit": null,
+    "any": 37
+   },
+   "first_off": null,
+   "n_steps": 235,
+   "path_m": 17.220088814759034,
+   "episode_id": "150",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": null,
+    "offtrack": null,
+    "commit": null,
+    "any": null
+   },
+   "first_off": null,
+   "n_steps": 20,
+   "path_m": 1.5271362171869953,
+   "episode_id": "156",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 28,
+    "offtrack": null,
+    "commit": null,
+    "any": 28
+   },
+   "first_off": null,
+   "n_steps": 47,
+   "path_m": 4.8870421832097275,
+   "episode_id": "166",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": 193,
+    "R5": 461,
+    "R6": 79,
+    "offtrack": 39,
+    "commit": 34,
+    "any": 34
+   },
+   "first_off": 39,
+   "n_steps": 462,
+   "path_m": 26.840782420457238,
+   "episode_id": "171",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 134,
+    "R5": 493,
+    "R6": 78,
+    "offtrack": 90,
+    "commit": null,
+    "any": 78
+   },
+   "first_off": 90,
+   "n_steps": 494,
+   "path_m": 43.80161009016282,
+   "episode_id": "176",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 267,
+    "R5": 310,
+    "R6": 34,
+    "offtrack": null,
+    "commit": 121,
+    "any": 34
+   },
+   "first_off": null,
+   "n_steps": 311,
+   "path_m": 22.219078069897073,
+   "episode_id": "181",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 37,
+    "offtrack": null,
+    "commit": null,
+    "any": 37
+   },
+   "first_off": null,
+   "n_steps": 93,
+   "path_m": 11.175245238241803,
+   "episode_id": "187",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 61,
+    "offtrack": null,
+    "commit": null,
+    "any": 61
+   },
+   "first_off": null,
+   "n_steps": 137,
+   "path_m": 14.44665197295812,
+   "episode_id": "190",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": 150,
+    "R5": 259,
+    "R6": 15,
+    "offtrack": null,
+    "commit": 98,
+    "any": 15
+   },
+   "first_off": null,
+   "n_steps": 260,
+   "path_m": 23.043695844584622,
+   "episode_id": "191",
+   "success": true
+  },
+  {
+   "first": {
+    "R1": 91,
+    "R5": 490,
+    "R6": 117,
+    "offtrack": 11,
+    "commit": null,
+    "any": 11
+   },
+   "first_off": 11,
+   "n_steps": 491,
+   "path_m": 39.7250102531466,
+   "episode_id": "207",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": null,
+    "offtrack": null,
+    "commit": null,
+    "any": null
+   },
+   "first_off": null,
+   "n_steps": 16,
+   "path_m": 1.2500015201392691,
+   "episode_id": "40",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 140,
+    "R5": 181,
+    "R6": 86,
+    "offtrack": 172,
+    "commit": 36,
+    "any": 36
+   },
+   "first_off": 172,
+   "n_steps": 182,
+   "path_m": 20.613724184637984,
+   "episode_id": "42",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": null,
+    "offtrack": null,
+    "commit": null,
+    "any": null
+   },
+   "first_off": null,
+   "n_steps": 26,
+   "path_m": 2.7204924543231876,
+   "episode_id": "52",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": null,
+    "R5": null,
+    "R6": 18,
+    "offtrack": null,
+    "commit": null,
+    "any": 18
+   },
+   "first_off": null,
+   "n_steps": 31,
+   "path_m": 4.702817586393151,
+   "episode_id": "7",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 89,
+    "R5": 137,
+    "R6": 59,
+    "offtrack": 100,
+    "commit": 82,
+    "any": 59
+   },
+   "first_off": 100,
+   "n_steps": 138,
+   "path_m": 17.21673513421263,
+   "episode_id": "70",
+   "success": false
+  },
+  {
+   "first": {
+    "R1": 151,
+    "R5": 499,
+    "R6": 88,
+    "offtrack": 48,
+    "commit": 31,
+    "any": 31
+   },
+   "first_off": 48,
+   "n_steps": 500,
+   "path_m": 38.56247407905548,
+   "episode_id": "94",
+   "success": false
+  }
+ ]
+}

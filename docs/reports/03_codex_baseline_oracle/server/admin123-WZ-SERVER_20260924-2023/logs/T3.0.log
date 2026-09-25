@@ -1,0 +1,141 @@
+## T3.0 修正：单调率 / 终点命中率 / 类型分布 / 预算表 / 误报率 / offtrack episode 列表
+
+设置：CLAUSE_TOL_MODE=`final_only`（中间子句 0 m，末尾零长度子句 0.5 m），TURN_RULE=`v1`（turn 触发词加入 left | right，排除条件不变），OFFTRACK_M=3.0；R6 按前进步计（转向不计），R5 只保留过长侧。任务 #2 输出目录 `/home/xukai/code/agentic-nav/oracles`。
+
+**类型分布（修正前 → 修正后，T2.2 重跑）**
+
+rand100（100 episodes）：
+
+| type | before n | before % | after n | after % |
+|---|---|---|---|---|
+| stop_at | 90 | 24.7% | 90 | 24.7% |
+| enter | 48 | 13.2% | 48 | 13.2% |
+| pass | 22 | 6.0% | 22 | 6.0% |
+| turn | 34 | 9.3% | 63 | 17.3% |
+| move | 171 | 46.8% | 142 | 38.9% |
+
+改动：{'move->turn': 29}
+
+val_unseen（1839 episodes）：
+
+| type | before n | before % | after n | after % |
+|---|---|---|---|---|
+| stop_at | 1589 | 23.8% | 1589 | 23.8% |
+| enter | 946 | 14.1% | 946 | 14.1% |
+| pass | 608 | 9.1% | 608 | 9.1% |
+| turn | 624 | 9.3% | 962 | 14.4% |
+| move | 2920 | 43.7% | 2582 | 38.6% |
+
+改动：{'move->turn': 338}
+
+train（10809 episodes）：
+
+| type | before n | before % | after n | after % |
+|---|---|---|---|---|
+| stop_at | 9304 | 23.4% | 9304 | 23.4% |
+| enter | 5690 | 14.3% | 5690 | 14.3% |
+| pass | 3902 | 9.8% | 3902 | 9.8% |
+| turn | 3766 | 9.5% | 5997 | 15.1% |
+| move | 17171 | 43.1% | 14940 | 37.5% |
+
+改动：{'move->turn': 2231}
+
+**rand100 GT 回放（T2.3 重跑）**：目标 单调率 100% / 终点命中 100% / offtrack 0
+
+| mode / tol | n | raw idx 单调 | final idx = last | offtrack episodes | max dist P95 (m) |
+|---|---|---|---|---|---|
+| all/0.0 | 100 | 100.00% | 64.00% | 0 | 0.440 |
+| all/0.5 | 100 | 99.00% | 100.00% | 0 | 0.440 |
+| final_only/0.5 (chosen) | 100 | 100.00% | 100.00% | 0 | 0.440 |
+
+判据 1（final_only/0.5）：满足
+
+**预算表（T2.4 重跑，split `train`，10809 episodes，10809 个有 GT）**
+
+子句长度 `length_m`（m）— R1 距离预算：
+
+| type | n | P50 | P90 | P95 | P99 |
+|---|---|---|---|---|---|
+| stop_at | 9304 | 1.0929 | 4.2358 | 5.6148 | 9.3188 |
+| enter | 5690 | 2.2976 | 5.6507 | 7.0729 | 10.3066 |
+| pass | 3902 | 3.389 | 7.0277 | 8.549 | 11.5868 |
+| turn | 5997 | 1.7552 | 4.2795 | 5.2282 | 7.8516 |
+| move | 14940 | 2.6259 | 6.3107 | 7.7735 | 11.0669 |
+
+GT 前进步数（转向不计）— R1 步数预算：
+
+| type | n | P50 | P90 | P95 | P99 |
+|---|---|---|---|---|---|
+| stop_at | 9304 | 2.0 | 15.0 | 21.0 | 38.0 |
+| enter | 5690 | 8.0 | 22.0 | 28.0 | 41.0 |
+| pass | 3902 | 14.0 | 29.0 | 35.0 | 48.0 |
+| turn | 5997 | 7.0 | 17.0 | 21.0 | 32.0 |
+| move | 14940 | 10.0 | 25.0 | 31.0 | 45.0 |
+
+R5 中位数（ref 弧长，按子句数）：1: 8.107, 2: 8.0994, 3: 8.6661, 4: 9.5333, 5: 10.5793, 6: 11.008, 7: 12.1537, 8: 12.7944, 9: 11.6862, 10: 11.6862, 11: 11.6862, 12: 11.6862, 13: 11.6862, 14: 11.6862
+
+**误报率表（T2.5 重跑，split `val_unseen`，1839 条 GT，66285 前进步）**
+
+R1 预算超支（m = 距离预算；steps = 前进步预算）：
+
+| 档 | budget_m[type] | episode 误报 (m) | 按步 (m) | episode 误报 (steps) | 触发 episode 按类型 |
+|---|---|---|---|---|---|
+| P90 | stop_at 4.2358, enter 5.6507, pass 7.0277, turn 4.2795, move 6.3107 | 31.16% | 7.28% | 31.27% | {'move': 237, 'enter': 79, 'pass': 55, 'stop_at': 121, 'turn': 93} |
+| P95 | stop_at 5.6148, enter 7.0729, pass 8.549, turn 5.2282, move 7.7735 | 16.86% | 3.49% | 16.48% | {'enter': 43, 'move': 102, 'stop_at': 81, 'turn': 61, 'pass': 23} |
+| P99 | stop_at 9.3188, enter 10.3066, pass 11.5868, turn 7.8516, move 11.0669 | 2.72% | 0.52% | 2.34% | {'turn': 12, 'stop_at': 7, 'pass': 2, 'move': 20, 'enter': 9} |
+
+R5 停止路程过长（总水平路程 > factor × train 同子句数 ref 弧长中位数）：
+
+| 档 | episode 误报 | 过长 n |
+|---|---|---|
+| long>2.0x | 0.22% | 4 |
+| long>2.5x | 0.00% | 0 |
+
+R6 回环（新口径：同一子句内，前进步后的位置进入 ≥gap 个前进步之前位置的 radius 内；转向不计步）：
+
+| 参数 | episode 误报 | 按位置触发率 |
+|---|---|---|
+| radius=0.5,gap=5 | 2.45% | 0.27% |
+| radius=0.5,gap=10 | 1.20% | 0.11% |
+| radius=1.0,gap=5 | 13.76% | 1.33% |
+| radius=1.0,gap=10 | 2.66% | 0.36% |
+
+新口径与任务 #2 `r6_flags` 在 GT 上逐位置比较：0 处不一致（GT 的 locations 本来就每前进步一点，差别只在 harness 侧含转向动作的轨迹上）。
+
+offtrack（> 3.0 m）GT episode：3 条 → [{'episode_id': 433, 'max_dist_m': 3.577, 'first_step': 13}, {'episode_id': 434, 'max_dist_m': 3.577, 'first_step': 13}, {'episode_id': 435, 'max_dist_m': 3.577, 'first_step': 13}]
+
+**误报率表（T2.5 重跑，split `rand100`，100 条 GT，3623 前进步）**
+
+R1 预算超支（m = 距离预算；steps = 前进步预算）：
+
+| 档 | budget_m[type] | episode 误报 (m) | 按步 (m) | episode 误报 (steps) | 触发 episode 按类型 |
+|---|---|---|---|---|---|
+| P90 | stop_at 4.2358, enter 5.6507, pass 7.0277, turn 4.2795, move 6.3107 | 29.00% | 7.76% | 30.00% | {'move': 16, 'turn': 8, 'stop_at': 5, 'enter': 3} |
+| P95 | stop_at 5.6148, enter 7.0729, pass 8.549, turn 5.2282, move 7.7735 | 17.00% | 4.17% | 17.00% | {'turn': 5, 'stop_at': 3, 'move': 7, 'enter': 2} |
+| P99 | stop_at 9.3188, enter 10.3066, pass 11.5868, turn 7.8516, move 11.0669 | 5.00% | 0.94% | 4.00% | {'turn': 3, 'stop_at': 1, 'move': 1} |
+
+R5 停止路程过长（总水平路程 > factor × train 同子句数 ref 弧长中位数）：
+
+| 档 | episode 误报 | 过长 n |
+|---|---|---|
+| long>2.0x | 0.00% | 0 |
+| long>2.5x | 0.00% | 0 |
+
+R6 回环（新口径：同一子句内，前进步后的位置进入 ≥gap 个前进步之前位置的 radius 内；转向不计步）：
+
+| 参数 | episode 误报 | 按位置触发率 |
+|---|---|---|
+| radius=0.5,gap=5 | 1.00% | 0.08% |
+| radius=0.5,gap=10 | 0.00% | 0.00% |
+| radius=1.0,gap=5 | 12.00% | 0.89% |
+| radius=1.0,gap=10 | 1.00% | 0.08% |
+
+新口径与任务 #2 `r6_flags` 在 GT 上逐位置比较：0 处不一致（GT 的 locations 本来就每前进步一点，差别只在 harness 侧含转向动作的轨迹上）。
+
+offtrack（> 3.0 m）GT episode：0 条 → 无
+
+**rules_v0.json**（`/home/xukai/code/agentic-nav/task3/rules_v0.json`）：R1 = P99，R5 过长侧 factor (2.0, 2.5)，R6 = 1.0 m / 10 前进步，offtrack 3.0 m，clause_tol final_only/0.5，turn_rule v1；校准 split `val_unseen`。选定档的 episode 误报：R1 2.72%，R5 0.22%，R6 2.66%。
+
+判据 2（选定档 episode 误报 < 5%）：满足
+
+结论：PASS
