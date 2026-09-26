@@ -1,0 +1,29 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+You are using a model of type xlm-roberta to instantiate a model of type . This is not supported for all configurations of models and can yield errors.
+Some weights of the model checkpoint at None were not used when initializing GlocalTextPathNavCMT: ['map_encoder.token_transformer.layers.1.linear1.weight', 'map_encoder.token_transformer.layers.1.linear2.weight', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.bias', 'map_encoder.token_transformer.layers.1.norm2.weight', 'map_encoder.output_norm.weight', 'mlm_head.predictions.bias', 'mlm_head.predictions.transform.LayerNorm.bias', 'map_encoder.output_norm.bias', 'map_encoder.spatial_tokenizer.bias', 'map_encoder.token_transformer.layers.0.linear1.bias', 'mlm_head.predictions.transform.LayerNorm.weight', 'map_encoder.token_transformer.layers.1.linear1.bias', 'map_encoder.token_transformer.layers.0.linear1.weight', 'map_encoder.token_transformer.layers.1.norm1.weight', 'map_encoder.token_transformer.layers.1.norm1.bias', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.bias', 'map_encoder.token_transformer.layers.1.linear2.bias', 'map_encoder.spatial_token_norm.bias', 'bert.global_encoder.graph_map_attention.residual_projection.bias', 'bert.global_encoder.graph_map_attention.attention.in_proj_bias', 'map_encoder.spatial_tokenizer.weight', 'bert.global_encoder.graph_map_attention.residual_projection.weight', 'bert.global_encoder.graph_map_attention.attention.out_proj.bias', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.0.norm2.weight', 'map_encoder.token_transformer.layers.0.norm1.bias', 'map_encoder.token_transformer.layers.0.norm1.weight', 'map_encoder.metadata_encoder.0.weight', 'map_encoder.metadata_encoder.3.weight', 'mlm_head.predictions.transform.dense.bias', 'mlm_head.predictions.transform.dense.weight', 'map_encoder.token_transformer.layers.0.linear2.bias', 'map_encoder.token_transformer.layers.0.linear2.weight', 'map_encoder.metadata_encoder.1.weight', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_bias', 'bert.global_encoder.graph_map_attention.attention.out_proj.weight', 'map_encoder.metadata_encoder.0.bias', 'map_encoder.metadata_encoder.3.bias', 'map_encoder.spatial_token_norm.weight', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_bias', 'bert.global_encoder.graph_map_attention.attention.in_proj_weight', 'map_encoder.category_projection.weight', 'map_encoder.metadata_encoder.1.bias', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_weight', 'map_encoder.token_transformer.layers.1.norm2.bias', 'map_encoder.token_transformer.layers.0.norm2.bias', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_weight', 'mlm_head.predictions.decoder.weight']
+- This IS expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+
+Initalizing the ETP_PriorGT model ...
+LANG EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+PANO EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+  graph_map_attention: no pretrained tensors loaded (checkpoint has none or load_pretrained_map_modules=False); fusion starts from random attention + zero residual projection
+  Map encoder enabled: CLIP 37-category init -> map tokens (101, 768)
+[ckpt] /home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter5000.pth
+[ckpt] missing=0 unexpected=0
+[ckpt] fusion residual_projection.weight norm = 13.7443 (0 = map path disconnected)
+ episode        scene gt_cells llm_cells  tok_rel     d_gt   d_zero   d_none  flip_gt flip_zero flip_none
+      53  zsNo4HB9uLZ      266       428   0.0000   0.0000   0.0000   1.2179     0.00      0.00      0.09
+     992  TbHJrupSAjP      201       100   0.0000   0.0000   0.0000   1.2228     0.00      0.00      0.09
+     444  EU6Fwq7SyZv      238       240   0.0000   0.0000   0.0000   1.2254     0.00      0.00      0.09
+    1352  QUCTc6BB5sX      197       168   0.0000   0.0000   0.0000   1.2556     0.00      0.00      0.09
+    1685  zsNo4HB9uLZ      242       128   0.0000   0.0000   0.0000   1.2359     0.00      0.00      0.09
+
+tok_rel = ||tokens(GT grid) - tokens(LLM grid)|| / ||tokens(LLM grid)||
+d_*     = mean L2 distance of action logits from the LLM-map logits when the map is
+          swapped to GT (gt), zeroed (zero) or removed (none); flip_* = argmax change rate
+VERDICT: the student's action never changes when the grid is swapped -> model side:
+         the map channel is dead; a bit-identical p0/gt_full eval is expected.

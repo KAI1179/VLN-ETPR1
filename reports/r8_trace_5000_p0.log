@@ -1,0 +1,91 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+trainer_init
+ <class 'vlnce_baselines.ss_trainer_ETP_LLM.RLTrainer'>
+2026-09-26 06:05:32,377 checkpoint_path: /home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter5000.pth
+eval_llm_navigation_maps: available=1833 cache_missing=6 cache_missing_rate=0.003263
+2026-09-26 06:05:32,736 Initializing dataset VLN-CE-v2
+2026-09-26 06:05:32,874 SPLTI: val_unseen, NUMBER OF SCENES: 11
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+2026-09-26 06:05:41,041 Initializing dataset VLN-CE-v2
+2026-09-26 06:05:41,082 initializing sim Sim-v1
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+2026-09-26 06:05:41,807 Initializing dataset VLN-CE-v2
+2026-09-26 06:05:41,847 initializing sim Sim-v1
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+2026-09-26 06:05:42,309 Initializing dataset VLN-CE-v2
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/xukai/anaconda3/envs/etpr1-py38/lib/python3.8/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at /opt/conda/conda-bld/pytorch_1670525541702/work/aten/src/ATen/native/TensorShape.cpp:3190.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+2026-09-26 06:05:42,317 Initializing dataset VLN-CE-v2
+2026-09-26 06:05:42,351 initializing sim Sim-v1
+2026-09-26 06:05:42,358 initializing sim Sim-v1
+2026-09-26 06:05:43,883 Initializing task VLN-v0
+2026-09-26 06:05:44,234 Initializing task VLN-v0
+2026-09-26 06:05:45,200 Initializing task VLN-v0
+2026-09-26 06:05:45,266 Initializing task VLN-v0
+local rank: 0 | dataset length: 1833
+
+Initalizing the ETP_PriorGT model ...
+You are using a model of type xlm-roberta to instantiate a model of type . This is not supported for all configurations of models and can yield errors.
+LANG EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+PANO EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!
+Some weights of the model checkpoint at None were not used when initializing GlocalTextPathNavCMT: ['mlm_head.predictions.bias', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_bias', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.weight', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.weight', 'bert.global_encoder.graph_map_attention.residual_projection.bias', 'map_encoder.output_norm.weight', 'map_encoder.metadata_encoder.0.bias', 'map_encoder.metadata_encoder.1.weight', 'map_encoder.spatial_tokenizer.weight', 'mlm_head.predictions.transform.LayerNorm.bias', 'map_encoder.token_transformer.layers.0.norm1.weight', 'bert.global_encoder.graph_map_attention.residual_projection.weight', 'mlm_head.predictions.transform.dense.weight', 'map_encoder.token_transformer.layers.1.norm1.weight', 'map_encoder.token_transformer.layers.1.linear1.weight', 'bert.global_encoder.graph_map_attention.attention.out_proj.bias', 'map_encoder.token_transformer.layers.1.self_attn.out_proj.bias', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_bias', 'map_encoder.metadata_encoder.3.bias', 'map_encoder.token_transformer.layers.0.linear2.bias', 'map_encoder.output_norm.bias', 'mlm_head.predictions.decoder.weight', 'map_encoder.token_transformer.layers.1.linear2.weight', 'map_encoder.spatial_token_norm.weight', 'map_encoder.token_transformer.layers.1.self_attn.in_proj_weight', 'map_encoder.token_transformer.layers.0.linear1.bias', 'mlm_head.predictions.transform.dense.bias', 'map_encoder.token_transformer.layers.0.linear1.weight', 'map_encoder.category_projection.weight', 'mlm_head.predictions.transform.LayerNorm.weight', 'map_encoder.spatial_tokenizer.bias', 'bert.global_encoder.graph_map_attention.attention.out_proj.weight', 'map_encoder.metadata_encoder.3.weight', 'map_encoder.spatial_token_norm.bias', 'map_encoder.token_transformer.layers.0.self_attn.in_proj_weight', 'map_encoder.token_transformer.layers.1.linear1.bias', 'map_encoder.token_transformer.layers.0.norm1.bias', 'map_encoder.token_transformer.layers.1.linear2.bias', 'map_encoder.token_transformer.layers.0.self_attn.out_proj.bias', 'map_encoder.metadata_encoder.1.bias', 'map_encoder.token_transformer.layers.1.norm2.bias', 'map_encoder.metadata_encoder.0.weight', 'map_encoder.token_transformer.layers.0.norm2.bias', 'map_encoder.token_transformer.layers.0.norm2.weight', 'map_encoder.token_transformer.layers.1.norm1.bias', 'map_encoder.token_transformer.layers.1.norm2.weight', 'map_encoder.token_transformer.layers.0.linear2.weight', 'bert.global_encoder.graph_map_attention.attention.in_proj_weight', 'bert.global_encoder.graph_map_attention.attention.in_proj_bias']
+- This IS expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing GlocalTextPathNavCMT from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+  graph_map_attention: no pretrained tensors loaded (checkpoint has none or load_pretrained_map_modules=False); fusion starts from random attention + zero residual projection
+  Map encoder enabled: CLIP 37-category init -> map tokens (101, 768)
+2026-09-26 06:05:54,397 -------------------Load pretrain weight: /home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt-------------------
+
+========================= Weight loading mismatch report =========================
+All network layers present in the model were found in the weight file.
+
+There are no extra network layers in the weight file.
+===========================================================================
+
+2026-09-26 06:05:57,394 Loaded weights from checkpoint: /home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter5000.pth, iteration: 0
+2026-09-26 06:05:57,398 Agent parameters: 588.58 MB. Trainable: 430.24 MB.
+2026-09-26 06:05:57,398 Finished setting up policy.
+  0%|          | 0/8 [00:00<?, ?it/s][trace] map_tokens norm=353.1779
+[trace] map_tokens norm=353.1779
+[trace] map_tokens norm=353.1779
+[trace] map_tokens norm=353.1779
+[trace] map_tokens norm=353.1779
+ 88%|████████▊ | 7/8 [00:01<00:00,  4.71it/s][trace] map_tokens norm=249.1193
+9it [00:01,  5.46it/s]                       10it [00:01,  5.43it/s]2026-09-26 06:06:00,037 Episodes evaluated: 10
+2026-09-26 06:06:00,037 Average episode collisions: 0.004082
+2026-09-26 06:06:00,038 Average episode distance_to_goal: 1.381155
+2026-09-26 06:06:00,038 Average episode ghost_cnt: 8.500000
+2026-09-26 06:06:00,038 Average episode high_level_step: 2.500000
+2026-09-26 06:06:00,038 Average episode llm_cache_missing: 0.600000
+2026-09-26 06:06:00,039 Average episode llm_generation_failure: 0.600000
+2026-09-26 06:06:00,039 Average episode ndtw: 0.233842
+2026-09-26 06:06:00,039 Average episode oracle_success: 0.200000
+2026-09-26 06:06:00,039 Average episode path_length: 3.706973
+2026-09-26 06:06:00,040 Average episode sdtw: 0.182324
+2026-09-26 06:06:00,040 Average episode spl: 0.200000
+2026-09-26 06:06:00,040 Average episode steps_taken: 21.200000
+2026-09-26 06:06:00,040 Average episode success: 0.200000
+2026-09-26 06:06:00,040 Average episode llm_cache_missing_count: 6.000000
+2026-09-26 06:06:00,040 Average episode llm_cache_missing_rate: 0.600000
+2026-09-26 06:06:00,041 Average episode llm_generation_failure_count: 6.000000
+2026-09-26 06:06:00,041 Average episode llm_generation_failure_rate: 0.600000
+Episodes evaluated: 10
+10it [00:02,  4.21it/s]
