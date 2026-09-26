@@ -1,0 +1,138 @@
+From 0379e1afd35c20929d5f3f6e6a8916167bc690c3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 26 Sep 2026 12:25:47 +0000
+Subject: [PATCH] Add checkpoint sweep for the map encoder's spatial tokenizer
+
+R9 showed spatial_tokenizer.weight at zero and its bias astronomically
+large in both pretraining checkpoints (387500 and 460000), so the pretrained
+map encoder never saw the raster and cannot learn it afterwards (LayerNorm's
+1/std makes the gradient vanish). This sweep prints norm, max|.| and the
+exactly-zero fraction of that weight and bias for every checkpoint matching
+the given globs, ordered by step, to show when the weight died and the bias
+exploded. CPU only, no repository imports.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/map_encoder_weight_sweep.py | 109 ++++++++++++++++++++
+ 1 file changed, 109 insertions(+)
+ create mode 100755 scripts/distill/map_encoder_weight_sweep.py
+
+diff --git a/scripts/distill/map_encoder_weight_sweep.py b/scripts/distill/map_encoder_weight_sweep.py
+new file mode 100755
+index 0000000..acb9918
+--- /dev/null
++++ b/scripts/distill/map_encoder_weight_sweep.py
+@@ -0,0 +1,109 @@
++#!/usr/bin/env python3
++"""Track the map encoder's spatial tokenizer across saved checkpoints.
++
++R9 found ``spatial_tokenizer.weight`` at (or near) zero and its bias
++astronomically large in both pretraining lines, which makes the encoder blind
++to the raster and, through LayerNorm's 1/std, untrainable afterwards.  This
++sweep reads only the relevant tensors from every checkpoint matching the
++given globs and prints one row per checkpoint, ordered by step, so the moment
++the weight died and the bias exploded can be read off directly.
++
++CPU only, no repository imports.  Usage:
++  python scripts/distill/map_encoder_weight_sweep.py
++  python scripts/distill/map_encoder_weight_sweep.py --checkpoint-globs 'checkpoints/llm-grid-try5-r1p5/*.pt'
++"""
++
++import glob
++import re
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++import torch
++from tap import Tap
++
++TENSORS = {
++    "st_w": "map_encoder.spatial_tokenizer.weight",
++    "st_b": "map_encoder.spatial_tokenizer.bias",
++    "cat_w": "map_encoder.category_projection.weight",
++    "meta0_w": "map_encoder.metadata_encoder.0.weight",
++    "res_w": "graph_map_attention.residual_projection.weight",
++}
++
++
++class Args(Tap):
++    checkpoint_globs: List[str] = [
++        "/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/*.pt",
++        "/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/*.pt",
++        "data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter*.pth",
++        "data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter*.pth",
++    ]
++    max_per_glob: int = 12
++    """Evenly subsample when a glob matches more files than this."""
++
++
++def _step(path: str) -> int:
++    match = re.search(r"(?:step_|iter)(\d+)", Path(path).name)
++    return int(match.group(1)) if match else -1
++
++
++def _find(state: Dict[str, Any], suffix: str) -> Optional[torch.Tensor]:
++    hits = [value for key, value in state.items() if key.endswith(suffix)]
++    if len(hits) > 1:
++        raise ValueError(f"{suffix}: {len(hits)} tensors end with this suffix")
++    return hits[0].detach().to(torch.float64) if hits else None
++
++
++def _stats(tensor: Optional[torch.Tensor]) -> str:
++    if tensor is None:
++        return f"{'-':>10} {'-':>10} {'-':>7}"
++    zero_frac = (tensor == 0).double().mean().item()
++    return f"{tensor.norm().item():>10.3e} {tensor.abs().max().item():>10.3e} {zero_frac:>7.3f}"
++
++
++def main() -> None:
++    args = Args(underscores_to_dashes=True).parse_args()
++    files: List[str] = []
++    for pattern in args.checkpoint_globs:
++        matched = sorted(glob.glob(pattern), key=_step)
++        if not matched:
++            print(f"# no files match {pattern}")
++            continue
++        if len(matched) > args.max_per_glob:
++            stride = len(matched) / args.max_per_glob
++            matched = [matched[int(i * stride)] for i in range(args.max_per_glob)]
++            if matched[-1] != sorted(glob.glob(pattern), key=_step)[-1]:
++                matched.append(sorted(glob.glob(pattern), key=_step)[-1])
++        files.extend(matched)
++
++    print(
++        f"{'step':>7} {'st_w norm':>10} {'st_w max':>10} {'st_w 0%':>7} "
++        f"{'st_b norm':>10} {'st_b max':>10} {'st_b 0%':>7} "
++        f"{'cat_w':>10} {'meta0_w':>10} {'res_w':>10}  file"
++    )
++    for path in files:
++        raw = torch.load(path, map_location="cpu")
++        if isinstance(raw, dict) and "state_dict" in raw:
++            raw = raw["state_dict"]
++        tensors = {name: _find(raw, suffix) for name, suffix in TENSORS.items()}
++        del raw
++        scalars = " ".join(
++            f"{tensors[name].norm().item():>10.3e}"
++            if tensors[name] is not None
++            else f"{'-':>10}"
++            for name in ("cat_w", "meta0_w", "res_w")
++        )
++        print(
++            f"{_step(path):>7} {_stats(tensors['st_w'])} {_stats(tensors['st_b'])} {scalars}  {path}"
++        )
++
++    print()
++    print(
++        "st_w / st_b = map_encoder.spatial_tokenizer weight / bias; norms and max|.| in float64;"
++    )
++    print(
++        "0% = fraction of exactly-zero elements. Fresh init: st_w norm ~16, st_b norm ~0.07."
++    )
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.43.0
+
