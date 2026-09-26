@@ -38,9 +38,6 @@ class Args(Tap):
     graphs: int = 32
     """Random graph draws per episode."""
 
-    def configure(self) -> None:
-        self.underscores_to_dashes = True
-
 
 def _strip_net_prefix(state: Dict[str, Any]) -> Dict[str, Any]:
     out = {}
@@ -54,7 +51,7 @@ def _strip_net_prefix(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> None:
-    args = Args().parse_args()
+    args = Args(underscores_to_dashes=True).parse_args()
     os.chdir(REPO_ROOT)
     sys.path.insert(0, str(REPO_ROOT))
 
