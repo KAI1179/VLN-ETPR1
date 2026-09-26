@@ -1,0 +1,310 @@
+From b33d903ec7737217e8bf57b85a110eae7cb85174 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 26 Sep 2026 07:53:29 +0000
+Subject: [PATCH] Add offline map-sensitivity probe for distilled students
+
+R7's iter-5000 p0 and gt_full evaluations produced byte-identical stats
+files. That has two possible causes: the gt_full grid swap never reached the
+map encoder (evaluation pipeline), or the student's actions do not depend on
+the grid (model). map_sensitivity_probe.py separates them without the
+simulator: it loads the DAgger checkpoint, encodes one episode's LLM grid and
+GT grid (LLM metadata kept, as the swap does), and measures logit movement
+and argmax flips on fixed synthetic graphs, against zeroed and removed maps.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/map_sensitivity_probe.py | 281 +++++++++++++++++++++++
+ 1 file changed, 281 insertions(+)
+ create mode 100755 scripts/distill/map_sensitivity_probe.py
+
+diff --git a/scripts/distill/map_sensitivity_probe.py b/scripts/distill/map_sensitivity_probe.py
+new file mode 100755
+index 0000000..06f938d
+--- /dev/null
++++ b/scripts/distill/map_sensitivity_probe.py
+@@ -0,0 +1,281 @@
++#!/usr/bin/env python3
++"""Does a distilled student react to its cognitive map at all?
++
++Offline, no simulator.  Load a DAgger checkpoint, encode one episode's LLM
++grid and its GT grid (metadata kept from the LLM map, exactly what the
++``eval_map_source=gt_full`` swap does), and run the navigation head on fixed
++synthetic graphs.  Reports how far the action logits move when only the grid
++changes, relative to removing the map entirely.
++
++A bit-identical p0 / gt_full evaluation pair has two possible causes: the swap
++never reached the map encoder (pipeline), or the student ignores the grid
++(model).  This probe separates them.
++
++Usage:
++  CUDA_VISIBLE_DEVICES=4 python scripts/distill/map_sensitivity_probe.py \
++      --run-name dagger_distill_gt_teacher_llmpt --iter 5000
++"""
++
++import os
++import sys
++from pathlib import Path
++from typing import Any, Dict, List
++
++from tap import Tap
++
++REPO_ROOT = Path(__file__).resolve().parents[2]
++
++
++class Args(Tap):
++    run_name: str = "dagger_distill_gt_teacher_llmpt"
++    iter: int = 5000
++    episode_ids: List[int] = [53, 992, 444, 1352, 1685]
++    """val_unseen episodes; each needs both an LLM and a GT raster cache."""
++    llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++    gt_namespace: str = "gt.legacy.r1p5.direction5.v1"
++    pretrained: str = "/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++    exp_config: str = "run_r2r/iter_train.yaml"
++    graphs: int = 32
++    """Random graph draws per episode."""
++
++    def configure(self) -> None:
++        self.underscores_to_dashes = True
++
++
++def _strip_net_prefix(state: Dict[str, Any]) -> Dict[str, Any]:
++    out = {}
++    for key, value in state.items():
++        for prefix in ("net.module.", "net."):
++            if key.startswith(prefix):
++                key = key[len(prefix) :]
++                break
++        out[key] = value
++    return out
++
++
++def main() -> None:
++    args = Args().parse_args()
++    os.chdir(REPO_ROOT)
++    sys.path.insert(0, str(REPO_ROOT))
++
++    import numpy as np
++    import torch
++    from gym import spaces
++    from habitat_baselines.common.baseline_registry import baseline_registry
++
++    import vlnce_baselines  # noqa: F401  (registers policies)
++    from vlnce_baselines.config.default import get_config
++    from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
++    from vlnce_baselines.models.etp_llm.navigation import (
++        llm_cached_cognitive_map_to_tensors,
++    )
++    from vlnce_baselines.models.etp_prior_gt.map_utils import (
++        VLNCE_COGNITIVE_MAP_DIR,
++        cached_cognitive_map_to_tensors,
++    )
++
++    ckpt_path = (
++        REPO_ROOT
++        / "data/logs/checkpoints"
++        / args.run_name
++        / f"ckpt.iter{args.iter}.pth"
++    )
++    if not ckpt_path.is_file():
++        raise FileNotFoundError(ckpt_path)
++
++    opts = [
++        "TORCH_GPU_ID",
++        "0",
++        "MODEL.policy_name",
++        "LLMGridTry5Policy",
++        "MODEL.MAP_ENCODER.enabled",
++        "True",
++        "MODEL.MAP_ENCODER.architecture",
++        "try5",
++        "MODEL.MAP_ENCODER.source",
++        "llm_grid",
++        "MODEL.MAP_ENCODER.llm_cache_model_key",
++        args.llm_model_key,
++        "MODEL.MAP_ENCODER.refiner_ckpt",
++        "",
++        "MODEL.MAP_ENCODER.load_pretrained_map_modules",
++        "False",
++        "MODEL.pretrained_path",
++        args.pretrained,
++    ]
++    config = get_config(args.exp_config, opts)
++
++    obs_spaces = {
++        "rgb": spaces.Box(0, 255, (224, 224, 3), dtype=np.uint8),
++        "depth": spaces.Box(0, 1, (256, 256, 1), dtype=np.float32),
++        "instruction": spaces.Box(0, 250000, (200,), dtype=np.int64),
++    }
++    for heading in range(30, 360, 30):
++        obs_spaces[f"rgb_{heading}"] = spaces.Box(0, 255, (224, 224, 3), dtype=np.uint8)
++        obs_spaces[f"depth_{heading}"] = spaces.Box(
++            0, 1, (256, 256, 1), dtype=np.float32
++        )
++    policy_cls = baseline_registry.get_policy(config.MODEL.policy_name)
++    policy = policy_cls.from_config(config, spaces.Dict(obs_spaces), spaces.Discrete(4))
++    net = policy.net.cuda().eval()
++
++    state = _strip_net_prefix(torch.load(ckpt_path, map_location="cpu")["state_dict"])
++    result = net.load_state_dict(state, strict=False)
++    map_missing = [
++        k
++        for k in result.missing_keys
++        if "map_encoder" in k or "graph_map_attention" in k
++    ]
++    print(f"[ckpt] {ckpt_path}")
++    print(
++        f"[ckpt] missing={len(result.missing_keys)} unexpected={len(result.unexpected_keys)}"
++    )
++    for key in list(result.missing_keys)[:5]:
++        print(f"[ckpt]   missing: {key}")
++    for key in list(result.unexpected_keys)[:5]:
++        print(f"[ckpt]   unexpected: {key}")
++    if map_missing:
++        raise RuntimeError(f"map path not loaded from checkpoint: {map_missing[:5]}")
++    residual = net.vln_bert.graph_map_attention.residual_projection.weight.norm().item()
++    print(
++        f"[ckpt] fusion residual_projection.weight norm = {residual:.4f} (0 = map path disconnected)"
++    )
++
++    schema = CognitiveMapCandidate.parse("try5", "llm_grid").metadata_schema
++
++    def load_pair(episode_id: int):
++        cache_id = f"R2R_val_unseen_{episode_id}"
++        hits = sorted(
++            (VLNCE_COGNITIVE_MAP_DIR / args.gt_namespace / "raster").glob(
++                f"*/{cache_id}.npz"
++            )
++        )
++        if len(hits) != 1:
++            raise FileNotFoundError(
++                f"expected exactly one GT raster for {cache_id} under {args.gt_namespace}, found {len(hits)}"
++            )
++        scene_key = hits[0].parent.name
++        llm = llm_cached_cognitive_map_to_tensors(
++            scene_key,
++            cache_id,
++            "r2r",
++            "val_unseen",
++            metadata_schema=schema,
++            model_key=args.llm_model_key,
++        )
++        gt = cached_cognitive_map_to_tensors(
++            scene_key, cache_id, namespace=args.gt_namespace, metadata_schema=schema
++        )
++        return scene_key, llm, gt
++
++    def encode(grid, meta):
++        tokens, masks = net(
++            mode="map_encoding",
++            cognitive_crops=grid.unsqueeze(0).cuda(),
++            trajectory_keypoints=meta["map_trajectory_metadata"].unsqueeze(0).cuda(),
++            start_direction_vectors=meta["start_direction_vector"].unsqueeze(0).cuda(),
++            start_positions=meta["start_position"].unsqueeze(0).cuda(),
++        )
++        return tokens, masks
++
++    torch.manual_seed(0)
++    txt_ids = torch.randint(0, 250000, (1, 40), device="cuda")
++    txt_masks = torch.ones(1, 40, dtype=torch.bool, device="cuda")
++    txt_task_encoding = torch.zeros(1, 40, dtype=torch.long, device="cuda")
++
++    header = f"{'episode':>8} {'scene':>12} {'gt_cells':>8} {'llm_cells':>9} {'tok_rel':>8} {'d_gt':>8} {'d_zero':>8} {'d_none':>8} {'flip_gt':>8} {'flip_zero':>9} {'flip_none':>9}"
++    print(header)
++    total_flips_gt = 0
++    total_draws = 0
++    with torch.no_grad():
++        txt = net(
++            mode="language",
++            txt_ids=txt_ids,
++            txt_masks=txt_masks,
++            txt_task_encoding=txt_task_encoding,
++        )
++        for episode_id in args.episode_ids:
++            scene_key, llm, gt = load_pair(episode_id)
++            llm_grid, gt_grid = llm["grid"].float(), gt["grid"].float()
++            tok_llm, mask = encode(llm_grid, llm)
++            tok_gt, _ = encode(gt_grid, llm)  # gt_full swap: grid only, LLM metadata
++            tok_zero, _ = encode(torch.zeros_like(llm_grid), llm)
++            tok_rel = (
++                (tok_gt - tok_llm).norm() / tok_llm.norm().clamp_min(1e-12)
++            ).item()
++
++            dists = {"gt": [], "zero": [], "none": []}
++            flips = {"gt": 0, "zero": 0, "none": 0}
++            g, d = 8, tok_llm.shape[-1]
++            for draw in range(args.graphs):
++                torch.manual_seed(1000 + draw)
++                nav = dict(
++                    gmap_vp_ids=[[None, "0", "1", "2", "g0", "g1", "g2", "g3"]],
++                    gmap_img_fts=torch.randn(1, g, d, device="cuda"),
++                    gmap_pos_fts=torch.randn(1, g, 7, device="cuda"),
++                    gmap_step_ids=torch.zeros(1, g, dtype=torch.long, device="cuda"),
++                    gmap_masks=torch.ones(1, g, dtype=torch.bool, device="cuda"),
++                    gmap_visited_masks=torch.zeros(
++                        1, g, dtype=torch.bool, device="cuda"
++                    ),
++                    gmap_pair_dists=torch.randn(1, g, g, device="cuda").abs(),
++                    gmap_task_embeddings=torch.zeros(
++                        1, g, dtype=torch.long, device="cuda"
++                    ),
++                )
++
++                def logits(tokens, masks):
++                    out = net(
++                        mode="navigation",
++                        txt_embeds=txt,
++                        txt_masks=txt_masks,
++                        map_tokens=tokens,
++                        map_token_masks=masks,
++                        **nav,
++                    )
++                    return out["global_logits"][0]
++
++                base = logits(tok_llm, mask)
++                for name, (tokens, masks) in {
++                    "gt": (tok_gt, mask),
++                    "zero": (tok_zero, mask),
++                    "none": (None, None),
++                }.items():
++                    other = logits(tokens, masks)
++                    dists[name].append((other - base).norm().item())
++                    flips[name] += int(other.argmax().item() != base.argmax().item())
++            total_flips_gt += flips["gt"]
++            total_draws += args.graphs
++            print(
++                f"{episode_id:>8} {scene_key:>12} {int((gt_grid >= 0.5).any(0).sum()):>8} "
++                f"{int((llm_grid >= 0.5).any(0).sum()):>9} {tok_rel:>8.4f} "
++                f"{np.mean(dists['gt']):>8.4f} {np.mean(dists['zero']):>8.4f} {np.mean(dists['none']):>8.4f} "
++                f"{flips['gt'] / args.graphs:>8.2f} {flips['zero'] / args.graphs:>9.2f} {flips['none'] / args.graphs:>9.2f}"
++            )
++
++    print()
++    print("tok_rel = ||tokens(GT grid) - tokens(LLM grid)|| / ||tokens(LLM grid)||")
++    print(
++        "d_*     = mean L2 distance of action logits from the LLM-map logits when the map is"
++    )
++    print(
++        "          swapped to GT (gt), zeroed (zero) or removed (none); flip_* = argmax change rate"
++    )
++    if total_flips_gt == 0:
++        print(
++            "VERDICT: the student's action never changes when the grid is swapped -> model side:"
++        )
++        print(
++            "         the map channel is dead; a bit-identical p0/gt_full eval is expected."
++        )
++    else:
++        print(
++            f"VERDICT: the student reacts to the grid ({total_flips_gt}/{total_draws} argmax flips) -> a"
++        )
++        print(
++            "         bit-identical p0/gt_full eval means the gt_full swap never reached the encoder."
++        )
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.43.0
+
