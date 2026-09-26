@@ -1,0 +1,55 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+rel(gt) = ||stage(GT grid) - stage(LLM grid)|| / ||stage(LLM grid)||, rel(zero) likewise for an all-zero grid; mean over episodes.
+
+=== /home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt
+    weight norms: category_projection.weight 5.3723 | spatial_tokenizer.weight 0.0000 bias inf | metadata_encoder.0.weight 2.2530
+    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): 0.000000
+                   stage    rel(gt)  rel(zero)
+     category_projection   0.968775   1.000000
+       spatial_tokenizer   0.000000   0.000000
+      spatial_token_norm   0.000000   0.000000
+       token_transformer   0.000000   0.000000
+             output_norm   0.000000   0.000000
+
+=== /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt
+    weight norms: category_projection.weight 6.0828 | spatial_tokenizer.weight 0.0000 bias 55.1822 | metadata_encoder.0.weight 2.0663
+    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): 0.000000
+                   stage    rel(gt)  rel(zero)
+     category_projection   0.968759   1.000000
+       spatial_tokenizer   0.000000   0.000000
+      spatial_token_norm   0.000000   0.000000
+       token_transformer   0.000000   0.000000
+             output_norm   0.000000   0.000000
+
+=== data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter5000.pth
+    weight norms: category_projection.weight 5.3692 | spatial_tokenizer.weight 0.0000 bias inf | metadata_encoder.0.weight 2.2500
+    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): 0.000000
+                   stage    rel(gt)  rel(zero)
+     category_projection   0.968775   1.000000
+       spatial_tokenizer   0.000000   0.000000
+      spatial_token_norm   0.000000   0.000000
+       token_transformer   0.000000   0.000000
+             output_norm   0.000000   0.000000
+
+=== data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth
+    weight norms: category_projection.weight 6.0527 | spatial_tokenizer.weight 17.1614 bias 0.0721 | metadata_encoder.0.weight 16.1073
+    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): 39.616801
+                   stage    rel(gt)  rel(zero)
+     category_projection   0.971602   1.000000
+       spatial_tokenizer   0.931665   1.000672
+      spatial_token_norm   0.466347   0.426202
+       token_transformer   0.646189   0.890210
+             output_norm   0.641792   0.975148
+
+=== /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth
+    weight norms: category_projection.weight 6.0279 | spatial_tokenizer.weight 17.8533 bias 0.0749 | metadata_encoder.0.weight 16.1545
+    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): 84.703493
+                   stage    rel(gt)  rel(zero)
+     category_projection   0.968828   1.000000
+       spatial_tokenizer   0.901909   1.000542
+      spatial_token_norm   0.425154   0.426496
+       token_transformer   0.794885   1.490474
+             output_norm   0.778295   1.167001
