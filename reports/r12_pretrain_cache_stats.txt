@@ -1,0 +1,3 @@
+source n zero_ratio active_ratio min max dtype start_range direction_range
+LLM train 200 0.030000 0.021338 0.0 1.0 float32 (0.6475396156311035, 79.13961029052734) (-1.0, 1.0)
+GT train 200 0.030000 0.017165 0.0 1.0 float32 (0.6475396156311035, 79.13961029052734) (-1.0, 1.0)

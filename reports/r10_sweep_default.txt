@@ -1,0 +1,32 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+   step  st_w norm   st_w max st_w 0%  st_b norm   st_b max st_b 0%      cat_w    meta0_w      res_w  file
+ 460000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.372e+00  2.253e+00  1.373e+01  /home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt
+ 387500  0.000e+00  0.000e+00   1.000  5.518e+01  1.029e+01   0.014  6.083e+00  2.066e+00  1.535e+01  /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt
+   1000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.372e+00  2.253e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter1000.pth
+   2000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.371e+00  2.253e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter2000.pth
+   4000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.370e+00  2.251e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter4000.pth
+   6000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.369e+00  2.250e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter6000.pth
+   7000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.368e+00  2.250e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter7000.pth
+   9000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.367e+00  2.247e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter9000.pth
+  11000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.365e+00  2.249e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter11000.pth
+  12000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.365e+00  2.249e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter12000.pth
+  14000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.363e+00  2.252e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter14000.pth
+  16000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.362e+00  2.254e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter16000.pth
+  17000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.361e+00  2.254e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter17000.pth
+  19000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.360e+00  2.254e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter19000.pth
+  20000  0.000e+00  0.000e+00   1.000  2.430e+36  1.718e+36   0.990  5.359e+00  2.255e+00  1.374e+01  data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter20000.pth
+   5000  1.639e+01  1.206e-02   0.000  7.089e-02  4.970e-03   0.000  6.080e+00  1.611e+01  1.534e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter5000.pth
+   6000  1.653e+01  1.293e-02   0.000  7.116e-02  5.104e-03   0.000  6.075e+00  1.611e+01  1.534e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter6000.pth
+   7000  1.668e+01  1.364e-02   0.000  7.139e-02  5.102e-03   0.000  6.070e+00  1.611e+01  1.534e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter7000.pth
+   8000  1.683e+01  1.450e-02   0.000  7.162e-02  5.164e-03   0.000  6.064e+00  1.611e+01  1.534e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter8000.pth
+   9000  1.700e+01  1.508e-02   0.000  7.176e-02  5.191e-03   0.000  6.057e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter9000.pth
+  10000  1.716e+01  1.560e-02   0.000  7.205e-02  5.420e-03   0.000  6.053e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth
+  11000  1.731e+01  1.566e-02   0.000  7.218e-02  5.530e-03   0.000  6.047e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter11000.pth
+  12000  1.747e+01  1.639e-02   0.000  7.239e-02  5.573e-03   0.000  6.040e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter12000.pth
+  13000  1.762e+01  1.680e-02   0.000  7.262e-02  5.719e-03   0.000  6.037e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter13000.pth
+  14000  1.776e+01  1.704e-02   0.000  7.279e-02  5.958e-03   0.000  6.034e+00  1.611e+01  1.533e+01  data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter14000.pth
+
+st_w / st_b = map_encoder.spatial_tokenizer weight / bias; norms and max|.| in float64;
+0% = fraction of exactly-zero elements. Fresh init: st_w norm ~16, st_b norm ~0.07.
