@@ -926,3 +926,15 @@ Drop Rate By `max_new_tokens`:
 - OpenScene 与 Mosaic3D 均已在 checkpoint-specific permission gate 于 load/runtime 前 NO-GO；获授权的
   三个候选至此全部完成。OOOPS validated manifest SHA-256 为 `3d2fce62…779c3`，完整 package tree
   SHA-256 为 `c76c576c…8238`。
+
+## 09/27（教师蒸馏系列 R5–R9：已验证结论汇总）
+
+- [逐日记录：09-24](daily/2026-09-24.md)、[09-25](daily/2026-09-25.md)、[09-26](daily/2026-09-26.md)、[09-27](daily/2026-09-27.md)。实现在 `exp/refiner`，补丁序列在 `scripts/distill/patches/0001–0016`。
+- **蒸馏实现正确**：冻结 GT 教师（`try-5-r1p5-dagger.iter16000.pth`，dz 位置特征）对 LLM-Grid 学生做动作层 KL（有效未访问节点上的 torch.where 掩码），镜像 GraphMap。教师在学生 rollout 状态上的 CE 稳定在 0.35–0.60。
+- **位置特征 dz 是"罗盘"**：同一教师 checkpoint 用 dz 评 73.84，用 dy 评 68.13。`MODEL.elevation_axis` / `IL.gt_teacher_elevation_axis` 已可配置。
+- **loader 缺陷**：预训练把 fusion 存在 `bert.global_encoder.graph_map_attention.*`、把 map encoder 存在 `map_encoder.*`，导航模型从未加载它们，历史上所有 DAgger 都从初始化训 map 模块。已修（patch 0001/0006，`load_pretrained_map_modules`）。
+- **预训练的 map encoder 是死的**（R9）：387500 与 460000 两个预训练 checkpoint 的 `spatial_tokenizer.weight` 均为 0、偏置巨大（460000 大到 float32 范数溢出），encoder 对栅格失明；信号在 10×10 卷积处消失。loader 缺陷反而让此前的 DAgger 躲开了它。机制（何时、为何归零）待 R10 扫描。
+- **学生结果**（val_unseen SR）：R5（387500 骨干，栅格通道弱但活着）9k–14k 平台 63.5–65.1；R7（460000 骨干，加载了死 encoder，实为骨干 + metadata token）13k–20k 平台 65.2–66.7。配对：R7 比 R5 的 SPL 稳健高约 2 pp（CI 不含 0），SR 高 1–1.6 pp（CI 边缘），OSR 不变，步数少 5 步。**换骨干带来的是路径效率，不是到达率**；与教师 73.84 的差距主要在到达率。
+- **教师通道消融**：none 73.84、no_direction 71.02、raster_only 69.33、metadata_only 56.93、nomap 57.04；LLM 地图喂给 GT 训练的教师只有 49.48（低于 nomap），说明 LLM 栅格会误导 GT 读图器。
+- **工程修正**：map 路径改 fp32（预训练精度；R7 首启 NaN 的真实来源是死 encoder 的巨大偏置在 fp16 溢出）；`nan_guard` 参数有限性检查与前 N 次 forward 的非有限输出定位；评测 launcher 自动选空闲端口与 EGL 变量；训练 launcher 按 `CUDA_VISIBLE_DEVICES` 推导进程布局；离线探针 `map_sensitivity_probe.py`、`map_encoder_stage_probe.py`、`map_encoder_weight_sweep.py`。
+- **待做（不需新训练）**：学生侧通道消融（LLM 栅格与 metadata 各贡献多少 SR）、学生 vs 教师的配对分解、预训练 spatial_tokenizer 死亡时间线与根因（任务书 R12）。
