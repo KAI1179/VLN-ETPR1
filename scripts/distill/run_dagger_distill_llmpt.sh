@@ -32,7 +32,12 @@ IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
 GPU_NUMBERS="${#_gpu_list[@]}"
 GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
 NUM_ENVS="${NUM_ENVS:-4}"
-RUN_NAME="dagger_distill_gt_teacher_llmpt"
+# RUN_NAME is overridable. Without an override, LOAD_MAP=False gets its own
+# directory so it never auto-resumes from the LOAD_MAP=True run's checkpoints.
+if [[ -z "${RUN_NAME:-}" ]]; then
+    RUN_NAME="dagger_distill_gt_teacher_llmpt"
+    [[ "${LOAD_MAP:-auto}" == "False" ]] && RUN_NAME="${RUN_NAME}_nomapload"
+fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
@@ -124,6 +129,7 @@ COMMAND=(
     echo "launch_time=$(date -Is)"
     echo "git_commit=$(git rev-parse HEAD)"
     echo "resume_from=${LATEST_CKPT:-none}"
+    echo "run_name=${RUN_NAME}"
     echo "load_pretrained_map_modules=${LOAD_MAP_VALUE}"
     echo "elevation_axis=${ELEVATION_AXIS:-y}"
     echo "iters=${ITERS:-20000}"
