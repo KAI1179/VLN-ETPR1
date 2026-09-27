@@ -94,6 +94,9 @@ COMMAND=(
 
 mkdir -p "${RUN_DIR}"
 cd "${REPO_ROOT}"
+# Habitat needs the NVIDIA EGL vendor file; a shell without it fails at env
+# construction. Same default as the eval launchers.
+export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
 
 # Name the first module that emits NaN/+inf during the first N policy forwards
 # (the hooks remove themselves afterwards; 0 disables them).
