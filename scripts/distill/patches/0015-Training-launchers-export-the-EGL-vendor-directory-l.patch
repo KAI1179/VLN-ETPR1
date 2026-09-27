@@ -1,0 +1,48 @@
+From 674dcb079292cdb7900988786e0c9ac716f3ba28 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 27 Sep 2026 09:06:06 +0000
+Subject: [PATCH] Training launchers: export the EGL vendor directory like the
+ eval launchers
+
+R11's first launch died at environment construction in a shell without
+__EGL_VENDOR_LIBRARY_DIRS. The eval launchers already default it (patch 0005);
+the two distillation training launchers now do the same.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/run_dagger_distill_llmpt.sh | 3 +++
+ scripts/distill/run_dagger_distill_v2.sh    | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/scripts/distill/run_dagger_distill_llmpt.sh b/scripts/distill/run_dagger_distill_llmpt.sh
+index 8cc5647..16fc786 100755
+--- a/scripts/distill/run_dagger_distill_llmpt.sh
++++ b/scripts/distill/run_dagger_distill_llmpt.sh
+@@ -54,6 +54,9 @@ elif [[ $# -ne 0 ]]; then
+ fi
+ 
+ cd "${REPO_ROOT}"
++# Habitat needs the NVIDIA EGL vendor file; a shell without it fails at env
++# construction. Same default as the eval launchers.
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ 
+ # Name the first module that emits NaN/+inf during the first N policy forwards
+ # (the hooks remove themselves afterwards; 0 disables them).
+diff --git a/scripts/distill/run_dagger_distill_v2.sh b/scripts/distill/run_dagger_distill_v2.sh
+index c5c08c9..6c7e722 100755
+--- a/scripts/distill/run_dagger_distill_v2.sh
++++ b/scripts/distill/run_dagger_distill_v2.sh
+@@ -94,6 +94,9 @@ COMMAND=(
+ 
+ mkdir -p "${RUN_DIR}"
+ cd "${REPO_ROOT}"
++# Habitat needs the NVIDIA EGL vendor file; a shell without it fails at env
++# construction. Same default as the eval launchers.
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+ 
+ # Name the first module that emits NaN/+inf during the first N policy forwards
+ # (the hooks remove themselves afterwards; 0 disables them).
+-- 
+2.43.0
+
