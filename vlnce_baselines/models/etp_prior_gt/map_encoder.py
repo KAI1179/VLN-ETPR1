@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import List, Optional, Tuple
 from .map_utils import (
     MAPPED_OBJECT_NAMES,
@@ -148,6 +149,18 @@ class EmbeddingGridMapEncoder(nn.Module):
             kernel_size=10,
             stride=10,
         )
+        # transformers' from_pretrained() replaces every torch.nn.init function
+        # with a no-op while the model is constructed, and BERT's _init_weights()
+        # only re-initialises Linear/Embedding/LayerNorm.  A Conv2d that is absent
+        # from the starting state_dict therefore kept raw torch.empty memory in
+        # every pretraining run: weight exactly zero, bias arbitrary (55 in one
+        # checkpoint, 1e19 in another).  Tensor methods are not patched, so
+        # reproduce PyTorch's default Conv2d init (kaiming_uniform a=sqrt(5) ->
+        # U(-1/sqrt(fan_in), 1/sqrt(fan_in)) for weight and bias) explicitly.
+        bound = 1.0 / math.sqrt(CLIP_EMBEDDING_DIM * 10 * 10)
+        with torch.no_grad():
+            self.spatial_tokenizer.weight.uniform_(-bound, bound)
+            self.spatial_tokenizer.bias.uniform_(-bound, bound)
         self.spatial_token_norm = nn.LayerNorm(hidden_size)
         self.metadata_encoder = nn.Sequential(
             nn.Linear(MAP_METADATA_DIM, hidden_size),
@@ -161,6 +174,22 @@ class EmbeddingGridMapEncoder(nn.Module):
             num_layers=MAP_TRANSFORMER_LAYERS,
         )
         self.output_norm = nn.LayerNorm(hidden_size)
+
+    def assert_initialised(self, where: str = "map_encoder") -> None:
+        """Fail fast if any parameter is all-zero or non-finite.
+
+        Call after the owning model has been built through
+        transformers' from_pretrained(), which can leave modules it does not
+        know how to initialise as uninitialised memory.
+        """
+        bad = []
+        for name, param in self.named_parameters():
+            if not torch.isfinite(param).all():
+                bad.append(f"{name}: non-finite")
+            elif param.numel() > 1 and not param.detach().any():
+                bad.append(f"{name}: all zeros")
+        if bad:
+            raise RuntimeError(f"{where} is not initialised: {bad}")
 
     def _validate_inputs(
         self,

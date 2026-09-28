@@ -68,6 +68,29 @@ def create_dataloaders(
     return dataloaders
 
 
+def assert_conv_modules_initialised(model):
+    """from_pretrained() disables torch.nn.init during construction and BERT's
+    _init_weights() ignores convolutions, so a conv absent from the starting
+    state_dict silently keeps uninitialised memory.  Refuse to train such a model."""
+    conv_types = (torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Conv3d, torch.nn.ConvTranspose2d)
+    bad = []
+    for name, module in model.named_modules():
+        if not isinstance(module, conv_types):
+            continue
+        for pname, param in module.named_parameters(recurse=False):
+            if not torch.isfinite(param).all():
+                bad.append(f"{name}.{pname}: non-finite")
+            elif param.numel() > 1 and not param.detach().any():
+                bad.append(f"{name}.{pname}: all zeros")
+    if bad:
+        raise RuntimeError(
+            "Uninitialised convolution parameters after from_pretrained(): "
+            + ", ".join(bad)
+        )
+    if getattr(model, "map_encoder", None) is not None:
+        model.map_encoder.assert_initialised("model.map_encoder")
+
+
 def main(opts):
     default_gpu, n_gpu, device = set_cuda(opts)
     print(default_gpu, n_gpu, device)
@@ -209,6 +232,7 @@ def main(opts):
     model = model_class.from_pretrained(
         pretrained_model_name_or_path=None, config=model_config, state_dict=checkpoint
     )
+    assert_conv_modules_initialised(model)
     model.train()
     set_dropout(model, opts.dropout)  # 0.1
     model = wrap_model(model, device, opts.local_rank)
