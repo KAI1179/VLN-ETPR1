@@ -1,0 +1,232 @@
+From 194748d96994f2ee7ed29408f70b1bc20e64b8ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 02:16:58 +0000
+Subject: [PATCH] Initialise the spatial tokenizer explicitly; refuse to
+ pretrain uninitialised convs
+
+Root cause of the dead pretrained map encoder (R9/R15): pretraining builds
+the model with transformers' from_pretrained(None, config, state_dict=...).
+Since transformers 4.31 that call wraps construction in no_init_weights(),
+which replaces every torch.nn.init function with a no-op, and afterwards only
+re-initialises modules covered by BERT's _init_weights (Linear, Embedding,
+LayerNorm). nn.Conv2d is not covered, so a spatial_tokenizer absent from the
+starting state_dict kept raw torch.empty memory: weight exactly zero (fresh
+pages), bias arbitrary (norm 55 in checkpoint 387500, ~1e19 in 460000).
+category_projection escaped because its weight is overwritten by an explicit
+copy_ of CLIP embeddings; metadata_encoder got BERT's N(0, 0.02).
+
+Reproduced with transformers 4.43.4 (the pinned version) on a toy
+PreTrainedModel: from_pretrained(None, config, state_dict={}) leaves
+conv.weight all zeros and conv.bias garbage (max 3.7e19), while a plain
+constructor gives kaiming init.
+
+- EmbeddingGridMapEncoder now initialises spatial_tokenizer with tensor-level
+  uniform_ (not patched by no_init_weights), reproducing PyTorch's default.
+- EmbeddingGridMapEncoder.assert_initialised() and
+  train_r2r.assert_conv_modules_initialised() fail fast right after
+  from_pretrained() if any conv parameter is all-zero or non-finite.
+- Regression test builds the encoder inside no_init_weights() and checks the
+  tokenizer is finite, bounded and non-zero.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ pretrain_src/pretrain_src/train_r2r.py        | 24 +++++
+ .../test_map_encoder_init_under_hf.py         | 90 +++++++++++++++++++
+ .../models/etp_prior_gt/map_encoder.py        | 29 ++++++
+ 3 files changed, 143 insertions(+)
+ create mode 100644 tests/etp_prior_gt/test_map_encoder_init_under_hf.py
+
+diff --git a/pretrain_src/pretrain_src/train_r2r.py b/pretrain_src/pretrain_src/train_r2r.py
+index 952dca8..0152eff 100644
+--- a/pretrain_src/pretrain_src/train_r2r.py
++++ b/pretrain_src/pretrain_src/train_r2r.py
+@@ -68,6 +68,29 @@ def create_dataloaders(
+     return dataloaders
+ 
+ 
++def assert_conv_modules_initialised(model):
++    """from_pretrained() disables torch.nn.init during construction and BERT's
++    _init_weights() ignores convolutions, so a conv absent from the starting
++    state_dict silently keeps uninitialised memory.  Refuse to train such a model."""
++    conv_types = (torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Conv3d, torch.nn.ConvTranspose2d)
++    bad = []
++    for name, module in model.named_modules():
++        if not isinstance(module, conv_types):
++            continue
++        for pname, param in module.named_parameters(recurse=False):
++            if not torch.isfinite(param).all():
++                bad.append(f"{name}.{pname}: non-finite")
++            elif param.numel() > 1 and not param.detach().any():
++                bad.append(f"{name}.{pname}: all zeros")
++    if bad:
++        raise RuntimeError(
++            "Uninitialised convolution parameters after from_pretrained(): "
++            + ", ".join(bad)
++        )
++    if getattr(model, "map_encoder", None) is not None:
++        model.map_encoder.assert_initialised("model.map_encoder")
++
++
+ def main(opts):
+     default_gpu, n_gpu, device = set_cuda(opts)
+     print(default_gpu, n_gpu, device)
+@@ -209,6 +232,7 @@ def main(opts):
+     model = model_class.from_pretrained(
+         pretrained_model_name_or_path=None, config=model_config, state_dict=checkpoint
+     )
++    assert_conv_modules_initialised(model)
+     model.train()
+     set_dropout(model, opts.dropout)  # 0.1
+     model = wrap_model(model, device, opts.local_rank)
+diff --git a/tests/etp_prior_gt/test_map_encoder_init_under_hf.py b/tests/etp_prior_gt/test_map_encoder_init_under_hf.py
+new file mode 100644
+index 0000000..d715f6a
+--- /dev/null
++++ b/tests/etp_prior_gt/test_map_encoder_init_under_hf.py
+@@ -0,0 +1,90 @@
++"""The spatial tokenizer must be initialised even when torch.nn.init is disabled.
++
++transformers' from_pretrained() wraps model construction in no_init_weights(),
++which turns every torch.nn.init function into a no-op, and BERT's _init_weights
++never touches nn.Conv2d.  Both pretraining checkpoints (387500, 460000) shipped
++a spatial_tokenizer.weight of exact zeros and an arbitrary bias for this reason.
++"""
++
++import importlib.util
++import sys
++import types
++from pathlib import Path
++
++import pytest
++import torch
++
++ROOT = Path(__file__).resolve().parents[2]
++transformers = pytest.importorskip("transformers")
++
++
++def _install_fake_clip(monkeypatch):
++    fake_clip = types.ModuleType("clip")
++
++    class FakeClipModel(torch.nn.Module):
++        def eval(self):
++            return self
++
++        def encode_text(self, tokens):
++            num_prompts = tokens.size(0)
++            features = torch.arange(num_prompts * 512, dtype=torch.float32).view(
++                num_prompts, 512
++            )
++            return features + 1.0
++
++    fake_clip.load = lambda name, device="cpu": (FakeClipModel(), None)
++    fake_clip.tokenize = lambda prompts: torch.zeros(len(prompts), 77, dtype=torch.long)
++    monkeypatch.setitem(sys.modules, "clip", fake_clip)
++
++
++def _load_map_encoder(monkeypatch):
++    _install_fake_clip(monkeypatch)
++    for name in [
++        "vlnce_baselines",
++        "vlnce_baselines.models",
++        "vlnce_baselines.models.etp_prior_gt",
++    ]:
++        if sys.modules.get(name) is None:
++            module = types.ModuleType(name)
++            module.__path__ = []
++            monkeypatch.setitem(sys.modules, name, module)
++    for mod_name, rel_path in [
++        (
++            "vlnce_baselines.models.etp_prior_gt.map_utils",
++            "vlnce_baselines/models/etp_prior_gt/map_utils.py",
++        ),
++        (
++            "vlnce_baselines.models.etp_prior_gt.map_encoder",
++            "vlnce_baselines/models/etp_prior_gt/map_encoder.py",
++        ),
++    ]:
++        spec = importlib.util.spec_from_file_location(mod_name, ROOT / rel_path)
++        module = importlib.util.module_from_spec(spec)
++        monkeypatch.setitem(sys.modules, mod_name, module)
++        spec.loader.exec_module(module)
++    return sys.modules["vlnce_baselines.models.etp_prior_gt.map_encoder"]
++
++
++def test_spatial_tokenizer_survives_transformers_no_init_weights(monkeypatch):
++    map_encoder = _load_map_encoder(monkeypatch)
++    with transformers.modeling_utils.no_init_weights():
++        encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
++
++    weight = encoder.spatial_tokenizer.weight.detach()
++    bias = encoder.spatial_tokenizer.bias.detach()
++    bound = 1.0 / (512 * 10 * 10) ** 0.5
++    assert torch.isfinite(weight).all() and torch.isfinite(bias).all()
++    assert weight.abs().max() <= bound and bias.abs().max() <= bound
++    # U(-bound, bound) over 39.3M entries: norm ~ bound * sqrt(n / 3) ~ 16.
++    assert 12.0 < weight.norm().item() < 20.0
++    encoder.assert_initialised()
++
++
++def test_assert_initialised_rejects_zero_weight(monkeypatch):
++    map_encoder = _load_map_encoder(monkeypatch)
++    encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
++    with torch.no_grad():
++        encoder.spatial_tokenizer.weight.zero_()
++
++    with pytest.raises(RuntimeError, match="spatial_tokenizer.weight: all zeros"):
++        encoder.assert_initialised()
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_encoder.py b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+index cef6739..73343dd 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_encoder.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+@@ -1,4 +1,5 @@
+ import logging
++import math
+ from typing import List, Optional, Tuple
+ from .map_utils import (
+     MAPPED_OBJECT_NAMES,
+@@ -148,6 +149,18 @@ class EmbeddingGridMapEncoder(nn.Module):
+             kernel_size=10,
+             stride=10,
+         )
++        # transformers' from_pretrained() replaces every torch.nn.init function
++        # with a no-op while the model is constructed, and BERT's _init_weights()
++        # only re-initialises Linear/Embedding/LayerNorm.  A Conv2d that is absent
++        # from the starting state_dict therefore kept raw torch.empty memory in
++        # every pretraining run: weight exactly zero, bias arbitrary (55 in one
++        # checkpoint, 1e19 in another).  Tensor methods are not patched, so
++        # reproduce PyTorch's default Conv2d init (kaiming_uniform a=sqrt(5) ->
++        # U(-1/sqrt(fan_in), 1/sqrt(fan_in)) for weight and bias) explicitly.
++        bound = 1.0 / math.sqrt(CLIP_EMBEDDING_DIM * 10 * 10)
++        with torch.no_grad():
++            self.spatial_tokenizer.weight.uniform_(-bound, bound)
++            self.spatial_tokenizer.bias.uniform_(-bound, bound)
+         self.spatial_token_norm = nn.LayerNorm(hidden_size)
+         self.metadata_encoder = nn.Sequential(
+             nn.Linear(MAP_METADATA_DIM, hidden_size),
+@@ -162,6 +175,22 @@ class EmbeddingGridMapEncoder(nn.Module):
+         )
+         self.output_norm = nn.LayerNorm(hidden_size)
+ 
++    def assert_initialised(self, where: str = "map_encoder") -> None:
++        """Fail fast if any parameter is all-zero or non-finite.
++
++        Call after the owning model has been built through
++        transformers' from_pretrained(), which can leave modules it does not
++        know how to initialise as uninitialised memory.
++        """
++        bad = []
++        for name, param in self.named_parameters():
++            if not torch.isfinite(param).all():
++                bad.append(f"{name}: non-finite")
++            elif param.numel() > 1 and not param.detach().any():
++                bad.append(f"{name}: all zeros")
++        if bad:
++            raise RuntimeError(f"{where} is not initialised: {bad}")
++
+     def _validate_inputs(
+         self,
+         cognitive_crop: torch.Tensor,
+-- 
+2.43.0
+
