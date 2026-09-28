@@ -1,0 +1,43 @@
+From bb3ade9039632832f977240c7ed0ad3eaa93ba9a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 06:18:44 +0000
+Subject: [PATCH] Launchers: activate conda before enabling nounset
+
+The etpr1-uv env's activate.d hook (qt-main) reads QT_XCB_GL_INTEGRATION
+unguarded, so with set -u the sbatch job died before python started.
+---
+ scripts/submit/llm-grid-try5-fixedtok-dagger.sh   | 3 ++-
+ scripts/submit/llm-grid-try5-pretrain-fixedtok.sh | 3 ++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/submit/llm-grid-try5-fixedtok-dagger.sh b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+index f81297b..656e89f 100755
+--- a/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
++++ b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+@@ -6,6 +6,7 @@
+ # DAgger from the fixed LLM-Grid Try5 pretraining, loading its map encoder and
+ # fusion (the first DAgger whose pretrained raster path is actually trained).
+ # LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT selects the pretraining step.
++# The env's conda activate.d hooks read unset variables, so turn on nounset only afterwards.
++eval "$(conda shell.bash hook)" && conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
+ set -euo pipefail
+-eval "$(conda shell.bash hook)" && conda activate etpr1-uv
+ bash run_r2r/main_server.bash llm_grid_try5_fixedtok_dagger
+diff --git a/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh b/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
+index 723cf9f..c1a13ac 100755
+--- a/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
++++ b/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
+@@ -7,8 +7,9 @@
+ # spatial-tokenizer initialisation fix (patch 0017) and the start-up guard.
+ # Submit from the checkout that carries the fix (the exp/refiner worktree).
+ # Extra arguments are passed to train_r2r.py, e.g. --num_train_steps 200000.
++# The env's conda activate.d hooks read unset variables, so turn on nounset only afterwards.
++eval "$(conda shell.bash hook)" && conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
+ set -euo pipefail
+-eval "$(conda shell.bash hook)" && conda activate etpr1-uv
+ 
+ grep -q "def reinit_spatial_tokenizer" vlnce_baselines/models/etp_prior_gt/map_encoder.py \
+   || { echo "checkout lacks the tokenizer init fix (patch 0017)" >&2; exit 2; }
+-- 
+2.43.0
+
