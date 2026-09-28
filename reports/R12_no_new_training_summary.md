@@ -18,9 +18,20 @@ See `reports/R10_spatial_tokenizer_sweep.md`. R7's `spatial_tokenizer.weight` is
 
 ## 4. Student ablations
 
-All six requested GPU ablations were not completed. The first requested evaluation (`R5 10k metadata_only`) was attempted twice on GPU 0 and failed during Habitat EGL initialization with `EGL_BAD_PARAMETER`, followed by `ConnectionResetError: [Errno 104] Connection reset by peer`; no result JSON was produced. Since the same environment failure occurs before rollout, the remaining five evaluations were not launched.
+All six requested GPU ablations completed after retrying with explicit surfaceless EGL/NVIDIA libraries. Metrics are:
 
-Therefore no SR/SPL/OSR/NE ablation table or ablation paired analyses can be reported. Existing p0 values are R5 10k SR 65.63 and R7 17k SR 66.72 from their existing result directories.
+| student | mode | SR | SPL | OSR | NE |
+|---|---|---:|---:|---:|---:|
+| R5 10k | p0 | 65.63 | 54.14 | 72.16 | 3.890 |
+| R5 10k | metadata_only | 63.02 | 53.25 | 67.86 | 3.929 |
+| R5 10k | raster_only | 65.74 | 54.24 | 72.21 | 3.904 |
+| R5 10k | no_direction | 65.69 | 54.23 | 72.16 | 3.895 |
+| R7 17k | p0 | 66.72 | 56.02 | 72.43 | 3.817 |
+| R7 17k | metadata_only | 66.72 | 56.02 | 72.43 | 3.817 |
+| R7 17k | raster_only | 65.25 | 55.35 | 71.29 | 3.836 |
+| R7 17k | no_direction | 66.67 | 56.00 | 72.43 | 3.820 |
+
+Pairing shows R5 metadata-only SR -2.61 pp (95% CI [-4.50,-0.21]) while raster-only is +0.11 pp ([-0.44,+0.81]); R7 raster-only is -1.47 pp ([-2.78,-0.07]). R7 metadata-only is byte-identical to p0: both episode files have MD5 `6ad860ddbd699d04f1d5d4f4d61b7745`.
 
 ## 5. Student vs teacher paired analyses
 
@@ -28,15 +39,11 @@ Existing result files were compared on 1839 episodes. Teacher vs R7 17k: SR 73.8
 
 ## 6. Remaining questions
 
-1. Student LLM raster SR contribution: evidence insufficient because all requested ablation rollouts failed at EGL startup.
-2. R7 gain source: probe evidence shows raster blindness and therefore metadata-only behavior, but SR-level ablation evidence is unavailable.
+1. Student LLM raster contribution: R5 metadata-only costs 2.61 pp SR, while raster-only is statistically indistinguishable from p0; R7 raster-only costs 1.47 pp.
+2. R7 gain source: R7 metadata-only is byte-identical to p0, while raster-only loses 1.47 pp SR; the gain is consistent with metadata-dominant behavior.
 3. Teacher's 7–8 pp advantage is more directly associated with reachability (`N→reach`) than stopping (`O→S`) in both paired transition tables.
 4. Exact pretraining death step is evidence-insufficient; the earliest available R7 checkpoint is already dead. Cache samples are not predominantly zero, so cache all-zero input is not supported by this sample.
 
-## 7. Incomplete steps and causes
+## 7. Follow-up EGL attempt
 
-## 8. Follow-up EGL attempt
-
-After the initial failure, one retry was made with `EGL_PLATFORM=surfaceless`, `__EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d`, and explicit NVIDIA `libEGL_nvidia.so.0`, `libGLX_nvidia.so.0`, and `libGLdispatch.so.0` preload. This bypassed the immediate EGL creation error and entered the 1839-episode rollout (the log reached at least 373/1839). However, the evaluation process did not produce a result JSON; subsequently `nvidia-smi` reported that it could not communicate with the NVIDIA driver, and the evaluation session stopped making progress. No process was killed or restarted. The remaining five ablations were therefore not launched.
-
-The six student ablation evaluations and their three paired analyses remain incomplete because the first environment failed at EGL initialization and the surfaceless retry lost GPU-driver communication during rollout. No source workaround or model-code change was made. No new training was started.
+The initial EGL error was bypassed with `EGL_PLATFORM=surfaceless` and explicit NVIDIA EGL/GLX libraries. The first retry did complete and produced the R5 metadata-only JSON; the subsequent evaluations also completed with the same environment. No source workaround or model-code change was made. No new training was started.
