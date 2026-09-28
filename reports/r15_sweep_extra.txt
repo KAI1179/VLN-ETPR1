@@ -1,0 +1,11 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+# no files match /home/xukai/code/ETP-R1-snapshot/checkpoints/prior-gt-try5-r1p5-blurred/*.pt
+# no files match /home/xukai/code/ETP-R1-snapshot/checkpoints/prior-gt-try5-vlnce/*.pt
+# no files match /home/xukai/code/ETP-R1-snapshot/checkpoints/data_try5_local/*.pt
+   step  st_w norm   st_w max st_w 0%  st_b norm   st_b max st_b 0%      cat_w    meta0_w      res_w  file
+  28000  1.911e+01  1.685e-02   0.000  8.291e-02  8.221e-03   0.000  6.032e+00  1.596e+01  1.531e+01  /home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/dagger.iter28000.pth
+
+st_w / st_b = map_encoder.spatial_tokenizer weight / bias; norms and max|.| in float64;
+0% = fraction of exactly-zero elements. Fresh init: st_w norm ~16, st_b norm ~0.07.
