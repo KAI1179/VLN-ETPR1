@@ -80,7 +80,7 @@ def assert_conv_modules_initialised(model):
         for pname, param in module.named_parameters(recurse=False):
             if not torch.isfinite(param).all():
                 bad.append(f"{name}.{pname}: non-finite")
-            elif param.numel() > 1 and not param.detach().any():
+            elif param.dim() >= 2 and not param.detach().any():
                 bad.append(f"{name}.{pname}: all zeros")
     if bad:
         raise RuntimeError(

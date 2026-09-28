@@ -182,11 +182,13 @@ class EmbeddingGridMapEncoder(nn.Module):
         transformers' from_pretrained(), which can leave modules it does not
         know how to initialise as uninitialised memory.
         """
+        # Zero biases are legitimate (LayerNorm, MultiheadAttention); an
+        # all-zero weight matrix or kernel is not.
         bad = []
         for name, param in self.named_parameters():
             if not torch.isfinite(param).all():
                 bad.append(f"{name}: non-finite")
-            elif param.numel() > 1 and not param.detach().any():
+            elif param.dim() >= 2 and not param.detach().any():
                 bad.append(f"{name}: all zeros")
         if bad:
             raise RuntimeError(f"{where} is not initialised: {bad}")

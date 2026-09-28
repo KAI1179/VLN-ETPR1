@@ -1,9 +1,10 @@
 """The spatial tokenizer must be initialised even when torch.nn.init is disabled.
 
-transformers' from_pretrained() wraps model construction in no_init_weights(),
-which turns every torch.nn.init function into a no-op, and BERT's _init_weights
-never touches nn.Conv2d.  Both pretraining checkpoints (387500, 460000) shipped
-a spatial_tokenizer.weight of exact zeros and an arbitrary bias for this reason.
+transformers >= 4.31 wraps from_pretrained() model construction in
+no_init_weights(), which turns every torch.nn.init function into a no-op, and
+BERT's _init_weights never touches nn.Conv2d.  On older transformers (4.28.1 is
+installed in etpr1-py38) no_init_weights() only skips init_weights(), so this
+test passes trivially there; it guards the newer behaviour.
 """
 
 import importlib.util
