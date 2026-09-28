@@ -183,6 +183,19 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
       GRPO.require_complete_checkpoint True
       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
 
+# Fixed-tokenizer pretraining (scripts/submit/llm-grid-try5-pretrain-fixedtok.sh).
+# Override the step with LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT=... when submitting.
+LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT="${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT:-pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok/ckpts/model_step_500000.pt}"
+LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT="${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT:-}"
+LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
+      MODEL.policy_name LLMGridTry5Policy
+      MODEL.MAP_ENCODER.enabled True
+      MODEL.MAP_ENCODER.architecture try5
+      MODEL.MAP_ENCODER.source llm_grid
+      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
+      MODEL.MAP_ENCODER.load_pretrained_map_modules True
+      MODEL.pretrained_path ${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}"
+
 launch() {
       torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $1
 }
@@ -289,6 +302,16 @@ case $mode in
       llm_grid_try5_eval_grpo)
       echo "###### LLM-Grid Try5 GRPO eval ######"
       launch "--exp_name release_r2r_llm_grid_try5_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_GRPO_CKPT} IL.back_algo control"
+      ;;
+      llm_grid_try5_fixedtok_dagger)
+      echo "###### LLM-Grid Try5 (fixed tokenizer pretraining) DAgger ######"
+      [ -f "${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}" ] || { echo "missing ${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}" >&2; exit 2; }
+      launch "--exp_name release_r2r_llm_grid_try5_fixedtok_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS} ${DAGGER_ARGS}"
+      ;;
+      llm_grid_try5_fixedtok_eval_dagger)
+      echo "###### LLM-Grid Try5 (fixed tokenizer pretraining) DAgger eval ######"
+      [ -n "${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT}" ] || { echo "set LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT" >&2; exit 2; }
+      launch "--exp_name release_r2r_llm_grid_try5_fixedtok_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT} IL.back_algo control"
       ;;
       imagined_infer)
       warn_unimplemented "inference path for imagined cognitive maps"

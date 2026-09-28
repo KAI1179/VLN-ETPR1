@@ -70,25 +70,38 @@ def create_dataloaders(
 
 def assert_conv_modules_initialised(model):
     """from_pretrained() disables torch.nn.init during construction and BERT's
-    _init_weights() ignores convolutions, so a conv absent from the starting
-    state_dict silently keeps uninitialised memory.  Refuse to train such a model."""
+    _init_weights() ignores convolutions and raw parameters, so anything absent
+    from the starting state_dict silently keeps uninitialised memory.  Refuse to
+    train when a convolution or map-encoder parameter is non-finite or all-zero;
+    warn about any other all-zero matrix (some are zero by design)."""
     conv_types = (torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Conv3d, torch.nn.ConvTranspose2d)
-    bad = []
-    for name, module in model.named_modules():
-        if not isinstance(module, conv_types):
-            continue
-        for pname, param in module.named_parameters(recurse=False):
-            if not torch.isfinite(param).all():
-                bad.append(f"{name}.{pname}: non-finite")
-            elif param.dim() >= 2 and not param.detach().any():
-                bad.append(f"{name}.{pname}: all zeros")
+    conv_param_ids = {
+        id(param)
+        for module in model.modules()
+        if isinstance(module, conv_types)
+        for param in module.parameters(recurse=False)
+    }
+    bad, suspicious = [], []
+    for name, param in model.named_parameters():
+        if not torch.isfinite(param).all():
+            bad.append(f"{name}: non-finite")
+        elif param.dim() >= 2 and not param.detach().any():
+            target = bad if id(param) in conv_param_ids or "map_encoder" in name else suspicious
+            target.append(f"{name}: all zeros")
+    if suspicious:
+        LOGGER.warning("All-zero matrices after from_pretrained(): %s", ", ".join(suspicious))
     if bad:
         raise RuntimeError(
-            "Uninitialised convolution parameters after from_pretrained(): "
-            + ", ".join(bad)
+            "Uninitialised parameters after from_pretrained(): " + ", ".join(bad)
         )
     if getattr(model, "map_encoder", None) is not None:
         model.map_encoder.assert_initialised("model.map_encoder")
+
+
+def _spatial_tokenizer(model):
+    base = model.module if hasattr(model, "module") else model
+    encoder = getattr(base, "map_encoder", None)
+    return None if encoder is None else encoder.spatial_tokenizer
 
 
 def main(opts):
@@ -403,6 +416,21 @@ def main(opts):
                 grad_scaler.update()
             else:
                 optimizer.step()
+            tokenizer = _spatial_tokenizer(model)
+            if tokenizer is not None and global_step % opts.log_steps == 0:
+                # Raster path health: the pretrained tokenizer used to sit at
+                # weight 0 with an exploded bias and never receive a gradient.
+                grad = tokenizer.weight.grad
+                weight_norm = tokenizer.weight.norm().item()
+                bias_norm = tokenizer.bias.norm().item()
+                grad_norm_value = 0.0 if grad is None else grad.norm().item()
+                TB_LOGGER.add_scalar("map/spatial_tokenizer_weight_norm", weight_norm, global_step)
+                TB_LOGGER.add_scalar("map/spatial_tokenizer_bias_norm", bias_norm, global_step)
+                TB_LOGGER.add_scalar("map/spatial_tokenizer_weight_grad_norm", grad_norm_value, global_step)
+                LOGGER.info(
+                    f"spatial_tokenizer @ {global_step}: weight norm {weight_norm:.4f} "
+                    f"bias norm {bias_norm:.4f} weight grad norm {grad_norm_value:.3e}"
+                )
             optimizer.zero_grad()
             pbar.update(1)
 
