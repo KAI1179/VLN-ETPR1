@@ -7,8 +7,9 @@
 # spatial-tokenizer initialisation fix (patch 0017) and the start-up guard.
 # Submit from the checkout that carries the fix (the exp/refiner worktree).
 # Extra arguments are passed to train_r2r.py, e.g. --num_train_steps 200000.
+# The env's conda activate.d hooks read unset variables, so turn on nounset only afterwards.
+eval "$(conda shell.bash hook)" && conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
 set -euo pipefail
-eval "$(conda shell.bash hook)" && conda activate etpr1-uv
 
 grep -q "def reinit_spatial_tokenizer" vlnce_baselines/models/etp_prior_gt/map_encoder.py \
   || { echo "checkout lacks the tokenizer init fix (patch 0017)" >&2; exit 2; }
