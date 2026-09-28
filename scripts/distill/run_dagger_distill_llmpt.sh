@@ -34,9 +34,13 @@ GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
 NUM_ENVS="${NUM_ENVS:-4}"
 # RUN_NAME is overridable. Without an override, LOAD_MAP=False gets its own
 # directory so it never auto-resumes from the LOAD_MAP=True run's checkpoints.
+# REINIT_TOKENIZER=True: load the pretrained map modules but re-initialise the
+# dead spatial tokenizer (R11': live raster channel on the 460000 backbone).
+REINIT_TOKENIZER="${REINIT_TOKENIZER:-False}"
 if [[ -z "${RUN_NAME:-}" ]]; then
     RUN_NAME="dagger_distill_gt_teacher_llmpt"
     [[ "${LOAD_MAP:-auto}" == "False" ]] && RUN_NAME="${RUN_NAME}_nomapload"
+    [[ "${REINIT_TOKENIZER}" == "True" ]] && RUN_NAME="${RUN_NAME}_reinit_tok"
 fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -80,6 +84,12 @@ if grep -q "load_pretrained_map_modules" vlnce_baselines/config/default.py; then
     LOAD_MAP_VALUE="${LOAD_MAP:-True}"
     [[ "${LOAD_MAP_VALUE}" == "auto" ]] && LOAD_MAP_VALUE=True
     MAP_LOAD_ARGS=(MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP_VALUE}")
+    if grep -q "reinit_spatial_tokenizer" vlnce_baselines/config/default.py; then
+        MAP_LOAD_ARGS+=(MODEL.MAP_ENCODER.reinit_spatial_tokenizer "${REINIT_TOKENIZER}")
+    elif [[ "${REINIT_TOKENIZER}" == "True" ]]; then
+        echo "REINIT_TOKENIZER=True needs patch 0019 (reinit_spatial_tokenizer config key)" >&2
+        exit 2
+    fi
 else
     LOAD_MAP_VALUE="unavailable"
 fi
@@ -134,6 +144,7 @@ COMMAND=(
     echo "resume_from=${LATEST_CKPT:-none}"
     echo "run_name=${RUN_NAME}"
     echo "load_pretrained_map_modules=${LOAD_MAP_VALUE}"
+    echo "reinit_spatial_tokenizer=${REINIT_TOKENIZER}"
     echo "elevation_axis=${ELEVATION_AXIS:-y}"
     echo "iters=${ITERS:-20000}"
     echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"

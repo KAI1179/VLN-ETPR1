@@ -157,10 +157,7 @@ class EmbeddingGridMapEncoder(nn.Module):
         # checkpoint, 1e19 in another).  Tensor methods are not patched, so
         # reproduce PyTorch's default Conv2d init (kaiming_uniform a=sqrt(5) ->
         # U(-1/sqrt(fan_in), 1/sqrt(fan_in)) for weight and bias) explicitly.
-        bound = 1.0 / math.sqrt(CLIP_EMBEDDING_DIM * 10 * 10)
-        with torch.no_grad():
-            self.spatial_tokenizer.weight.uniform_(-bound, bound)
-            self.spatial_tokenizer.bias.uniform_(-bound, bound)
+        self.reinit_spatial_tokenizer()
         self.spatial_token_norm = nn.LayerNorm(hidden_size)
         self.metadata_encoder = nn.Sequential(
             nn.Linear(MAP_METADATA_DIM, hidden_size),
@@ -174,6 +171,18 @@ class EmbeddingGridMapEncoder(nn.Module):
             num_layers=MAP_TRANSFORMER_LAYERS,
         )
         self.output_norm = nn.LayerNorm(hidden_size)
+
+    def reinit_spatial_tokenizer(self) -> None:
+        """PyTorch's default Conv2d init via tensor ops (immune to no_init_weights).
+
+        Also the repair for checkpoints whose spatial_tokenizer was never
+        initialised (weight all zeros, bias garbage): everything else in the
+        pretrained map path is kept, only this layer starts fresh.
+        """
+        bound = 1.0 / math.sqrt(CLIP_EMBEDDING_DIM * 10 * 10)
+        with torch.no_grad():
+            self.spatial_tokenizer.weight.uniform_(-bound, bound)
+            self.spatial_tokenizer.bias.uniform_(-bound, bound)
 
     def assert_initialised(self, where: str = "map_encoder") -> None:
         """Fail fast if any parameter is all-zero or non-finite.

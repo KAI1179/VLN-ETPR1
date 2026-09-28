@@ -175,14 +175,22 @@ class ETP_PriorGT(Net):
             )
             if getattr(map_cfg, "load_pretrained_map_modules", True):
                 self._load_pretrained_map_encoder(
-                    getattr(model_config, "pretrained_path", None)
+                    getattr(model_config, "pretrained_path", None),
+                    reinit_spatial_tokenizer=getattr(
+                        map_cfg, "reinit_spatial_tokenizer", False
+                    ),
                 )
 
-    def _load_pretrained_map_encoder(self, pretrained_path):
+    def _load_pretrained_map_encoder(
+        self, pretrained_path, reinit_spatial_tokenizer=False
+    ):
         """Load map_encoder.* from the pretraining checkpoint, strictly.
 
         Historically nothing loaded these tensors: the map encoder started from
         CLIP init in every DAgger run even when pretraining had trained it.
+        With ``reinit_spatial_tokenizer`` the raster conv is re-initialised after
+        loading (the pretrained one is dead: weight all zeros); without it a dead
+        tokenizer is refused instead of silently training a blind encoder.
         """
         if not pretrained_path or not os.path.isfile(pretrained_path):
             print("  map_encoder: no pretrained_path file; keeping CLIP init")
@@ -210,6 +218,21 @@ class ETP_PriorGT(Net):
             f"  map_encoder: loaded {len(module_state)} pretrained tensors "
             f"from {pretrained_path}"
         )
+        if reinit_spatial_tokenizer:
+            self.map_encoder.reinit_spatial_tokenizer()
+            print(
+                "  map_encoder: spatial_tokenizer re-initialised "
+                f"(weight norm {self.map_encoder.spatial_tokenizer.weight.norm():.2f}, "
+                f"bias norm {self.map_encoder.spatial_tokenizer.bias.norm():.4f})"
+            )
+        try:
+            self.map_encoder.assert_initialised("pretrained map_encoder")
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{exc}. The pretrained raster conv is dead; set "
+                "MODEL.MAP_ENCODER.reinit_spatial_tokenizer True to start it fresh "
+                "while keeping the rest of the pretrained map path."
+            ) from exc
 
     @property
     def output_size(self):

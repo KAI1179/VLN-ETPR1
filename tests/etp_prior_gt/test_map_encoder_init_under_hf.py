@@ -89,3 +89,18 @@ def test_assert_initialised_rejects_zero_weight(monkeypatch):
 
     with pytest.raises(RuntimeError, match="spatial_tokenizer.weight: all zeros"):
         encoder.assert_initialised()
+
+
+def test_reinit_spatial_tokenizer_repairs_a_dead_layer(monkeypatch):
+    map_encoder = _load_map_encoder(monkeypatch)
+    encoder = map_encoder.EmbeddingGridMapEncoder(hidden_size=768)
+    with torch.no_grad():
+        encoder.spatial_tokenizer.weight.zero_()
+        encoder.spatial_tokenizer.bias.fill_(1e19)
+
+    encoder.reinit_spatial_tokenizer()
+
+    bound = 1.0 / (512 * 10 * 10) ** 0.5
+    assert 12.0 < encoder.spatial_tokenizer.weight.norm().item() < 20.0
+    assert encoder.spatial_tokenizer.bias.abs().max() <= bound
+    encoder.assert_initialised()

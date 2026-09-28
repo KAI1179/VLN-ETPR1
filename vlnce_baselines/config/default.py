@@ -228,6 +228,11 @@ _C.MODEL.MAP_ENCODER.eval_map_source = "refiner"
 # MODEL.pretrained_path into the navigation policy. False reproduces the historical
 # behaviour where both modules start from CLIP/zero init in every DAgger run.
 _C.MODEL.MAP_ENCODER.load_pretrained_map_modules = True
+# After loading pretrained map modules, re-initialise only the spatial tokenizer
+# (the 10x10 raster conv). Both pretraining lines shipped it uninitialised
+# (weight all zeros, huge bias), which makes the raster channel dead and
+# untrainable; fusion and metadata path keep their pretrained weights.
+_C.MODEL.MAP_ENCODER.reinit_spatial_tokenizer = False
 # Map-channel ablation applied in _prepare_map_inputs:
 #   none | metadata_only (zero raster) | raster_only (zero all metadata)
 #   | no_direction (zero the five route direction vectors only)
