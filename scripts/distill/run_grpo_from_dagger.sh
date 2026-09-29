@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# GRPO continuation of a distilled LLM-Grid Try5 DAgger run (R11' and successors).
+#
+# Usage: DAGGER_ITER=<N> CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/distill/run_grpo_from_dagger.sh [--dry-run]
+#
+# What is loaded, and from where
+#   * Every policy weight (BERT backbone, nav heads, graph_map_attention fusion,
+#     map_encoder with the DAgger-trained spatial tokenizer) comes from the DAgger
+#     checkpoint data/logs/checkpoints/<DAGGER_RUN>/ckpt.iter<DAGGER_ITER>.pth.
+#     GRPO.require_complete_checkpoint True makes the trainer refuse any
+#     missing or unexpected key, so nothing can silently stay at init.
+#   * MODEL.pretrained_path still names the 460000 pretraining file: the policy
+#     constructor torch.loads it for the backbone shapes. Its map modules are
+#     NOT loaded (load_pretrained_map_modules False): that file's spatial
+#     tokenizer is dead and the DAgger checkpoint carries the live one.
+#   * The frozen KL reference policy is a copy of the loaded DAgger weights
+#     (trainer behaviour), so the KL anchor is the DAgger checkpoint.
+#   * The optimizer is fresh. DAgger's optimizer state is not reused.
+#
+# What trains, and at which learning rate
+#   * GRPO has one learning rate (GRPO.lr) for everything it trains; there is
+#     no per-module LR in the trainer. Two AdamW groups differ only in weight
+#     decay (0.01 / 0 for biases and LayerNorm).
+#   * PROFILE=nav4 (default, the SR 66.50 recipe): global_encoder,
+#     graph_query_text, graph_attentioned_txt_embeds_transform, global_sap_head
+#     (234 tensors). map_encoder and graph_map_attention stay frozen, i.e. the
+#     raster path is kept exactly as DAgger left it. The trainer raises if the
+#     frozen map_encoder ever receives a gradient.
+#   * PROFILE=nav4-fusion additionally trains graph_map_attention (6 tensors).
+#     That profile lost to nav4 historically (65.42 vs 66.50); use it only as a
+#     deliberate second arm.
+#   * Schedule: LR 2e-5, no warmup, cosine to 0.25x over ITERS (500) iterations,
+#     grad-norm clip 2.0, G=8 samples per episode, beta 0.04, epsilon 0.2,
+#     dropout 0.10 on, AMP off, waypoint aug on, train_10 split, seed 100,
+#     one process per visible GPU with NUM_ENVS (4) environments each.
+#
+# Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
+# continues from the latest one (GRPO.is_requeue True restores weights,
+# optimizer, scheduler and iteration). Note that on resume the trainer copies
+# the KL reference from the resumed GRPO checkpoint, not from the DAgger one.
+#
+# Checkpoints are written every LOG_EVERY (50) iterations (GRPO ignores
+# CHECKPOINT_INTERVAL); each is about 2.75 GB. Evaluate them with
+#   bash scripts/distill/eval_iters.sh <RUN_NAME> 100 200 300 400 500
+#
+# Env: DAGGER_RUN (dagger_distill_gt_teacher_llmpt_reinit_tok), DAGGER_ITER (required),
+#      RUN_NAME (<DAGGER_RUN>_grpo_i<DAGGER_ITER>), PROFILE (nav4|nav4-fusion),
+#      ITERS (500), LOG_EVERY (50), LR (2e-5), NUM_ENVS (4), SEED (100),
+#      CUDA_VISIBLE_DEVICES (required), MASTER_PORT (free port), PREFLIGHT (1),
+#      ALLOW_DEAD_TOKENIZER (0), PRETRAINED_CKPT (460000 file, shapes only).
+set -euo pipefail
+
+REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+
+DRY_RUN_ARGS=()
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN_ARGS=(--dry-run)
+elif [[ $# -ne 0 ]]; then
+    echo "Usage: DAGGER_ITER=<N> CUDA_VISIBLE_DEVICES=... bash scripts/distill/run_grpo_from_dagger.sh [--dry-run]" >&2
+    exit 2
+fi
+
+DAGGER_RUN="${DAGGER_RUN:-dagger_distill_gt_teacher_llmpt_reinit_tok}"
+DAGGER_DIR="${REPO_ROOT}/data/logs/checkpoints/${DAGGER_RUN}"
+if [[ -z "${DAGGER_ITER:-}" ]]; then
+    echo "DAGGER_ITER is required. Checkpoints in ${DAGGER_DIR}:" >&2
+    ls -1 "${DAGGER_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/  \1/' | sort -n >&2 || true
+    exit 2
+fi
+[[ "${DAGGER_ITER}" =~ ^[0-9]+$ ]] || { echo "DAGGER_ITER must be an integer, got '${DAGGER_ITER}'" >&2; exit 2; }
+DAGGER_CKPT="${DAGGER_DIR}/ckpt.iter${DAGGER_ITER}.pth"
+[[ -f "${DAGGER_CKPT}" ]] || { echo "DAgger checkpoint not found: ${DAGGER_CKPT}" >&2; exit 1; }
+
+PROFILE="${PROFILE:-nav4}"
+case "${PROFILE}" in nav4|nav4-fusion) ;; *) echo "PROFILE must be nav4 or nav4-fusion, got '${PROFILE}'" >&2; exit 2 ;; esac
+RUN_NAME="${RUN_NAME:-${DAGGER_RUN}_grpo_i${DAGGER_ITER}}"
+[[ "${RUN_NAME}" != "${DAGGER_RUN}" ]] || { echo "RUN_NAME must differ from DAGGER_RUN (GRPO would resume from the DAgger directory)" >&2; exit 2; }
+RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+LOG_PATH="${RUN_DIR}/train.log"
+PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+[[ -f "${PRETRAINED_CKPT}" ]] || { echo "pretrained_path must exist (the policy constructor torch.loads it): ${PRETRAINED_CKPT}" >&2; exit 1; }
+
+# GPUs: explicit, so a still-running DAgger job is never shared by accident.
+[[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || { echo "Set CUDA_VISIBLE_DEVICES explicitly (e.g. 0,1,2,3)" >&2; exit 2; }
+IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
+GPU_NUMBERS="${#_gpu_list[@]}"
+GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
+NUM_ENVS="${NUM_ENVS:-4}"
+ITERS="${ITERS:-500}"
+LOG_EVERY="${LOG_EVERY:-50}"
+LR="${LR:-2e-5}"
+SEED="${SEED:-100}"
+
+cd "${REPO_ROOT}"
+for key in require_complete_checkpoint trainable_profile; do
+    grep -q "GRPO.${key}" vlnce_baselines/config/default.py || { echo "checkout lacks GRPO.${key}; wrong branch?" >&2; exit 2; }
+done
+grep -q "load_pretrained_map_modules" vlnce_baselines/config/default.py || { echo "checkout lacks MODEL.MAP_ENCODER.load_pretrained_map_modules (patch 0001)" >&2; exit 2; }
+grep -q "reinit_spatial_tokenizer" vlnce_baselines/config/default.py || { echo "checkout lacks MODEL.MAP_ENCODER.reinit_spatial_tokenizer (patch 0019)" >&2; exit 2; }
+
+# torchrun --standalone binds a fixed port on torch 2.1; pick a free one so a
+# DAgger job on 29500 and concurrent evals cannot collide.
+free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
+RDZV_PORT="${MASTER_PORT:-$(free_port)}"
+export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+mkdir -p "${RUN_DIR}"
+
+# Resume decision (same shell logic as the DAgger launcher, GRPO keys).
+RESUME_ARGS=(GRPO.load_from_ckpt True GRPO.is_requeue False)
+LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
+if [[ -n "${LATEST_CKPT}" ]]; then
+    RESUME_ARGS=(GRPO.load_from_ckpt True GRPO.is_requeue True)
+    echo "Resuming from ${LATEST_CKPT} (KL reference re-anchors to it)"
+else
+    echo "Fresh GRPO start from ${DAGGER_CKPT}"
+fi
+
+# Preflight: read the DAgger checkpoint once on CPU and refuse a dead or
+# non-finite spatial tokenizer, a missing fusion, or a mismatched iteration.
+PREFLIGHT_SUMMARY="skipped"
+if [[ "${PREFLIGHT:-1}" == "1" && -z "${LATEST_CKPT}" ]]; then
+    PREFLIGHT_SUMMARY="$("${PYTHON}" - "${DAGGER_CKPT}" "${DAGGER_ITER}" "${ALLOW_DEAD_TOKENIZER:-0}" <<'PY'
+import sys, torch
+path, expect_iter, allow_dead = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
+ckpt = torch.load(path, map_location="cpu")
+state = ckpt["state_dict"]
+def find(suffix):
+    hits = [v for k, v in state.items() if k.endswith(suffix)]
+    if len(hits) != 1:
+        raise SystemExit(f"expected exactly one key ending in {suffix}, found {len(hits)}")
+    return hits[0].double()
+w, b = find("map_encoder.spatial_tokenizer.weight"), find("map_encoder.spatial_tokenizer.bias")
+n_map = sum(1 for k in state if ".map_encoder." in k)
+n_fusion = sum(1 for k in state if ".graph_map_attention." in k)
+problems = []
+if ckpt.get("iteration") != expect_iter:
+    problems.append(f"checkpoint iteration {ckpt.get('iteration')} != DAGGER_ITER {expect_iter}")
+if n_fusion == 0:
+    problems.append("no graph_map_attention tensors in the checkpoint")
+nonfinite = [k for k, v in state.items() if v.is_floating_point() and not torch.isfinite(v).all()]
+if nonfinite:
+    problems.append(f"non-finite tensors: {nonfinite[:5]}")
+dead = bool((w == 0).all()) or not torch.isfinite(b).all()
+summary = (f"dagger_iteration={ckpt.get('iteration')} keys={len(state)} map_encoder_keys={n_map} "
+           f"fusion_keys={n_fusion} tokenizer_weight_norm={w.norm():.4f} tokenizer_bias_norm={b.norm():.4f}")
+if dead and not allow_dead:
+    problems.append("spatial tokenizer is dead (all-zero weight or non-finite bias); set ALLOW_DEAD_TOKENIZER=1 to override")
+if problems:
+    print(summary)
+    raise SystemExit("PREFLIGHT FAILED: " + "; ".join(problems))
+print(summary)
+PY
+)" || { echo "${PREFLIGHT_SUMMARY}" >&2; exit 1; }
+    echo "Preflight: ${PREFLIGHT_SUMMARY}"
+fi
+
+COMMAND=(
+    "${TORCHRUN}" --nproc_per_node="${GPU_NUMBERS}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" "${REPO_ROOT}/run.py"
+    --exp_name "${RUN_NAME}"
+    --run-type grpo
+    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+    "${DRY_RUN_ARGS[@]}"
+    SIMULATOR_GPU_IDS "${GPU_IDS}"
+    TORCH_GPU_IDS "${GPU_IDS}"
+    GPU_NUMBERS "${GPU_NUMBERS}"
+    TASK_CONFIG.SEED "${SEED}"
+    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+    TASK_CONFIG.DATASET.SUFFIX _10
+    NUM_ENVIRONMENTS "${NUM_ENVS}"
+    TRAINER_NAME GRPO-ETP-LLM
+    MODEL.policy_name LLMGridTry5Policy
+    MODEL.MAP_ENCODER.enabled True
+    MODEL.MAP_ENCODER.architecture try5
+    MODEL.MAP_ENCODER.source llm_grid
+    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+    MODEL.MAP_ENCODER.refiner_ckpt ""
+    MODEL.MAP_ENCODER.load_pretrained_map_modules False
+    MODEL.MAP_ENCODER.reinit_spatial_tokenizer False
+    MODEL.elevation_axis y
+    MODEL.pretrained_path "${PRETRAINED_CKPT}"
+    GRPO.trainable_profile "${PROFILE}"
+    GRPO.require_complete_checkpoint True
+    "${RESUME_ARGS[@]}"
+    GRPO.ckpt_to_load "${DAGGER_CKPT}"
+    GRPO.iters "${ITERS}"
+    GRPO.lr "${LR}"
+    GRPO.warmup_iters 0
+    GRPO.min_lr_ratio 0.25
+    GRPO.log_every "${LOG_EVERY}"
+    GRPO.sample_num 8
+    GRPO.update_epochs 1
+    GRPO.grpo_beta 0.04
+    GRPO.grpo_epsilon 0.2
+    GRPO.max_grad_norm 2.0
+    GRPO.enable_amp False
+    GRPO.enable_all_dropouts True
+    GRPO.dropout_in_sampling True
+    GRPO.dropout_rate 0.10
+    GRPO.waypoint_aug True
+    GRPO.back_algo teleport
+)
+
+{
+    echo "launch_time=$(date -Is)"
+    echo "git_commit=$(git rev-parse HEAD)"
+    echo "run_name=${RUN_NAME}"
+    echo "dagger_ckpt=${DAGGER_CKPT}"
+    echo "resume_from=${LATEST_CKPT:-none}"
+    echo "preflight=${PREFLIGHT_SUMMARY}"
+    echo "profile=${PROFILE}"
+    echo "load_pretrained_map_modules=False (all map weights from the DAgger checkpoint)"
+    echo "pretrained_path=${PRETRAINED_CKPT} (backbone shapes only)"
+    echo "iters=${ITERS} log_every=${LOG_EVERY} lr=${LR} warmup=0 min_lr_ratio=0.25 G=8 beta=0.04 eps=0.2 clip=2.0"
+    echo "seed=${SEED} split=train_10 gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs) port=${RDZV_PORT}"
+} >> "${RUN_DIR}/launch_info.txt"
+
+echo "Log: ${LOG_PATH}"
+env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee -a "${LOG_PATH}"
+
+if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+    echo "Dry run complete: ${RUN_DIR}/config.yaml"
+fi
