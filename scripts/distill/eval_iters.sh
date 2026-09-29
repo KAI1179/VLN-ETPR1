@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Evaluate several DAgger checkpoints of one run on R2R val_unseen, one
+# checkpoint per GPU in parallel, then print the summary table.
+#
+# Usage: bash scripts/distill/eval_iters.sh RUN_NAME [ITER ...]
+#   With no ITER the script lists the run's checkpoints and which of them
+#   already have a val_unseen result, and exits.
+# Env: GPUS            comma-separated physical GPU ids (default 4,5,6,7);
+#                      iters are dealt round-robin, each GPU works through
+#                      its share sequentially.
+#      PRETRAINED_CKPT passed through to eval_run.sh (its default is the
+#                      460000 llm_grid pretraining; runs started from the
+#                      GT-line 387500 must override it).
+#      SPLIT, NUM_ENVS, BACK_ALGO, ELEVATION_AXIS: as in eval_run.sh.
+# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>/eval_results/
+# (eval_run.sh layout, so summarize_eval.py and paired_analysis.py read them).
+# Per-iteration console output: data/logs/checkpoints/<RUN_NAME>/eval_iter<ITER>_<SPLIT>.log
+set -euo pipefail
+
+REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+EVAL_RUN="${REPO_ROOT}/scripts/distill/eval_run.sh"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: bash scripts/distill/eval_iters.sh RUN_NAME [ITER ...]" >&2
+    exit 2
+fi
+RUN_NAME="$1"; shift
+SPLIT="${SPLIT:-val_unseen}"
+RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+[[ -d "${RUN_DIR}" ]] || { echo "Run directory not found: ${RUN_DIR}" >&2; exit 1; }
+
+result_json() { echo "${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
+
+if [[ $# -eq 0 ]]; then
+    echo "Checkpoints of ${RUN_NAME} (${SPLIT}):"
+    found=0
+    for ckpt in $(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1/' | sort -n); do
+        found=1
+        if [[ -f "$(result_json "${ckpt}")" ]]; then echo "  iter ${ckpt}  evaluated"; else echo "  iter ${ckpt}"; fi
+    done
+    [[ ${found} -eq 1 ]] || echo "  (none yet)"
+    exit 0
+fi
+
+ITERS=("$@")
+for it in "${ITERS[@]}"; do
+    [[ "${it}" =~ ^[0-9]+$ ]] || { echo "ITER must be an integer, got '${it}'" >&2; exit 2; }
+    [[ -f "${RUN_DIR}/ckpt.iter${it}.pth" ]] || { echo "Checkpoint not found: ${RUN_DIR}/ckpt.iter${it}.pth" >&2; exit 1; }
+done
+
+IFS=',' read -ra GPU_LIST <<< "${GPUS:-4,5,6,7}"
+[[ ${#GPU_LIST[@]} -ge 1 ]] || { echo "GPUS must name at least one GPU" >&2; exit 2; }
+
+# Deal iterations round-robin onto the GPUs; each GPU evaluates its share in order.
+declare -a SHARES
+for ((i = 0; i < ${#GPU_LIST[@]}; i++)); do SHARES[i]=""; done
+for ((i = 0; i < ${#ITERS[@]}; i++)); do
+    g=$((i % ${#GPU_LIST[@]}))
+    SHARES[g]="${SHARES[g]} ${ITERS[i]}"
+done
+
+DRIVER_LOG="${RUN_DIR}/eval_iters_$(date +%Y%m%d-%H%M%S).log"
+echo "run=${RUN_NAME} split=${SPLIT} gpus=${GPU_LIST[*]} iters=${ITERS[*]}" | tee "${DRIVER_LOG}"
+
+worker() {
+    local gpu="$1"; shift
+    local it
+    for it in "$@"; do
+        if [[ -f "$(result_json "${it}")" ]]; then
+            echo "[gpu ${gpu}] iter ${it}: result exists, skipping"
+            continue
+        fi
+        echo "[gpu ${gpu}] iter ${it}: start $(date +%H:%M:%S)"
+        # eval_run.sh already tees its full console to eval_iter<ITER>_<SPLIT>.log.
+        if CUDA_VISIBLE_DEVICES="${gpu}" bash "${EVAL_RUN}" "${RUN_NAME}" "${it}" ${PRETRAINED_CKPT:+"${PRETRAINED_CKPT}"} >/dev/null; then
+            echo "[gpu ${gpu}] iter ${it}: done  $(date +%H:%M:%S)"
+        else
+            echo "[gpu ${gpu}] iter ${it}: FAILED, see ${RUN_DIR}/eval_iter${it}_${SPLIT}.log"
+        fi
+    done
+}
+
+pids=()
+for ((g = 0; g < ${#GPU_LIST[@]}; g++)); do
+    # shellcheck disable=SC2086  # SHARES[g] is a space-separated iter list
+    [[ -n "${SHARES[g]// /}" ]] || continue
+    worker "${GPU_LIST[g]}" ${SHARES[g]} 2>&1 | tee -a "${DRIVER_LOG}" &
+    pids+=($!)
+done
+wait "${pids[@]}"
+
+failed=()
+for it in "${ITERS[@]}"; do [[ -f "$(result_json "${it}")" ]] || failed+=("${it}"); done
+
+cd "${REPO_ROOT}"
+"${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" | tee -a "${DRIVER_LOG}"
+echo "Driver log: ${DRIVER_LOG}"
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Missing results for iters: ${failed[*]}" >&2
+    exit 1
+fi
