@@ -17,6 +17,9 @@ Examples:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import gzip
 import json
 from typing import Literal, Optional, Sequence
@@ -25,9 +28,14 @@ import numpy as np
 import torch
 from tap import Tap
 
-from prior import R2R_DIR
-from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
-from vlnce_baselines.models.etp_prior_gt.map_utils import (
+# Runnable as `python scripts/distill/<name>.py` from anywhere, like the other probes.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from prior import R2R_DIR  # noqa: E402
+from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors  # noqa: E402
+from vlnce_baselines.models.etp_prior_gt.map_utils import (  # noqa: E402
     SIZE,
     cached_cognitive_map_to_tensors,
     map_origin_xz,
