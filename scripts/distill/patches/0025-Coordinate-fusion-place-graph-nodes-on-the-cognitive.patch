@@ -1,0 +1,867 @@
+From 0c7295de0038d139a6fd828f3c0231fcf7890cb9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 29 Sep 2026 23:52:55 -0600
+Subject: [PATCH] Coordinate fusion: place graph nodes on the cognitive map
+
+The try5 map path could not use map layout. The map encoder has no position
+code, so its 100 spatial tokens are an unordered set (invariant to permuting
+10x10 blocks), and graph nodes carry only egocentric position features, so
+the graph->map cross-attention can match nodes to map tokens by content only.
+On the historical LLM try5 policy a raster from another scene scores no lower
+than the episode's own (65.96-66.01 vs 65.09, three donor seeds).
+
+MODEL.MAP_ENCODER.coordinate_fusion (default False, try5 only) closes that:
+  * every gmap entry gets its map-frame (row, col) in raster cells from its
+    world position (node_pos / ghost_aug_pos, as in get_pos_fts), using the
+    raster origin = episode start (x, z) - cached start_position, the frame
+    the refiner's online evidence already uses;
+    MAP_ENCODER.start_position_meters_per_unit gives the cache's unit
+    (1.0 LLM / gt.legacy metres, 0.5 gt.online cells);
+  * GraphMapCrossAttention adds a fixed per-head distance bias
+    -c_h * |node - token centre|^2 (tokens, 5 m) to the attention logits:
+    a third of the heads stay content-only, the rest use sigma = 2.5-20 m;
+    STOP, padding and the metadata token get no bias;
+  * EmbeddingGridMapEncoder adds a fixed 2D sin/cos code to the spatial
+    tokens.
+Buffers are non-persistent, so no parameters or state_dict keys are added and
+checkpoints load with the flag on or off; with the flag off every code path
+is unchanged. The residual projection stays zero-initialised, so at step 0
+the fused output equals try5's. The fusion refuses to run without node
+coordinates, and the trainer refuses the GT teacher with the flag on (the
+teacher checkpoint was trained without it); the GRPO trainer does not pass
+coordinates yet and fails fast. Pretraining is untouched.
+
+scripts/distill/check_map_frame.py is the offline preflight: it maps each
+episode's reference path into the raster with the trainer's transform and
+reports how often it lands on a labelled region, also under the wrong unit
+and with x/z swapped, so a GT cache must clearly prefer the configured unit.
+
+Tests: flag adds no state; NaN coordinates reproduce try5 exactly; zero
+residual is identity; per-batch/per-head bias matches a manual attention;
+local heads peak on the token under the node; encoder is block-permutation
+invariant without the code and not with it; the start maps to its cached
+cell in both units.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CAaWoeW35zu5bncqujUPPQ
+---
+ scripts/distill/check_map_frame.py            | 120 +++++++++++
+ tests/etp_prior_gt/test_coordinate_fusion.py  | 197 ++++++++++++++++++
+ vlnce_baselines/config/default.py             |   8 +
+ .../models/etp_prior_gt/map_encoder.py        |  36 +++-
+ .../models/etp_prior_gt/map_fusion.py         |  92 +++++++-
+ .../models/etp_prior_gt/map_utils.py          |  39 ++++
+ vlnce_baselines/models/etp_prior_gt/policy.py |   5 +
+ .../models/etp_prior_gt/vilmodel_cmt.py       |   9 +-
+ .../models/etp_prior_gt/vlnbert_init.py       |   4 +
+ vlnce_baselines/models/graph_utils.py         |  11 +
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     |  57 +++++
+ 11 files changed, 573 insertions(+), 5 deletions(-)
+ create mode 100644 scripts/distill/check_map_frame.py
+ create mode 100644 tests/etp_prior_gt/test_coordinate_fusion.py
+
+diff --git a/scripts/distill/check_map_frame.py b/scripts/distill/check_map_frame.py
+new file mode 100644
+index 0000000..0755f00
+--- /dev/null
++++ b/scripts/distill/check_map_frame.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python3
++"""Preflight for coordinate fusion: do graph positions land on the raster?
++
++Maps each episode's reference path (world coordinates) into the raster with
++the same transform the trainer uses (map_origin_xz + world_to_map_cells) and
++reports how often the path falls on a cell that the map labels with any
++region.  A GT map must score high under the configured unit and clearly
++lower under the wrong unit or with x/z swapped; otherwise the frame is wrong
++and coordinate fusion would bias attention towards the wrong tokens.  For an
++LLM map the same number measures how well its regions sit under the true path.
++
++Examples:
++    python scripts/distill/check_map_frame.py --source gt \
++        --namespace gt.online121c369.r1p5.direction5.v1 --meters-per-unit 0.5
++    python scripts/distill/check_map_frame.py --source llm --meters-per-unit 1.0
++"""
++
++from __future__ import annotations
++
++import gzip
++import json
++from typing import Literal, Optional, Sequence
++
++import numpy as np
++import torch
++from tap import Tap
++
++from prior import R2R_DIR
++from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
++from vlnce_baselines.models.etp_prior_gt.map_utils import (
++    SIZE,
++    cached_cognitive_map_to_tensors,
++    map_origin_xz,
++    world_to_map_cells,
++)
++
++REGION_CHANNELS = slice(27, 37)
++
++
++class Args(Tap):
++    source: Literal["gt", "llm"]
++    meters_per_unit: float
++    """MAP_ENCODER.start_position_meters_per_unit to check (1.0 metres, 0.5 cells)."""
++    namespace: str = "gt.online121c369.r1p5.direction5.v1"
++    """GT cache namespace (source gt)."""
++    llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++    split: str = "val_unseen"
++    limit: int = 300
++
++
++def _load_map(args: Args, episode: dict) -> Optional[dict]:
++    cache_id = f"R2R_{args.split}_{episode['episode_id']}"
++    try:
++        if args.source == "gt":
++            return cached_cognitive_map_to_tensors(
++                episode["scene_id"], cache_id, namespace=args.namespace,
++                metadata_schema="direction5",
++            )
++        return llm_cached_cognitive_map_to_tensors(
++            episode["scene_id"], cache_id, "R2R", args.split,
++            metadata_schema="direction5", model_key=args.llm_model_key,
++        )
++    except FileNotFoundError:
++        return None
++
++
++def _region_hit_rate(grid: torch.Tensor, cells: torch.Tensor) -> float:
++    index = torch.floor(cells).long()
++    inside = ((index >= 0) & (index < SIZE)).all(dim=-1)
++    if not bool(inside.any()):
++        return 0.0
++    regions = grid[REGION_CHANNELS]
++    hits = regions[:, index[inside, 0], index[inside, 1]].amax(dim=0) > 0
++    return float(hits.sum()) / float(len(cells))
++
++
++def main(argv: Optional[Sequence[str]] = None) -> None:
++    args = Args(underscores_to_dashes=True).parse_args(argv)
++    path = R2R_DIR / args.split / f"{args.split}.json.gz"
++    with gzip.open(path, "rt", encoding="utf-8") as file:
++        episodes = json.load(file)["episodes"]
++    variants = {
++        f"configured unit {args.meters_per_unit}": (args.meters_per_unit, False),
++        f"unit x2 ({args.meters_per_unit * 2})": (args.meters_per_unit * 2, False),
++        f"unit /2 ({args.meters_per_unit / 2})": (args.meters_per_unit / 2, False),
++        "configured unit, x/z swapped": (args.meters_per_unit, True),
++    }
++    rates: dict[str, list[float]] = {name: [] for name in variants}
++    start_outside = 0
++    used = 0
++    for episode in episodes:
++        if used >= args.limit:
++            break
++        cognitive_map = _load_map(args, episode)
++        if cognitive_map is None:
++            continue
++        used += 1
++        grid = cognitive_map["grid"].float()
++        reference = np.asarray(episode["reference_path"], dtype=np.float64)
++        for name, (meters_per_unit, swap) in variants.items():
++            origin = map_origin_xz(
++                episode["start_position"], cognitive_map["start_position"], meters_per_unit
++            )
++            cells = world_to_map_cells(reference, origin)
++            if swap:
++                cells = cells.flip(-1)
++            rates[name].append(_region_hit_rate(grid, cells))
++        origin = map_origin_xz(
++            episode["start_position"], cognitive_map["start_position"], args.meters_per_unit
++        )
++        start = world_to_map_cells([episode["start_position"]], origin)[0]
++        start_outside += int(not bool(((start >= 0) & (start < SIZE)).all()))
++
++    print(f"source={args.source} episodes={used} start_outside_raster={start_outside}")
++    for name, values in rates.items():
++        print(f"  {name:32s} path-on-region rate {np.mean(values) * 100:6.2f}%")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/etp_prior_gt/test_coordinate_fusion.py b/tests/etp_prior_gt/test_coordinate_fusion.py
+new file mode 100644
+index 0000000..8e6b064
+--- /dev/null
++++ b/tests/etp_prior_gt/test_coordinate_fusion.py
+@@ -0,0 +1,197 @@
++"""Coordinate fusion: node-to-map-token distance bias and map token positions.
++
++Without it the try5 map path is blind to layout: the map encoder has no
++position code, so its 100 spatial tokens form an unordered set, and graph
++nodes attend to them by content only.  These tests pin down that the flag-off
++path is unchanged, that the flag adds no parameters, and that with the flag
++on the policy can tell where on the map each node is.
++"""
++
++import importlib.util
++import sys
++import types
++from pathlib import Path
++
++import numpy as np
++import pytest
++import torch
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def _load(monkeypatch, *modules):
++    fake_clip = types.ModuleType("clip")
++
++    class FakeClipModel(torch.nn.Module):
++        def eval(self):
++            return self
++
++        def encode_text(self, tokens):
++            return torch.randn(tokens.size(0), 512, generator=torch.Generator().manual_seed(0))
++
++    fake_clip.load = lambda name, device="cpu": (FakeClipModel(), None)
++    fake_clip.tokenize = lambda prompts: torch.zeros(len(prompts), 77, dtype=torch.long)
++    monkeypatch.setitem(sys.modules, "clip", fake_clip)
++    for name in [
++        "vlnce_baselines",
++        "vlnce_baselines.models",
++        "vlnce_baselines.models.etp_prior_gt",
++    ]:
++        if sys.modules.get(name) is None:
++            package = types.ModuleType(name)
++            package.__path__ = []
++            monkeypatch.setitem(sys.modules, name, package)
++    loaded = []
++    for stem in modules:
++        mod_name = f"vlnce_baselines.models.etp_prior_gt.{stem}"
++        spec = importlib.util.spec_from_file_location(
++            mod_name, ROOT / f"vlnce_baselines/models/etp_prior_gt/{stem}.py"
++        )
++        module = importlib.util.module_from_spec(spec)
++        monkeypatch.setitem(sys.modules, mod_name, module)
++        spec.loader.exec_module(module)
++        loaded.append(module)
++    return loaded
++
++
++def _fusions(map_fusion, hidden=16, heads=4):
++    torch.manual_seed(0)
++    off = map_fusion.GraphMapCrossAttention(hidden, heads, dropout=0.0)
++    on = map_fusion.GraphMapCrossAttention(hidden, heads, dropout=0.0, coordinate_fusion=True)
++    on.load_state_dict(off.state_dict())
++    for module in (off, on):
++        torch.nn.init.normal_(module.residual_projection.weight, std=0.1)
++    on.residual_projection.load_state_dict(off.residual_projection.state_dict())
++    return off.eval(), on.eval()
++
++
++def test_flag_adds_no_parameters_and_no_state(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    off, on = _fusions(map_fusion)
++    assert off.state_dict().keys() == on.state_dict().keys()
++
++
++def test_nodes_without_position_reproduce_try5(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    off, on = _fusions(map_fusion)
++    gmap = torch.randn(2, 5, 16)
++    tokens = torch.randn(2, 101, 16)
++    masks = torch.ones(2, 101, dtype=torch.bool)
++    no_position = torch.full((2, 5, 2), float("nan"))
++    expected, _ = off(gmap, None, tokens, masks)
++    actual, _ = on(gmap, None, tokens, masks, node_coords=no_position)
++    assert torch.allclose(actual, expected, atol=1e-6)
++
++
++def test_zero_residual_projection_is_identity(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    fusion = map_fusion.GraphMapCrossAttention(16, 4, dropout=0.0, coordinate_fusion=True)
++    gmap = torch.randn(1, 4, 16)
++    out, _ = fusion(
++        gmap, None, torch.randn(1, 101, 16), torch.ones(1, 101, dtype=torch.bool),
++        node_coords=torch.rand(1, 4, 2) * 100,
++    )
++    assert torch.equal(out, gmap)
++
++
++def test_missing_coordinates_fail_loudly(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    _, on = _fusions(map_fusion)
++    with pytest.raises(ValueError, match="gmap_map_coords"):
++        on(torch.randn(1, 2, 16), None, torch.randn(1, 101, 16), None)
++
++
++def test_bias_is_applied_per_batch_item_and_head(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    _, on = _fusions(map_fusion)
++    gmap = torch.randn(2, 3, 16)
++    tokens = torch.randn(2, 101, 16)
++    coords = torch.tensor(
++        [[[5.0, 5.0], [55.0, 95.0], [float("nan")] * 2],
++         [[95.0, 5.0], [12.0, 40.0], [60.0, 60.0]]]
++    )
++    out, _ = on(gmap, None, tokens, torch.ones(2, 101, dtype=torch.bool), node_coords=coords)
++
++    attention = on.attention
++    heads, head_dim = attention.num_heads, 16 // attention.num_heads
++    w_q, w_k, w_v = attention.in_proj_weight.chunk(3)
++    b_q, b_k, b_v = attention.in_proj_bias.chunk(3)
++    q = (gmap @ w_q.T + b_q).view(2, 3, heads, head_dim).transpose(1, 2)
++    k = (tokens @ w_k.T + b_k).view(2, 101, heads, head_dim).transpose(1, 2)
++    v = (tokens @ w_v.T + b_v).view(2, 101, heads, head_dim).transpose(1, 2)
++    bias = on.coordinate_bias(coords, 101).view(2, heads, 3, 101)
++    weights = torch.softmax(q @ k.transpose(-1, -2) / head_dim**0.5 + bias, dim=-1)
++    context = (weights @ v).transpose(1, 2).reshape(2, 3, 16)
++    context = attention.out_proj(context)
++    expected = gmap + on.residual_projection(context)
++    assert torch.allclose(out, expected, atol=1e-5)
++
++
++def test_local_heads_prefer_the_token_under_the_node(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    fusion = map_fusion.GraphMapCrossAttention(24, 12, coordinate_fusion=True)
++    coef = fusion.locality_coef
++    assert (coef == 0).sum() == 4 and (coef > 0).sum() == 8
++    # Node at raster cell (37.2, 81.9) lies in token row 3, col 8 -> index 38.
++    bias = fusion.coordinate_bias(torch.tensor([[[37.2, 81.9]]]), 101).view(12, 101)
++    for head in range(12):
++        if coef[head] > 0:
++            assert int(bias[head, :100].argmax()) == 38
++            assert bias[head, 100] == 0  # metadata token is never biased
++        else:
++            assert torch.all(bias[head] == 0)
++
++
++def test_factory_rejects_coordinates_for_bidirectional_fusion(monkeypatch):
++    (map_fusion,) = _load(monkeypatch, "map_fusion")
++    with pytest.raises(ValueError, match="try5"):
++        map_fusion.build_map_token_fusion("current", 16, 4, coordinate_fusion=True)
++
++
++def _block_permute(grid, order):
++    blocks = grid.reshape(37, 10, 10, 10, 10).transpose(0, 1, 3, 2, 4).reshape(37, 100, 10, 10)
++    return blocks[:, order].reshape(37, 10, 10, 10, 10).transpose(0, 1, 3, 2, 4).reshape(37, 100, 100)
++
++
++def test_position_code_makes_the_encoder_see_layout(monkeypatch):
++    _, map_encoder = _load(monkeypatch, "map_utils", "map_encoder")
++    torch.manual_seed(0)
++    plain = map_encoder.EmbeddingGridMapEncoder(hidden_size=64).eval()
++    coded = map_encoder.EmbeddingGridMapEncoder(hidden_size=64, spatial_position_encoding=True).eval()
++    assert plain.state_dict().keys() == coded.state_dict().keys()
++    coded.load_state_dict(plain.state_dict())
++
++    rng = np.random.default_rng(0)
++    grid = (rng.random((37, 100, 100)) > 0.97).astype(np.float32)
++    order = rng.permutation(100)
++    inverse = np.argsort(order)
++    permuted = _block_permute(grid, order)
++    metadata = (torch.randn(1, 5, 2), torch.randn(1, 2), torch.randn(1, 2))
++
++    def tokens(encoder, raster):
++        with torch.no_grad():
++            out, _ = encoder(torch.from_numpy(np.ascontiguousarray(raster))[None], *metadata)
++        return out[0]
++
++    # Without the code the spatial tokens are an unordered set: permuting the
++    # blocks only permutes the output tokens.
++    base, moved = tokens(plain, grid), tokens(plain, permuted)
++    assert torch.allclose(moved[:100][inverse], base[:100], atol=1e-4)
++    assert torch.allclose(moved[100], base[100], atol=1e-4)
++    # With it, the same blocks at other places encode differently.
++    base, moved = tokens(coded, grid), tokens(coded, permuted)
++    assert not torch.allclose(moved[:100][inverse], base[:100], atol=1e-2)
++
++
++def test_start_maps_to_its_cached_cell(monkeypatch):
++    map_utils, = _load(monkeypatch, "map_utils")
++    start_world = [3.2, 0.1, -7.9]
++    for meters_per_unit, start_position in ((1.0, [12.25, 30.5]), (0.5, [24.5, 61.0])):
++        origin = map_utils.map_origin_xz(start_world, torch.tensor(start_position), meters_per_unit)
++        cell = map_utils.world_to_map_cells([start_world], origin)[0]
++        assert torch.allclose(cell, torch.tensor([24.5, 61.0]))
++    # One metre along world x is two rows, along world z two columns.
++    moved = map_utils.world_to_map_cells([[4.2, 0.1, -7.4]], origin)[0]
++    assert torch.allclose(moved, torch.tensor([26.5, 62.0]))
++    nan_row = map_utils.world_to_map_cells(np.full((1, 3), np.nan), origin)
++    assert torch.isnan(nan_row).all()
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 86f073e..6b8ce9e 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -240,6 +240,14 @@ _C.MODEL.MAP_ENCODER.map_ablation = "none"
+ # Multiply start_position before the map encoder (online GT maps store grid
+ # cells = 2x metres; cached GT/LLM maps store metres).
+ _C.MODEL.MAP_ENCODER.start_position_scale = 1.0
++# Coordinate fusion (try5 only): each graph node gets its map-frame position,
++# the 10x10 spatial tokens get a fixed 2D position code, and the graph->map
++# cross-attention is biased by node-to-token distance.  Off reproduces try5
++# exactly; no parameters are added, so checkpoints load either way.
++_C.MODEL.MAP_ENCODER.coordinate_fusion = False
++# Unit of the cached start_position used to place graph nodes in the raster:
++# 1.0 for LLM and gt.legacy caches (metres), 0.5 for gt.online* caches (cells).
++_C.MODEL.MAP_ENCODER.start_position_meters_per_unit = 1.0
+ 
+ 
+ def purge_keys(config: CN, keys: List[str]) -> None:
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_encoder.py b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+index e2f4359..a638d48 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_encoder.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+@@ -5,6 +5,7 @@ from .map_utils import (
+     MAPPED_OBJECT_NAMES,
+     MAPPED_REGION_NAMES,
+     MAP_TOKEN_COUNT,
++    MAP_TOKEN_GRID_SIZE,
+     NUM_MAP_CATEGORIES,
+     SIZE,
+     TRAJECTORY_KEYPOINT_COUNT,
+@@ -75,6 +76,26 @@ def _build_category_projection_weights() -> torch.Tensor:
+         raise RuntimeError("CLIP-based map category initialization failed") from exc
+ 
+ 
++def _grid_sincos_code(grid_size: int, hidden_size: int) -> torch.Tensor:
++    """(1, grid_size**2, hidden_size) row-major 2D sin/cos code.
++
++    Half of the channels encode the token row, half the column, each as
++    sin/cos pairs over geometrically spaced frequencies.
++    """
++    if hidden_size % 4 != 0:
++        raise ValueError(f"hidden_size must be divisible by 4, got {hidden_size}")
++    quarter = hidden_size // 4
++    frequencies = 1.0 / (100.0 ** (torch.arange(quarter, dtype=torch.float32) / quarter))
++    index = torch.arange(grid_size, dtype=torch.float32)
++    rows, cols = torch.meshgrid(index, index, indexing="ij")
++
++    def encode(values: torch.Tensor) -> torch.Tensor:
++        angles = values.reshape(-1, 1) * frequencies
++        return torch.cat([angles.sin(), angles.cos()], dim=-1)
++
++    return torch.cat([encode(rows), encode(cols)], dim=-1).unsqueeze(0)
++
++
+ class NormFirstTransformerEncoderLayer(nn.Module):
+     """PyTorch 1.9-compatible pre-norm transformer encoder layer."""
+ 
+@@ -126,13 +147,24 @@ class EmbeddingGridMapEncoder(nn.Module):
+     transformer encoding.
+     """
+ 
+-    def __init__(self, hidden_size: int = 768):
++    def __init__(self, hidden_size: int = 768, spatial_position_encoding: bool = False):
+         super().__init__()
+         if hidden_size % MAP_TRANSFORMER_HEADS != 0:
+             raise ValueError(
+                 f"hidden_size must be divisible by {MAP_TRANSFORMER_HEADS}, got {hidden_size}"
+             )
+         self.hidden_size = hidden_size
++        # Without it the 100 spatial tokens are an unordered set: the token
++        # transformer and the try5 fusion are invariant to permuting 10x10
++        # blocks, so the map's layout never reaches the policy.  Fixed 2D
++        # sin/cos code, non-persistent: checkpoints are unaffected.
++        self.spatial_position_encoding = spatial_position_encoding
++        if spatial_position_encoding:
++            self.register_buffer(
++                "spatial_position_code",
++                _grid_sincos_code(MAP_TOKEN_GRID_SIZE, hidden_size),
++                persistent=False,
++            )
+ 
+         self.category_projection = nn.Conv2d(
+             NUM_MAP_CATEGORIES, CLIP_EMBEDDING_DIM, kernel_size=1, bias=False
+@@ -301,6 +333,8 @@ class EmbeddingGridMapEncoder(nn.Module):
+             1, 2
+         )  # (B, 100, hidden_size)
+         spatial_tokens = self.spatial_token_norm(spatial_tokens)
++        if self.spatial_position_encoding:
++            spatial_tokens = spatial_tokens + self.spatial_position_code
+ 
+         # metadata: (B, 14) = flattened keypoints (5*2), direction (2), start (2).
+         metadata = torch.cat(
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_fusion.py b/vlnce_baselines/models/etp_prior_gt/map_fusion.py
+index fa0ce43..6d5cfc9 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_fusion.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_fusion.py
+@@ -3,6 +3,35 @@
+ import torch
+ import torch.nn as nn
+ 
++# Geometry of the map encoder's spatial tokens (EmbeddingGridMapEncoder): a
++# 100x100 raster of 0.5 m cells cut by a stride-10 convolution into 10x10
++# tokens, flattened row-major, followed by one metadata token.
++MAP_TOKEN_GRID = 10
++MAP_CELLS_PER_TOKEN = 10
++MAP_SPATIAL_TOKENS = MAP_TOKEN_GRID * MAP_TOKEN_GRID
++# Per-head locality scales (in tokens, 1 token = 5 m) for coordinate fusion.
++# A third of the heads stay purely content-based; the rest are pulled towards
++# the map tokens around each graph node at 2.5 m to 20 m scales.
++LOCALITY_SIGMAS_TOKENS = (0.5, 1.0, 2.0, 4.0)
++
++
++def map_token_centers() -> torch.Tensor:
++    """(100, 2) centres of the spatial tokens in raster-cell coordinates."""
++    index = torch.arange(MAP_TOKEN_GRID, dtype=torch.float32)
++    centers = index * MAP_CELLS_PER_TOKEN + MAP_CELLS_PER_TOKEN / 2.0
++    rows, cols = torch.meshgrid(centers, centers, indexing="ij")
++    return torch.stack([rows.reshape(-1), cols.reshape(-1)], dim=-1)
++
++
++def locality_coefficients(num_heads: int) -> torch.Tensor:
++    """(num_heads,) coefficients c_h of the attention bias -c_h * d^2."""
++    content_heads = num_heads // 3
++    coefficients = [0.0] * content_heads
++    for index in range(num_heads - content_heads):
++        sigma = LOCALITY_SIGMAS_TOKENS[index % len(LOCALITY_SIGMAS_TOKENS)]
++        coefficients.append(1.0 / (2.0 * sigma * sigma))
++    return torch.tensor(sorted(coefficients), dtype=torch.float32)
++
+ 
+ def _fp32(tensor: torch.Tensor):
+     """Disable autocast on the tensor's device.
+@@ -17,13 +46,30 @@ def _fp32(tensor: torch.Tensor):
+ class GraphMapCrossAttention(nn.Module):
+     """Try5 one-way map-token fusion: graph nodes attend to fixed map tokens."""
+ 
+-    def __init__(self, hidden_size: int, num_heads: int, dropout: float = 0.1):
++    def __init__(
++        self,
++        hidden_size: int,
++        num_heads: int,
++        dropout: float = 0.1,
++        coordinate_fusion: bool = False,
++    ):
+         super().__init__()
+         self.attention = nn.MultiheadAttention(
+             hidden_size, num_heads, dropout=dropout, batch_first=True
+         )
+         self.residual_projection = nn.Linear(hidden_size, hidden_size)
+         self._zero_residual_projection()
++        # Coordinate fusion adds a fixed distance bias between each graph node's
++        # map-frame position and each spatial token's centre to the attention
++        # logits.  Non-persistent buffers: the state_dict (and so every
++        # checkpoint) is identical with the flag on or off.
++        self.num_heads = num_heads
++        self.coordinate_fusion = coordinate_fusion
++        if coordinate_fusion:
++            self.register_buffer("token_centers", map_token_centers(), persistent=False)
++            self.register_buffer(
++                "locality_coef", locality_coefficients(num_heads), persistent=False
++            )
+ 
+     def _zero_residual_projection(self):
+         nn.init.zeros_(self.residual_projection.weight)
+@@ -37,18 +83,53 @@ class GraphMapCrossAttention(nn.Module):
+             map_token_masks[map_token_masks.any(dim=1).logical_not(), 0] = True
+         return map_token_masks.logical_not()
+ 
+-    def forward(self, gmap_embeds, gmap_masks, map_tokens, map_token_masks):
++    def coordinate_bias(self, node_coords, num_map_tokens):
++        """Additive attention bias (B * num_heads, G, num_map_tokens).
++
++        node_coords: (B, G, 2) map-frame (row, col) in raster cells; rows that
++        are not finite (STOP slot, padding) get no bias, and neither does the
++        metadata token.
++        """
++        batch_size, num_nodes, _ = node_coords.shape
++        valid = torch.isfinite(node_coords).all(dim=-1)
++        coords = torch.where(
++            valid.unsqueeze(-1), node_coords, torch.zeros_like(node_coords)
++        )
++        delta = (coords.unsqueeze(2) - self.token_centers) / MAP_CELLS_PER_TOKEN
++        squared_distance = delta.pow(2).sum(dim=-1)  # (B, G, 100) in tokens^2
++        bias = -self.locality_coef.view(1, -1, 1, 1) * squared_distance.unsqueeze(1)
++        bias = bias * valid.view(batch_size, 1, num_nodes, 1)
++        extra = bias.new_zeros(
++            batch_size, self.num_heads, num_nodes, num_map_tokens - MAP_SPATIAL_TOKENS
++        )
++        bias = torch.cat([bias, extra], dim=-1)
++        return bias.reshape(batch_size * self.num_heads, num_nodes, num_map_tokens)
++
++    def forward(
++        self, gmap_embeds, gmap_masks, map_tokens, map_token_masks, node_coords=None
++    ):
+         if map_tokens is None:
+             return gmap_embeds, None
++        if self.coordinate_fusion and node_coords is None:
++            raise ValueError(
++                "MAP_ENCODER.coordinate_fusion is on but no gmap_map_coords were "
++                "passed; this trainer does not provide node map coordinates"
++            )
+ 
+         with _fp32(gmap_embeds):
+             gmap_embeds = gmap_embeds.float()
+             map_tokens = map_tokens.float()
++            attn_mask = None
++            if self.coordinate_fusion:
++                attn_mask = self.coordinate_bias(
++                    node_coords.float(), map_tokens.size(1)
++                )
+             map_context, _ = self.attention(
+                 gmap_embeds,
+                 map_tokens,
+                 map_tokens,
+                 key_padding_mask=self._map_key_padding_mask(map_token_masks),
++                attn_mask=attn_mask,
+                 need_weights=False,
+             )
+             return gmap_embeds + self.residual_projection(map_context), None
+@@ -137,9 +218,14 @@ def build_map_token_fusion(
+     hidden_size: int,
+     num_heads: int,
+     dropout: float = 0.1,
++    coordinate_fusion: bool = False,
+ ) -> nn.Module:
+     if architecture == "current":
++        if coordinate_fusion:
++            raise ValueError("coordinate_fusion is only implemented for try5")
+         return BidirectionalMapTokenFusion(hidden_size, num_heads, dropout)
+     if architecture == "try5":
+-        return GraphMapCrossAttention(hidden_size, num_heads, dropout)
++        return GraphMapCrossAttention(
++            hidden_size, num_heads, dropout, coordinate_fusion=coordinate_fusion
++        )
+     raise ValueError(f"Unknown navigation architecture: {architecture}")
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_utils.py b/vlnce_baselines/models/etp_prior_gt/map_utils.py
+index 414818a..7f70e3a 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_utils.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_utils.py
+@@ -91,6 +91,45 @@ def _validate_metadata_points(name: str, points) -> torch.Tensor:
+     return tensor
+ 
+ 
++def map_origin_xz(
++    start_world_position,
++    start_position: torch.Tensor,
++    meters_per_unit: float,
++) -> torch.Tensor:
++    """World (x, z) of raster cell (0, 0)'s corner.
++
++    The raster's rows follow world x and its columns world z in 0.5 m cells
++    (``meters_to_grid``); ``start_position`` is the episode start in that frame,
++    stored in metres by the LLM and legacy GT caches and in 0.5 m cells by the
++    online GT generator (``meters_per_unit`` 1.0 and 0.5 respectively).  Same
++    frame as the refiner's online evidence projection.
++    """
++    start_m = start_position.double() * meters_per_unit
++    return torch.tensor(
++        [
++            float(start_world_position[0]) - float(start_m[0]),
++            float(start_world_position[2]) - float(start_m[1]),
++        ],
++        dtype=torch.float64,
++    )
++
++
++def world_to_map_cells(positions, origin_xz: torch.Tensor) -> torch.Tensor:
++    """(N, 3) world positions -> (N, 2) continuous (row, col) raster cells.
++
++    Rows that are not finite stay NaN (used for the STOP slot).
++    """
++    positions = torch.as_tensor(np.asarray(positions, dtype=np.float64))
++    cells = torch.stack(
++        [
++            (positions[:, 0] - origin_xz[0]) / CELL_SIZE,
++            (positions[:, 2] - origin_xz[1]) / CELL_SIZE,
++        ],
++        dim=-1,
++    )
++    return cells.float()
++
++
+ def direction5_cognitive_map_file_to_tensors(
+     cache_path: Path,
+ ) -> Dict[str, torch.Tensor]:
+diff --git a/vlnce_baselines/models/etp_prior_gt/policy.py b/vlnce_baselines/models/etp_prior_gt/policy.py
+index 4bc3965..a9481ed 100644
+--- a/vlnce_baselines/models/etp_prior_gt/policy.py
++++ b/vlnce_baselines/models/etp_prior_gt/policy.py
+@@ -169,6 +169,9 @@ class ETP_PriorGT(Net):
+             map_hidden_size = self.vln_bert.config.hidden_size
+             self.map_encoder = EmbeddingGridMapEncoder(
+                 hidden_size=map_hidden_size,
++                spatial_position_encoding=bool(
++                    getattr(map_cfg, "coordinate_fusion", False)
++                ),
+             )
+             print(
+                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
+@@ -275,6 +278,7 @@ class ETP_PriorGT(Net):
+         start_positions=None,
+         map_tokens=None,
+         map_token_masks=None,
++        gmap_map_coords=None,
+     ):
+ 
+         if mode == "language":
+@@ -475,5 +479,6 @@ class ETP_PriorGT(Net):
+                 gmap_task_embeddings,
+                 map_tokens=map_tokens,
+                 map_token_masks=map_token_masks,
++                gmap_map_coords=gmap_map_coords,
+             )
+             return outs
+diff --git a/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py b/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
+index 69f85c4..77e46de 100644
+--- a/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
++++ b/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
+@@ -857,6 +857,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
+             config.hidden_size,
+             config.num_attention_heads,
+             config.hidden_dropout_prob,
++            coordinate_fusion=getattr(config, "map_coordinate_fusion", False),
+         )
+ 
+         self.graph_query_text = BertOutAttention(config)
+@@ -940,6 +941,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
+         gmap_task_embeddings,
+         map_tokens=None,
+         map_token_masks=None,
++        gmap_map_coords=None,
+     ):
+         # global branch
+         batch_size = gmap_task_embeddings.size(0)
+@@ -964,8 +966,13 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
+ 
+         # Bidirectional fusion preserves both views:
+         # gmap_embeds stays (B, G, hidden_size), updated_map_tokens is (B, 101, hidden_size).
++        # gmap_map_coords: (B, G, 2) map-frame (row, col) of each node, only
++        # passed when MAP_ENCODER.coordinate_fusion is on.
++        fusion_kwargs = (
++            {} if gmap_map_coords is None else {"node_coords": gmap_map_coords}
++        )
+         gmap_embeds, updated_map_tokens = self.graph_map_attention(
+-            gmap_embeds, gmap_masks, map_tokens, map_token_masks
++            gmap_embeds, gmap_masks, map_tokens, map_token_masks, **fusion_kwargs
+         )
+ 
+         if self.global_encoder.sprel_linear is not None:
+diff --git a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+index 27fc8a5..79b7c97 100644
+--- a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
++++ b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+@@ -84,6 +84,10 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
+     vis_config.max_txt_task_embeddings = 4
+     vis_config.max_gmap_task_embeddings = 3
+     vis_config.navigation_architecture = config.MAP_ENCODER.architecture
++    vis_config.map_coordinate_fusion = bool(
++        getattr(config.MAP_ENCODER, "enabled", False)
++        and getattr(config.MAP_ENCODER, "coordinate_fusion", False)
++    )
+ 
+     visual_model = model_class.from_pretrained(
+         pretrained_model_name_or_path=None,
+diff --git a/vlnce_baselines/models/graph_utils.py b/vlnce_baselines/models/graph_utils.py
+index fcbc04a..c72782e 100644
+--- a/vlnce_baselines/models/graph_utils.py
++++ b/vlnce_baselines/models/graph_utils.py
+@@ -304,6 +304,17 @@ class GraphMap(object):
+         else:
+             return self.ghost_embeds[vp][0] / self.ghost_embeds[vp][1]
+ 
++    def get_vp_positions(self, gmap_vp_ids):
++        """(G, 3) world positions matching get_pos_fts: node_pos for visited
++        nodes, ghost_aug_pos for ghosts, NaN for the STOP slot (None)."""
++        positions = np.full((len(gmap_vp_ids), 3), np.nan, dtype=np.float64)
++        for index, vp in enumerate(gmap_vp_ids):
++            if vp is None:
++                continue
++            source = self.ghost_aug_pos if vp.startswith("g") else self.node_pos
++            positions[index] = np.asarray(source[vp], dtype=np.float64)
++        return positions
++
+     def get_pos_fts(self, cur_vp, cur_pos, cur_ori, gmap_vp_ids, elevation_axis="y"):
+         rel_angles, rel_dists = [], []
+         for vp in gmap_vp_ids:
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 168b237..5416a9b 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -45,8 +45,11 @@ from torch.nn.utils.rnn import pad_sequence
+ from collections import OrderedDict
+ 
+ from vlnce_baselines.models.etp_prior_gt.map_utils import (
++    SIZE as MAP_SIZE,
+     available_vlnce_cognitive_map_episode_ids,
+     cached_cognitive_map_to_tensors,
++    map_origin_xz,
++    world_to_map_cells,
+ )
+ from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+ from vlnce_baselines.models.etp_prior_gt.nan_guard import (
+@@ -1375,8 +1378,60 @@ class RLTrainer(BaseVLNCETrainer):
+         # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
+         nav_inputs["map_tokens"] = map_tokens
+         nav_inputs["map_token_masks"] = map_token_masks
++        if getattr(map_cfg, "coordinate_fusion", False):
++            nav_inputs["gmap_map_coords"] = self._gmap_map_coords(
++                nav_inputs["gmap_vp_ids"], cognitive_maps
++            )
+         return None
+ 
++    def _attach_map_origins(self, cognitive_maps, mode):
++        """Store each episode's raster origin (world x, z) in its map dict.
++
++        Kept in the per-env dict so it is popped together with the map when
++        an env finishes.
++        """
++        if self._gtt_on and mode == "train":
++            raise ValueError(
++                "MAP_ENCODER.coordinate_fusion is not supported together with "
++                "the GT teacher (the teacher checkpoint was trained without it)"
++            )
++        meters_per_unit = float(
++            self.config.MODEL.MAP_ENCODER.start_position_meters_per_unit
++        )
++        episodes = self.envs.current_episodes()
++        for cognitive_map, episode in zip(cognitive_maps, episodes):
++            origin = map_origin_xz(
++                episode.start_position,
++                cognitive_map["start_position"],
++                meters_per_unit,
++            )
++            start_cell = world_to_map_cells([episode.start_position], origin)[0]
++            if not bool(((start_cell >= 0) & (start_cell < MAP_SIZE)).all()):
++                raise ValueError(
++                    f"episode {episode.episode_id}: start maps to raster cell "
++                    f"{start_cell.tolist()}, outside the {MAP_SIZE}x{MAP_SIZE} map; "
++                    "check MAP_ENCODER.start_position_meters_per_unit "
++                    f"(={meters_per_unit}: 1.0 for metres, 0.5 for cells)"
++                )
++            cognitive_map["map_origin_xz"] = origin
++
++    def _gmap_map_coords(self, gmap_vp_ids, cognitive_maps):
++        """(B, G, 2) map-frame (row, col) of every gmap entry, NaN for STOP
++        and padding; same node/ghost positions as get_pos_fts."""
++        per_env = [
++            world_to_map_cells(
++                gmap.get_vp_positions(vp_ids), cognitive_map["map_origin_xz"]
++            )
++            for gmap, vp_ids, cognitive_map in zip(
++                self.gmaps, gmap_vp_ids, cognitive_maps[: self.envs.num_envs]
++            )
++        ]
++        max_len = max(coords.size(0) for coords in per_env)
++        batch = torch.full((len(per_env), max_len, 2), float("nan"))
++        for index, coords in enumerate(per_env):
++            batch[index, : coords.size(0)] = coords
++        return batch.to(self.device)
++
+     def _should_load_cognitive_maps(self, mode, map_cfg):
+         return map_cfg.enabled
+ 
+@@ -1634,6 +1689,8 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+         else:
+             cognitive_maps = None
++        if cognitive_maps is not None and getattr(map_cfg, "coordinate_fusion", False):
++            self._attach_map_origins(cognitive_maps, mode)
+         if self._refiner_enabled() and cognitive_maps is not None:
+             self._initialize_refiner_state(cognitive_maps)
+ 
+-- 
+2.43.0
+
