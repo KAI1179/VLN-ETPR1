@@ -304,6 +304,17 @@ class GraphMap(object):
         else:
             return self.ghost_embeds[vp][0] / self.ghost_embeds[vp][1]
 
+    def get_vp_positions(self, gmap_vp_ids):
+        """(G, 3) world positions matching get_pos_fts: node_pos for visited
+        nodes, ghost_aug_pos for ghosts, NaN for the STOP slot (None)."""
+        positions = np.full((len(gmap_vp_ids), 3), np.nan, dtype=np.float64)
+        for index, vp in enumerate(gmap_vp_ids):
+            if vp is None:
+                continue
+            source = self.ghost_aug_pos if vp.startswith("g") else self.node_pos
+            positions[index] = np.asarray(source[vp], dtype=np.float64)
+        return positions
+
     def get_pos_fts(self, cur_vp, cur_pos, cur_ori, gmap_vp_ids, elevation_axis="y"):
         rel_angles, rel_dists = [], []
         for vp in gmap_vp_ids:

@@ -84,6 +84,10 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
     vis_config.max_txt_task_embeddings = 4
     vis_config.max_gmap_task_embeddings = 3
     vis_config.navigation_architecture = config.MAP_ENCODER.architecture
+    vis_config.map_coordinate_fusion = bool(
+        getattr(config.MAP_ENCODER, "enabled", False)
+        and getattr(config.MAP_ENCODER, "coordinate_fusion", False)
+    )
 
     visual_model = model_class.from_pretrained(
         pretrained_model_name_or_path=None,

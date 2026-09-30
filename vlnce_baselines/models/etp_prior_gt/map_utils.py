@@ -91,6 +91,45 @@ def _validate_metadata_points(name: str, points) -> torch.Tensor:
     return tensor
 
 
+def map_origin_xz(
+    start_world_position,
+    start_position: torch.Tensor,
+    meters_per_unit: float,
+) -> torch.Tensor:
+    """World (x, z) of raster cell (0, 0)'s corner.
+
+    The raster's rows follow world x and its columns world z in 0.5 m cells
+    (``meters_to_grid``); ``start_position`` is the episode start in that frame,
+    stored in metres by the LLM and legacy GT caches and in 0.5 m cells by the
+    online GT generator (``meters_per_unit`` 1.0 and 0.5 respectively).  Same
+    frame as the refiner's online evidence projection.
+    """
+    start_m = start_position.double() * meters_per_unit
+    return torch.tensor(
+        [
+            float(start_world_position[0]) - float(start_m[0]),
+            float(start_world_position[2]) - float(start_m[1]),
+        ],
+        dtype=torch.float64,
+    )
+
+
+def world_to_map_cells(positions, origin_xz: torch.Tensor) -> torch.Tensor:
+    """(N, 3) world positions -> (N, 2) continuous (row, col) raster cells.
+
+    Rows that are not finite stay NaN (used for the STOP slot).
+    """
+    positions = torch.as_tensor(np.asarray(positions, dtype=np.float64))
+    cells = torch.stack(
+        [
+            (positions[:, 0] - origin_xz[0]) / CELL_SIZE,
+            (positions[:, 2] - origin_xz[1]) / CELL_SIZE,
+        ],
+        dim=-1,
+    )
+    return cells.float()
+
+
 def direction5_cognitive_map_file_to_tensors(
     cache_path: Path,
 ) -> Dict[str, torch.Tensor]:

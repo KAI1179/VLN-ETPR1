@@ -857,6 +857,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
             config.hidden_size,
             config.num_attention_heads,
             config.hidden_dropout_prob,
+            coordinate_fusion=getattr(config, "map_coordinate_fusion", False),
         )
 
         self.graph_query_text = BertOutAttention(config)
@@ -940,6 +941,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         gmap_task_embeddings,
         map_tokens=None,
         map_token_masks=None,
+        gmap_map_coords=None,
     ):
         # global branch
         batch_size = gmap_task_embeddings.size(0)
@@ -964,8 +966,13 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
 
         # Bidirectional fusion preserves both views:
         # gmap_embeds stays (B, G, hidden_size), updated_map_tokens is (B, 101, hidden_size).
+        # gmap_map_coords: (B, G, 2) map-frame (row, col) of each node, only
+        # passed when MAP_ENCODER.coordinate_fusion is on.
+        fusion_kwargs = (
+            {} if gmap_map_coords is None else {"node_coords": gmap_map_coords}
+        )
         gmap_embeds, updated_map_tokens = self.graph_map_attention(
-            gmap_embeds, gmap_masks, map_tokens, map_token_masks
+            gmap_embeds, gmap_masks, map_tokens, map_token_masks, **fusion_kwargs
         )
 
         if self.global_encoder.sprel_linear is not None:

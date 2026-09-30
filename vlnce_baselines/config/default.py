@@ -240,6 +240,14 @@ _C.MODEL.MAP_ENCODER.map_ablation = "none"
 # Multiply start_position before the map encoder (online GT maps store grid
 # cells = 2x metres; cached GT/LLM maps store metres).
 _C.MODEL.MAP_ENCODER.start_position_scale = 1.0
+# Coordinate fusion (try5 only): each graph node gets its map-frame position,
+# the 10x10 spatial tokens get a fixed 2D position code, and the graph->map
+# cross-attention is biased by node-to-token distance.  Off reproduces try5
+# exactly; no parameters are added, so checkpoints load either way.
+_C.MODEL.MAP_ENCODER.coordinate_fusion = False
+# Unit of the cached start_position used to place graph nodes in the raster:
+# 1.0 for LLM and gt.legacy caches (metres), 0.5 for gt.online* caches (cells).
+_C.MODEL.MAP_ENCODER.start_position_meters_per_unit = 1.0
 
 
 def purge_keys(config: CN, keys: List[str]) -> None:

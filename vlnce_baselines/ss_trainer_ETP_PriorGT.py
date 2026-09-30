@@ -45,8 +45,11 @@ from torch.nn.utils.rnn import pad_sequence
 from collections import OrderedDict
 
 from vlnce_baselines.models.etp_prior_gt.map_utils import (
+    SIZE as MAP_SIZE,
     available_vlnce_cognitive_map_episode_ids,
     cached_cognitive_map_to_tensors,
+    map_origin_xz,
+    world_to_map_cells,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.nan_guard import (
@@ -1375,7 +1378,59 @@ class RLTrainer(BaseVLNCETrainer):
         # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
         nav_inputs["map_tokens"] = map_tokens
         nav_inputs["map_token_masks"] = map_token_masks
+        if getattr(map_cfg, "coordinate_fusion", False):
+            nav_inputs["gmap_map_coords"] = self._gmap_map_coords(
+                nav_inputs["gmap_vp_ids"], cognitive_maps
+            )
         return None
+
+    def _attach_map_origins(self, cognitive_maps, mode):
+        """Store each episode's raster origin (world x, z) in its map dict.
+
+        Kept in the per-env dict so it is popped together with the map when
+        an env finishes.
+        """
+        if self._gtt_on and mode == "train":
+            raise ValueError(
+                "MAP_ENCODER.coordinate_fusion is not supported together with "
+                "the GT teacher (the teacher checkpoint was trained without it)"
+            )
+        meters_per_unit = float(
+            self.config.MODEL.MAP_ENCODER.start_position_meters_per_unit
+        )
+        episodes = self.envs.current_episodes()
+        for cognitive_map, episode in zip(cognitive_maps, episodes):
+            origin = map_origin_xz(
+                episode.start_position,
+                cognitive_map["start_position"],
+                meters_per_unit,
+            )
+            start_cell = world_to_map_cells([episode.start_position], origin)[0]
+            if not bool(((start_cell >= 0) & (start_cell < MAP_SIZE)).all()):
+                raise ValueError(
+                    f"episode {episode.episode_id}: start maps to raster cell "
+                    f"{start_cell.tolist()}, outside the {MAP_SIZE}x{MAP_SIZE} map; "
+                    "check MAP_ENCODER.start_position_meters_per_unit "
+                    f"(={meters_per_unit}: 1.0 for metres, 0.5 for cells)"
+                )
+            cognitive_map["map_origin_xz"] = origin
+
+    def _gmap_map_coords(self, gmap_vp_ids, cognitive_maps):
+        """(B, G, 2) map-frame (row, col) of every gmap entry, NaN for STOP
+        and padding; same node/ghost positions as get_pos_fts."""
+        per_env = [
+            world_to_map_cells(
+                gmap.get_vp_positions(vp_ids), cognitive_map["map_origin_xz"]
+            )
+            for gmap, vp_ids, cognitive_map in zip(
+                self.gmaps, gmap_vp_ids, cognitive_maps[: self.envs.num_envs]
+            )
+        ]
+        max_len = max(coords.size(0) for coords in per_env)
+        batch = torch.full((len(per_env), max_len, 2), float("nan"))
+        for index, coords in enumerate(per_env):
+            batch[index, : coords.size(0)] = coords
+        return batch.to(self.device)
 
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
@@ -1634,6 +1689,8 @@ class RLTrainer(BaseVLNCETrainer):
             )
         else:
             cognitive_maps = None
+        if cognitive_maps is not None and getattr(map_cfg, "coordinate_fusion", False):
+            self._attach_map_origins(cognitive_maps, mode)
         if self._refiner_enabled() and cognitive_maps is not None:
             self._initialize_refiner_state(cognitive_maps)
 

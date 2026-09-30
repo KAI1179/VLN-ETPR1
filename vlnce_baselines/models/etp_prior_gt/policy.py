@@ -169,6 +169,9 @@ class ETP_PriorGT(Net):
             map_hidden_size = self.vln_bert.config.hidden_size
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=map_hidden_size,
+                spatial_position_encoding=bool(
+                    getattr(map_cfg, "coordinate_fusion", False)
+                ),
             )
             print(
                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
@@ -275,6 +278,7 @@ class ETP_PriorGT(Net):
         start_positions=None,
         map_tokens=None,
         map_token_masks=None,
+        gmap_map_coords=None,
     ):
 
         if mode == "language":
@@ -475,5 +479,6 @@ class ETP_PriorGT(Net):
                 gmap_task_embeddings,
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
+                gmap_map_coords=gmap_map_coords,
             )
             return outs

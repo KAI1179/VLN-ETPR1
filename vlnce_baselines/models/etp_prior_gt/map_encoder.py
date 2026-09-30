@@ -5,6 +5,7 @@ from .map_utils import (
     MAPPED_OBJECT_NAMES,
     MAPPED_REGION_NAMES,
     MAP_TOKEN_COUNT,
+    MAP_TOKEN_GRID_SIZE,
     NUM_MAP_CATEGORIES,
     SIZE,
     TRAJECTORY_KEYPOINT_COUNT,
@@ -75,6 +76,26 @@ def _build_category_projection_weights() -> torch.Tensor:
         raise RuntimeError("CLIP-based map category initialization failed") from exc
 
 
+def _grid_sincos_code(grid_size: int, hidden_size: int) -> torch.Tensor:
+    """(1, grid_size**2, hidden_size) row-major 2D sin/cos code.
+
+    Half of the channels encode the token row, half the column, each as
+    sin/cos pairs over geometrically spaced frequencies.
+    """
+    if hidden_size % 4 != 0:
+        raise ValueError(f"hidden_size must be divisible by 4, got {hidden_size}")
+    quarter = hidden_size // 4
+    frequencies = 1.0 / (100.0 ** (torch.arange(quarter, dtype=torch.float32) / quarter))
+    index = torch.arange(grid_size, dtype=torch.float32)
+    rows, cols = torch.meshgrid(index, index, indexing="ij")
+
+    def encode(values: torch.Tensor) -> torch.Tensor:
+        angles = values.reshape(-1, 1) * frequencies
+        return torch.cat([angles.sin(), angles.cos()], dim=-1)
+
+    return torch.cat([encode(rows), encode(cols)], dim=-1).unsqueeze(0)
+
+
 class NormFirstTransformerEncoderLayer(nn.Module):
     """PyTorch 1.9-compatible pre-norm transformer encoder layer."""
 
@@ -126,13 +147,24 @@ class EmbeddingGridMapEncoder(nn.Module):
     transformer encoding.
     """
 
-    def __init__(self, hidden_size: int = 768):
+    def __init__(self, hidden_size: int = 768, spatial_position_encoding: bool = False):
         super().__init__()
         if hidden_size % MAP_TRANSFORMER_HEADS != 0:
             raise ValueError(
                 f"hidden_size must be divisible by {MAP_TRANSFORMER_HEADS}, got {hidden_size}"
             )
         self.hidden_size = hidden_size
+        # Without it the 100 spatial tokens are an unordered set: the token
+        # transformer and the try5 fusion are invariant to permuting 10x10
+        # blocks, so the map's layout never reaches the policy.  Fixed 2D
+        # sin/cos code, non-persistent: checkpoints are unaffected.
+        self.spatial_position_encoding = spatial_position_encoding
+        if spatial_position_encoding:
+            self.register_buffer(
+                "spatial_position_code",
+                _grid_sincos_code(MAP_TOKEN_GRID_SIZE, hidden_size),
+                persistent=False,
+            )
 
         self.category_projection = nn.Conv2d(
             NUM_MAP_CATEGORIES, CLIP_EMBEDDING_DIM, kernel_size=1, bias=False
@@ -301,6 +333,8 @@ class EmbeddingGridMapEncoder(nn.Module):
             1, 2
         )  # (B, 100, hidden_size)
         spatial_tokens = self.spatial_token_norm(spatial_tokens)
+        if self.spatial_position_encoding:
+            spatial_tokens = spatial_tokens + self.spatial_position_code
 
         # metadata: (B, 14) = flattened keypoints (5*2), direction (2), start (2).
         metadata = torch.cat(
