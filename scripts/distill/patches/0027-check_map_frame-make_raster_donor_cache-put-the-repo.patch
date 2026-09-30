@@ -1,0 +1,81 @@
+From 81f041b23e95e3917e609665edd01fe371d4d6e4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 30 Sep 2026 00:11:47 -0600
+Subject: [PATCH] check_map_frame / make_raster_donor_cache: put the repo root
+ on sys.path
+
+Run as 'python scripts/distill/<name>.py' they failed with
+ModuleNotFoundError: prior, because only the launcher set PYTHONPATH. Same
+pattern as map_encoder_stage_probe.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CAaWoeW35zu5bncqujUPPQ
+---
+ scripts/distill/check_map_frame.py         | 14 +++++++++++---
+ scripts/distill/make_raster_donor_cache.py | 11 +++++++++--
+ 2 files changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/scripts/distill/check_map_frame.py b/scripts/distill/check_map_frame.py
+index 0755f00..35f5f99 100644
+--- a/scripts/distill/check_map_frame.py
++++ b/scripts/distill/check_map_frame.py
+@@ -17,6 +17,9 @@ Examples:
+ 
+ from __future__ import annotations
+ 
++import sys
++from pathlib import Path
++
+ import gzip
+ import json
+ from typing import Literal, Optional, Sequence
+@@ -25,9 +28,14 @@ import numpy as np
+ import torch
+ from tap import Tap
+ 
+-from prior import R2R_DIR
+-from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
+-from vlnce_baselines.models.etp_prior_gt.map_utils import (
++# Runnable as `python scripts/distill/<name>.py` from anywhere, like the other probes.
++REPO_ROOT = Path(__file__).resolve().parents[2]
++if str(REPO_ROOT) not in sys.path:
++    sys.path.insert(0, str(REPO_ROOT))
++
++from prior import R2R_DIR  # noqa: E402
++from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors  # noqa: E402
++from vlnce_baselines.models.etp_prior_gt.map_utils import (  # noqa: E402
+     SIZE,
+     cached_cognitive_map_to_tensors,
+     map_origin_xz,
+diff --git a/scripts/distill/make_raster_donor_cache.py b/scripts/distill/make_raster_donor_cache.py
+index 3365904..aedae3a 100755
+--- a/scripts/distill/make_raster_donor_cache.py
++++ b/scripts/distill/make_raster_donor_cache.py
+@@ -28,6 +28,8 @@ Example:
+ 
+ from __future__ import annotations
+ 
++import sys
++
+ from collections import defaultdict
+ import csv
+ import gzip
+@@ -39,8 +41,13 @@ from typing import Dict, List, Literal, Optional, Sequence
+ import numpy as np
+ from tap import Tap
+ 
+-from prior import R2R_DIR
+-from vlnce_baselines.models.etp_llm.navigation import (
++# Runnable as `python scripts/distill/<name>.py` from anywhere, like the other probes.
++REPO_ROOT = Path(__file__).resolve().parents[2]
++if str(REPO_ROOT) not in sys.path:
++    sys.path.insert(0, str(REPO_ROOT))
++
++from prior import R2R_DIR  # noqa: E402
++from vlnce_baselines.models.etp_llm.navigation import (  # noqa: E402
+     llm_navigation_cache_complete,
+     llm_navigation_cognitive_map_raster_path,
+     llm_navigation_split_dir,
+-- 
+2.43.0
+
