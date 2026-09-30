@@ -8,10 +8,12 @@
 2. **根因是 HuggingFace `from_pretrained` 与 transformers ≥ 4.31 的初始化行为**：模型在 `no_init_weights()` 下构造，`torch.nn.init.*` 被空操作；事后 `_init_weights` 只重初始化 Linear / Embedding / LayerNorm，`nn.Conv2d` 不在其列，起始 checkpoint 里没有的卷积保持 `torch.empty` 原始内存。云端预训练环境 `etpr1-uv` 的 transformers 为 4.43.4，本地 `etpr1-py38` 为 4.28.1 不复现。已用独立脚本复现。
 3. **历史上所有 DAgger 都没有加载预训练的 map 模块**（loader 缺陷，09-24 才修）。因此历史 try5（65.42）和 refiner 线 S4（64.76）的栅格通路都是 DAgger 从初始化训的，是活的但很弱；它们反而躲开了死编码器。
 4. **加载了死编码器的 R7 是"栅格盲"策略**：p0 与 gt_full 逐 episode 字节相同，栅格置零结果不变。它的 66.72 来自 460000 骨干 + 预训练 fusion + 元数据 token（元数据贡献 +1.47，CI [+0.07, +2.78]）。
-5. **DAgger 阶段从头训栅格的上限约 +2.6 SR，且训完仍用不上 GT 栅格**（R5：栅格置零 −2.61，CI [−4.50, −0.21]；gt_full 对 p0 无增益）。把 R7 的 tokenizer 重初始化再 DAgger（R11′）与 R7 训练损失逐 iter 重合，评测差在噪声内。
-6. **GT 教师真正依赖栅格**（none 73.84 / raster_only 69.33 / metadata_only 56.93），说明栅格通路在预训练规模上训好时是有用的；LLM 地图喂给 GT 教师只有 49.48，低于无地图的 57.04，说明 LLM 栅格会误导 GT 读图器。
-7. **修复后重做 LLM-Grid try5 预训练（R16，150k 步）得到活的编码器**：tokenizer 权重范数 17.08、偏置 0.28，信号/偏置比 83（教师 84.7），输出对 GT 栅格的相对变化 0.36。其 DAgger 正在云端运行，是区分"LLM 栅格没有信息"与"通路必须在预训练里学"的实验。
-8. GRPO 接 R7 17k 无增益（最高 66.29 对起点 66.72）。
+5. **用 LLM 栅格在 DAgger 阶段从头训栅格通路，收益 ≤ +2.6 SR，且训完仍用不上 GT 栅格**（R5：栅格置零 −2.61，CI [−4.50, −0.21]；gt_full 对 p0 无增益）。把 R7 的 tokenizer 重初始化再 DAgger（R11′）与 R7 训练损失逐 iter 重合，评测差在噪声内。
+6. **但"DAgger 学不动栅格通路"不成立。** GT 教师的 map 模块同样是 DAgger 从初始化训出来的（其预训练 387500 的 tokenizer 也是死的，当时 loader 不加载，教师 ckpt 的 tokenizer 范数 17.85），却从栅格拿到约 17 分（none 73.84 / raster_only 69.33 / metadata_only 56.93）。学不动的是 **LLM 栅格**：LLM 地图喂给 GT 教师只有 49.48，低于无地图的 57.04。教师与学生的差别在于地图真假，以及节点能否定位到地图上（教师用 dz 位置特征，恰是地图 x/z 轴的分量；学生用 dy，节点特征完全自我中心）。
+7. **跨 episode 置换测试（patch 0024）证明历史 try5 策略不使用栅格中任何 episode 或场景特异信息**：把栅格换成别场景的 LLM 栅格，SR 不掉反升（control 65.09，cross_scene 66.01 / 65.91 / 65.96 三个 donor seed，配对 +0.9，CI [+0.11, +1.86]）；同场景他人栅格 65.20 ≈ control。全零置零掉的 1.4 是分布外代价，不是信息损失。
+8. **修复后重做 LLM-Grid try5 预训练（R16，150k 步）得到活的编码器**：tokenizer 权重范数 17.08、偏置 0.28，信号/偏置比 83（教师 84.7），输出对 GT 栅格的相对变化 0.36。其 DAgger 正在云端运行；判定改用 control vs cross_scene 配对（不用 metadata_only）。
+9. **方案修正为坐标融合（patch 0025/0026，默认关）**：节点按与位置特征相同的换算映射到栅格坐标，cross-attention 加逐 head 固定距离偏置，map encoder 加固定 2D 位置码，不增加参数；计划 E1（GT 在线地图，387500 起步，对照 dz 教师 73.84）与 E2（LLM 地图，460000 起步，对照 control 65.09）并行。
+10. GRPO 接 R7 17k 无增益（最高 66.29 对起点 66.72）。
 
 ## 2. 模块与数据
 
@@ -127,6 +129,8 @@ grid (B,37,100,100)
 | 历史 try5 DAgger iter28000 | 19.1 | — | — | — |
 | **R16 预训练 142500** | **17.08** | **0.28** | **83.0** | **0.36** |
 
+注意：R5、GT 教师、历史 try5 三行的 map 模块都是 DAgger 从初始化训出来的（当时 loader 不加载预训练 map 模块），tokenizer 活着；GT 教师的这条 DAgger 训出的通路值 17 分。
+
 rel(gt) = ‖stage(GT grid) − stage(LLM grid)‖ / ‖stage(LLM grid)‖。R16 各级：category_projection 0.970、spatial_tokenizer 0.882、spatial_token_norm 0.386、token_transformer 0.357、output_norm 0.363；rel(zero) 0.436。
 
 ## 6. 实验矩阵
@@ -170,7 +174,7 @@ rel(gt) = ‖stage(GT grid) − stage(LLM grid)‖ / ‖stage(LLM grid)‖。R16
 | 14000 | 0.621 / 0.186 | 0.672 / 0.194 |
 | 17000 | 0.560 / 0.161 | 0.556 / 0.161 |
 
-完全重合。结论：活的栅格通路在 DAgger 规模下既没有让学生更接近重度依赖栅格的教师，也没有造成扰动成本；R7 与 R11′ 是同一实验的两次噪声采样。要么 LLM 栅格里没有学生可取用的额外信息，要么这条通路在 DAgger 里学不动，两者只能靠 R16 区分。
+完全重合。结论：活的栅格通路在 DAgger 规模下既没有让学生更接近重度依赖栅格的教师，也没有造成扰动成本；R7 与 R11′ 是同一实验的两次噪声采样。结合 GT 教师的证据（同样 DAgger 从初始化训出栅格通路，却拿到 17 分）和置换测试（第 10b 节），"通路在 DAgger 里学不动"可以排除，问题在 LLM 栅格本身的信息与坐标对齐。
 
 ### 7.3 R11′ 实现
 
@@ -210,11 +214,27 @@ patch 0019：`MODEL.MAP_ENCODER.reinit_spatial_tokenizer`；加载 37 个预训�
 
 `LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT=pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok/ckpts/model_step_142500.pt sbatch scripts/submit/llm-grid-try5-fixedtok-dagger.sh`，输出 `data/logs/checkpoints/release_r2r_llm_grid_try5_fixedtok_dagger/`，原版 try5 DAgger 配置（30000 iter，无教师，4 卡 × 4 环境），与历史 65.42 直接对照。已提交，进行中。
 
-判定：DAgger 后做 `metadata_only` / `gt_full` 评测。栅格置零明显掉分且 gt_full 明显高于 p0 → 通路必须在预训练里学，refiner 值得在此策略上重测，并可叠加教师蒸馏；两者都接近 0 → LLM 栅格本身无信息，回到地图质量与任务设计。
+判定（按 patch 0024 的方法修正）：DAgger 后做 control vs cross_scene 配对（`eval_raster_donor.sh`，栅格换成别场景的 LLM 栅格，元数据不变），不用 metadata_only（全零输入有分布外代价，会把 OOD 损失误判为信息损失）。cross_scene 明显低于 control → 预训练规模训出的通路确实用上了 LLM 栅格的场景特异信息；cross_scene ≈ control（如历史 try5）→ 预训练也没让 LLM 栅格产生可用信息，转向坐标融合（E1/E2）与地图坐标系。
 
 ## 10. GRPO
 
 `scripts/distill/run_grpo_from_dagger.sh`（patch 0023）接 R7 17k：nav4 profile（234 张量，map encoder 与 fusion 冻结），`load_pretrained_map_modules False`（全部权重来自 DAgger ckpt，`require_complete_checkpoint True`），LR 2e-5 余弦到 0.25×，500 iter，G=8，β 0.04，ε 0.2，train_10。结果 iter 100/200/300/400/450：66.18 / 65.58 / 66.29 / 65.47 / 65.58，均低于起点 66.72。与历史 +1.1 合看，GRPO 对该族模型效应约 0 ± 1。已停。
+
+## 10b. 跨 episode 置换测试与坐标融合方案（patch 0024–0027，另一会话完成）
+
+### 置换测试
+
+- 历史 try5（LLM-Grid 2，iter28000）training-free 通道消融：Full 65.42 / No-object 65.80 / No-region 65.31 / Joint-zero 64.06 / Direction-zero 65.25 / All-three-zero 64.17。置零是训练中从未出现的输入，分不清"信息损失"与"分布外代价"。
+- 新工具 `make_raster_donor_cache.py` + `eval_raster_donor.sh`：每个 episode 保留自己的元数据，只把栅格换成别的 episode 的 LLM 栅格（cross_scene，或 within_scene 且排除同 trajectory），派生为新的 cache key，评测零代码改动。
+- 结构性事实：map encoder 无位置编码、mask 全真，fusion 是普通 cross-attention，因此策略对 10×10 块的置换严格不变（随机权重数值验证输出差 2e-7）；`gmap_pos_fts` 以当前位姿为参照，是自我中心坐标。
+- 结果（同一 harness，val_unseen 1839）：control 65.09 / within_scene 65.20 / cross_scene 66.01；cross_scene 三个 donor seed 66.01 / 65.91 / 65.96，配对 +0.82～+0.92，CI [+0.11, +1.86]，增益主要在可达性。**该策略不使用栅格中任何 episode 或场景特异信息**；Joint-zero 掉的 1.4 是全零输入的分布外代价。
+
+### 方案修正：坐标融合
+
+- 重新判断：GT 教师的 map 模块同样由 DAgger 从初始化训出（387500 tokenizer 死、loader 未加载，教师 ckpt tokenizer 范数 17.85），却从栅格拿到 17 分，因此"DAgger 学不动栅格通路"不成立。教师与学生的差别是地图真假，以及节点能否定位到地图上：教师用 dz，地图就是 Habitat x/z 轴（`meters_to_grid(x, z)`），dz 恰给节点一个沿地图轴的分量；学生 dy 下节点特征完全自我中心。LLM 地图唯一不与指令重复的信息是布局，需要编码器保留布局、节点知道自己在图上的位置。
+- `MODEL.MAP_ENCODER.coordinate_fusion`（默认关，仅 try5）：节点按与 `get_pos_fts` 相同的位置换算映射到栅格坐标（原点 = 起点世界 x,z − 缓存 start_position；`start_position_meters_per_unit` LLM/legacy 1.0、gt.online 0.5）；cross-attention 加固定逐 head 距离偏置（1/3 head 纯内容，其余 σ = 2.5/5/10/20 m），STOP/填充/元数据 token 不加偏置；map encoder 加固定 2D sin/cos 位置码。全为非持久 buffer，不增参数、不改 state_dict 键；单元测试 9/9 通过。
+- `check_map_frame.py`：把参考路径按训练同一变换映射进栅格，统计落在有区域标注格子上的比例，与错误单位、x/z 互换对照。
+- 计划：先对 gt.online121c369（0.5）与 LLM（1.0）跑 `check_map_frame`；通过后并行 E1（GT 在线地图，387500 起步，dy + 坐标融合，对照 dz 教师 73.84）与 E2（LLM 地图，460000 起步、map 模块从初始化，dy + 坐标融合，对照 control 65.09，并做 control vs cross_scene 配对）。E1 过而 E2 不过 → 改 LLM 地图为起点坐标系输出。启动器 `run_dagger_coord_fusion.sh {gt|llm}`（`COORD=False` 为同臂对照）；加载 checkpoint 时核对 `coordinate_fusion` 与训练一致，不一致直接报错。
 
 ## 11. 结论与未决问题
 
@@ -222,16 +242,17 @@ patch 0019：`MODEL.MAP_ENCODER.reinit_spatial_tokenizer`；加载 37 个预训�
 
 - 预训练 map encoder 因 HF 初始化行为而死，机制、范围、复现、修复齐备。
 - 历史 DAgger 从未加载预训练 map 模块，因而未受影响，但也从未有过"预训练规模训好的栅格通路"。
-- DAgger 规模从头训栅格的价值 ≤ 2.6 SR，且无法利用 GT 栅格；R7 的优势来自元数据 token 而非栅格。
+- 用 LLM 栅格在 DAgger 里从头训栅格通路的价值 ≤ 2.6 SR，且无法利用 GT 栅格；R7 的优势来自元数据 token 而非栅格。历史 try5 策略不使用栅格中任何 episode/场景特异信息（置换测试）。
+- "DAgger 学不动栅格通路"不成立：GT 教师同样在 DAgger 里从初始化训出栅格通路并拿到 17 分。差别在地图真假与节点—地图坐标对齐。
 - refiner 线失败不是死 tokenizer 所致，而是策略对栅格依赖弱。
 - 修复后的预训练得到活编码器（R16）。
 
 **未决**
 
-- R16-DAgger 的栅格消融与 gt_full 结果（进行中）。
-- LLM 栅格本身的信息量是否足以支撑任何策略（教师喂 LLM 栅格 49.48 提示偏悲观）。
-- map encoder 无位置编码是否是结构性瓶颈。
-- R11′ 13k 的 `metadata_only` 消融、R11′ vs R7 配对 CI、`s4_try5_refiner` tokenizer 扫描（均为收尾，不改变结论）。
+- R16-DAgger 的 control vs cross_scene 配对结果（进行中）。
+- 坐标融合 E1/E2 的结果；`check_map_frame` 对两种缓存的坐标系核查。
+- LLM 栅格本身的信息量是否足以支撑任何策略（教师喂 LLM 栅格 49.48；置换测试提示当前策略下为零）。
+- R11′ 13k 消融、R11′ vs R7 配对 CI、`s4_try5_refiner` tokenizer 扫描（均为收尾，不改变结论）。
 
 ## 12. 附录：工具与命令
 
@@ -248,5 +269,8 @@ patch 0019：`MODEL.MAP_ENCODER.reinit_spatial_tokenizer`；加载 37 个预训�
 | `scripts/distill/run_dagger_distill_llmpt.sh`（`REINIT_TOKENIZER`、`LOAD_MAP`） | 蒸馏 DAgger 启动器 |
 | `scripts/distill/run_grpo_from_dagger.sh`（`DAGGER_RUN`、`DAGGER_ITER`、`PROFILE`） | GRPO 续训启动器 |
 | `scripts/submit/llm-grid-try5-pretrain-fixedtok.sh`、`llm-grid-try5-fixedtok-dagger.sh` | 云端修复后预训练 / DAgger |
+| `scripts/distill/make_raster_donor_cache.py`、`eval_raster_donor.sh`（patch 0024） | 跨 episode 栅格置换测试（cross_scene / within_scene） |
+| `scripts/distill/check_map_frame.py`（patch 0025） | 离线核查节点→栅格坐标系（单位、x/z 轴） |
+| `scripts/distill/run_dagger_coord_fusion.sh {gt\|llm}`（patch 0026，`COORD=False` 为对照） | 坐标融合 DAgger E1/E2 启动器 |
 
-关键路径：预训练 checkpoint `pretrained/r2r_rxr_ce/llm_grid_try5/ckpts/model_step_460000.pt`（死）、`pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok/ckpts/model_step_142500.pt`（活）；GT 教师 `try-5-r1p5-dagger.iter16000.pth`；补丁序列 `scripts/distill/patches/0001–0023`（分支 `claude/awesome-ride-axuad6`）；逐日记录 `docs/daily/2026-09-24 … 09-30.md`。
+关键路径：预训练 checkpoint `pretrained/r2r_rxr_ce/llm_grid_try5/ckpts/model_step_460000.pt`（死）、`pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok/ckpts/model_step_142500.pt`（活）；GT 教师 `try-5-r1p5-dagger.iter16000.pth`；补丁序列 `scripts/distill/patches/0001–0027`（分支 `claude/awesome-ride-axuad6`）；逐日记录 `docs/daily/2026-09-24 … 09-30.md`。
