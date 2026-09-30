@@ -79,6 +79,27 @@ def _get_latest_iter_checkpoint(checkpoint_dir: str) -> str:
     return ckpt_list[-1]
 
 
+def _coordinate_fusion_flag(config) -> bool:
+    map_cfg = getattr(getattr(config, "MODEL", None), "MAP_ENCODER", None)
+    return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
+
+
+def _check_coordinate_fusion_matches(config, ckpt_dict, ckpt_path) -> None:
+    """A checkpoint trained with coordinate fusion evaluates silently wrong
+    without it (and vice versa): the flag adds no weights, so nothing else
+    would catch the mismatch."""
+    saved = ckpt_dict.get("config")
+    if saved is None:
+        return
+    trained, current = _coordinate_fusion_flag(saved), _coordinate_fusion_flag(config)
+    if trained != current:
+        raise ValueError(
+            f"{ckpt_path} was trained with MODEL.MAP_ENCODER.coordinate_fusion="
+            f"{trained} but this run sets {current}; pass the run's eval_args.txt "
+            "options (eval_run.sh / eval_iters.sh do this automatically)"
+        )
+
+
 @baseline_registry.register_trainer(name="SS-ETP-PriorGT")
 class RLTrainer(BaseVLNCETrainer):
     def __init__(self, config=None):
@@ -406,6 +427,7 @@ class RLTrainer(BaseVLNCETrainer):
             else:
                 ckpt_path = config.IL.ckpt_to_load
             ckpt_dict = self.load_checkpoint(ckpt_path, map_location="cpu")
+            _check_coordinate_fusion_matches(config, ckpt_dict, ckpt_path)
             if config.IL.is_requeue:
                 start_iter = ckpt_dict["iteration"]
             else:

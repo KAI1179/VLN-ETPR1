@@ -42,6 +42,14 @@ MAP_LOAD_ARGS=()
 if grep -q "load_pretrained_map_modules" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
     MAP_LOAD_ARGS=(MODEL.MAP_ENCODER.load_pretrained_map_modules False)
 fi
+# Runs started by run_dagger_coord_fusion.sh record the model/map options their
+# checkpoints need (map source, coordinate_fusion, ...); they override the
+# LLM-Grid defaults below.
+RUN_ARGS=()
+if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
+    while read -r key value; do RUN_ARGS+=("${key}" "${value}"); done < "${RUN_DIR}/eval_args.txt"
+    echo "Using ${RUN_DIR}/eval_args.txt: ${RUN_ARGS[*]}"
+fi
 
 cd "${REPO_ROOT}"
 env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
@@ -67,7 +75,8 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
     MODEL.MAP_ENCODER.refiner_ckpt "" \
     "${MAP_LOAD_ARGS[@]}" \
     MODEL.elevation_axis "${ELEVATION_AXIS:-y}" \
-    MODEL.pretrained_path "${PRETRAINED_CKPT}" 2>&1 | tee "${EVAL_LOG}"
+    MODEL.pretrained_path "${PRETRAINED_CKPT}" \
+    "${RUN_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
 
 "${PYTHON}" - "${RESULT_JSON}" "${RUN_NAME}" "${ITER}" <<'PY'
 import json, sys

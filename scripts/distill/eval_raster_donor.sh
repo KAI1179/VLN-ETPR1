@@ -56,6 +56,17 @@ case "${MODE}" in
     *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;;
 esac
 
+# Checkpoints from run_dagger_coord_fusion.sh carry their model options next
+# to them; the cache key is excluded because it is what this test replaces.
+RUN_ARGS=()
+if [[ -f "$(dirname "${CKPT_PATH}")/eval_args.txt" ]]; then
+    while read -r key value; do
+        [[ "${key}" == "MODEL.MAP_ENCODER.llm_cache_model_key" ]] && continue
+        RUN_ARGS+=("${key}" "${value}")
+    done < "$(dirname "${CKPT_PATH}")/eval_args.txt"
+    echo "Using $(dirname "${CKPT_PATH}")/eval_args.txt: ${RUN_ARGS[*]}"
+fi
+
 EVAL_NAME="${TAG}_raster_${MODE}"
 [[ "${MODE}" == control ]] || EVAL_NAME="${EVAL_NAME}_s${SEED}"
 EVAL_DIR="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}"
@@ -84,7 +95,8 @@ env GLOG_minloglevel=2 MAGNUM_LOG=quiet PYTHONPATH="${REPO_ROOT}" \
     MODEL.MAP_ENCODER.load_pretrained_map_modules False \
     MODEL.MAP_ENCODER.map_ablation none \
     MODEL.pretrained_path "${PRETRAINED_CKPT}" \
-    MODEL.elevation_axis "${ELEVATION_AXIS:-y}" >"${EVAL_LOG}" 2>&1
+    MODEL.elevation_axis "${ELEVATION_AXIS:-y}" \
+    "${RUN_ARGS[@]}" >"${EVAL_LOG}" 2>&1
 
 RESULT_DIR="${EVAL_DIR}/eval_results"
 RESULT_JSON="$(ls "${RESULT_DIR}"/stats_ckpt_*_val_unseen.json | head -n 1)"
