@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Derive a GT raster namespace that keeps only instruction-mentioned categories.
+
+A GT r1.5 m map paints every object and region along the route, mentioned in
+the instruction or not.  A language-predicted map can at best place the
+categories the instruction names, so evaluating a GT-trained policy on this
+derived namespace (training-free) gives the ceiling a perfect LLM map could
+reach under that policy: the remaining gap to the full GT map is content no
+instruction carries.
+
+Each episode keeps its own metadata; in ``grid`` the channels of categories
+not mentioned in the episode's instruction (prior.grid_map._cognitive
+.extract_categories) are zeroed.  Layout of the kept channels is untouched.
+
+    python scripts/distill/make_mentioned_only_gt_cache.py \
+        --namespace gt.legacy.r1p5.direction5.v1 --split val_unseen
+prints the derived namespace to pass as MODEL.MAP_ENCODER.cache_namespace.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import gzip
+import json
+import os
+from typing import Optional, Sequence
+
+import numpy as np
+from tap import Tap
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from prior import R2R_DIR  # noqa: E402
+from prior.constants import OBJECT_CATEGORIES  # noqa: E402
+from prior.grid_map._cognitive import extract_categories  # noqa: E402
+from vlnce_baselines.models.etp_prior_gt.map_utils import (  # noqa: E402
+    VLNCE_COGNITIVE_MAP_DIR,
+    cognitive_map_cache_path,
+)
+
+
+class Args(Tap):
+    namespace: str = "gt.legacy.r1p5.direction5.v1"
+    split: str = "val_unseen"
+    overwrite: bool = False
+
+
+def derived_namespace(namespace: str) -> str:
+    return f"{namespace}.mentioned_only"
+
+
+def main(argv: Optional[Sequence[str]] = None) -> str:
+    args = Args(underscores_to_dashes=True).parse_args(argv)
+    target_ns = derived_namespace(args.namespace)
+    target_root = VLNCE_COGNITIVE_MAP_DIR / target_ns
+    summary_path = target_root / f"summary_{args.split}.json"
+    if summary_path.is_file() and not args.overwrite:
+        print(f"exists: {summary_path}")
+        print(target_ns)
+        return target_ns
+
+    with gzip.open(R2R_DIR / args.split / f"{args.split}.json.gz", "rt", encoding="utf-8") as file:
+        episodes = json.load(file)["episodes"]
+    source_boxes = VLNCE_COGNITIVE_MAP_DIR / args.namespace / "boxes"
+    target_boxes = target_root / "boxes"
+    if source_boxes.exists() and not target_boxes.exists():
+        target_root.mkdir(parents=True, exist_ok=True)
+        target_boxes.symlink_to(source_boxes.resolve(), target_is_directory=True)
+
+    written = 0
+    missing = 0
+    kept_fraction = []
+    mentioned_counts = []
+    for episode in episodes:
+        cache_id = f"R2R_{args.split}_{episode['episode_id']}"
+        source = cognitive_map_cache_path(episode["scene_id"], cache_id, namespace=args.namespace)
+        if not source.is_file():
+            missing += 1
+            continue
+        objects, regions = extract_categories(episode["instruction"]["instruction_text"])
+        keep = np.zeros(37, dtype=bool)
+        keep[sorted(objects)] = True
+        keep[[OBJECT_CATEGORIES + r for r in sorted(regions)]] = True
+        with np.load(source, allow_pickle=True) as data:
+            arrays = {name: data[name] for name in data.files}
+        grid = arrays["grid"]
+        if grid.shape[0] != 37:
+            raise ValueError(f"{source}: expected 37 channels, got {grid.shape}")
+        before = float((grid > 0).sum())
+        grid = grid * keep[:, None, None].astype(grid.dtype)
+        kept_fraction.append(float((grid > 0).sum()) / before if before else 1.0)
+        mentioned_counts.append(int(keep.sum()))
+        arrays["grid"] = grid
+        out = cognitive_map_cache_path(episode["scene_id"], cache_id, namespace=target_ns)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(f".{out.stem}.{os.getpid()}.tmp.npz")
+        np.savez_compressed(tmp, **arrays)
+        tmp.replace(out)
+        written += 1
+
+    summary = {
+        "namespace": target_ns,
+        "source_namespace": args.namespace,
+        "split": args.split,
+        "episodes_written": written,
+        "episodes_missing_source": missing,
+        "mean_mentioned_categories": float(np.mean(mentioned_counts)) if mentioned_counts else 0.0,
+        "mean_kept_cell_fraction": float(np.mean(kept_fraction)) if kept_fraction else 0.0,
+    }
+    target_root.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+    print(target_ns)
+    return target_ns
+
+
+if __name__ == "__main__":
+    main()
