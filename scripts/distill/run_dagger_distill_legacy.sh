@@ -9,9 +9,13 @@
 #
 # Usage: bash scripts/distill/run_dagger_distill_legacy.sh MODE [--dry-run]
 #
-#   MODE  kl      plain action KL (historical distillation, the control arm)
-#         gated   action KL with the reachability gate
+#   MODE  kl      plain action KL (historical distillation, the control arm);
+#                 JS_LOG=True additionally logs the teacher's GT-vs-LLM-map JS
+#                 per iteration (gate_js_mean / gate_js_median) without
+#                 weighting anything: that is where GATE_TAU comes from.
+#         gated   action KL with the reachability gate (GATE_TAU required)
 #         full    STOP-factorised KL + gate + counterfactual effect matching
+#                 (GATE_TAU required)
 #
 # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
 # continues from the latest one; re-running after a crash is always safe.
@@ -20,7 +24,9 @@
 # NUM_ENVS (4 per process; batch_donor needs >= 2), PRETRAINED_CKPT (460000),
 # LOAD_MAP (False: map modules train from initialisation, as the teacher's
 # did), GT_TEACHER_CKPT, EFFECT_WEIGHT (1.0), EFFECT_CF (batch_donor|zero),
-# GATE_TAU (0 = batch median), GATE_MIN (0.2), STOP_WEIGHT (1.0), TEMP (1.0),
+# GATE_TAU (absolute JS scale, no default: take gate_js_median from a kl
+# JS_LOG=True run), GATE_MIN (0.2), GATE_NORMALIZE (True), EFFECT_REDUCTION
+# (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
 # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
 set -euo pipefail
 
@@ -69,30 +75,56 @@ EFFECT_WEIGHT="${EFFECT_WEIGHT:-1.0}"
 EFFECT_CF="${EFFECT_CF:-batch_donor}"
 GATE_TAU="${GATE_TAU:-0.0}"
 GATE_MIN="${GATE_MIN:-0.2}"
+GATE_NORMALIZE="${GATE_NORMALIZE:-True}"
+EFFECT_REDUCTION="${EFFECT_REDUCTION:-sum}"
+JS_LOG="${JS_LOG:-False}"
 STOP_WEIGHT="${STOP_WEIGHT:-1.0}"
 TEMP="${TEMP:-1.0}"
 DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"
 
 # Mode -> distillation switches.  Every key defaults to the historical plain
 # KL, so the kl arm passes the defaults explicitly for the record.
+_need_tau() {
+    if ! awk -v t="${GATE_TAU}" 'BEGIN { exit !(t > 0) }'; then
+        echo "GATE_TAU must be set to a positive absolute JS scale for MODE=${MODE}: run" >&2
+        echo "  JS_LOG=True bash scripts/distill/run_dagger_distill_legacy.sh kl" >&2
+        echo "for a few hundred iters and use its gate_js_median" >&2
+        exit 2
+    fi
+}
 case "${MODE}" in
     kl)
-        DISTILL_ARGS=(
-            IL.distill_stop_factorized False
-            IL.gate_enabled False
-            IL.effect_match_weight 0.0
-        )
+        if [[ "${JS_LOG}" == "True" ]]; then
+            # gate_min_weight 1.0 makes every weight 1: the KL is unchanged,
+            # only the teacher's GT-vs-LLM-map JS is logged.
+            DISTILL_ARGS=(
+                IL.distill_stop_factorized False
+                IL.gate_enabled True
+                IL.gate_tau 1.0
+                IL.gate_min_weight 1.0
+                IL.effect_match_weight 0.0
+            )
+        else
+            DISTILL_ARGS=(
+                IL.distill_stop_factorized False
+                IL.gate_enabled False
+                IL.effect_match_weight 0.0
+            )
+        fi
         ;;
     gated)
+        _need_tau
         DISTILL_ARGS=(
             IL.distill_stop_factorized False
             IL.gate_enabled True
             IL.gate_tau "${GATE_TAU}"
             IL.gate_min_weight "${GATE_MIN}"
+            IL.gate_normalize "${GATE_NORMALIZE}"
             IL.effect_match_weight 0.0
         )
         ;;
     full)
+        _need_tau
         if [[ "${EFFECT_CF}" == "batch_donor" && "${NUM_ENVS}" -lt 2 ]]; then
             echo "EFFECT_CF=batch_donor needs NUM_ENVS >= 2 (got ${NUM_ENVS}); set EFFECT_CF=zero" >&2
             exit 2
@@ -103,15 +135,17 @@ case "${MODE}" in
             IL.gate_enabled True
             IL.gate_tau "${GATE_TAU}"
             IL.gate_min_weight "${GATE_MIN}"
+            IL.gate_normalize "${GATE_NORMALIZE}"
             IL.effect_match_weight "${EFFECT_WEIGHT}"
             IL.effect_counterfactual "${EFFECT_CF}"
+            IL.effect_reduction "${EFFECT_REDUCTION}"
         )
         ;;
 esac
 
-for key in distill_stop_factorized effect_match_weight gate_enabled; do
+for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction; do
     if ! grep -q "_C.IL.${key}" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
-        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patch 0050 first" >&2
+        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050 and 0053 first" >&2
         exit 2
     fi
 done

@@ -129,6 +129,17 @@ def test_effect_match_is_invariant_to_shared_non_map_shift():
     assert torch.allclose(a, b, atol=1e-5)
 
 
+def test_effect_match_mean_reduction_divides_by_valid_count():
+    t_full, t_cf, valid = _case(seed=6)
+    s_full = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
+    s_cf = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
+    summed = dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="sum")
+    mean = dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="mean")
+    assert torch.allclose(mean, summed / valid.sum(dim=1).float())
+    with pytest.raises(ValueError):
+        dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="max")
+
+
 def test_js_divergence_range_and_symmetry():
     a, b, valid = _case(seed=5)
     js = dl.js_divergence(a, b, valid)
@@ -144,19 +155,26 @@ def test_js_divergence_range_and_symmetry():
 
 def test_gate_weights_floor_and_scale():
     d = torch.tensor([0.0, 0.1, 0.2, 10.0])
-    w = dl.gate_weights(d, tau=0.1, min_weight=0.2)
+    w = dl.gate_weights(d, tau=0.1, min_weight=0.2, normalize=False)
     assert w[0] == pytest.approx(1.0)
     assert w[1] == pytest.approx(0.2 + 0.8 * math.exp(-1))
     assert w[3] == pytest.approx(0.2, abs=1e-6)
     assert (w >= 0.2).all() and (w <= 1.0).all()
-    # tau <= 0: batch median as the scale.
-    w_med = dl.gate_weights(d, tau=0.0, min_weight=0.0)
-    median = d.median().item()
-    assert w_med[1] == pytest.approx(math.exp(-0.1 / median))
-    # All-zero divergence: no gating.
-    assert torch.equal(dl.gate_weights(torch.zeros(3), tau=0.0, min_weight=0.2), torch.ones(3))
     with pytest.raises(ValueError):
         dl.gate_weights(d, tau=1.0, min_weight=1.5)
+    # A batch-relative scale is refused: tau is absolute.
+    with pytest.raises(ValueError, match="tau must be positive"):
+        dl.gate_weights(d, tau=0.0, min_weight=0.2)
+
+
+def test_gate_weights_normalisation_keeps_the_total():
+    d = torch.tensor([0.0, 0.1, 0.2, 10.0])
+    w = dl.gate_weights(d, tau=0.1, min_weight=0.2)
+    assert w.mean().item() == pytest.approx(1.0)
+    raw = dl.gate_weights(d, tau=0.1, min_weight=0.2, normalize=False)
+    assert torch.allclose(w / w[0], raw / raw[0])  # same ratios between steps
+    # All reachable: nobody is down-weighted.
+    assert torch.allclose(dl.gate_weights(torch.full((4,), 1e-4), tau=0.1, min_weight=0.2), torch.ones(4), atol=1e-3)
 
 
 def test_gate_weights_are_detached():

@@ -99,14 +99,22 @@ _C.IL.distill_stop_weight = 1.0
 # map keeps the episode's own metadata and takes its raster from another episode
 # of the same batch ("batch_donor", needs NUM_ENVIRONMENTS >= 2) or zeros ("zero").
 _C.IL.effect_match_weight = 0.0
+# batch_donor | zero | self ("self" is the sanity check: the counterfactual map
+# is the episode's own map, so the loss must be exactly 0).
 _C.IL.effect_counterfactual = "batch_donor"
+# sum: squared errors summed over the valid candidates; mean: divided by their count.
+_C.IL.effect_reduction = "sum"
 # Reachability gate: per-step weight min + (1 - min) * exp(-JS / tau) where JS is
 # the divergence between the teacher on its GT map and the teacher on the
-# student's LLM map; tau <= 0 uses the batch median JS.  Applied to the action KL
-# and to the effect-matching loss.
+# student's LLM map.  tau is an absolute JS scale and must be > 0 whenever the
+# gate can bite (min < 1); take it from the gate_js_* logs of a run with
+# gate_min_weight 1.0 (logging only, weights all 1).  With gate_normalize the
+# weights are rescaled to mean 1 per batch so the gate only redistributes the
+# loss between steps.  Applied to the action KL and to the effect-matching loss.
 _C.IL.gate_enabled = False
 _C.IL.gate_tau = 0.0
 _C.IL.gate_min_weight = 0.2
+_C.IL.gate_normalize = True
 # Scale on the student's cached start_position when its map is fed to the teacher
 # (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
 _C.IL.gate_teacher_start_position_scale = 1.0

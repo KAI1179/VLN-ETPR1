@@ -162,8 +162,13 @@ def effect_match(
     student_full: torch.Tensor,
     student_cf: torch.Tensor,
     valid: torch.Tensor,
+    reduction: str = "sum",
 ) -> torch.Tensor:
     """Per-row squared error between the student's and the teacher's map effect.
+
+    ``reduction`` "sum" adds the squared errors over the valid candidates (so
+    the term scales like the KL terms, per decision); "mean" divides by the
+    number of valid candidates, which keeps it independent of the graph size.
 
     ``*_full`` are logits with each model's own map, ``*_cf`` with the
     counterfactual map.  The teacher side and ``student_cf`` are detached:
@@ -176,7 +181,12 @@ def effect_match(
     _check_pair(student_full, valid, "student_full")
     delta_t = _centered_delta(teacher_full.detach(), teacher_cf.detach(), valid)
     delta_s = _centered_delta(student_full, student_cf.detach(), valid)
-    return ((delta_s - delta_t) ** 2).sum(dim=1)
+    sq = ((delta_s - delta_t) ** 2).sum(dim=1)
+    if reduction == "sum":
+        return sq
+    if reduction == "mean":
+        return sq / valid.sum(dim=1).clamp(min=1).float()
+    raise ValueError(f"reduction must be sum or mean, got {reduction!r}")
 
 
 def js_divergence(
@@ -197,24 +207,32 @@ def js_divergence(
 
 
 def gate_weights(
-    divergence: torch.Tensor, tau: float, min_weight: float
+    divergence: torch.Tensor,
+    tau: float,
+    min_weight: float,
+    normalize: bool = True,
 ) -> torch.Tensor:
     """Soft reachability gate ``w = min_weight + (1 - min_weight) * exp(-d / tau)``.
 
-    ``tau <= 0`` uses the batch median of ``divergence`` (detached) as the
-    scale; when that median is zero every weight is 1.  ``divergence`` is
-    detached: the gate is a weight, not a training target.
+    ``tau`` is an absolute scale and must be positive: a batch-relative scale
+    (e.g. the batch median) would always push half of every batch below
+    ``exp(-1)`` whatever the absolute reachability, and a batch here is only a
+    handful of episodes.  Pick it from the JS values the plain-KL arm logs.
+
+    With ``normalize`` the weights are rescaled to mean 1 over the batch, so
+    the gate only redistributes the loss between steps and leaves its total
+    (hence the effective distillation weight) equal to the ungated arm.
+    ``divergence`` is detached: the gate is a weight, not a training target.
     """
     if not 0.0 <= min_weight <= 1.0:
         raise ValueError(f"min_weight must be in [0, 1], got {min_weight}")
-    d = divergence.detach().float()
     if tau <= 0:
-        scale = d.median()
-        if scale <= 0:
-            return torch.ones_like(d)
-    else:
-        scale = torch.as_tensor(float(tau), device=d.device)
-    return min_weight + (1.0 - min_weight) * torch.exp(-d / scale)
+        raise ValueError(f"tau must be positive (an absolute JS scale), got {tau}")
+    d = divergence.detach().float()
+    w = min_weight + (1.0 - min_weight) * torch.exp(-d / float(tau))
+    if normalize and w.numel() > 0:
+        w = w / w.mean()
+    return w
 
 
 def donor_permutation(scene_ids: Sequence[str]) -> list[int] | None:

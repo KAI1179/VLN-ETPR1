@@ -1506,6 +1506,12 @@ class RLTrainer(BaseVLNCETrainer):
 
     def _distill_aux_enabled(self) -> bool:
         il_cfg = self.config.IL
+        if il_cfg.gate_enabled and il_cfg.gate_min_weight < 1.0 and il_cfg.gate_tau <= 0:
+            raise ValueError(
+                "IL.gate_tau must be a positive absolute JS scale when the gate can "
+                "bite (gate_min_weight < 1); run once with IL.gate_min_weight 1.0 "
+                "and take it from the gate_js_median log"
+            )
         return self._gtt_on and (
             float(il_cfg.effect_match_weight) > 0 or bool(il_cfg.gate_enabled)
         )
@@ -1584,9 +1590,13 @@ class RLTrainer(BaseVLNCETrainer):
                 elif mode == "zero":
                     s_cf_grid = torch.zeros_like(s_grid)
                     t_cf_grid = torch.zeros_like(t_grid)
+                elif mode == "self":
+                    # Sanity check only: own map as counterfactual -> loss == 0.
+                    s_cf_grid = s_grid
+                    t_cf_grid = t_grid
                 else:
                     raise ValueError(
-                        "IL.effect_counterfactual must be batch_donor or zero, "
+                        "IL.effect_counterfactual must be batch_donor, zero or self, "
                         f"got {mode!r}"
                     )
                 out["student_cf"] = self.policy.net(
@@ -1861,6 +1871,7 @@ class RLTrainer(BaseVLNCETrainer):
             gtt_teacher_ce = 0.0
             gtt_teacher_llm_ce = 0.0
             gtt_gate_sum = 0.0
+            gtt_js_values = []
             gtt_stop_kl = 0.0
             gtt_move_kl = 0.0
             gtt_aux = {}
@@ -2014,6 +2025,15 @@ class RLTrainer(BaseVLNCETrainer):
                 stepk,
             )
 
+            # The effect-matching loss compares this forward with a second one
+            # on the counterfactual map; the student is in train mode, so the
+            # two must share their dropout masks.  Remember the device RNG
+            # state here and replay it for the counterfactual forward.
+            nav_rng_state = (
+                torch.cuda.get_rng_state(self.device)
+                if mode == "train" and self._gtt_on and self.config.IL.effect_match_weight > 0
+                else None
+            )
             nav_outs = self.policy.net(**nav_inputs)
             nav_logits = nav_outs["global_logits"]
             nav_probs = F.softmax(nav_logits, 1)
@@ -2077,20 +2097,28 @@ class RLTrainer(BaseVLNCETrainer):
                                 **self._with_map_tokens(t_inputs, gtt_aux["teacher_llm"])
                             )["global_logits"]
                         js = distill_losses.js_divergence(t_logits, t_llm_logits, valid)
-                        gate = distill_losses.gate_weights(
-                            js, il_cfg.gate_tau, il_cfg.gate_min_weight
-                        )
-                        gtt_gate_sum += gate.sum().item()
+                        gtt_js_values.append(js[valid.any(dim=1)].detach().cpu())
+                        if il_cfg.gate_min_weight < 1.0:
+                            gate = distill_losses.gate_weights(
+                                js, il_cfg.gate_tau, il_cfg.gate_min_weight,
+                                normalize=il_cfg.gate_normalize,
+                            )
+                            gtt_gate_sum += gate.sum().item()
+                        else:
+                            # Logging-only mode: record JS, weight nothing.
+                            gtt_gate_sum += float(js.numel())
                         gtt_teacher_llm_ce += F.cross_entropy(
                             t_llm_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
                         ).item()
 
                     # Action-level KL, optionally STOP-factorised.
                     if il_cfg.distill_stop_factorized:
-                        stop_kl, move_kl, _ = distill_losses.factorized_kl(
+                        stop_kl, move_kl, p_move = distill_losses.factorized_kl(
                             t_logits, nav_logits, valid, temp
                         )
-                        kl_rows = il_cfg.distill_stop_weight * stop_kl + move_kl
+                        # stop_kl + p_move * move_kl is exactly the joint KL, so
+                        # distill_stop_weight 1.0 reproduces the plain-KL arm.
+                        kl_rows = il_cfg.distill_stop_weight * stop_kl + p_move * move_kl
                         gtt_stop_kl += stop_kl.sum().item()
                         gtt_move_kl += move_kl.sum().item()
                     else:
@@ -2102,14 +2130,21 @@ class RLTrainer(BaseVLNCETrainer):
                     # Counterfactual map-effect matching.
                     if il_cfg.effect_match_weight > 0:
                         with torch.no_grad():
+                            # Same shapes as the own-map forward, so replaying
+                            # the RNG state gives identical dropout masks and
+                            # the non-map pathways cancel exactly in the delta.
+                            rng_after = torch.cuda.get_rng_state(self.device)
+                            torch.cuda.set_rng_state(nav_rng_state, self.device)
                             s_cf_logits = self.policy.net(
                                 **self._with_map_tokens(nav_inputs, gtt_aux["student_cf"])
                             )["global_logits"]
+                            torch.cuda.set_rng_state(rng_after, self.device)
                             t_cf_logits = self.gt_teacher.net(
                                 **self._with_map_tokens(t_inputs, gtt_aux["teacher_cf"])
                             )["global_logits"]
                         eff_rows = distill_losses.effect_match(
-                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid
+                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid,
+                            reduction=il_cfg.effect_reduction,
                         )
                         if gate is not None:
                             eff_rows = eff_rows * gate
@@ -2391,6 +2426,10 @@ class RLTrainer(BaseVLNCETrainer):
                 if self.config.IL.gate_enabled:
                     self.logs["gate_mean"].append(gtt_gate_sum / total_actions)
                     self.logs["teacher_llm_ce"].append(gtt_teacher_llm_ce / total_actions)
+                    if gtt_js_values:
+                        js_all = torch.cat(gtt_js_values)
+                        self.logs["gate_js_mean"].append(js_all.mean().item())
+                        self.logs["gate_js_median"].append(js_all.median().item())
                 if self.config.IL.distill_stop_factorized:
                     self.logs["stop_kl"].append(gtt_stop_kl / total_actions)
                     self.logs["move_kl"].append(gtt_move_kl / total_actions)
