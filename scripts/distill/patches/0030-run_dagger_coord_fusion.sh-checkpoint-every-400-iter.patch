@@ -1,0 +1,36 @@
+From 19ebabce0652a9dac03b4f04c94ccfffd572208d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 20:12:21 -0600
+Subject: [PATCH] run_dagger_coord_fusion.sh: checkpoint every 400 iters
+ (CKPT_INTERVAL)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CAaWoeW35zu5bncqujUPPQ
+---
+ scripts/distill/run_dagger_coord_fusion.sh | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/distill/run_dagger_coord_fusion.sh b/scripts/distill/run_dagger_coord_fusion.sh
+index 284ad73..aaa7d33 100755
+--- a/scripts/distill/run_dagger_coord_fusion.sh
++++ b/scripts/distill/run_dagger_coord_fusion.sh
+@@ -19,6 +19,7 @@
+ #      the historical run used 4 cards x 4 envs), NUM_ENVS (4), ITERS (30000),
+ #      MASTER_PORT (29500; use distinct ports for concurrent runs),
+ #      PRETRAINED_CKPT (arm default), RUN_NAME (dagger_coordfusion_<arm>).
++# Checkpoint every CKPT_INTERVAL iters (400).
+ # Resume: re-running continues from the latest ckpt.iter*.pth in the run dir.
+ # The run dir also gets eval_args.txt, which eval_run.sh / eval_iters.sh /
+ # eval_raster_donor.sh append, so checkpoints are always evaluated with the
+@@ -121,7 +122,7 @@ COMMAND=(
+     TASK_CONFIG.SEED 100
+     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
+     NUM_ENVIRONMENTS "${NUM_ENVS}"
+-    CHECKPOINT_INTERVAL 1000
++    CHECKPOINT_INTERVAL "${CKPT_INTERVAL:-400}"
+     ONLY_LAST_SAVEALL False
+     IL.iters "${ITERS}"
+     IL.lr 1e-5
+-- 
+2.43.0
+
