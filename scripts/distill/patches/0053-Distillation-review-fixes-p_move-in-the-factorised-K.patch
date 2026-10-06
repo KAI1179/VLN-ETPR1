@@ -1,0 +1,454 @@
+From 96f4ca2b75ff1cbe26770ba3fe1b3c1b3add7a39 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 13:27:39 +0000
+Subject: [PATCH] Distillation review fixes: p_move in the factorised KL,
+ absolute normalised gate, RNG-matched counterfactual forward
+
+Three defects found in review of patch 0050, all in the trainer wiring (the
+loss functions themselves were correct):
+
+1. The STOP-factorised KL used stop_weight * stop_kl + move_kl, dropping the
+   teacher's p_move from the move term. Steps where the teacher wants to stop
+   (p_move ~ 0.05) were weighted ~10x towards imitating "where to go if not
+   stopping", the opposite of the intent, and distill_stop_weight 1.0 did not
+   reproduce the plain KL. Now stop_weight * stop_kl + p_move * move_kl, which
+   is exactly the joint KL at weight 1.0.
+
+2. The gate's tau <= 0 mode used the batch median JS: with 4 episodes per
+   process that pushed half of every batch below exp(-1) whatever the
+   absolute reachability, and the gated sum divided by total_actions halved
+   the effective distillation weight. tau is now a required absolute scale
+   (gate_weights refuses tau <= 0; the trainer refuses the config at start
+   unless gate_min_weight is 1.0), and IL.gate_normalize (default True)
+   rescales the weights to mean 1 per batch so the gate only redistributes
+   the loss between steps. gate_min_weight 1.0 is a logging-only mode; the
+   per-iteration JS mean and median are logged as gate_js_mean / gate_js_median
+   so tau can be read off a plain-KL run (launcher: JS_LOG=True ... kl).
+
+3. The student runs in train mode, so the own-map and counterfactual-map
+   forwards drew different dropout masks and the non-map pathways did not
+   cancel in the delta. The device RNG state is now captured before the
+   own-map navigation forward and replayed for the counterfactual forward
+   (same shapes, hence identical masks), then restored. The map encoder has
+   dropout 0.0, so its once-per-rollout counterfactual tokens are exact.
+   IL.effect_counterfactual "self" (own map as counterfactual) is the sanity
+   check: effect_loss must be exactly 0.
+
+Also IL.effect_reduction sum|mean (mean divides by the number of valid
+candidates) for the magnitude question. Launcher: GATE_TAU required for
+gated/full with the kl JS_LOG=True recipe in the error text; GATE_NORMALIZE,
+EFFECT_REDUCTION, JS_LOG pass-throughs. Tests: 17.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Q37SwHSfdSLWwALjMD6Pvv
+---
+ scripts/distill/run_dagger_distill_legacy.sh  | 54 ++++++++++++++----
+ tests/etp_prior_gt/test_distill_losses.py     | 32 ++++++++---
+ vlnce_baselines/config/default.py             | 12 +++-
+ .../models/etp_prior_gt/distill_losses.py     | 42 ++++++++++----
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 55 ++++++++++++++++---
+ 5 files changed, 156 insertions(+), 39 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 03b6dfd..d7adb70 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -9,9 +9,13 @@
+ #
+ # Usage: bash scripts/distill/run_dagger_distill_legacy.sh MODE [--dry-run]
+ #
+-#   MODE  kl      plain action KL (historical distillation, the control arm)
+-#         gated   action KL with the reachability gate
++#   MODE  kl      plain action KL (historical distillation, the control arm);
++#                 JS_LOG=True additionally logs the teacher's GT-vs-LLM-map JS
++#                 per iteration (gate_js_mean / gate_js_median) without
++#                 weighting anything: that is where GATE_TAU comes from.
++#         gated   action KL with the reachability gate (GATE_TAU required)
+ #         full    STOP-factorised KL + gate + counterfactual effect matching
++#                 (GATE_TAU required)
+ #
+ # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
+ # continues from the latest one; re-running after a crash is always safe.
+@@ -27,7 +31,9 @@
+ # NUM_ENVS (4 per process; batch_donor needs >= 2), PRETRAINED_CKPT (460000),
+ # LOAD_MAP (False: map modules train from initialisation, as the teacher's
+ # did), GT_TEACHER_CKPT, EFFECT_WEIGHT (1.0), EFFECT_CF (batch_donor|zero),
+-# GATE_TAU (0 = batch median), GATE_MIN (0.2), STOP_WEIGHT (1.0), TEMP (1.0),
++# GATE_TAU (absolute JS scale, no default: take gate_js_median from a kl
++# JS_LOG=True run), GATE_MIN (0.2), GATE_NORMALIZE (True), EFFECT_REDUCTION
++# (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
+ # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
+ set -euo pipefail
+ 
+@@ -89,30 +95,56 @@ EFFECT_WEIGHT="${EFFECT_WEIGHT:-1.0}"
+ EFFECT_CF="${EFFECT_CF:-batch_donor}"
+ GATE_TAU="${GATE_TAU:-0.0}"
+ GATE_MIN="${GATE_MIN:-0.2}"
++GATE_NORMALIZE="${GATE_NORMALIZE:-True}"
++EFFECT_REDUCTION="${EFFECT_REDUCTION:-sum}"
++JS_LOG="${JS_LOG:-False}"
+ STOP_WEIGHT="${STOP_WEIGHT:-1.0}"
+ TEMP="${TEMP:-1.0}"
+ DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"
+ 
+ # Mode -> distillation switches.  Every key defaults to the historical plain
+ # KL, so the kl arm passes the defaults explicitly for the record.
++_need_tau() {
++    if ! awk -v t="${GATE_TAU}" 'BEGIN { exit !(t > 0) }'; then
++        echo "GATE_TAU must be set to a positive absolute JS scale for MODE=${MODE}: run" >&2
++        echo "  JS_LOG=True bash scripts/distill/run_dagger_distill_legacy.sh kl" >&2
++        echo "for a few hundred iters and use its gate_js_median" >&2
++        exit 2
++    fi
++}
+ case "${MODE}" in
+     kl)
+-        DISTILL_ARGS=(
+-            IL.distill_stop_factorized False
+-            IL.gate_enabled False
+-            IL.effect_match_weight 0.0
+-        )
++        if [[ "${JS_LOG}" == "True" ]]; then
++            # gate_min_weight 1.0 makes every weight 1: the KL is unchanged,
++            # only the teacher's GT-vs-LLM-map JS is logged.
++            DISTILL_ARGS=(
++                IL.distill_stop_factorized False
++                IL.gate_enabled True
++                IL.gate_tau 1.0
++                IL.gate_min_weight 1.0
++                IL.effect_match_weight 0.0
++            )
++        else
++            DISTILL_ARGS=(
++                IL.distill_stop_factorized False
++                IL.gate_enabled False
++                IL.effect_match_weight 0.0
++            )
++        fi
+         ;;
+     gated)
++        _need_tau
+         DISTILL_ARGS=(
+             IL.distill_stop_factorized False
+             IL.gate_enabled True
+             IL.gate_tau "${GATE_TAU}"
+             IL.gate_min_weight "${GATE_MIN}"
++            IL.gate_normalize "${GATE_NORMALIZE}"
+             IL.effect_match_weight 0.0
+         )
+         ;;
+     full)
++        _need_tau
+         if [[ "${EFFECT_CF}" == "batch_donor" && "${NUM_ENVS}" -lt 2 ]]; then
+             echo "EFFECT_CF=batch_donor needs NUM_ENVS >= 2 (got ${NUM_ENVS}); set EFFECT_CF=zero" >&2
+             exit 2
+@@ -123,15 +155,17 @@ case "${MODE}" in
+             IL.gate_enabled True
+             IL.gate_tau "${GATE_TAU}"
+             IL.gate_min_weight "${GATE_MIN}"
++            IL.gate_normalize "${GATE_NORMALIZE}"
+             IL.effect_match_weight "${EFFECT_WEIGHT}"
+             IL.effect_counterfactual "${EFFECT_CF}"
++            IL.effect_reduction "${EFFECT_REDUCTION}"
+         )
+         ;;
+ esac
+ 
+-for key in distill_stop_factorized effect_match_weight gate_enabled; do
++for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction; do
+     if ! grep -q "_C.IL.${key}" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
+-        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patch 0050 first" >&2
++        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050 and 0053 first" >&2
+         exit 2
+     fi
+ done
+diff --git a/tests/etp_prior_gt/test_distill_losses.py b/tests/etp_prior_gt/test_distill_losses.py
+index bda84a4..62eabf9 100644
+--- a/tests/etp_prior_gt/test_distill_losses.py
++++ b/tests/etp_prior_gt/test_distill_losses.py
+@@ -129,6 +129,17 @@ def test_effect_match_is_invariant_to_shared_non_map_shift():
+     assert torch.allclose(a, b, atol=1e-5)
+ 
+ 
++def test_effect_match_mean_reduction_divides_by_valid_count():
++    t_full, t_cf, valid = _case(seed=6)
++    s_full = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
++    s_cf = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
++    summed = dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="sum")
++    mean = dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="mean")
++    assert torch.allclose(mean, summed / valid.sum(dim=1).float())
++    with pytest.raises(ValueError):
++        dl.effect_match(t_full, t_cf, s_full, s_cf, valid, reduction="max")
++
++
+ def test_js_divergence_range_and_symmetry():
+     a, b, valid = _case(seed=5)
+     js = dl.js_divergence(a, b, valid)
+@@ -144,19 +155,26 @@ def test_js_divergence_range_and_symmetry():
+ 
+ def test_gate_weights_floor_and_scale():
+     d = torch.tensor([0.0, 0.1, 0.2, 10.0])
+-    w = dl.gate_weights(d, tau=0.1, min_weight=0.2)
++    w = dl.gate_weights(d, tau=0.1, min_weight=0.2, normalize=False)
+     assert w[0] == pytest.approx(1.0)
+     assert w[1] == pytest.approx(0.2 + 0.8 * math.exp(-1))
+     assert w[3] == pytest.approx(0.2, abs=1e-6)
+     assert (w >= 0.2).all() and (w <= 1.0).all()
+-    # tau <= 0: batch median as the scale.
+-    w_med = dl.gate_weights(d, tau=0.0, min_weight=0.0)
+-    median = d.median().item()
+-    assert w_med[1] == pytest.approx(math.exp(-0.1 / median))
+-    # All-zero divergence: no gating.
+-    assert torch.equal(dl.gate_weights(torch.zeros(3), tau=0.0, min_weight=0.2), torch.ones(3))
+     with pytest.raises(ValueError):
+         dl.gate_weights(d, tau=1.0, min_weight=1.5)
++    # A batch-relative scale is refused: tau is absolute.
++    with pytest.raises(ValueError, match="tau must be positive"):
++        dl.gate_weights(d, tau=0.0, min_weight=0.2)
++
++
++def test_gate_weights_normalisation_keeps_the_total():
++    d = torch.tensor([0.0, 0.1, 0.2, 10.0])
++    w = dl.gate_weights(d, tau=0.1, min_weight=0.2)
++    assert w.mean().item() == pytest.approx(1.0)
++    raw = dl.gate_weights(d, tau=0.1, min_weight=0.2, normalize=False)
++    assert torch.allclose(w / w[0], raw / raw[0])  # same ratios between steps
++    # All reachable: nobody is down-weighted.
++    assert torch.allclose(dl.gate_weights(torch.full((4,), 1e-4), tau=0.1, min_weight=0.2), torch.ones(4), atol=1e-3)
+ 
+ 
+ def test_gate_weights_are_detached():
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index be49071..1b281cf 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -99,14 +99,22 @@ _C.IL.distill_stop_weight = 1.0
+ # map keeps the episode's own metadata and takes its raster from another episode
+ # of the same batch ("batch_donor", needs NUM_ENVIRONMENTS >= 2) or zeros ("zero").
+ _C.IL.effect_match_weight = 0.0
++# batch_donor | zero | self ("self" is the sanity check: the counterfactual map
++# is the episode's own map, so the loss must be exactly 0).
+ _C.IL.effect_counterfactual = "batch_donor"
++# sum: squared errors summed over the valid candidates; mean: divided by their count.
++_C.IL.effect_reduction = "sum"
+ # Reachability gate: per-step weight min + (1 - min) * exp(-JS / tau) where JS is
+ # the divergence between the teacher on its GT map and the teacher on the
+-# student's LLM map; tau <= 0 uses the batch median JS.  Applied to the action KL
+-# and to the effect-matching loss.
++# student's LLM map.  tau is an absolute JS scale and must be > 0 whenever the
++# gate can bite (min < 1); take it from the gate_js_* logs of a run with
++# gate_min_weight 1.0 (logging only, weights all 1).  With gate_normalize the
++# weights are rescaled to mean 1 per batch so the gate only redistributes the
++# loss between steps.  Applied to the action KL and to the effect-matching loss.
+ _C.IL.gate_enabled = False
+ _C.IL.gate_tau = 0.0
+ _C.IL.gate_min_weight = 0.2
++_C.IL.gate_normalize = True
+ # Scale on the student's cached start_position when its map is fed to the teacher
+ # (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
+ _C.IL.gate_teacher_start_position_scale = 1.0
+diff --git a/vlnce_baselines/models/etp_prior_gt/distill_losses.py b/vlnce_baselines/models/etp_prior_gt/distill_losses.py
+index 4048fb8..9e053a9 100644
+--- a/vlnce_baselines/models/etp_prior_gt/distill_losses.py
++++ b/vlnce_baselines/models/etp_prior_gt/distill_losses.py
+@@ -162,9 +162,14 @@ def effect_match(
+     student_full: torch.Tensor,
+     student_cf: torch.Tensor,
+     valid: torch.Tensor,
++    reduction: str = "sum",
+ ) -> torch.Tensor:
+     """Per-row squared error between the student's and the teacher's map effect.
+ 
++    ``reduction`` "sum" adds the squared errors over the valid candidates (so
++    the term scales like the KL terms, per decision); "mean" divides by the
++    number of valid candidates, which keeps it independent of the graph size.
++
+     ``*_full`` are logits with each model's own map, ``*_cf`` with the
+     counterfactual map.  The teacher side and ``student_cf`` are detached:
+     gradient reaches the student only through ``student_full``, so the
+@@ -176,7 +181,12 @@ def effect_match(
+     _check_pair(student_full, valid, "student_full")
+     delta_t = _centered_delta(teacher_full.detach(), teacher_cf.detach(), valid)
+     delta_s = _centered_delta(student_full, student_cf.detach(), valid)
+-    return ((delta_s - delta_t) ** 2).sum(dim=1)
++    sq = ((delta_s - delta_t) ** 2).sum(dim=1)
++    if reduction == "sum":
++        return sq
++    if reduction == "mean":
++        return sq / valid.sum(dim=1).clamp(min=1).float()
++    raise ValueError(f"reduction must be sum or mean, got {reduction!r}")
+ 
+ 
+ def js_divergence(
+@@ -197,24 +207,32 @@ def js_divergence(
+ 
+ 
+ def gate_weights(
+-    divergence: torch.Tensor, tau: float, min_weight: float
++    divergence: torch.Tensor,
++    tau: float,
++    min_weight: float,
++    normalize: bool = True,
+ ) -> torch.Tensor:
+     """Soft reachability gate ``w = min_weight + (1 - min_weight) * exp(-d / tau)``.
+ 
+-    ``tau <= 0`` uses the batch median of ``divergence`` (detached) as the
+-    scale; when that median is zero every weight is 1.  ``divergence`` is
+-    detached: the gate is a weight, not a training target.
++    ``tau`` is an absolute scale and must be positive: a batch-relative scale
++    (e.g. the batch median) would always push half of every batch below
++    ``exp(-1)`` whatever the absolute reachability, and a batch here is only a
++    handful of episodes.  Pick it from the JS values the plain-KL arm logs.
++
++    With ``normalize`` the weights are rescaled to mean 1 over the batch, so
++    the gate only redistributes the loss between steps and leaves its total
++    (hence the effective distillation weight) equal to the ungated arm.
++    ``divergence`` is detached: the gate is a weight, not a training target.
+     """
+     if not 0.0 <= min_weight <= 1.0:
+         raise ValueError(f"min_weight must be in [0, 1], got {min_weight}")
+-    d = divergence.detach().float()
+     if tau <= 0:
+-        scale = d.median()
+-        if scale <= 0:
+-            return torch.ones_like(d)
+-    else:
+-        scale = torch.as_tensor(float(tau), device=d.device)
+-    return min_weight + (1.0 - min_weight) * torch.exp(-d / scale)
++        raise ValueError(f"tau must be positive (an absolute JS scale), got {tau}")
++    d = divergence.detach().float()
++    w = min_weight + (1.0 - min_weight) * torch.exp(-d / float(tau))
++    if normalize and w.numel() > 0:
++        w = w / w.mean()
++    return w
+ 
+ 
+ def donor_permutation(scene_ids: Sequence[str]) -> list[int] | None:
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 192447a..64ff234 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1506,6 +1506,12 @@ class RLTrainer(BaseVLNCETrainer):
+ 
+     def _distill_aux_enabled(self) -> bool:
+         il_cfg = self.config.IL
++        if il_cfg.gate_enabled and il_cfg.gate_min_weight < 1.0 and il_cfg.gate_tau <= 0:
++            raise ValueError(
++                "IL.gate_tau must be a positive absolute JS scale when the gate can "
++                "bite (gate_min_weight < 1); run once with IL.gate_min_weight 1.0 "
++                "and take it from the gate_js_median log"
++            )
+         return self._gtt_on and (
+             float(il_cfg.effect_match_weight) > 0 or bool(il_cfg.gate_enabled)
+         )
+@@ -1584,9 +1590,13 @@ class RLTrainer(BaseVLNCETrainer):
+                 elif mode == "zero":
+                     s_cf_grid = torch.zeros_like(s_grid)
+                     t_cf_grid = torch.zeros_like(t_grid)
++                elif mode == "self":
++                    # Sanity check only: own map as counterfactual -> loss == 0.
++                    s_cf_grid = s_grid
++                    t_cf_grid = t_grid
+                 else:
+                     raise ValueError(
+-                        "IL.effect_counterfactual must be batch_donor or zero, "
++                        "IL.effect_counterfactual must be batch_donor, zero or self, "
+                         f"got {mode!r}"
+                     )
+                 out["student_cf"] = self.policy.net(
+@@ -1861,6 +1871,7 @@ class RLTrainer(BaseVLNCETrainer):
+             gtt_teacher_ce = 0.0
+             gtt_teacher_llm_ce = 0.0
+             gtt_gate_sum = 0.0
++            gtt_js_values = []
+             gtt_stop_kl = 0.0
+             gtt_move_kl = 0.0
+             gtt_aux = {}
+@@ -2014,6 +2025,15 @@ class RLTrainer(BaseVLNCETrainer):
+                 stepk,
+             )
+ 
++            # The effect-matching loss compares this forward with a second one
++            # on the counterfactual map; the student is in train mode, so the
++            # two must share their dropout masks.  Remember the device RNG
++            # state here and replay it for the counterfactual forward.
++            nav_rng_state = (
++                torch.cuda.get_rng_state(self.device)
++                if mode == "train" and self._gtt_on and self.config.IL.effect_match_weight > 0
++                else None
++            )
+             nav_outs = self.policy.net(**nav_inputs)
+             nav_logits = nav_outs["global_logits"]
+             nav_probs = F.softmax(nav_logits, 1)
+@@ -2077,20 +2097,28 @@ class RLTrainer(BaseVLNCETrainer):
+                                 **self._with_map_tokens(t_inputs, gtt_aux["teacher_llm"])
+                             )["global_logits"]
+                         js = distill_losses.js_divergence(t_logits, t_llm_logits, valid)
+-                        gate = distill_losses.gate_weights(
+-                            js, il_cfg.gate_tau, il_cfg.gate_min_weight
+-                        )
+-                        gtt_gate_sum += gate.sum().item()
++                        gtt_js_values.append(js[valid.any(dim=1)].detach().cpu())
++                        if il_cfg.gate_min_weight < 1.0:
++                            gate = distill_losses.gate_weights(
++                                js, il_cfg.gate_tau, il_cfg.gate_min_weight,
++                                normalize=il_cfg.gate_normalize,
++                            )
++                            gtt_gate_sum += gate.sum().item()
++                        else:
++                            # Logging-only mode: record JS, weight nothing.
++                            gtt_gate_sum += float(js.numel())
+                         gtt_teacher_llm_ce += F.cross_entropy(
+                             t_llm_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+                         ).item()
+ 
+                     # Action-level KL, optionally STOP-factorised.
+                     if il_cfg.distill_stop_factorized:
+-                        stop_kl, move_kl, _ = distill_losses.factorized_kl(
++                        stop_kl, move_kl, p_move = distill_losses.factorized_kl(
+                             t_logits, nav_logits, valid, temp
+                         )
+-                        kl_rows = il_cfg.distill_stop_weight * stop_kl + move_kl
++                        # stop_kl + p_move * move_kl is exactly the joint KL, so
++                        # distill_stop_weight 1.0 reproduces the plain-KL arm.
++                        kl_rows = il_cfg.distill_stop_weight * stop_kl + p_move * move_kl
+                         gtt_stop_kl += stop_kl.sum().item()
+                         gtt_move_kl += move_kl.sum().item()
+                     else:
+@@ -2102,14 +2130,21 @@ class RLTrainer(BaseVLNCETrainer):
+                     # Counterfactual map-effect matching.
+                     if il_cfg.effect_match_weight > 0:
+                         with torch.no_grad():
++                            # Same shapes as the own-map forward, so replaying
++                            # the RNG state gives identical dropout masks and
++                            # the non-map pathways cancel exactly in the delta.
++                            rng_after = torch.cuda.get_rng_state(self.device)
++                            torch.cuda.set_rng_state(nav_rng_state, self.device)
+                             s_cf_logits = self.policy.net(
+                                 **self._with_map_tokens(nav_inputs, gtt_aux["student_cf"])
+                             )["global_logits"]
++                            torch.cuda.set_rng_state(rng_after, self.device)
+                             t_cf_logits = self.gt_teacher.net(
+                                 **self._with_map_tokens(t_inputs, gtt_aux["teacher_cf"])
+                             )["global_logits"]
+                         eff_rows = distill_losses.effect_match(
+-                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid
++                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid,
++                            reduction=il_cfg.effect_reduction,
+                         )
+                         if gate is not None:
+                             eff_rows = eff_rows * gate
+@@ -2391,6 +2426,10 @@ class RLTrainer(BaseVLNCETrainer):
+                 if self.config.IL.gate_enabled:
+                     self.logs["gate_mean"].append(gtt_gate_sum / total_actions)
+                     self.logs["teacher_llm_ce"].append(gtt_teacher_llm_ce / total_actions)
++                    if gtt_js_values:
++                        js_all = torch.cat(gtt_js_values)
++                        self.logs["gate_js_mean"].append(js_all.mean().item())
++                        self.logs["gate_js_median"].append(js_all.median().item())
+                 if self.config.IL.distill_stop_factorized:
+                     self.logs["stop_kl"].append(gtt_stop_kl / total_actions)
+                     self.logs["move_kl"].append(gtt_move_kl / total_actions)
+-- 
+2.43.0
+
