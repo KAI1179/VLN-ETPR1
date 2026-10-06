@@ -1,0 +1,36 @@
+From 140974fb96d3e298daf6fd242192a8f86e30c0a8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 08:25:50 +0000
+Subject: [PATCH] DAgger launcher: CKPT_INTERVAL knob, additive resume
+ overrides
+
+The run died at a checkpoint save on a full filesystem (150 files x 5.5 GB
+at the habitat default interval). CKPT_INTERVAL=N passes CHECKPOINT_INTERVAL N;
+RESUME=1 now appends to LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS instead of
+replacing it.
+---
+ scripts/submit/llm-grid-try5-fixedtok-dagger.sh | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/submit/llm-grid-try5-fixedtok-dagger.sh b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+index 0e1fde6..9c5a1d4 100755
+--- a/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
++++ b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+@@ -20,7 +20,13 @@ if [[ "${RESUME:-0}" == "1" ]]; then
+         LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT="$(grep -E '^\s*pretrained_path:' "${RUN_DIR}/config.yaml" | head -1 | awk '{print $2}' | tr -d "'\"")"
+         export LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT
+     fi
+-    export LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS="IL.load_from_ckpt True IL.is_requeue True"
++    export LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS="${LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS:-} IL.load_from_ckpt True IL.is_requeue True"
+     echo "Resuming from ${LATEST} (pretrained_path ${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT})"
+ fi
++# CKPT_INTERVAL=N: save a checkpoint every N iterations instead of the habitat
++# default (50, i.e. at every 200-iteration log point: 150 files x 5.5 GB per run).
++if [[ -n "${CKPT_INTERVAL:-}" ]]; then
++    [[ "${CKPT_INTERVAL}" =~ ^[0-9]+$ ]] || { echo "CKPT_INTERVAL must be an integer" >&2; exit 2; }
++    export LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS="${LLM_GRID_TRY5_FIXEDTOK_EXTRA_ARGS:-} CHECKPOINT_INTERVAL ${CKPT_INTERVAL}"
++fi
+ bash run_r2r/main_server.bash llm_grid_try5_fixedtok_dagger
+-- 
+2.43.0
+
