@@ -19,6 +19,7 @@
 #      the historical run used 4 cards x 4 envs), NUM_ENVS (4), ITERS (30000),
 #      MASTER_PORT (29500; use distinct ports for concurrent runs),
 #      PRETRAINED_CKPT (arm default), RUN_NAME (dagger_coordfusion_<arm>).
+# Checkpoint every CKPT_INTERVAL iters (400).
 # Resume: re-running continues from the latest ckpt.iter*.pth in the run dir.
 # The run dir also gets eval_args.txt, which eval_run.sh / eval_iters.sh /
 # eval_raster_donor.sh append, so checkpoints are always evaluated with the
@@ -121,7 +122,7 @@ COMMAND=(
     TASK_CONFIG.SEED 100
     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
     NUM_ENVIRONMENTS "${NUM_ENVS}"
-    CHECKPOINT_INTERVAL 1000
+    CHECKPOINT_INTERVAL "${CKPT_INTERVAL:-400}"
     ONLY_LAST_SAVEALL False
     IL.iters "${ITERS}"
     IL.lr 1e-5
