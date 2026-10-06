@@ -1,0 +1,98 @@
+From e65f9fc16533f2f9978911f90fc6d97cc5b1a955 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 20:02:07 -0600
+Subject: [PATCH] Coordinate fusion: a start outside the raster is data, not an
+ error
+
+E2 died at iter 91 on train episode 7362, whose start maps to raster cell
+(48.6, 106.9): the raster is a fixed 50 m window at the level origin and
+on a large level the start lies beyond it. That is what the cached
+start_position says (the metadata token always received it as-is), not a
+unit mistake, which would move every episode and is what
+check_map_frame.py validates. Replace the hard check with a counted
+warning (first five, then every 100th). Nodes outside the raster get a
+large distance to every token, so the local heads attend to the nearest
+edge tokens; no NaN path (finite bias, softmax over finite logits).
+
+check_map_frame.py: --limit 0 checks the whole split, so the train-split
+frequency of out-of-raster starts can be measured.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CAaWoeW35zu5bncqujUPPQ
+---
+ scripts/distill/check_map_frame.py        |  5 ++++-
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py | 25 ++++++++++++++++-------
+ 2 files changed, 22 insertions(+), 8 deletions(-)
+
+diff --git a/scripts/distill/check_map_frame.py b/scripts/distill/check_map_frame.py
+index 35f5f99..62677e0 100644
+--- a/scripts/distill/check_map_frame.py
++++ b/scripts/distill/check_map_frame.py
+@@ -53,7 +53,10 @@ class Args(Tap):
+     """GT cache namespace (source gt)."""
+     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+     split: str = "val_unseen"
++    """Episode split; train also needs --limit raised (or 0 for all) to see how
++    many starts fall outside the 50 m raster window on large levels."""
+     limit: int = 300
++    """Episodes to check; 0 = all."""
+ 
+ 
+ def _load_map(args: Args, episode: dict) -> Optional[dict]:
+@@ -97,7 +100,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+     start_outside = 0
+     used = 0
+     for episode in episodes:
+-        if used >= args.limit:
++        if args.limit and used >= args.limit:
+             break
+         cognitive_map = _load_map(args, episode)
+         if cognitive_map is None:
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 34c48f8..48ec8ea 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1406,6 +1406,8 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+         return None
+ 
++    _start_outside_raster = 0
++
+     def _attach_map_origins(self, cognitive_maps, mode):
+         """Store each episode's raster origin (world x, z) in its map dict.
+ 
+@@ -1427,15 +1429,24 @@ class RLTrainer(BaseVLNCETrainer):
+                 cognitive_map["start_position"],
+                 meters_per_unit,
+             )
++            cognitive_map["map_origin_xz"] = origin
++            # The raster is a fixed 50 m window at the level origin, so on a
++            # large level the start (and nodes) can lie outside it.  That is
++            # the cached start_position itself, not a unit error (a wrong
++            # unit moves every episode; the unit is validated offline by
++            # scripts/distill/check_map_frame.py).  Nodes outside just get a
++            # large distance to every token, which the local heads turn into
++            # attention on the nearest edge tokens.  Count it for the log.
+             start_cell = world_to_map_cells([episode.start_position], origin)[0]
+             if not bool(((start_cell >= 0) & (start_cell < MAP_SIZE)).all()):
+-                raise ValueError(
+-                    f"episode {episode.episode_id}: start maps to raster cell "
+-                    f"{start_cell.tolist()}, outside the {MAP_SIZE}x{MAP_SIZE} map; "
+-                    "check MAP_ENCODER.start_position_meters_per_unit "
+-                    f"(={meters_per_unit}: 1.0 for metres, 0.5 for cells)"
+-                )
+-            cognitive_map["map_origin_xz"] = origin
++                self._start_outside_raster += 1
++                if self._start_outside_raster <= 5 or self._start_outside_raster % 100 == 0:
++                    logger.warning(
++                        f"coordinate_fusion: episode {episode.episode_id} starts at "
++                        f"raster cell {[round(v, 1) for v in start_cell.tolist()]}, "
++                        f"outside the {MAP_SIZE}x{MAP_SIZE} map "
++                        f"({self._start_outside_raster} such episodes so far)"
++                    )
+ 
+     def _gmap_map_coords(self, gmap_vp_ids, cognitive_maps):
+         """(B, G, 2) map-frame (row, col) of every gmap entry, NaN for STOP
+-- 
+2.43.0
+
