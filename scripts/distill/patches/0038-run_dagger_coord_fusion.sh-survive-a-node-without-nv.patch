@@ -1,0 +1,45 @@
+From 79efc8b4a4a575af75f950fd8b9a82edaaa021a3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 05:53:47 -0600
+Subject: [PATCH] run_dagger_coord_fusion.sh: survive a node without nvidia-smi
+
+With CUDA_VISIBLE_DEVICES unset the GPU count came from a nvidia-smi
+pipeline inside a command substitution; on a node without nvidia-smi
+(the ln01 login node) that pipeline fails and, under set -e -o pipefail,
+the script exited silently before writing anything. Now the count is
+taken with the failure tolerated: a dry run assumes 4 GPUs and says so,
+a real run stops with a message.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_coord_fusion.sh | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_coord_fusion.sh b/scripts/distill/run_dagger_coord_fusion.sh
+index 60c0ade..4e749e4 100755
+--- a/scripts/distill/run_dagger_coord_fusion.sh
++++ b/scripts/distill/run_dagger_coord_fusion.sh
+@@ -111,8 +111,17 @@ MODEL_ARGS=(
+ )
+ 
+ if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+-    _n="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+-    CUDA_VISIBLE_DEVICES="$(seq -s, 0 $((${_n:-8} - 1)))"
++    # A node without nvidia-smi (ln01 login node) must not kill the script
++    # under pipefail: count what is there, and for a dry run assume 4 GPUs.
++    _n="$( (nvidia-smi -L 2>/dev/null || true) | wc -l | tr -d ' ')"
++    if [[ "${_n}" -eq 0 ]]; then
++        if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++            _n=4; echo "No GPU visible here; dry run assumes ${_n} GPUs"
++        else
++            echo "No GPU visible and CUDA_VISIBLE_DEVICES unset (submit through slurm or set it)" >&2; exit 1
++        fi
++    fi
++    CUDA_VISIBLE_DEVICES="$(seq -s, 0 $((_n - 1)))"
+ fi
+ IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
+ GPU_NUMBERS="${#_gpu_list[@]}"
+-- 
+2.43.0
+
