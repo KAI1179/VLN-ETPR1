@@ -1,0 +1,149 @@
+From 1c0133aee563ba56125297f838b6b5184877b2e9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 13:10:54 +0000
+Subject: [PATCH] GT teacher loader: refuse a checkpoint trained as another
+ policy or map cache
+
+Teacher and student share the architecture, so an LLM-Grid student
+checkpoint loads into the teacher without a missing key and the run would
+silently distil the student into itself. The checkpoint's saved config names
+the policy and the map cache namespace it was trained with; both must match
+IL.gt_teacher_policy_name / IL.gt_teacher_map_namespace. Checkpoints without
+a saved config pass. Test lifts the function with ast (the trainer imports
+habitat).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Q37SwHSfdSLWwALjMD6Pvv
+---
+ .../etp_prior_gt/test_gt_teacher_identity.py  | 61 +++++++++++++++++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 39 +++++++++++-
+ 2 files changed, 97 insertions(+), 3 deletions(-)
+ create mode 100644 tests/etp_prior_gt/test_gt_teacher_identity.py
+
+diff --git a/tests/etp_prior_gt/test_gt_teacher_identity.py b/tests/etp_prior_gt/test_gt_teacher_identity.py
+new file mode 100644
+index 0000000..7d07137
+--- /dev/null
++++ b/tests/etp_prior_gt/test_gt_teacher_identity.py
+@@ -0,0 +1,61 @@
++"""The GT-teacher loader refuses a checkpoint trained as a different policy or
++on a different map cache.  Teacher and student share the architecture, so a
++student checkpoint would otherwise load silently and the run would distil the
++student into itself.
++
++The trainer module imports habitat, so the function is lifted from the source
++with ast instead of being imported.
++"""
++
++import ast
++import types
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parents[2]
++SRC = (ROOT / "vlnce_baselines" / "ss_trainer_ETP_PriorGT.py").read_text()
++_FN = next(
++    n for n in ast.parse(SRC).body
++    if isinstance(n, ast.FunctionDef) and n.name == "_check_teacher_identity"
++)
++_NS = {}
++exec(compile(ast.Module([_FN], type_ignores=[]), "ss_trainer_ETP_PriorGT.py", "exec"), _NS)  # noqa: S102
++check = _NS["_check_teacher_identity"]
++
++GT = ("PriorGTTry5Policy", "gt.legacy.r1p5.direction5.v1")
++
++
++def _cfg(policy, namespace):
++    return types.SimpleNamespace(
++        IL=types.SimpleNamespace(gt_teacher_policy_name=policy, gt_teacher_map_namespace=namespace)
++    )
++
++
++def _ckpt(policy, namespace):
++    return {
++        "config": types.SimpleNamespace(
++            MODEL=types.SimpleNamespace(
++                policy_name=policy, MAP_ENCODER=types.SimpleNamespace(cache_namespace=namespace)
++            )
++        ),
++        "state_dict": {},
++    }
++
++
++def test_matching_teacher_passes():
++    check(_cfg(*GT), _ckpt(*GT), "t.pth")
++
++
++def test_student_checkpoint_is_rejected():
++    with pytest.raises(ValueError, match="LLMGridTry5Policy"):
++        check(_cfg(*GT), _ckpt("LLMGridTry5Policy", "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"), "t.pth")
++
++
++def test_other_gt_namespace_is_rejected():
++    with pytest.raises(ValueError, match="cache_namespace"):
++        check(_cfg(*GT), _ckpt("PriorGTTry5Policy", "gt.online121c369.r1p5.direction5.v1"), "t.pth")
++
++
++def test_checkpoint_without_config_passes():
++    check(_cfg(*GT), {"state_dict": {}}, "t.pth")
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index ac8aa46..192447a 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -85,6 +85,38 @@ def _coordinate_fusion_flag(config) -> bool:
+     return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
+ 
+ 
++def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
++    """Refuse a teacher checkpoint that was trained as something else.
++
++    Teacher and student share the architecture, so a student checkpoint
++    (e.g. an LLM-Grid DAgger run) loads into the teacher without a missing
++    key and the run silently distils the student into itself.  The saved
++    config names the policy and the map cache the checkpoint was trained
++    with; both must match what IL.gt_teacher_* asks for.  Checkpoints
++    without a saved config pass (nothing to compare against).
++    """
++    saved = ckpt_dict.get("config")
++    if saved is None:
++        return
++    want_policy = config.IL.gt_teacher_policy_name
++    want_ns = config.IL.gt_teacher_map_namespace
++    model = getattr(saved, "MODEL", None)
++    have_policy = getattr(model, "policy_name", None)
++    map_cfg = getattr(model, "MAP_ENCODER", None)
++    have_ns = getattr(map_cfg, "cache_namespace", None)
++    problems = []
++    if have_policy is not None and have_policy != want_policy:
++        problems.append(f"policy_name {have_policy!r} != IL.gt_teacher_policy_name {want_policy!r}")
++    if have_ns is not None and have_ns != want_ns:
++        problems.append(
++            f"MAP_ENCODER.cache_namespace {have_ns!r} != IL.gt_teacher_map_namespace {want_ns!r}"
++        )
++    if problems:
++        raise ValueError(
++            f"{ckpt_path} is not the requested GT teacher: " + "; ".join(problems)
++        )
++
++
+ def _check_coordinate_fusion_matches(config, ckpt_dict, ckpt_path) -> None:
+     """A checkpoint trained with coordinate fusion evaluates silently wrong
+     without it (and vice versa): the flag adds no weights, so nothing else
+@@ -540,9 +572,10 @@ class RLTrainer(BaseVLNCETrainer):
+                 observation_space=observation_space,
+                 action_space=action_space,
+             )
+-            sd = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")[
+-                "state_dict"
+-            ]
++            t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
++            _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
++            sd = t_ckpt["state_dict"]
++            del t_ckpt
+             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
+             missing, unexpected = self.gt_teacher.load_state_dict(sd, strict=False)
+             logger.info(
+-- 
+2.43.0
+
