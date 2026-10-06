@@ -1,0 +1,119 @@
+From c99ca792783f7c2ad6b80fc01a92a2f8da23d3a7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 09:27:28 +0000
+Subject: [PATCH] Cloud (slurm) version of the raster donor test
+
+scripts/submit/raster-donor-eval.sh MODE runs eval_raster_donor.sh's
+protocol on the login-node checkout: derives the donor cache with
+make_raster_donor_cache.py, evaluates the fixed-tokenizer DAgger checkpoint
+(CKPT_ITER, default 20400) on all GPUs of the job with the derived
+llm_cache_model_key, and prints the paired_analysis command.
+---
+ scripts/submit/raster-donor-eval.sh | 95 +++++++++++++++++++++++++++++
+ 1 file changed, 95 insertions(+)
+ create mode 100755 scripts/submit/raster-donor-eval.sh
+
+diff --git a/scripts/submit/raster-donor-eval.sh b/scripts/submit/raster-donor-eval.sh
+new file mode 100755
+index 0000000..afdd476
+--- /dev/null
++++ b/scripts/submit/raster-donor-eval.sh
+@@ -0,0 +1,95 @@
++#!/bin/bash
++#SBATCH --job-name=raster-donor-eval
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++# Cloud (slurm) version of scripts/distill/eval_raster_donor.sh: the
++# episode-level raster information test for an LLM-grid try5 checkpoint on
++# R2R val_unseen, training-free. Every episode keeps its own metadata token
++# inputs; only the 37x100x100 raster is replaced.
++#
++# Usage: sbatch scripts/submit/raster-donor-eval.sh MODE
++#   MODE: control       the unmodified LLM cache (required baseline, same harness)
++#         cross_scene   raster of a random episode from another scene
++#         within_scene  raster of the same scene, different trajectory_id
++#         block_permute own raster, 10x10 token blocks permuted (sanity check)
++#   Submit from the repo root. Each job uses all its GPUs (one rank per GPU).
++# Env: CKPT_ITER (20400) or CKPT_PATH (data/logs/checkpoints/<DAGGER_RUN>/ckpt.iter<CKPT_ITER>.pth),
++#      DAGGER_RUN (release_r2r_llm_grid_try5_fixedtok_dagger), TAG (<DAGGER_RUN>_iter<CKPT_ITER>),
++#      SEED (0, donor seed), PRETRAINED_CKPT (pretrained_path of the DAgger run's
++#      config.yaml; only seeds tensor shapes, the checkpoint overrides every weight),
++#      ELEVATION_AXIS (y), NUM_ENVS (4 per rank).
++# Results: data/logs/checkpoints/<TAG>_raster_<MODE>[_s<SEED>]/eval_results/
++#   (stats_ckpt_<ITER>_val_unseen.json plus per-episode files for paired_analysis.py)
++# The derived cache is written next to the source key under data/llm_navigation/
++# by scripts/distill/make_raster_donor_cache.py (reused when it already exists).
++# The env's conda activate.d hooks read unset variables, so turn on nounset only afterwards.
++eval "$(conda shell.bash hook)" && conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
++set -euo pipefail
++export GLOG_minloglevel=2 MAGNUM_LOG=quiet
++export LD_PRELOAD=/lib/x86_64-linux-gnu/libGLX_nvidia.so.0:/lib/x86_64-linux-gnu/libGLdispatch.so.0
++source scripts/gpu-detection.bash
++configure_distributed_gpu_vars
++
++[[ $# -eq 1 ]] || { echo "Usage: sbatch scripts/submit/raster-donor-eval.sh MODE" >&2; exit 2; }
++MODE="$1"
++case "${MODE}" in control|cross_scene|within_scene|block_permute) ;; *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
++
++SOURCE_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++DAGGER_RUN="${DAGGER_RUN:-release_r2r_llm_grid_try5_fixedtok_dagger}"
++RUN_DIR="data/logs/checkpoints/${DAGGER_RUN}"
++CKPT_ITER="${CKPT_ITER:-20400}"
++CKPT_PATH="${CKPT_PATH:-${RUN_DIR}/ckpt.iter${CKPT_ITER}.pth}"
++TAG="${TAG:-${DAGGER_RUN}_iter${CKPT_ITER}}"
++SEED="${SEED:-0}"
++[[ -f "${CKPT_PATH}" ]] || { echo "Missing checkpoint ${CKPT_PATH}" >&2; exit 1; }
++if [[ -z "${PRETRAINED_CKPT:-}" ]]; then
++    PRETRAINED_CKPT="$(grep -E '^\s*pretrained_path:' "${RUN_DIR}/config.yaml" | head -1 | awk '{print $2}' | tr -d "'\"")"
++fi
++[[ -f "${PRETRAINED_CKPT}" ]] || { echo "pretrained_path not found: '${PRETRAINED_CKPT}'" >&2; exit 1; }
++
++case "${MODE}" in
++    control) CACHE_KEY="${SOURCE_KEY}" ;;
++    *) CACHE_KEY="$(PYTHONPATH="$PWD" python scripts/distill/make_raster_donor_cache.py \
++           --mode "${MODE}" --seed "${SEED}" --source-model-key "${SOURCE_KEY}" | tail -n 1)" ;;
++esac
++EVAL_NAME="${TAG}_raster_${MODE}"
++[[ "${MODE}" == control ]] || EVAL_NAME="${EVAL_NAME}_s${SEED}"
++EVAL_DIR="data/logs/checkpoints/${EVAL_NAME}"
++mkdir -p "${EVAL_DIR}"
++echo "mode=${MODE} cache_key=${CACHE_KEY} ckpt=${CKPT_PATH} pretrained=${PRETRAINED_CKPT} gpus=${GPU_NUMBERS}" | tee "${EVAL_DIR}/launch_info.txt"
++
++PYTHONPATH="$PWD" torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py \
++    --exp_name "${EVAL_NAME}" \
++    --run-type eval \
++    --exp-config run_r2r/iter_train.yaml \
++    SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
++    TASK_CONFIG.SEED 100 \
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
++    NUM_ENVIRONMENTS "${NUM_ENVS:-4}" \
++    EVAL.SPLIT val_unseen EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
++    IL.back_algo control \
++    TRAINER_NAME SS-ETP-LLM MODEL.policy_name LLMGridTry5Policy \
++    MODEL.MAP_ENCODER.enabled True MODEL.MAP_ENCODER.architecture try5 \
++    MODEL.MAP_ENCODER.source llm_grid \
++    MODEL.MAP_ENCODER.llm_cache_model_key "${CACHE_KEY}" \
++    MODEL.MAP_ENCODER.eval_map_source p0 \
++    MODEL.MAP_ENCODER.refiner_ckpt "" \
++    MODEL.MAP_ENCODER.load_pretrained_map_modules False \
++    MODEL.MAP_ENCODER.map_ablation none \
++    MODEL.pretrained_path "${PRETRAINED_CKPT}" \
++    MODEL.elevation_axis "${ELEVATION_AXIS:-y}"
++
++RESULT_JSON="${EVAL_DIR}/eval_results/stats_ckpt_${CKPT_ITER}_val_unseen.json"
++[[ -f "${RESULT_JSON}" ]] || RESULT_JSON="$(ls "${EVAL_DIR}"/eval_results/stats_ckpt_*_val_unseen.json | head -n 1)"
++python - "${RESULT_JSON}" "${MODE}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"raster={sys.argv[2]} | SR {m['success']*100:.2f} | SPL {m['spl']*100:.2f} | "
++      f"OSR {m['oracle_success']*100:.2f} | NE {m['distance_to_goal']:.3f} | "
++      f"cache_missing {int(m.get('llm_cache_missing_count', 0))}")
++PY
++echo "Results: ${EVAL_DIR}/eval_results"
++echo "Paired vs control (login node, CPU):"
++echo "  python scripts/distill/paired_analysis.py --dir-a data/logs/checkpoints/${TAG}_raster_control/eval_results --dir-b ${EVAL_DIR}/eval_results"
+-- 
+2.43.0
+
