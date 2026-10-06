@@ -89,6 +89,27 @@ _C.IL.gt_teacher_ckpt = ""
 _C.IL.gt_teacher_map_namespace = ""
 _C.IL.gt_teacher_policy_name = ""
 _C.IL.gt_teacher_elevation_axis = "z"
+# Distillation terms beyond the plain action KL (see
+# vlnce_baselines/models/etp_prior_gt/distill_losses.py).  All default to the
+# historical behaviour (plain KL, no gate, no effect matching).
+# STOP factorisation: KL = distill_stop_weight * KL(Bernoulli STOP) + KL(move | not STOP).
+_C.IL.distill_stop_factorized = False
+_C.IL.distill_stop_weight = 1.0
+# Counterfactual map-effect matching; weight 0 disables it.  The counterfactual
+# map keeps the episode's own metadata and takes its raster from another episode
+# of the same batch ("batch_donor", needs NUM_ENVIRONMENTS >= 2) or zeros ("zero").
+_C.IL.effect_match_weight = 0.0
+_C.IL.effect_counterfactual = "batch_donor"
+# Reachability gate: per-step weight min + (1 - min) * exp(-JS / tau) where JS is
+# the divergence between the teacher on its GT map and the teacher on the
+# student's LLM map; tau <= 0 uses the batch median JS.  Applied to the action KL
+# and to the effect-matching loss.
+_C.IL.gate_enabled = False
+_C.IL.gate_tau = 0.0
+_C.IL.gate_min_weight = 0.2
+# Scale on the student's cached start_position when its map is fed to the teacher
+# (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
+_C.IL.gate_teacher_start_position_scale = 1.0
 # it True, start training from the saved epoch
 # -----------------------------------------------------------------------------
 # IL: RXR TRAINER CONFIG

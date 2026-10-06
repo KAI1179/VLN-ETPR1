@@ -56,6 +56,7 @@ from vlnce_baselines.models.etp_prior_gt.nan_guard import (
     NonFiniteOutputGuard,
     assert_finite_parameters,
 )
+from vlnce_baselines.models.etp_prior_gt import distill_losses
 from prior.online_evidence import OnlineEvidence
 from vlnce_baselines.models.refiner import CognitiveMapRefiner
 
@@ -1468,6 +1469,118 @@ class RLTrainer(BaseVLNCETrainer):
     def _should_load_cognitive_maps(self, mode, map_cfg):
         return map_cfg.enabled
 
+    # ---- distillation beyond the plain action KL -------------------------
+
+    def _distill_aux_enabled(self) -> bool:
+        il_cfg = self.config.IL
+        return self._gtt_on and (
+            float(il_cfg.effect_match_weight) > 0 or bool(il_cfg.gate_enabled)
+        )
+
+    @staticmethod
+    def _with_map_tokens(inputs, tokens_and_masks):
+        """Copy of a navigation input dict with the map tokens swapped."""
+        tokens, masks = tokens_and_masks
+        out = dict(inputs)
+        out["map_tokens"] = tokens
+        out["map_token_masks"] = masks
+        return out
+
+    def _build_distill_aux_tokens(self, cognitive_maps, gtt_maps):
+        """Map tokens for the counterfactual and gate branches, once per rollout.
+
+        Returns a dict of ``(tokens, masks)`` pairs, each (B, 101, H) / (B, 101):
+
+        * ``student_cf``: the student's encoder on the counterfactual map
+          (own metadata, raster from another episode of the batch or zeros).
+        * ``teacher_cf``: the teacher's encoder on the GT counterfactual map
+          built with the same donor permutation.
+        * ``teacher_llm``: the teacher's encoder on the student's LLM map.
+
+        The maps are static for the whole rollout (no refiner, no ablation),
+        so encoding them once is exact; the student side is detached by
+        construction (stop-gradient branch of the effect-matching loss).
+        """
+        il_cfg = self.config.IL
+        map_cfg = self.config.MODEL.MAP_ENCODER
+        n = self.envs.num_envs
+        if self._refiner_enabled():
+            raise ValueError(
+                "effect matching / gating need a static student map; the refiner "
+                "rewrites it every step"
+            )
+        if getattr(map_cfg, "map_ablation", "none") != "none":
+            raise ValueError(
+                "effect matching / gating are defined on the unablated map; "
+                f"got MODEL.MAP_ENCODER.map_ablation={map_cfg.map_ablation!r}"
+            )
+        if len(cognitive_maps) < n or len(gtt_maps) < n:
+            raise ValueError(
+                f"{n} envs but {len(cognitive_maps)} student maps and "
+                f"{len(gtt_maps)} teacher maps"
+            )
+
+        def stack(maps, key):
+            return torch.stack([m[key] for m in maps[:n]]).to(self.device)
+
+        s_grid = stack(cognitive_maps, "grid")
+        s_meta = stack(cognitive_maps, "map_trajectory_metadata")
+        s_dir = stack(cognitive_maps, "start_direction_vector")
+        s_start = stack(cognitive_maps, "start_position")
+        student_scale = float(getattr(map_cfg, "start_position_scale", 1.0))
+        t_grid = stack(gtt_maps, "grid")
+        t_meta = stack(gtt_maps, "map_trajectory_metadata")
+        t_dir = stack(gtt_maps, "start_direction_vector")
+        t_start = stack(gtt_maps, "start_position")
+
+        out = {}
+        with torch.no_grad():
+            if float(il_cfg.effect_match_weight) > 0:
+                mode = il_cfg.effect_counterfactual
+                if mode == "batch_donor":
+                    scenes = [ep.scene_id for ep in self.envs.current_episodes()]
+                    perm = distill_losses.donor_permutation(scenes)
+                    if perm is None:
+                        raise ValueError(
+                            "IL.effect_counterfactual=batch_donor needs at least 2 "
+                            "environments per process; use IL.effect_counterfactual=zero "
+                            "for a single-env run"
+                        )
+                    s_cf_grid = s_grid[perm]
+                    t_cf_grid = t_grid[perm]
+                elif mode == "zero":
+                    s_cf_grid = torch.zeros_like(s_grid)
+                    t_cf_grid = torch.zeros_like(t_grid)
+                else:
+                    raise ValueError(
+                        "IL.effect_counterfactual must be batch_donor or zero, "
+                        f"got {mode!r}"
+                    )
+                out["student_cf"] = self.policy.net(
+                    mode="map_encoding",
+                    cognitive_crops=s_cf_grid,
+                    trajectory_keypoints=s_meta,
+                    start_direction_vectors=s_dir,
+                    start_positions=s_start * student_scale,
+                )
+                out["teacher_cf"] = self.gt_teacher.net(
+                    mode="map_encoding",
+                    cognitive_crops=t_cf_grid,
+                    trajectory_keypoints=t_meta,
+                    start_direction_vectors=t_dir,
+                    start_positions=t_start,
+                )
+            if il_cfg.gate_enabled:
+                teacher_scale = float(il_cfg.gate_teacher_start_position_scale)
+                out["teacher_llm"] = self.gt_teacher.net(
+                    mode="map_encoding",
+                    cognitive_crops=s_grid,
+                    trajectory_keypoints=s_meta,
+                    start_direction_vectors=s_dir,
+                    start_positions=s_start * teacher_scale,
+                )
+        return {key: (tokens, masks) for key, (tokens, masks) in out.items()}
+
     def _cognitive_map_cache_id(self, episode):
         dataset = self.config.MODEL.task_type.upper()
         split = self.config.TASK_CONFIG.DATASET.SPLIT
@@ -1711,7 +1824,13 @@ class RLTrainer(BaseVLNCETrainer):
                 for _ in range(self.envs.num_envs)
             ]
             gtt_distill_loss = torch.zeros((), device=self.device)
+            gtt_effect_loss = torch.zeros((), device=self.device)
             gtt_teacher_ce = 0.0
+            gtt_teacher_llm_ce = 0.0
+            gtt_gate_sum = 0.0
+            gtt_stop_kl = 0.0
+            gtt_move_kl = 0.0
+            gtt_aux = {}
         prev_vp = [None] * self.envs.num_envs
 
         # Build cognitive maps for current episodes.
@@ -1751,6 +1870,8 @@ class RLTrainer(BaseVLNCETrainer):
                     start_direction_vectors=torch.stack([m["start_direction_vector"] for m in gtt_maps]).to(self.device),
                     start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
                 )
+            if self._distill_aux_enabled():
+                gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
             del gtt_maps
 
         for stepk in range(self.max_len):
@@ -1911,11 +2032,56 @@ class RLTrainer(BaseVLNCETrainer):
                         tgmap.node_stop_scores[cur_vp[i]] = t_probs[i, 0].item()
                     valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
                     valid = valid & (teacher_actions != -100).unsqueeze(1)
-                    temp = self.config.IL.distill_temperature
-                    s_logp = F.log_softmax(nav_logits.float() / temp, dim=1)
-                    t_logp = F.log_softmax(t_logits.float() / temp, dim=1)
-                    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(s_logp))
-                    gtt_distill_loss = gtt_distill_loss + kl.sum() * (temp * temp)
+                    il_cfg = self.config.IL
+                    temp = il_cfg.distill_temperature
+
+                    # Reachability gate: how much does the student's LLM map
+                    # mislead the teacher at this step?
+                    gate = None
+                    if il_cfg.gate_enabled:
+                        with torch.no_grad():
+                            t_llm_logits = self.gt_teacher.net(
+                                **self._with_map_tokens(t_inputs, gtt_aux["teacher_llm"])
+                            )["global_logits"]
+                        js = distill_losses.js_divergence(t_logits, t_llm_logits, valid)
+                        gate = distill_losses.gate_weights(
+                            js, il_cfg.gate_tau, il_cfg.gate_min_weight
+                        )
+                        gtt_gate_sum += gate.sum().item()
+                        gtt_teacher_llm_ce += F.cross_entropy(
+                            t_llm_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+                        ).item()
+
+                    # Action-level KL, optionally STOP-factorised.
+                    if il_cfg.distill_stop_factorized:
+                        stop_kl, move_kl, _ = distill_losses.factorized_kl(
+                            t_logits, nav_logits, valid, temp
+                        )
+                        kl_rows = il_cfg.distill_stop_weight * stop_kl + move_kl
+                        gtt_stop_kl += stop_kl.sum().item()
+                        gtt_move_kl += move_kl.sum().item()
+                    else:
+                        kl_rows = distill_losses.action_kl(t_logits, nav_logits, valid, temp)
+                    if gate is not None:
+                        kl_rows = kl_rows * gate
+                    gtt_distill_loss = gtt_distill_loss + kl_rows.sum()
+
+                    # Counterfactual map-effect matching.
+                    if il_cfg.effect_match_weight > 0:
+                        with torch.no_grad():
+                            s_cf_logits = self.policy.net(
+                                **self._with_map_tokens(nav_inputs, gtt_aux["student_cf"])
+                            )["global_logits"]
+                            t_cf_logits = self.gt_teacher.net(
+                                **self._with_map_tokens(t_inputs, gtt_aux["teacher_cf"])
+                            )["global_logits"]
+                        eff_rows = distill_losses.effect_match(
+                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid
+                        )
+                        if gate is not None:
+                            eff_rows = eff_rows * gate
+                        gtt_effect_loss = gtt_effect_loss + eff_rows.sum()
+
                     gtt_teacher_ce += F.cross_entropy(
                         t_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
                     ).item()
@@ -2143,6 +2309,12 @@ class RLTrainer(BaseVLNCETrainer):
                             gtt_map_token_masks = torch.cat(
                                 (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
                             )
+                            gtt_aux = {
+                                key: tuple(
+                                    torch.cat((t[:i], t[i + 1 :]), dim=0) for t in pair
+                                )
+                                for key, pair in gtt_aux.items()
+                            }
 
             if self.envs.num_envs == 0:
                 break
@@ -2177,6 +2349,18 @@ class RLTrainer(BaseVLNCETrainer):
                 loss = loss + gtt_distill_loss
                 self.logs["distill_loss"].append(gtt_distill_loss.item())
                 self.logs["teacher_ce"].append(gtt_teacher_ce / total_actions)
+                if self.config.IL.effect_match_weight > 0:
+                    gtt_effect_loss = (
+                        self.config.IL.effect_match_weight * gtt_effect_loss / total_actions
+                    )
+                    loss = loss + gtt_effect_loss
+                    self.logs["effect_loss"].append(gtt_effect_loss.item())
+                if self.config.IL.gate_enabled:
+                    self.logs["gate_mean"].append(gtt_gate_sum / total_actions)
+                    self.logs["teacher_llm_ce"].append(gtt_teacher_llm_ce / total_actions)
+                if self.config.IL.distill_stop_factorized:
+                    self.logs["stop_kl"].append(gtt_stop_kl / total_actions)
+                    self.logs["move_kl"].append(gtt_move_kl / total_actions)
             if map_aux_loss_total is not None:
                 loss = loss + map_aux_loss_total
             self.loss += loss
