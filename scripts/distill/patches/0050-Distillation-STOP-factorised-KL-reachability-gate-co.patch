@@ -1,0 +1,974 @@
+From 791ad570b1285f1e8e1326076448fcf599ae2261 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 12:39:15 +0000
+Subject: [PATCH] Distillation: STOP-factorised KL, reachability gate,
+ counterfactual map-effect matching
+
+The plain action-level KL asks the LLM-map student to match the GT-map
+teacher's whole action distribution, most of which depends on the GT route
+corridor the student cannot see. Three opt-in terms separate the part that
+can be transferred (all default to the historical plain KL):
+
+- IL.distill_stop_factorized: KL = stop_weight * KL(Bernoulli STOP)
+  + KL(move | not STOP), so the stop decision can be weighted separately.
+- IL.gate_enabled: per-step weight min + (1 - min) * exp(-JS / tau), with JS
+  between the teacher on its GT map and the teacher on the student's LLM map
+  (same legacy format). Steps where the LLM map misleads the teacher itself
+  are down-weighted, never dropped. tau <= 0 uses the batch median JS.
+- IL.effect_match_weight: squared error between the student's and the
+  teacher's map effect on the (valid-set centred) logits, each measured
+  against a counterfactual map (own metadata, raster from another episode of
+  the batch via a scene-mismatch-maximising derangement, or zeros). Vision
+  and language cancel in the difference, so the student can only lower it
+  through its map pathway; the teacher side and the student counterfactual
+  branch are detached.
+
+Counterfactual and gate map tokens are encoded once per rollout (maps are
+static; refiner and map ablations are rejected). Logs: effect_loss,
+gate_mean, teacher_llm_ce, stop_kl, move_kl.
+
+scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full}: GT-legacy
+18600 teacher (dy, legacy r1.5 m GT map) into an isomorphic LLM-Grid try5
+student (460000 backbone, map modules from initialisation, no coordinate
+fusion). kl is the historical control arm.
+
+Unit tests (tests/etp_prior_gt/test_distill_losses.py, 15): masked softmax,
+KL equals the historical formula, chain-rule identity of the factorisation,
+effect matching zero up to a constant and invariant to shared shifts with
+gradient only through the student's own-map branch, JS range, gate floor and
+median scale, donor permutation.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Q37SwHSfdSLWwALjMD6Pvv
+---
+ scripts/distill/run_dagger_distill_legacy.sh  | 203 +++++++++++++++
+ tests/etp_prior_gt/test_distill_losses.py     | 178 +++++++++++++
+ vlnce_baselines/config/default.py             |  21 ++
+ .../models/etp_prior_gt/distill_losses.py     | 239 ++++++++++++++++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 194 +++++++++++++-
+ 5 files changed, 830 insertions(+), 5 deletions(-)
+ create mode 100755 scripts/distill/run_dagger_distill_legacy.sh
+ create mode 100644 tests/etp_prior_gt/test_distill_losses.py
+ create mode 100644 vlnce_baselines/models/etp_prior_gt/distill_losses.py
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+new file mode 100755
+index 0000000..3c3f725
+--- /dev/null
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -0,0 +1,203 @@
++#!/usr/bin/env bash
++# Distil the GT-legacy teacher (try5, dy, legacy r1.5 m GT map, no coordinate
++# fusion; val_unseen SR 68.41) into an isomorphic LLM-Grid try5 student.
++#
++# Teacher and student share the architecture, the dy position features and the
++# legacy map format; only the raster content differs (GT corridor vs LLM
++# prediction).  That is what makes the counterfactual map-effect matching and
++# the reachability gate well defined: the teacher can read the student's map.
++#
++# Usage: bash scripts/distill/run_dagger_distill_legacy.sh MODE [--dry-run]
++#
++#   MODE  kl      plain action KL (historical distillation, the control arm)
++#         gated   action KL with the reachability gate
++#         full    STOP-factorised KL + gate + counterfactual effect matching
++#
++# Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
++# continues from the latest one; re-running after a crash is always safe.
++#
++# Env overrides: RUN_NAME (dagger_distill_legacy18600_<MODE>), ITERS (20000),
++# NUM_ENVS (4 per process; batch_donor needs >= 2), PRETRAINED_CKPT (460000),
++# LOAD_MAP (False: map modules train from initialisation, as the teacher's
++# did), GT_TEACHER_CKPT, EFFECT_WEIGHT (1.0), EFFECT_CF (batch_donor|zero),
++# GATE_TAU (0 = batch median), GATE_MIN (0.2), STOP_WEIGHT (1.0), TEMP (1.0),
++# DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++
++MODE="${1:-}"
++case "${MODE}" in
++    kl|gated|full) ;;
++    *)
++        echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
++        exit 2
++        ;;
++esac
++DRY_RUN_ARGS=()
++if [[ "${2:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++elif [[ $# -gt 1 ]]; then
++    echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
++    exit 2
++fi
++
++if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
++    _n="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
++    if [[ "${_n}" -gt 0 ]]; then
++        CUDA_VISIBLE_DEVICES="$(seq -s, 0 $((_n - 1)))"
++    else
++        CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
++    fi
++fi
++IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
++GPU_NUMBERS="${#_gpu_list[@]}"
++GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
++NUM_ENVS="${NUM_ENVS:-4}"
++
++RUN_NAME="${RUN_NAME:-dagger_distill_legacy18600_${MODE}}"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
++GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
++GT_TEACHER_NAMESPACE="gt.legacy.r1p5.direction5.v1"
++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
++LOAD_MAP="${LOAD_MAP:-False}"
++
++EFFECT_WEIGHT="${EFFECT_WEIGHT:-1.0}"
++EFFECT_CF="${EFFECT_CF:-batch_donor}"
++GATE_TAU="${GATE_TAU:-0.0}"
++GATE_MIN="${GATE_MIN:-0.2}"
++STOP_WEIGHT="${STOP_WEIGHT:-1.0}"
++TEMP="${TEMP:-1.0}"
++DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"
++
++# Mode -> distillation switches.  Every key defaults to the historical plain
++# KL, so the kl arm passes the defaults explicitly for the record.
++case "${MODE}" in
++    kl)
++        DISTILL_ARGS=(
++            IL.distill_stop_factorized False
++            IL.gate_enabled False
++            IL.effect_match_weight 0.0
++        )
++        ;;
++    gated)
++        DISTILL_ARGS=(
++            IL.distill_stop_factorized False
++            IL.gate_enabled True
++            IL.gate_tau "${GATE_TAU}"
++            IL.gate_min_weight "${GATE_MIN}"
++            IL.effect_match_weight 0.0
++        )
++        ;;
++    full)
++        if [[ "${EFFECT_CF}" == "batch_donor" && "${NUM_ENVS}" -lt 2 ]]; then
++            echo "EFFECT_CF=batch_donor needs NUM_ENVS >= 2 (got ${NUM_ENVS}); set EFFECT_CF=zero" >&2
++            exit 2
++        fi
++        DISTILL_ARGS=(
++            IL.distill_stop_factorized True
++            IL.distill_stop_weight "${STOP_WEIGHT}"
++            IL.gate_enabled True
++            IL.gate_tau "${GATE_TAU}"
++            IL.gate_min_weight "${GATE_MIN}"
++            IL.effect_match_weight "${EFFECT_WEIGHT}"
++            IL.effect_counterfactual "${EFFECT_CF}"
++        )
++        ;;
++esac
++
++for key in distill_stop_factorized effect_match_weight gate_enabled; do
++    if ! grep -q "_C.IL.${key}" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
++        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patch 0050 first" >&2
++        exit 2
++    fi
++done
++[[ -f "${GT_TEACHER_CKPT}" ]] || { echo "Teacher checkpoint not found: ${GT_TEACHER_CKPT}" >&2; exit 1; }
++[[ -d "${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" ]] \
++    || { echo "Teacher namespace not found: ${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" >&2; exit 1; }
++
++cd "${REPO_ROOT}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
++mkdir -p "${RUN_DIR}"
++
++RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
++LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
++if [[ -n "${LATEST_CKPT}" ]]; then
++    RESUME_ARGS=(IL.load_from_ckpt True IL.is_requeue True)
++    echo "Resuming from ${LATEST_CKPT}"
++else
++    echo "Fresh start from ${PRETRAINED_CKPT}"
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --nproc_per_node="${GPU_NUMBERS}" --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS "${GPU_IDS}"
++    TORCH_GPU_IDS "${GPU_IDS}"
++    GPU_NUMBERS "${GPU_NUMBERS}"
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS "${NUM_ENVS}"
++    CHECKPOINT_INTERVAL "${CKPT_INTERVAL:-1000}"
++    ONLY_LAST_SAVEALL False
++    IL.iters "${ITERS:-20000}"
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 1400
++    IL.warmup_iters 300
++    IL.min_lr_ratio 1.0
++    "${RESUME_ARGS[@]}"
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
++    MODEL.MAP_ENCODER.coordinate_fusion False
++    MODEL.elevation_axis y
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled True
++    IL.distill_weight "${DISTILL_WEIGHT}"
++    IL.distill_temperature "${TEMP}"
++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
++    IL.gt_teacher_elevation_axis y
++    IL.gate_teacher_start_position_scale 1.0
++    "${DISTILL_ARGS[@]}"
++)
++
++{
++    echo "launch_time=$(date -Is)"
++    echo "git_commit=$(git rev-parse HEAD)"
++    echo "resume_from=${LATEST_CKPT:-none}"
++    echo "run_name=${RUN_NAME}"
++    echo "mode=${MODE}"
++    echo "teacher=${GT_TEACHER_CKPT} (${GT_TEACHER_NAMESPACE}, dy)"
++    echo "pretrained=${PRETRAINED_CKPT} load_pretrained_map_modules=${LOAD_MAP}"
++    echo "distill_args=${DISTILL_ARGS[*]}"
++    echo "iters=${ITERS:-20000}"
++    echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"
++} >> "${RUN_DIR}/launch_info.txt"
++
++echo "Log: ${LOG_PATH}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS}" \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee -a "${LOG_PATH}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++fi
+diff --git a/tests/etp_prior_gt/test_distill_losses.py b/tests/etp_prior_gt/test_distill_losses.py
+new file mode 100644
+index 0000000..bda84a4
+--- /dev/null
++++ b/tests/etp_prior_gt/test_distill_losses.py
+@@ -0,0 +1,178 @@
++"""Distillation loss terms: masked KL, STOP factorisation, counterfactual
++map-effect matching, the reachability gate and the donor permutation.
++
++Pure tensor math, no policy or simulator involved.
++"""
++
++import importlib.util
++import math
++from pathlib import Path
++
++import pytest
++import torch
++
++ROOT = Path(__file__).resolve().parents[2]
++SPEC = importlib.util.spec_from_file_location(
++    "distill_losses",
++    ROOT / "vlnce_baselines" / "models" / "etp_prior_gt" / "distill_losses.py",
++)
++dl = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(dl)
++
++
++def _case(seed=0, b=3, g=6):
++    gen = torch.Generator().manual_seed(seed)
++    t = torch.randn(b, g, generator=gen)
++    s = torch.randn(b, g, generator=gen)
++    valid = torch.ones(b, g, dtype=torch.bool)
++    valid[0, 3:] = False  # a short graph
++    valid[1, 2] = False  # a visited node
++    # The policy masks invalid logits to -inf; mimic that on both sides.
++    t = t.masked_fill(~valid, float("-inf"))
++    s = s.masked_fill(~valid, float("-inf"))
++    return t, s, valid
++
++
++def _plain_kl(t, s, valid, temp=1.0):
++    t_logp = torch.log_softmax(t / temp, dim=1)
++    s_logp = torch.log_softmax(s / temp, dim=1)
++    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(t))
++    return kl.sum(dim=1) * temp * temp
++
++
++def test_masked_log_softmax_normalises_over_valid_only():
++    t, _, valid = _case()
++    logp = dl.masked_log_softmax(t, valid)
++    probs = torch.where(valid, logp.exp(), torch.zeros_like(logp))
++    assert torch.allclose(probs.sum(dim=1), torch.ones(3), atol=1e-6)
++    assert torch.isinf(logp[~valid]).all()
++
++
++def test_masked_log_softmax_empty_row_is_finite_free_of_nan():
++    t, _, valid = _case()
++    valid[2] = False
++    logp = dl.masked_log_softmax(t, valid)
++    assert not torch.isnan(logp).any()
++
++
++@pytest.mark.parametrize("temp", [1.0, 2.0])
++def test_action_kl_matches_historical_formula(temp):
++    t, s, valid = _case()
++    assert torch.allclose(dl.action_kl(t, s, valid, temp), _plain_kl(t, s, valid, temp), atol=1e-6)
++
++
++def test_action_kl_zero_for_identical_and_zero_on_empty_rows():
++    t, _, valid = _case()
++    assert torch.allclose(dl.action_kl(t, t, valid), torch.zeros(3), atol=1e-6)
++    valid[1] = False
++    assert dl.action_kl(t, t + 1.0, valid)[1] == 0.0
++
++
++def test_factorized_kl_chain_rule_identity():
++    t, s, valid = _case(seed=1)
++    stop_kl, move_kl, p_move = dl.factorized_kl(t, s, valid)
++    assert torch.allclose(stop_kl + p_move * move_kl, dl.action_kl(t, s, valid), atol=1e-5)
++    assert (stop_kl >= -1e-7).all() and (move_kl >= -1e-7).all()
++
++
++def test_factorized_kl_stop_only_row_has_zero_move_term():
++    t, s, valid = _case()
++    valid[0, 1:] = False
++    t = t.masked_fill(~valid, float("-inf"))
++    s = s.masked_fill(~valid, float("-inf"))
++    stop_kl, move_kl, _ = dl.factorized_kl(t, s, valid)
++    assert move_kl[0] == 0.0
++    assert torch.isfinite(stop_kl).all()
++
++
++def test_factorized_kl_ignored_row_is_zero_and_masked_stop_is_rejected():
++    t, s, valid = _case()
++    valid[2] = False
++    stop_kl, move_kl, _ = dl.factorized_kl(t, s, valid)
++    assert stop_kl[2] == 0.0 and move_kl[2] == 0.0
++    valid[1, 0] = False
++    with pytest.raises(ValueError, match="STOP is masked out in rows \\[1\\]"):
++        dl.factorized_kl(t, s, valid)
++
++
++def test_effect_match_zero_when_student_effect_equals_teacher_effect_up_to_constant():
++    t_full, t_cf, valid = _case(seed=2)
++    delta = torch.where(valid, t_full - t_cf, torch.zeros_like(t_full))
++    s_cf = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
++    s_full = s_cf + delta + 3.0  # same effect, shifted by a row constant
++    loss = dl.effect_match(t_full, t_cf, s_full, s_cf, valid)
++    assert torch.allclose(loss, torch.zeros(3), atol=1e-5)
++
++
++def test_effect_match_gradient_reaches_only_student_full():
++    t_full, t_cf, valid = _case(seed=3)
++    s_full = torch.randn(3, 6).masked_fill(~valid, float("-inf")).requires_grad_(True)
++    s_cf = torch.randn(3, 6).masked_fill(~valid, float("-inf")).requires_grad_(True)
++    t_full = t_full.clone().requires_grad_(True)
++    loss = dl.effect_match(t_full, t_cf, s_full, s_cf, valid).sum()
++    loss.backward()
++    assert s_full.grad is not None and torch.isfinite(s_full.grad).all()
++    assert (s_full.grad[~valid] == 0).all()
++    assert s_cf.grad is None or (s_cf.grad == 0).all()
++    assert t_full.grad is None
++    assert loss.item() > 0
++
++
++def test_effect_match_is_invariant_to_shared_non_map_shift():
++    # A change that moves both branches equally (vision, language) cancels.
++    t_full, t_cf, valid = _case(seed=4)
++    s_full = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
++    s_cf = torch.randn(3, 6).masked_fill(~valid, float("-inf"))
++    shift = torch.randn(3, 6)
++    a = dl.effect_match(t_full, t_cf, s_full, s_cf, valid)
++    b = dl.effect_match(t_full, t_cf, s_full + shift, s_cf + shift, valid)
++    assert torch.allclose(a, b, atol=1e-5)
++
++
++def test_js_divergence_range_and_symmetry():
++    a, b, valid = _case(seed=5)
++    js = dl.js_divergence(a, b, valid)
++    assert (js >= 0).all() and (js <= math.log(2) + 1e-6).all()
++    assert torch.allclose(js, dl.js_divergence(b, a, valid), atol=1e-6)
++    assert torch.allclose(dl.js_divergence(a, a, valid), torch.zeros(3), atol=1e-6)
++    # Disjoint supports (as disjoint as -inf masking allows) approach ln 2.
++    peaked_a = torch.tensor([[50.0, 0.0, 0.0]])
++    peaked_b = torch.tensor([[0.0, 0.0, 50.0]])
++    ones = torch.ones(1, 3, dtype=torch.bool)
++    assert abs(dl.js_divergence(peaked_a, peaked_b, ones).item() - math.log(2)) < 1e-4
++
++
++def test_gate_weights_floor_and_scale():
++    d = torch.tensor([0.0, 0.1, 0.2, 10.0])
++    w = dl.gate_weights(d, tau=0.1, min_weight=0.2)
++    assert w[0] == pytest.approx(1.0)
++    assert w[1] == pytest.approx(0.2 + 0.8 * math.exp(-1))
++    assert w[3] == pytest.approx(0.2, abs=1e-6)
++    assert (w >= 0.2).all() and (w <= 1.0).all()
++    # tau <= 0: batch median as the scale.
++    w_med = dl.gate_weights(d, tau=0.0, min_weight=0.0)
++    median = d.median().item()
++    assert w_med[1] == pytest.approx(math.exp(-0.1 / median))
++    # All-zero divergence: no gating.
++    assert torch.equal(dl.gate_weights(torch.zeros(3), tau=0.0, min_weight=0.2), torch.ones(3))
++    with pytest.raises(ValueError):
++        dl.gate_weights(d, tau=1.0, min_weight=1.5)
++
++
++def test_gate_weights_are_detached():
++    d = torch.tensor([0.1, 0.3], requires_grad=True)
++    w = dl.gate_weights(d, tau=1.0, min_weight=0.0)
++    assert not w.requires_grad
++
++
++def test_donor_permutation_is_a_derangement_preferring_other_scenes():
++    scenes = ["a", "a", "b", "b"]
++    perm = dl.donor_permutation(scenes)
++    assert sorted(perm) == [0, 1, 2, 3]
++    assert all(p != i for i, p in enumerate(perm))
++    # Shift 1 pairs a->a and b->b once each; shift 2 pairs every a with a b.
++    assert all(scenes[i] != scenes[p] for i, p in enumerate(perm))
++    assert dl.donor_permutation(["a"]) is None
++    assert dl.donor_permutation([]) is None
++    same = dl.donor_permutation(["a", "a"])
++    assert same == [1, 0]
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 6b8ce9e..be49071 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -89,6 +89,27 @@ _C.IL.gt_teacher_ckpt = ""
+ _C.IL.gt_teacher_map_namespace = ""
+ _C.IL.gt_teacher_policy_name = ""
+ _C.IL.gt_teacher_elevation_axis = "z"
++# Distillation terms beyond the plain action KL (see
++# vlnce_baselines/models/etp_prior_gt/distill_losses.py).  All default to the
++# historical behaviour (plain KL, no gate, no effect matching).
++# STOP factorisation: KL = distill_stop_weight * KL(Bernoulli STOP) + KL(move | not STOP).
++_C.IL.distill_stop_factorized = False
++_C.IL.distill_stop_weight = 1.0
++# Counterfactual map-effect matching; weight 0 disables it.  The counterfactual
++# map keeps the episode's own metadata and takes its raster from another episode
++# of the same batch ("batch_donor", needs NUM_ENVIRONMENTS >= 2) or zeros ("zero").
++_C.IL.effect_match_weight = 0.0
++_C.IL.effect_counterfactual = "batch_donor"
++# Reachability gate: per-step weight min + (1 - min) * exp(-JS / tau) where JS is
++# the divergence between the teacher on its GT map and the teacher on the
++# student's LLM map; tau <= 0 uses the batch median JS.  Applied to the action KL
++# and to the effect-matching loss.
++_C.IL.gate_enabled = False
++_C.IL.gate_tau = 0.0
++_C.IL.gate_min_weight = 0.2
++# Scale on the student's cached start_position when its map is fed to the teacher
++# (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
++_C.IL.gate_teacher_start_position_scale = 1.0
+ # it True, start training from the saved epoch
+ # -----------------------------------------------------------------------------
+ # IL: RXR TRAINER CONFIG
+diff --git a/vlnce_baselines/models/etp_prior_gt/distill_losses.py b/vlnce_baselines/models/etp_prior_gt/distill_losses.py
+new file mode 100644
+index 0000000..4048fb8
+--- /dev/null
++++ b/vlnce_baselines/models/etp_prior_gt/distill_losses.py
+@@ -0,0 +1,239 @@
++"""Loss terms for distilling a GT-map teacher into an LLM-map student.
++
++The plain action-level KL (``action_kl``) asks the student to match the
++teacher's whole action distribution.  Most of what makes the teacher better
++is information the student cannot see (the GT route corridor), so that target
++is largely noise to it.  The three terms below separate the part that can be
++transferred:
++
++* ``effect_match`` compares *how the map changes the decision* in teacher and
++  student.  Both are evaluated with their own map and with a counterfactual
++  map (another episode's raster, own metadata).  Vision and language are the
++  same in both branches and cancel in the difference, so the only way for the
++  student to reduce this loss is through its map pathway.
++* ``js_divergence`` / ``gate_weights`` measure, per step, how much the LLM map
++  misleads the *teacher* (teacher on GT map vs teacher on the LLM map).  Where
++  the teacher itself goes wrong on the LLM map, the teacher's advantage is
++  unreachable for the student and the step is down-weighted (never dropped:
++  ``min_weight`` is the floor).
++* ``factorized_kl`` splits the action KL into a STOP Bernoulli term and the
++  conditional distribution over the non-STOP candidates, so the two can be
++  weighted separately.
++
++All functions take raw logits of shape (B, G) over the student's graph
++(index 0 is STOP) and a boolean ``valid`` mask of the same shape.  Logits
++outside ``valid`` are ignored: every softmax is renormalised over the valid
++set only.  Rows without a valid entry contribute zero.  Everything is
++computed in float32 regardless of the input dtype.
++"""
++
++from __future__ import annotations
++
++from typing import Sequence
++
++import torch
++
++STOP_INDEX = 0
++_NEG_INF = float("-inf")
++
++
++def _check_pair(logits: torch.Tensor, valid: torch.Tensor, name: str) -> None:
++    if logits.dim() != 2:
++        raise ValueError(f"{name} must be (B, G), got shape {tuple(logits.shape)}")
++    if valid.shape != logits.shape:
++        raise ValueError(
++            f"valid mask shape {tuple(valid.shape)} does not match {name} "
++            f"{tuple(logits.shape)}"
++        )
++    if valid.dtype != torch.bool:
++        raise TypeError(f"valid mask must be bool, got {valid.dtype}")
++
++
++def masked_log_softmax(
++    logits: torch.Tensor, valid: torch.Tensor, temperature: float = 1.0
++) -> torch.Tensor:
++    """Log-softmax over the valid entries only; invalid entries become -inf.
++
++    Rows with no valid entry return all -inf (callers mask them out).
++    """
++    _check_pair(logits, valid, "logits")
++    if temperature <= 0:
++        raise ValueError(f"temperature must be positive, got {temperature}")
++    z = logits.float() / temperature
++    z = torch.where(valid, z, torch.full_like(z, _NEG_INF))
++    # logsumexp of an all -inf row is -inf; (-inf) - (-inf) = nan.  Guard it.
++    lse = torch.logsumexp(z, dim=1, keepdim=True)
++    has_valid = valid.any(dim=1, keepdim=True)
++    lse = torch.where(has_valid, lse, torch.zeros_like(lse))
++    return z - lse
++
++
++def _masked_probs(logp: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
++    return torch.where(valid, logp.exp(), torch.zeros_like(logp))
++
++
++def action_kl(
++    teacher_logits: torch.Tensor,
++    student_logits: torch.Tensor,
++    valid: torch.Tensor,
++    temperature: float = 1.0,
++) -> torch.Tensor:
++    """Per-row KL(teacher || student) over the valid set, scaled by T^2.
++
++    Returns shape (B,).
++    """
++    t_logp = masked_log_softmax(teacher_logits, valid, temperature)
++    s_logp = masked_log_softmax(student_logits, valid, temperature)
++    t_p = _masked_probs(t_logp, valid)
++    kl = torch.where(valid, t_p * (t_logp - s_logp), torch.zeros_like(t_p))
++    return kl.sum(dim=1) * (temperature * temperature)
++
++
++def factorized_kl(
++    teacher_logits: torch.Tensor,
++    student_logits: torch.Tensor,
++    valid: torch.Tensor,
++    temperature: float = 1.0,
++) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """Split the action KL into a STOP term and a move-conditional term.
++
++    Returns ``(stop_kl, move_kl, p_move)``, each of shape (B,):
++
++    * ``stop_kl``: KL between the teacher's and the student's Bernoulli(STOP).
++    * ``move_kl``: KL between the two distributions over the non-STOP valid
++      candidates, each renormalised to exclude STOP.  Zero when STOP is the
++      only valid action.
++    * ``p_move``: the teacher's probability of not stopping.
++
++    Identity: ``stop_kl + p_move * move_kl == action_kl`` (chain rule), so the
++    caller re-weights the two parts, it never changes what is measured.
++    """
++    _check_pair(teacher_logits, valid, "teacher_logits")
++    has_valid = valid.any(dim=1)
++    if not valid[has_valid, STOP_INDEX].all():
++        # The policy never masks STOP (index 0 is never "visited"); a masked
++        # STOP would make the Bernoulli term meaningless.  Rows with no valid
++        # entry at all (ignored decisions) are allowed and contribute zero.
++        bad = (has_valid & ~valid[:, STOP_INDEX]).nonzero().flatten().tolist()
++        raise ValueError(f"STOP is masked out in rows {bad}")
++    t_logp = masked_log_softmax(teacher_logits, valid, temperature)
++    s_logp = masked_log_softmax(student_logits, valid, temperature)
++    t_stop = t_logp[:, STOP_INDEX].exp().clamp(1e-6, 1 - 1e-6)
++    s_stop = s_logp[:, STOP_INDEX].exp().clamp(1e-6, 1 - 1e-6)
++    stop_kl = t_stop * (t_stop.log() - s_stop.log()) + (1 - t_stop) * (
++        (1 - t_stop).log() - (1 - s_stop).log()
++    )
++    stop_kl = torch.where(has_valid, stop_kl, torch.zeros_like(stop_kl))
++
++    move_valid = valid.clone()
++    move_valid[:, STOP_INDEX] = False
++    t_move_logp = masked_log_softmax(teacher_logits, move_valid, temperature)
++    s_move_logp = masked_log_softmax(student_logits, move_valid, temperature)
++    t_move_p = _masked_probs(t_move_logp, move_valid)
++    move_kl = torch.where(
++        move_valid, t_move_p * (t_move_logp - s_move_logp), torch.zeros_like(t_move_p)
++    ).sum(dim=1)
++    scale = temperature * temperature
++    return stop_kl * scale, move_kl * scale, 1 - t_stop
++
++
++def _centered_delta(
++    full_logits: torch.Tensor, cf_logits: torch.Tensor, valid: torch.Tensor
++) -> torch.Tensor:
++    """Map effect on the logits, mean-removed over the valid set.
++
++    log-softmax differences and raw logit differences agree up to a per-row
++    constant, which the centering removes, so raw logits are used.
++    """
++    # Masked logits are -inf on both sides; subtract after zeroing them so no
++    # inf - inf appears even in the unselected branch of the where.
++    zero = torch.zeros_like(full_logits, dtype=torch.float32)
++    full = torch.where(valid, full_logits.float(), zero)
++    cf = torch.where(valid, cf_logits.float(), zero)
++    delta = full - cf
++    count = valid.sum(dim=1, keepdim=True).clamp(min=1).float()
++    mean = delta.sum(dim=1, keepdim=True) / count
++    return torch.where(valid, delta - mean, torch.zeros_like(delta))
++
++
++def effect_match(
++    teacher_full: torch.Tensor,
++    teacher_cf: torch.Tensor,
++    student_full: torch.Tensor,
++    student_cf: torch.Tensor,
++    valid: torch.Tensor,
++) -> torch.Tensor:
++    """Per-row squared error between the student's and the teacher's map effect.
++
++    ``*_full`` are logits with each model's own map, ``*_cf`` with the
++    counterfactual map.  The teacher side and ``student_cf`` are detached:
++    gradient reaches the student only through ``student_full``, so the
++    student can only lower this loss by changing what its map pathway adds.
++    Returns shape (B,), the sum over valid entries (so it scales like the
++    KL terms, per decision rather than per candidate).
++    """
++    _check_pair(teacher_full, valid, "teacher_full")
++    _check_pair(student_full, valid, "student_full")
++    delta_t = _centered_delta(teacher_full.detach(), teacher_cf.detach(), valid)
++    delta_s = _centered_delta(student_full, student_cf.detach(), valid)
++    return ((delta_s - delta_t) ** 2).sum(dim=1)
++
++
++def js_divergence(
++    logits_a: torch.Tensor, logits_b: torch.Tensor, valid: torch.Tensor
++) -> torch.Tensor:
++    """Jensen-Shannon divergence (natural log, in [0, ln 2]) per row."""
++    a_logp = masked_log_softmax(logits_a, valid)
++    b_logp = masked_log_softmax(logits_b, valid)
++    a_p = _masked_probs(a_logp, valid)
++    b_p = _masked_probs(b_logp, valid)
++    m_p = 0.5 * (a_p + b_p)
++    m_logp = torch.where(valid, m_p.clamp(min=1e-12).log(), torch.zeros_like(m_p))
++
++    def _kl(p, logp):
++        return torch.where(valid, p * (logp - m_logp), torch.zeros_like(p)).sum(dim=1)
++
++    return (0.5 * (_kl(a_p, a_logp) + _kl(b_p, b_logp))).clamp(min=0.0)
++
++
++def gate_weights(
++    divergence: torch.Tensor, tau: float, min_weight: float
++) -> torch.Tensor:
++    """Soft reachability gate ``w = min_weight + (1 - min_weight) * exp(-d / tau)``.
++
++    ``tau <= 0`` uses the batch median of ``divergence`` (detached) as the
++    scale; when that median is zero every weight is 1.  ``divergence`` is
++    detached: the gate is a weight, not a training target.
++    """
++    if not 0.0 <= min_weight <= 1.0:
++        raise ValueError(f"min_weight must be in [0, 1], got {min_weight}")
++    d = divergence.detach().float()
++    if tau <= 0:
++        scale = d.median()
++        if scale <= 0:
++            return torch.ones_like(d)
++    else:
++        scale = torch.as_tensor(float(tau), device=d.device)
++    return min_weight + (1.0 - min_weight) * torch.exp(-d / scale)
++
++
++def donor_permutation(scene_ids: Sequence[str]) -> list[int] | None:
++    """A derangement of the batch used to pick each episode's donor raster.
++
++    Among the cyclic shifts the one pairing the most episodes with a
++    different scene is chosen (ties: the smallest shift), so the
++    counterfactual map is in-distribution (a real LLM raster) but carries no
++    information about the episode's own scene wherever the batch allows.
++    Returns ``None`` for a batch of one, where no derangement exists.
++    """
++    n = len(scene_ids)
++    if n < 2:
++        return None
++    best_shift, best_mismatch = 1, -1
++    for shift in range(1, n):
++        mismatch = sum(
++            scene_ids[i] != scene_ids[(i + shift) % n] for i in range(n)
++        )
++        if mismatch > best_mismatch:
++            best_shift, best_mismatch = shift, mismatch
++    return [(i + best_shift) % n for i in range(n)]
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 48ec8ea..ac8aa46 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -56,6 +56,7 @@ from vlnce_baselines.models.etp_prior_gt.nan_guard import (
+     NonFiniteOutputGuard,
+     assert_finite_parameters,
+ )
++from vlnce_baselines.models.etp_prior_gt import distill_losses
+ from prior.online_evidence import OnlineEvidence
+ from vlnce_baselines.models.refiner import CognitiveMapRefiner
+ 
+@@ -1468,6 +1469,118 @@ class RLTrainer(BaseVLNCETrainer):
+     def _should_load_cognitive_maps(self, mode, map_cfg):
+         return map_cfg.enabled
+ 
++    # ---- distillation beyond the plain action KL -------------------------
++
++    def _distill_aux_enabled(self) -> bool:
++        il_cfg = self.config.IL
++        return self._gtt_on and (
++            float(il_cfg.effect_match_weight) > 0 or bool(il_cfg.gate_enabled)
++        )
++
++    @staticmethod
++    def _with_map_tokens(inputs, tokens_and_masks):
++        """Copy of a navigation input dict with the map tokens swapped."""
++        tokens, masks = tokens_and_masks
++        out = dict(inputs)
++        out["map_tokens"] = tokens
++        out["map_token_masks"] = masks
++        return out
++
++    def _build_distill_aux_tokens(self, cognitive_maps, gtt_maps):
++        """Map tokens for the counterfactual and gate branches, once per rollout.
++
++        Returns a dict of ``(tokens, masks)`` pairs, each (B, 101, H) / (B, 101):
++
++        * ``student_cf``: the student's encoder on the counterfactual map
++          (own metadata, raster from another episode of the batch or zeros).
++        * ``teacher_cf``: the teacher's encoder on the GT counterfactual map
++          built with the same donor permutation.
++        * ``teacher_llm``: the teacher's encoder on the student's LLM map.
++
++        The maps are static for the whole rollout (no refiner, no ablation),
++        so encoding them once is exact; the student side is detached by
++        construction (stop-gradient branch of the effect-matching loss).
++        """
++        il_cfg = self.config.IL
++        map_cfg = self.config.MODEL.MAP_ENCODER
++        n = self.envs.num_envs
++        if self._refiner_enabled():
++            raise ValueError(
++                "effect matching / gating need a static student map; the refiner "
++                "rewrites it every step"
++            )
++        if getattr(map_cfg, "map_ablation", "none") != "none":
++            raise ValueError(
++                "effect matching / gating are defined on the unablated map; "
++                f"got MODEL.MAP_ENCODER.map_ablation={map_cfg.map_ablation!r}"
++            )
++        if len(cognitive_maps) < n or len(gtt_maps) < n:
++            raise ValueError(
++                f"{n} envs but {len(cognitive_maps)} student maps and "
++                f"{len(gtt_maps)} teacher maps"
++            )
++
++        def stack(maps, key):
++            return torch.stack([m[key] for m in maps[:n]]).to(self.device)
++
++        s_grid = stack(cognitive_maps, "grid")
++        s_meta = stack(cognitive_maps, "map_trajectory_metadata")
++        s_dir = stack(cognitive_maps, "start_direction_vector")
++        s_start = stack(cognitive_maps, "start_position")
++        student_scale = float(getattr(map_cfg, "start_position_scale", 1.0))
++        t_grid = stack(gtt_maps, "grid")
++        t_meta = stack(gtt_maps, "map_trajectory_metadata")
++        t_dir = stack(gtt_maps, "start_direction_vector")
++        t_start = stack(gtt_maps, "start_position")
++
++        out = {}
++        with torch.no_grad():
++            if float(il_cfg.effect_match_weight) > 0:
++                mode = il_cfg.effect_counterfactual
++                if mode == "batch_donor":
++                    scenes = [ep.scene_id for ep in self.envs.current_episodes()]
++                    perm = distill_losses.donor_permutation(scenes)
++                    if perm is None:
++                        raise ValueError(
++                            "IL.effect_counterfactual=batch_donor needs at least 2 "
++                            "environments per process; use IL.effect_counterfactual=zero "
++                            "for a single-env run"
++                        )
++                    s_cf_grid = s_grid[perm]
++                    t_cf_grid = t_grid[perm]
++                elif mode == "zero":
++                    s_cf_grid = torch.zeros_like(s_grid)
++                    t_cf_grid = torch.zeros_like(t_grid)
++                else:
++                    raise ValueError(
++                        "IL.effect_counterfactual must be batch_donor or zero, "
++                        f"got {mode!r}"
++                    )
++                out["student_cf"] = self.policy.net(
++                    mode="map_encoding",
++                    cognitive_crops=s_cf_grid,
++                    trajectory_keypoints=s_meta,
++                    start_direction_vectors=s_dir,
++                    start_positions=s_start * student_scale,
++                )
++                out["teacher_cf"] = self.gt_teacher.net(
++                    mode="map_encoding",
++                    cognitive_crops=t_cf_grid,
++                    trajectory_keypoints=t_meta,
++                    start_direction_vectors=t_dir,
++                    start_positions=t_start,
++                )
++            if il_cfg.gate_enabled:
++                teacher_scale = float(il_cfg.gate_teacher_start_position_scale)
++                out["teacher_llm"] = self.gt_teacher.net(
++                    mode="map_encoding",
++                    cognitive_crops=s_grid,
++                    trajectory_keypoints=s_meta,
++                    start_direction_vectors=s_dir,
++                    start_positions=s_start * teacher_scale,
++                )
++        return {key: (tokens, masks) for key, (tokens, masks) in out.items()}
++
+     def _cognitive_map_cache_id(self, episode):
+         dataset = self.config.MODEL.task_type.upper()
+         split = self.config.TASK_CONFIG.DATASET.SPLIT
+@@ -1711,7 +1824,13 @@ class RLTrainer(BaseVLNCETrainer):
+                 for _ in range(self.envs.num_envs)
+             ]
+             gtt_distill_loss = torch.zeros((), device=self.device)
++            gtt_effect_loss = torch.zeros((), device=self.device)
+             gtt_teacher_ce = 0.0
++            gtt_teacher_llm_ce = 0.0
++            gtt_gate_sum = 0.0
++            gtt_stop_kl = 0.0
++            gtt_move_kl = 0.0
++            gtt_aux = {}
+         prev_vp = [None] * self.envs.num_envs
+ 
+         # Build cognitive maps for current episodes.
+@@ -1751,6 +1870,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     start_direction_vectors=torch.stack([m["start_direction_vector"] for m in gtt_maps]).to(self.device),
+                     start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
+                 )
++            if self._distill_aux_enabled():
++                gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
+             del gtt_maps
+ 
+         for stepk in range(self.max_len):
+@@ -1911,11 +2032,56 @@ class RLTrainer(BaseVLNCETrainer):
+                         tgmap.node_stop_scores[cur_vp[i]] = t_probs[i, 0].item()
+                     valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
+                     valid = valid & (teacher_actions != -100).unsqueeze(1)
+-                    temp = self.config.IL.distill_temperature
+-                    s_logp = F.log_softmax(nav_logits.float() / temp, dim=1)
+-                    t_logp = F.log_softmax(t_logits.float() / temp, dim=1)
+-                    kl = torch.where(valid, t_logp.exp() * (t_logp - s_logp), torch.zeros_like(s_logp))
+-                    gtt_distill_loss = gtt_distill_loss + kl.sum() * (temp * temp)
++                    il_cfg = self.config.IL
++                    temp = il_cfg.distill_temperature
++
++                    # Reachability gate: how much does the student's LLM map
++                    # mislead the teacher at this step?
++                    gate = None
++                    if il_cfg.gate_enabled:
++                        with torch.no_grad():
++                            t_llm_logits = self.gt_teacher.net(
++                                **self._with_map_tokens(t_inputs, gtt_aux["teacher_llm"])
++                            )["global_logits"]
++                        js = distill_losses.js_divergence(t_logits, t_llm_logits, valid)
++                        gate = distill_losses.gate_weights(
++                            js, il_cfg.gate_tau, il_cfg.gate_min_weight
++                        )
++                        gtt_gate_sum += gate.sum().item()
++                        gtt_teacher_llm_ce += F.cross_entropy(
++                            t_llm_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
++                        ).item()
++
++                    # Action-level KL, optionally STOP-factorised.
++                    if il_cfg.distill_stop_factorized:
++                        stop_kl, move_kl, _ = distill_losses.factorized_kl(
++                            t_logits, nav_logits, valid, temp
++                        )
++                        kl_rows = il_cfg.distill_stop_weight * stop_kl + move_kl
++                        gtt_stop_kl += stop_kl.sum().item()
++                        gtt_move_kl += move_kl.sum().item()
++                    else:
++                        kl_rows = distill_losses.action_kl(t_logits, nav_logits, valid, temp)
++                    if gate is not None:
++                        kl_rows = kl_rows * gate
++                    gtt_distill_loss = gtt_distill_loss + kl_rows.sum()
++
++                    # Counterfactual map-effect matching.
++                    if il_cfg.effect_match_weight > 0:
++                        with torch.no_grad():
++                            s_cf_logits = self.policy.net(
++                                **self._with_map_tokens(nav_inputs, gtt_aux["student_cf"])
++                            )["global_logits"]
++                            t_cf_logits = self.gt_teacher.net(
++                                **self._with_map_tokens(t_inputs, gtt_aux["teacher_cf"])
++                            )["global_logits"]
++                        eff_rows = distill_losses.effect_match(
++                            t_logits, t_cf_logits, nav_logits, s_cf_logits, valid
++                        )
++                        if gate is not None:
++                            eff_rows = eff_rows * gate
++                        gtt_effect_loss = gtt_effect_loss + eff_rows.sum()
++
+                     gtt_teacher_ce += F.cross_entropy(
+                         t_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+                     ).item()
+@@ -2143,6 +2309,12 @@ class RLTrainer(BaseVLNCETrainer):
+                             gtt_map_token_masks = torch.cat(
+                                 (gtt_map_token_masks[:i], gtt_map_token_masks[i + 1 :]), dim=0
+                             )
++                            gtt_aux = {
++                                key: tuple(
++                                    torch.cat((t[:i], t[i + 1 :]), dim=0) for t in pair
++                                )
++                                for key, pair in gtt_aux.items()
++                            }
+ 
+             if self.envs.num_envs == 0:
+                 break
+@@ -2177,6 +2349,18 @@ class RLTrainer(BaseVLNCETrainer):
+                 loss = loss + gtt_distill_loss
+                 self.logs["distill_loss"].append(gtt_distill_loss.item())
+                 self.logs["teacher_ce"].append(gtt_teacher_ce / total_actions)
++                if self.config.IL.effect_match_weight > 0:
++                    gtt_effect_loss = (
++                        self.config.IL.effect_match_weight * gtt_effect_loss / total_actions
++                    )
++                    loss = loss + gtt_effect_loss
++                    self.logs["effect_loss"].append(gtt_effect_loss.item())
++                if self.config.IL.gate_enabled:
++                    self.logs["gate_mean"].append(gtt_gate_sum / total_actions)
++                    self.logs["teacher_llm_ce"].append(gtt_teacher_llm_ce / total_actions)
++                if self.config.IL.distill_stop_factorized:
++                    self.logs["stop_kl"].append(gtt_stop_kl / total_actions)
++                    self.logs["move_kl"].append(gtt_move_kl / total_actions)
+             if map_aux_loss_total is not None:
+                 loss = loss + map_aux_loss_total
+             self.loss += loss
+-- 
+2.43.0
+
