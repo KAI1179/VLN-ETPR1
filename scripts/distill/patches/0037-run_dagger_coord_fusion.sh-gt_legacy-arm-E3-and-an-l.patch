@@ -1,0 +1,179 @@
+From 4f2f4c78be0ef46835dfd0fa79de0a2e8db4db3e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 05:40:54 -0600
+Subject: [PATCH] run_dagger_coord_fusion.sh: gt_legacy arm (E3) and an ln01
+ slurm wrapper
+
+E3 is the GT-legacy 18600 recipe plus coordinate fusion: legacy GT cache
+gt.legacy.r1p5.direction5.v1 (start_position in metres), PriorGTTry5Policy
+from the no-Gaussian GT pretraining model_step_440000, with the map encoder
+and graph-map fusion loaded from it (load_pretrained_map_modules True; that
+checkpoint's spatial tokenizer is alive, norm 26.06, and the strict loader
+refuses a dead one). Elevation axis y, as 18600 was trained. COORD=False
+is the 18600 reproduction control in the same harness. The gt and llm arms
+are unchanged (map modules from init).
+
+The launcher no longer hard-codes the WZ checkout and torchrun: REPO_ROOT
+defaults to the checkout the script lives in, TORCHRUN to the torchrun on
+PATH, and the EGL vendor directory is exported only where it exists, so the
+same script runs on ln01. scripts/submit/dagger-coord-fusion.sh ARM is the
+sbatch wrapper (4 GPUs, vip_gpu_scze096, etpr1-uv), passing COORD / RUN_NAME
+/ CKPT_INTERVAL / ... through and deriving MASTER_PORT from the job id.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_coord_fusion.sh | 52 ++++++++++++++++++----
+ scripts/submit/dagger-coord-fusion.sh      | 38 ++++++++++++++++
+ 2 files changed, 82 insertions(+), 8 deletions(-)
+ create mode 100755 scripts/submit/dagger-coord-fusion.sh
+
+diff --git a/scripts/distill/run_dagger_coord_fusion.sh b/scripts/distill/run_dagger_coord_fusion.sh
+index aaa7d33..60c0ade 100755
+--- a/scripts/distill/run_dagger_coord_fusion.sh
++++ b/scripts/distill/run_dagger_coord_fusion.sh
+@@ -11,8 +11,22 @@
+ #            SS-ETP-LLM / LLMGridTry5Policy, from model_step_460000, map
+ #            modules from init exactly like the historical try5 run.
+ #            Reference: historical try5 iter28000, 65.09 in the same harness.
+-# Both arms: elevation axis y (the physically correct one), map modules not
+-# loaded from pretraining (both pretraining checkpoints have a dead tokenizer).
++#   ARM gt_legacy  E3: the GT-legacy 18600 recipe plus coordinate fusion.
++#            gt.legacy.r1p5.direction5.v1 (start_position in metres -> 1.0),
++#            SS-ETP-PriorGT / PriorGTTry5Policy, from the no-Gaussian GT
++#            pretraining model_step_440000 with the map encoder and the
++#            graph-map fusion loaded from it (its spatial tokenizer is alive;
++#            the strict loader refuses a dead one). COORD=False is the 18600
++#            reproduction control. Reference: ckpt.iter18600 own 68.41 /
++#            cross_scene 55.68 / nomap 55.68 on val_unseen (HEAD harness).
++# All arms: elevation axis y (the physically correct one). gt and llm do not
++# load map modules from pretraining (both of those checkpoints have a dead
++# tokenizer); gt_legacy does.
++#
++# Runs on WZ (torchrun directly) and on ln01 (through
++# scripts/submit/dagger-coord-fusion.sh). REPO_ROOT defaults to the checkout
++# this script lives in and TORCHRUN to the torchrun on PATH; both can be set
++# in the environment.
+ #
+ # Env: COORD (True; False gives the same run without coordinate fusion as a
+ #      control, in its own directory), CUDA_VISIBLE_DEVICES (all visible;
+@@ -26,20 +40,22 @@
+ # arm's map source and coordinate-fusion setting.
+ set -euo pipefail
+ 
+-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+-TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
++TORCHRUN="${TORCHRUN:-$(command -v torchrun || true)}"
++[[ -x "${TORCHRUN}" ]] || { echo "torchrun not found: activate the training env or set TORCHRUN" >&2; exit 1; }
+ 
+ ARM="${1:-}"
+ DRY_RUN_ARGS=()
+ if [[ "${2:-}" == "--dry-run" ]]; then
+     DRY_RUN_ARGS=(--dry-run)
+ elif [[ $# -ne 1 ]]; then
+-    echo "Usage: bash scripts/distill/run_dagger_coord_fusion.sh {gt|llm} [--dry-run]" >&2
++    echo "Usage: bash scripts/distill/run_dagger_coord_fusion.sh {gt|llm|gt_legacy} [--dry-run]" >&2
+     exit 2
+ fi
+ COORD="${COORD:-True}"
+ case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
+ 
++LOAD_MAP_MODULES=False
+ case "${ARM}" in
+     gt)
+         PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}"
+@@ -59,7 +75,25 @@ case "${ARM}" in
+             MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+             MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
+         ) ;;
+-    *) echo "ARM must be gt or llm" >&2; exit 2 ;;
++    gt_legacy)
++        if [[ -z "${PRETRAINED_CKPT:-}" ]]; then
++            for _c in \
++                "${REPO_ROOT}/pretrained/r2r_rxr_ce/prior_gt_r1p5_nogaussian/store2/model_step_440000.pt" \
++                "${REPO_ROOT}/pretrained/r2r_rxr_ce/prior_gt_r1p5_nogaussian/ckpts/model_step_440000.pt" \
++                "/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/model_step_440000.pt"; do
++                [[ -f "${_c}" ]] && { PRETRAINED_CKPT="${_c}"; break; }
++            done
++            PRETRAINED_CKPT="${PRETRAINED_CKPT:-${REPO_ROOT}/pretrained/r2r_rxr_ce/prior_gt_r1p5_nogaussian/store2/model_step_440000.pt}"
++        fi
++        LOAD_MAP_MODULES=True
++        ARM_ARGS=(
++            TRAINER_NAME SS-ETP-PriorGT
++            MODEL.policy_name PriorGTTry5Policy
++            MODEL.MAP_ENCODER.source prior_gt
++            MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
++            MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
++        ) ;;
++    *) echo "ARM must be gt, llm or gt_legacy" >&2; exit 2 ;;
+ esac
+ [[ -f "${PRETRAINED_CKPT}" ]] || { echo "Missing pretraining checkpoint ${PRETRAINED_CKPT}" >&2; exit 1; }
+ grep -q "coordinate_fusion" "${REPO_ROOT}/vlnce_baselines/config/default.py" \
+@@ -70,7 +104,7 @@ MODEL_ARGS=(
+     MODEL.MAP_ENCODER.enabled True
+     MODEL.MAP_ENCODER.architecture try5
+     MODEL.MAP_ENCODER.refiner_ckpt ""
+-    MODEL.MAP_ENCODER.load_pretrained_map_modules False
++    MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP_MODULES}"
+     MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
+     MODEL.elevation_axis y
+     MODEL.pretrained_path "${PRETRAINED_CKPT}"
+@@ -94,7 +128,9 @@ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+ LOG_PATH="${RUN_DIR}/train.log"
+ mkdir -p "${RUN_DIR}"
+ cd "${REPO_ROOT}"
+-export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++if [[ -z "${__EGL_VENDOR_LIBRARY_DIRS:-}" && -d /usr/share/glvnd/egl_vendor.d ]]; then
++    export __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d
++fi
+ ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
+ 
+ # Model/map options every evaluation of this run must use (one "KEY VALUE" per line).
+diff --git a/scripts/submit/dagger-coord-fusion.sh b/scripts/submit/dagger-coord-fusion.sh
+new file mode 100755
+index 0000000..a42fd30
+--- /dev/null
++++ b/scripts/submit/dagger-coord-fusion.sh
+@@ -0,0 +1,38 @@
++#!/bin/bash
++#SBATCH --job-name=dagger-coord-fusion
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++#
++# ln01 (slurm) wrapper for scripts/distill/run_dagger_coord_fusion.sh.
++#
++# Usage (from the repo root):
++#   sbatch scripts/submit/dagger-coord-fusion.sh ARM        ARM = gt | llm | gt_legacy
++#   COORD=False sbatch --job-name=nocoord-gt_legacy scripts/submit/dagger-coord-fusion.sh gt_legacy
++#
++# sbatch exports the submitting shell's environment, so COORD, RUN_NAME,
++# PRETRAINED_CKPT, NUM_ENVS, ITERS, CKPT_INTERVAL and MASTER_PORT all pass
++# through to the launcher. One rank per allocated GPU; CUDA_VISIBLE_DEVICES
++# is set by slurm. Re-submitting with the same RUN_NAME resumes from the
++# latest ckpt.iter*.pth in the run directory (the launcher's own rule).
++#
++# The env's conda activate.d hooks read unset variables, so turn on nounset only afterwards.
++set -eo pipefail
++source /data/apps/miniforge3/etc/profile.d/conda.sh
++conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
++set -u
++
++[[ $# -eq 1 ]] || { echo "Usage: sbatch scripts/submit/dagger-coord-fusion.sh {gt|llm|gt_legacy}" >&2; exit 2; }
++ARM="$1"
++
++cd "${SLURM_SUBMIT_DIR:-$PWD}"
++[[ -f scripts/distill/run_dagger_coord_fusion.sh ]] || { echo "Submit from the repo root (no scripts/distill/run_dagger_coord_fusion.sh here)" >&2; exit 2; }
++
++# Two jobs on one node must not share a rendezvous port.
++export MASTER_PORT="${MASTER_PORT:-$((29500 + SLURM_JOB_ID % 1000))}"
++export REPO_ROOT="$PWD"
++
++echo "job=${SLURM_JOB_ID} node=$(hostname) gpus=${CUDA_VISIBLE_DEVICES:-unset} arm=${ARM} coord=${COORD:-True} port=${MASTER_PORT}"
++nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader || true
++
++bash scripts/distill/run_dagger_coord_fusion.sh "${ARM}"
+-- 
+2.43.0
+
