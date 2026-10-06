@@ -85,6 +85,38 @@ def _coordinate_fusion_flag(config) -> bool:
     return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
 
 
+def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
+    """Refuse a teacher checkpoint that was trained as something else.
+
+    Teacher and student share the architecture, so a student checkpoint
+    (e.g. an LLM-Grid DAgger run) loads into the teacher without a missing
+    key and the run silently distils the student into itself.  The saved
+    config names the policy and the map cache the checkpoint was trained
+    with; both must match what IL.gt_teacher_* asks for.  Checkpoints
+    without a saved config pass (nothing to compare against).
+    """
+    saved = ckpt_dict.get("config")
+    if saved is None:
+        return
+    want_policy = config.IL.gt_teacher_policy_name
+    want_ns = config.IL.gt_teacher_map_namespace
+    model = getattr(saved, "MODEL", None)
+    have_policy = getattr(model, "policy_name", None)
+    map_cfg = getattr(model, "MAP_ENCODER", None)
+    have_ns = getattr(map_cfg, "cache_namespace", None)
+    problems = []
+    if have_policy is not None and have_policy != want_policy:
+        problems.append(f"policy_name {have_policy!r} != IL.gt_teacher_policy_name {want_policy!r}")
+    if have_ns is not None and have_ns != want_ns:
+        problems.append(
+            f"MAP_ENCODER.cache_namespace {have_ns!r} != IL.gt_teacher_map_namespace {want_ns!r}"
+        )
+    if problems:
+        raise ValueError(
+            f"{ckpt_path} is not the requested GT teacher: " + "; ".join(problems)
+        )
+
+
 def _check_coordinate_fusion_matches(config, ckpt_dict, ckpt_path) -> None:
     """A checkpoint trained with coordinate fusion evaluates silently wrong
     without it (and vice versa): the flag adds no weights, so nothing else
@@ -540,9 +572,10 @@ class RLTrainer(BaseVLNCETrainer):
                 observation_space=observation_space,
                 action_space=action_space,
             )
-            sd = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")[
-                "state_dict"
-            ]
+            t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
+            _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
+            sd = t_ckpt["state_dict"]
+            del t_ckpt
             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
             missing, unexpected = self.gt_teacher.load_state_dict(sd, strict=False)
             logger.info(
