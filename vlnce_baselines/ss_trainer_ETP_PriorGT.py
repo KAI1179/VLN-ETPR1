@@ -1406,6 +1406,8 @@ class RLTrainer(BaseVLNCETrainer):
             )
         return None
 
+    _start_outside_raster = 0
+
     def _attach_map_origins(self, cognitive_maps, mode):
         """Store each episode's raster origin (world x, z) in its map dict.
 
@@ -1427,15 +1429,24 @@ class RLTrainer(BaseVLNCETrainer):
                 cognitive_map["start_position"],
                 meters_per_unit,
             )
+            cognitive_map["map_origin_xz"] = origin
+            # The raster is a fixed 50 m window at the level origin, so on a
+            # large level the start (and nodes) can lie outside it.  That is
+            # the cached start_position itself, not a unit error (a wrong
+            # unit moves every episode; the unit is validated offline by
+            # scripts/distill/check_map_frame.py).  Nodes outside just get a
+            # large distance to every token, which the local heads turn into
+            # attention on the nearest edge tokens.  Count it for the log.
             start_cell = world_to_map_cells([episode.start_position], origin)[0]
             if not bool(((start_cell >= 0) & (start_cell < MAP_SIZE)).all()):
-                raise ValueError(
-                    f"episode {episode.episode_id}: start maps to raster cell "
-                    f"{start_cell.tolist()}, outside the {MAP_SIZE}x{MAP_SIZE} map; "
-                    "check MAP_ENCODER.start_position_meters_per_unit "
-                    f"(={meters_per_unit}: 1.0 for metres, 0.5 for cells)"
-                )
-            cognitive_map["map_origin_xz"] = origin
+                self._start_outside_raster += 1
+                if self._start_outside_raster <= 5 or self._start_outside_raster % 100 == 0:
+                    logger.warning(
+                        f"coordinate_fusion: episode {episode.episode_id} starts at "
+                        f"raster cell {[round(v, 1) for v in start_cell.tolist()]}, "
+                        f"outside the {MAP_SIZE}x{MAP_SIZE} map "
+                        f"({self._start_outside_raster} such episodes so far)"
+                    )
 
     def _gmap_map_coords(self, gmap_vp_ids, cognitive_maps):
         """(B, G, 2) map-frame (row, col) of every gmap entry, NaN for STOP

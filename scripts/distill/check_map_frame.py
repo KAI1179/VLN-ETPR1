@@ -53,7 +53,10 @@ class Args(Tap):
     """GT cache namespace (source gt)."""
     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
     split: str = "val_unseen"
+    """Episode split; train also needs --limit raised (or 0 for all) to see how
+    many starts fall outside the 50 m raster window on large levels."""
     limit: int = 300
+    """Episodes to check; 0 = all."""
 
 
 def _load_map(args: Args, episode: dict) -> Optional[dict]:
@@ -97,7 +100,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     start_outside = 0
     used = 0
     for episode in episodes:
-        if used >= args.limit:
+        if args.limit and used >= args.limit:
             break
         cognitive_map = _load_map(args, episode)
         if cognitive_map is None:
