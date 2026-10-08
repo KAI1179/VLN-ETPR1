@@ -586,6 +586,26 @@ class RLTrainer(BaseVLNCETrainer):
             self.gt_teacher.to(self.device).eval()
             for p in self.gt_teacher.parameters():
                 p.requires_grad_(False)
+            if self.config.IL.gt_teacher_half:
+                # The frozen teacher only ever runs under the rollout's fp16
+                # autocast, so storing its weights in fp16 changes nothing but
+                # memory -- except the two modules that deliberately run with
+                # autocast disabled in fp32 (map encoder: the spatial tokenizer
+                # overflows in fp16; graph-map fusion): those keep fp32 weights.
+                before = torch.cuda.memory_allocated(self.device)
+                self.gt_teacher.half()
+                net = self.gt_teacher.net
+                for name in ("map_encoder",):
+                    if getattr(net, name, None) is not None:
+                        getattr(net, name).float()
+                fusion = getattr(getattr(net, "vln_bert", None), "graph_map_attention", None)
+                if fusion is not None:
+                    fusion.float()
+                torch.cuda.synchronize(self.device)
+                logger.info(
+                    "[gt_teacher] weights stored in fp16 (map encoder and graph-map "
+                    f"fusion kept fp32): {(before - torch.cuda.memory_allocated(self.device)) / 2**30:.2f} GiB freed"
+                )
 
         params = sum(param.numel() for param in self.policy.parameters())
         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)

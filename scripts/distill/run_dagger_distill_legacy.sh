@@ -39,7 +39,8 @@
 # (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
 # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
 # dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
-# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False).
+# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False);
+# TEACHER_HALF (True: frozen teacher weights in fp16, ~1.1 GiB per process).
 set -euo pipefail
 
 # Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
@@ -246,6 +247,7 @@ COMMAND=(
     IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
     IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
     IL.gt_teacher_elevation_axis y
+    IL.gt_teacher_half "${TEACHER_HALF:-True}"
     IL.gate_teacher_start_position_scale 1.0
     "${DISTILL_ARGS[@]}"
 )

@@ -89,6 +89,10 @@ _C.IL.gt_teacher_ckpt = ""
 _C.IL.gt_teacher_map_namespace = ""
 _C.IL.gt_teacher_policy_name = ""
 _C.IL.gt_teacher_elevation_axis = "z"
+# Store the frozen teacher's weights in fp16 (it only runs under autocast);
+# the map encoder and the graph-map fusion, which run with autocast disabled,
+# keep fp32 weights.  Saves ~1.1 GiB per process.
+_C.IL.gt_teacher_half = False
 # Distillation terms beyond the plain action KL (see
 # vlnce_baselines/models/etp_prior_gt/distill_losses.py).  All default to the
 # historical behaviour (plain KL, no gate, no effect matching).
