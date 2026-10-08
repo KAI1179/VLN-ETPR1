@@ -1,0 +1,58 @@
+From 89157f4f4d9cc5639fb6ccf0fc293b83a272318c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 10:07:56 +0000
+Subject: [PATCH] run_dagger_coord_fusion.sh: ELEVATION_AXIS knob (dz arm)
+
+ELEVATION_AXIS=z gives the original ETP-R1 node position features
+(arcsin(dz/d)); the run name gets a _dz suffix and eval_args.txt carries
+MODEL.elevation_axis z so every evaluation of the run uses the same axis.
+COORD=False ELEVATION_AXIS=z gt_legacy is the GT-legacy 18600 recipe with
+only the elevation convention changed.
+---
+ scripts/distill/run_dagger_coord_fusion.sh | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_coord_fusion.sh b/scripts/distill/run_dagger_coord_fusion.sh
+index 4e749e4..3fa755c 100755
+--- a/scripts/distill/run_dagger_coord_fusion.sh
++++ b/scripts/distill/run_dagger_coord_fusion.sh
+@@ -54,6 +54,10 @@ elif [[ $# -ne 1 ]]; then
+ fi
+ COORD="${COORD:-True}"
+ case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
++# ELEVATION_AXIS=z reproduces the original ETP-R1 node position features
++# (arcsin(dz/d), the 121c369 "compass"); y is the physically correct axis.
++ELEVATION_AXIS="${ELEVATION_AXIS:-y}"
++case "${ELEVATION_AXIS}" in y|z) ;; *) echo "ELEVATION_AXIS must be y or z" >&2; exit 2 ;; esac
+ 
+ LOAD_MAP_MODULES=False
+ case "${ARM}" in
+@@ -106,7 +110,7 @@ MODEL_ARGS=(
+     MODEL.MAP_ENCODER.refiner_ckpt ""
+     MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP_MODULES}"
+     MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
+-    MODEL.elevation_axis y
++    MODEL.elevation_axis "${ELEVATION_AXIS}"
+     MODEL.pretrained_path "${PRETRAINED_CKPT}"
+ )
+ 
+@@ -132,6 +136,7 @@ ITERS="${ITERS:-30000}"
+ if [[ -z "${RUN_NAME:-}" ]]; then
+     RUN_NAME="dagger_coordfusion_${ARM}"
+     [[ "${COORD}" == "False" ]] && RUN_NAME="dagger_nocoord_${ARM}"
++    [[ "${ELEVATION_AXIS}" == "z" ]] && RUN_NAME="${RUN_NAME}_dz"
+ fi
+ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+ LOG_PATH="${RUN_DIR}/train.log"
+@@ -187,7 +192,7 @@ COMMAND=(
+ {
+     echo "launch_time=$(date -Is)"
+     echo "git_commit=$(git rev-parse HEAD)"
+-    echo "arm=${ARM} coordinate_fusion=${COORD}"
++    echo "arm=${ARM} coordinate_fusion=${COORD} elevation_axis=${ELEVATION_AXIS}"
+     echo "resume_from=${LATEST_CKPT:-none}"
+     echo "pretrained=${PRETRAINED_CKPT}"
+     echo "iters=${ITERS}"
+-- 
+2.43.0
+
