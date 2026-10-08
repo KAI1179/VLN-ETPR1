@@ -1,0 +1,425 @@
+From ceb3d135a5ac4cf32897f6088c88632fb3dde4ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 03:55:43 -0600
+Subject: [PATCH] Dual-branch distillation: a student deployed without the
+ raster
+
+For the "cognitive map as a training-time modality" setting: at test time
+the raster is zeroed (metadata kept, every module in place, i.e.
+map_ablation metadata_only); at training time every step runs the policy
+twice, with its LLM raster (map branch) and with the raster zeroed (zero
+branch, the deployment view, same dropout masks by RNG replay, gradient on).
+
+  L = CE(zero) + CE(map)
+      + distill_weight * [ KL(T || map) + KL(T || zero) ]     (GT teacher)
+      + dual_llm_weight * KL(sg[map] || zero)                 (map -> zero)
+
+Stop-gradient on the map side of the last term: otherwise the cheapest
+solution is for the map branch to stop reading its raster and collapse
+onto the zero branch.  Rollout actions are sampled from the zero branch
+(the deployed policy) by default, so DAgger's data distribution is the
+deployed one; IL.dual_rollout_branch map switches that.  The two GT-KL
+terms are separate switches (dual_gt_kl_on_map_branch /
+dual_gt_kl_on_zero_branch), so the chain (GT -> map -> zero) and the
+pure parallel form are ablations of the same code.
+
+Exclusive with effect matching; the gate and the STOP factorisation apply
+to both GT-KL terms if enabled (off by default).  IL.dual_enabled False
+(default) leaves every existing path untouched.  Launcher mode dual with
+DUAL_* / STOP_FACTORIZED pass-throughs.  Logs: student_ce (map branch),
+student_ce_zero, self_kl, gt_kl_map, gt_kl_zero.  Tests: 3 (self-KL zero
+when the branches agree, gradient only on the zero branch, config defaults).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_distill_legacy.sh |  44 ++++++-
+ tests/etp_prior_gt/test_dual_branch.py       |  63 +++++++++
+ vlnce_baselines/config/default.py            |  14 ++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py    | 128 ++++++++++++++++---
+ 4 files changed, 225 insertions(+), 24 deletions(-)
+ create mode 100644 tests/etp_prior_gt/test_dual_branch.py
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 508bffc..7104d4d 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -16,6 +16,16 @@
+ #         gated   action KL with the reachability gate (GATE_TAU required)
+ #         full    STOP-factorised KL + gate + counterfactual effect matching
+ #                 (GATE_TAU required)
++#         dual    student deployed WITHOUT the raster: each step runs the
++#                 policy with its LLM raster (map branch) and with the raster
++#                 zeroed, metadata kept (zero branch = deployment view); CE on
++#                 both, GT-teacher KL on both (DUAL_GT_ON_MAP / DUAL_GT_ON_ZERO
++#                 give the chain or the parallel ablation), zero branch mimics
++#                 the map branch (DUAL_LLM_WEIGHT, stop-gradient on the map
++#                 side); rollout actions from DUAL_ROLLOUT (zero|map).  No gate,
++#                 no effect matching, no STOP factorisation (STOP_FACTORIZED=True
++#                 adds it).  Evaluate with MODEL.MAP_ENCODER.map_ablation
++#                 metadata_only.
+ #
+ # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
+ # continues from the latest one; re-running after a crash is always safe.
+@@ -27,7 +37,9 @@
+ # GATE_TAU (absolute JS scale, no default: take gate_js_median from a kl
+ # JS_LOG=True run), GATE_MIN (0.2), GATE_NORMALIZE (True), EFFECT_REDUCTION
+ # (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
+-# DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
++# DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
++# dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
++# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False).
+ set -euo pipefail
+ 
+ # Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
+@@ -39,9 +51,9 @@ TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
+ 
+ MODE="${1:-}"
+ case "${MODE}" in
+-    kl|gated|full) ;;
++    kl|gated|full|dual) ;;
+     *)
+-        echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
++        echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full|dual} [--dry-run]" >&2
+         exit 2
+         ;;
+ esac
+@@ -49,7 +61,7 @@ DRY_RUN_ARGS=()
+ if [[ "${2:-}" == "--dry-run" ]]; then
+     DRY_RUN_ARGS=(--dry-run)
+ elif [[ $# -gt 1 ]]; then
+-    echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
++    echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full|dual} [--dry-run]" >&2
+     exit 2
+ fi
+ 
+@@ -85,6 +97,12 @@ JS_LOG="${JS_LOG:-False}"
+ STOP_WEIGHT="${STOP_WEIGHT:-1.0}"
+ TEMP="${TEMP:-1.0}"
+ DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"
++DUAL_LLM_WEIGHT="${DUAL_LLM_WEIGHT:-1.0}"
++DUAL_GT_ON_MAP="${DUAL_GT_ON_MAP:-True}"
++DUAL_GT_ON_ZERO="${DUAL_GT_ON_ZERO:-True}"
++DUAL_CE_ON_MAP="${DUAL_CE_ON_MAP:-True}"
++DUAL_ROLLOUT="${DUAL_ROLLOUT:-zero}"
++STOP_FACTORIZED="${STOP_FACTORIZED:-False}"
+ 
+ # Mode -> distillation switches.  Every key defaults to the historical plain
+ # KL, so the kl arm passes the defaults explicitly for the record.
+@@ -127,6 +145,20 @@ case "${MODE}" in
+             IL.effect_match_weight 0.0
+         )
+         ;;
++    dual)
++        DISTILL_ARGS=(
++            IL.dual_enabled True
++            IL.dual_llm_weight "${DUAL_LLM_WEIGHT}"
++            IL.dual_gt_kl_on_map_branch "${DUAL_GT_ON_MAP}"
++            IL.dual_gt_kl_on_zero_branch "${DUAL_GT_ON_ZERO}"
++            IL.dual_ce_on_map_branch "${DUAL_CE_ON_MAP}"
++            IL.dual_rollout_branch "${DUAL_ROLLOUT}"
++            IL.distill_stop_factorized "${STOP_FACTORIZED}"
++            IL.distill_stop_weight "${STOP_WEIGHT}"
++            IL.gate_enabled False
++            IL.effect_match_weight 0.0
++        )
++        ;;
+     full)
+         _need_tau
+         if [[ "${EFFECT_CF}" == "batch_donor" && "${NUM_ENVS}" -lt 2 ]]; then
+@@ -147,9 +179,9 @@ case "${MODE}" in
+         ;;
+ esac
+ 
+-for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction; do
++for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction dual_enabled; do
+     if ! grep -q "_C.IL.${key}" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
+-        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050 and 0053 first" >&2
++        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050, 0053 and 0056 first" >&2
+         exit 2
+     fi
+ done
+diff --git a/tests/etp_prior_gt/test_dual_branch.py b/tests/etp_prior_gt/test_dual_branch.py
+new file mode 100644
+index 0000000..b98486d
+--- /dev/null
++++ b/tests/etp_prior_gt/test_dual_branch.py
+@@ -0,0 +1,63 @@
++"""Dual-branch distillation: the identities the trainer wiring relies on.
++
++The zero branch mimics the map branch through action_kl with the map side
++detached; this checks that (1) the loss is zero when both branches agree,
++(2) gradient reaches only the zero branch, (3) the config keys exist with
++their documented defaults.  Pure tensor math plus an ast read of the config.
++"""
++
++import ast
++import importlib.util
++from pathlib import Path
++
++import torch
++
++ROOT = Path(__file__).resolve().parents[2]
++SPEC = importlib.util.spec_from_file_location(
++    "distill_losses",
++    ROOT / "vlnce_baselines" / "models" / "etp_prior_gt" / "distill_losses.py",
++)
++dl = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(dl)
++
++
++def _pair():
++    gen = torch.Generator().manual_seed(1)
++    map_logits = torch.randn(3, 6, generator=gen, requires_grad=True)
++    zero_logits = torch.randn(3, 6, generator=gen, requires_grad=True)
++    valid = torch.ones(3, 6, dtype=torch.bool)
++    valid[0, 4:] = False
++    return map_logits, zero_logits, valid
++
++
++def test_self_kl_is_zero_when_branches_agree():
++    map_logits, _, valid = _pair()
++    kl = dl.action_kl(map_logits.detach(), map_logits, valid)
++    assert torch.allclose(kl, torch.zeros(3), atol=1e-6)
++
++
++def test_self_kl_gradient_reaches_only_the_zero_branch():
++    map_logits, zero_logits, valid = _pair()
++    kl = dl.action_kl(map_logits.detach(), zero_logits, valid).sum()
++    kl.backward()
++    assert map_logits.grad is None
++    assert zero_logits.grad is not None and torch.isfinite(zero_logits.grad).all()
++    assert (zero_logits.grad[~valid] == 0).all()
++
++
++def test_dual_config_defaults():
++    tree = ast.parse((ROOT / "vlnce_baselines" / "config" / "default.py").read_text())
++    found = {}
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Assign) and len(node.targets) == 1:
++            target = ast.unparse(node.targets[0])
++            if target.startswith("_C.IL.dual_"):
++                found[target[len("_C.IL."):]] = ast.literal_eval(node.value)
++    assert found == {
++        "dual_enabled": False,
++        "dual_llm_weight": 1.0,
++        "dual_ce_on_map_branch": True,
++        "dual_gt_kl_on_map_branch": True,
++        "dual_gt_kl_on_zero_branch": True,
++        "dual_rollout_branch": "zero",
++    }
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 1b281cf..ac2543b 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -118,6 +118,20 @@ _C.IL.gate_normalize = True
+ # Scale on the student's cached start_position when its map is fed to the teacher
+ # (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
+ _C.IL.gate_teacher_start_position_scale = 1.0
++# Dual-branch distillation for a student deployed WITHOUT the raster: every
++# training step runs the policy twice, with its LLM raster (map branch) and
++# with the raster zeroed but the metadata kept (zero branch, the deployment
++# view, identical to map_ablation metadata_only at evaluation).  Both
++# branches get the CE; the zero branch additionally mimics the map branch
++# (KL, stop-gradient on the map side so the pair cannot collapse); the GT
++# teacher's KL goes to the map branch and/or the zero branch.  Rollout
++# actions come from the deployment (zero) branch by default.
++_C.IL.dual_enabled = False
++_C.IL.dual_llm_weight = 1.0
++_C.IL.dual_ce_on_map_branch = True
++_C.IL.dual_gt_kl_on_map_branch = True
++_C.IL.dual_gt_kl_on_zero_branch = True
++_C.IL.dual_rollout_branch = "zero"
+ # it True, start training from the saved epoch
+ # -----------------------------------------------------------------------------
+ # IL: RXR TRAINER CONFIG
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 64ff234..efa0a40 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1434,6 +1434,21 @@ class RLTrainer(BaseVLNCETrainer):
+         # map_tokens=(B, 101, hidden_size), map_token_masks=(B, 101).
+         nav_inputs["map_tokens"] = map_tokens
+         nav_inputs["map_token_masks"] = map_token_masks
++        if mode == "train" and self.config.IL.dual_enabled:
++            # Dual-branch distillation: the deployment view of the same
++            # policy, raster zeroed, metadata kept, every module in place
++            # (identical to evaluation with map_ablation metadata_only).
++            # Computed with gradient: the metadata path and the fusion are
++            # trained through this branch as well.
++            nav_inputs["map_tokens_zero"], nav_inputs["map_token_masks_zero"] = (
++                self.policy.net(
++                    mode="map_encoding",
++                    cognitive_crops=torch.zeros_like(cognitive_crops),
++                    trajectory_keypoints=map_trajectory_metadata,
++                    start_direction_vectors=start_direction_vectors,
++                    start_positions=start_positions,
++                )
++            )
+         if getattr(map_cfg, "coordinate_fusion", False):
+             nav_inputs["gmap_map_coords"] = self._gmap_map_coords(
+                 nav_inputs["gmap_vp_ids"], cognitive_maps
+@@ -1872,6 +1887,18 @@ class RLTrainer(BaseVLNCETrainer):
+             gtt_teacher_llm_ce = 0.0
+             gtt_gate_sum = 0.0
+             gtt_js_values = []
++        dual_on = mode == "train" and bool(self.config.IL.dual_enabled)
++        if dual_on:
++            if self.config.IL.effect_match_weight > 0:
++                raise ValueError("IL.dual_enabled and IL.effect_match_weight > 0 are exclusive")
++            if self.config.IL.dual_rollout_branch not in ("zero", "map"):
++                raise ValueError(
++                    f"IL.dual_rollout_branch must be zero or map, got {self.config.IL.dual_rollout_branch!r}"
++                )
++            dual_self_loss = torch.zeros((), device=self.device)
++            dual_ce_zero = 0.0
++            dual_gt_kl_map = 0.0
++            dual_gt_kl_zero = 0.0
+             gtt_stop_kl = 0.0
+             gtt_move_kl = 0.0
+             gtt_aux = {}
+@@ -2031,12 +2058,37 @@ class RLTrainer(BaseVLNCETrainer):
+             # state here and replay it for the counterfactual forward.
+             nav_rng_state = (
+                 torch.cuda.get_rng_state(self.device)
+-                if mode == "train" and self._gtt_on and self.config.IL.effect_match_weight > 0
++                if mode == "train"
++                and (dual_on or (self._gtt_on and self.config.IL.effect_match_weight > 0))
+                 else None
+             )
++            zero_tokens = None
++            if dual_on:
++                zero_tokens = (
++                    nav_inputs.pop("map_tokens_zero", None),
++                    nav_inputs.pop("map_token_masks_zero", None),
++                )
++                if zero_tokens[0] is None:
++                    raise ValueError(
++                        "IL.dual_enabled needs MODEL.MAP_ENCODER.enabled True with a "
++                        "cognitive map per episode (no zero-raster branch was built)"
++                    )
+             nav_outs = self.policy.net(**nav_inputs)
+             nav_logits = nav_outs["global_logits"]
+-            nav_probs = F.softmax(nav_logits, 1)
++            act_logits = nav_logits
++            zero_logits = None
++            if dual_on:
++                # Zero-raster branch of the same policy, with gradient and the
++                # same dropout masks as the map branch (RNG replay).
++                rng_after = torch.cuda.get_rng_state(self.device)
++                torch.cuda.set_rng_state(nav_rng_state, self.device)
++                zero_logits = self.policy.net(
++                    **self._with_map_tokens(nav_inputs, zero_tokens)
++                )["global_logits"]
++                torch.cuda.set_rng_state(rng_after, self.device)
++                if self.config.IL.dual_rollout_branch == "zero":
++                    act_logits = zero_logits
++            nav_probs = F.softmax(act_logits, 1)
+             for i, gmap in enumerate(self.gmaps):
+                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
+ 
+@@ -2048,8 +2100,24 @@ class RLTrainer(BaseVLNCETrainer):
+                 student_ce_loss = F.cross_entropy(
+                     nav_logits, teacher_actions, reduction="sum", ignore_index=-100
+                 )
+-                loss += student_ce_loss
++                if not dual_on or self.config.IL.dual_ce_on_map_branch:
++                    loss += student_ce_loss
+                 student_ce += student_ce_loss.item()
++                if dual_on:
++                    zero_ce_loss = F.cross_entropy(
++                        zero_logits, teacher_actions, reduction="sum", ignore_index=-100
++                    )
++                    loss += zero_ce_loss
++                    dual_ce_zero += zero_ce_loss.item()
++                    # The map branch teaches the zero branch; stop-gradient on
++                    # the map side so the pair cannot collapse by the map
++                    # branch ignoring its raster.
++                    dual_valid = nav_inputs["gmap_masks"] & ~nav_inputs["gmap_visited_masks"]
++                    dual_valid = dual_valid & (teacher_actions != -100).unsqueeze(1)
++                    dual_self_loss = dual_self_loss + distill_losses.action_kl(
++                        nav_logits.detach(), zero_logits, dual_valid,
++                        self.config.IL.distill_temperature,
++                    ).sum()
+                 if map_aux_loss is not None:
+                     map_aux_loss_total = (
+                         map_aux_loss
+@@ -2111,21 +2179,37 @@ class RLTrainer(BaseVLNCETrainer):
+                             t_llm_logits.float(), teacher_actions, reduction="sum", ignore_index=-100
+                         ).item()
+ 
+-                    # Action-level KL, optionally STOP-factorised.
+-                    if il_cfg.distill_stop_factorized:
+-                        stop_kl, move_kl, p_move = distill_losses.factorized_kl(
+-                            t_logits, nav_logits, valid, temp
+-                        )
+-                        # stop_kl + p_move * move_kl is exactly the joint KL, so
+-                        # distill_stop_weight 1.0 reproduces the plain-KL arm.
+-                        kl_rows = il_cfg.distill_stop_weight * stop_kl + p_move * move_kl
+-                        gtt_stop_kl += stop_kl.sum().item()
+-                        gtt_move_kl += move_kl.sum().item()
++                    # Action-level KL, optionally STOP-factorised.  With the
++                    # dual branch it is taken on the map branch and/or the
++                    # zero branch (IL.dual_gt_kl_on_*).
++                    def _gt_kl(student_logits):
++                        nonlocal gtt_stop_kl, gtt_move_kl
++                        if il_cfg.distill_stop_factorized:
++                            stop_kl, move_kl, p_move = distill_losses.factorized_kl(
++                                t_logits, student_logits, valid, temp
++                            )
++                            # stop_kl + p_move * move_kl is exactly the joint KL, so
++                            # distill_stop_weight 1.0 reproduces the plain-KL arm.
++                            rows = il_cfg.distill_stop_weight * stop_kl + p_move * move_kl
++                            gtt_stop_kl += stop_kl.sum().item()
++                            gtt_move_kl += move_kl.sum().item()
++                        else:
++                            rows = distill_losses.action_kl(t_logits, student_logits, valid, temp)
++                        if gate is not None:
++                            rows = rows * gate
++                        return rows.sum()
++
++                    if not dual_on:
++                        gtt_distill_loss = gtt_distill_loss + _gt_kl(nav_logits)
+                     else:
+-                        kl_rows = distill_losses.action_kl(t_logits, nav_logits, valid, temp)
+-                    if gate is not None:
+-                        kl_rows = kl_rows * gate
+-                    gtt_distill_loss = gtt_distill_loss + kl_rows.sum()
++                        if il_cfg.dual_gt_kl_on_map_branch:
++                            kl_map = _gt_kl(nav_logits)
++                            gtt_distill_loss = gtt_distill_loss + kl_map
++                            dual_gt_kl_map += kl_map.item()
++                        if il_cfg.dual_gt_kl_on_zero_branch:
++                            kl_zero = _gt_kl(zero_logits)
++                            gtt_distill_loss = gtt_distill_loss + kl_zero
++                            dual_gt_kl_zero += kl_zero.item()
+ 
+                     # Counterfactual map-effect matching.
+                     if il_cfg.effect_match_weight > 0:
+@@ -2165,7 +2249,7 @@ class RLTrainer(BaseVLNCETrainer):
+                 )
+ 
+             elif feedback == "argmax":
+-                a_t = nav_logits.argmax(dim=-1)
++                a_t = act_logits.argmax(dim=-1)
+             else:
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
+@@ -2433,6 +2517,14 @@ class RLTrainer(BaseVLNCETrainer):
+                 if self.config.IL.distill_stop_factorized:
+                     self.logs["stop_kl"].append(gtt_stop_kl / total_actions)
+                     self.logs["move_kl"].append(gtt_move_kl / total_actions)
++            if dual_on:
++                dual_self_loss = self.config.IL.dual_llm_weight * dual_self_loss / total_actions
++                loss = loss + dual_self_loss
++                self.logs["self_kl"].append(dual_self_loss.item())
++                self.logs["student_ce_zero"].append(dual_ce_zero / total_actions)
++                if self._gtt_on:
++                    self.logs["gt_kl_map"].append(dual_gt_kl_map / total_actions)
++                    self.logs["gt_kl_zero"].append(dual_gt_kl_zero / total_actions)
+             if map_aux_loss_total is not None:
+                 loss = loss + map_aux_loss_total
+             self.loss += loss
+-- 
+2.43.0
+
