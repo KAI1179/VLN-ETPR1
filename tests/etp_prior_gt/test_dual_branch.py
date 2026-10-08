@@ -49,10 +49,21 @@ def test_dual_config_defaults():
     tree = ast.parse((ROOT / "vlnce_baselines" / "config" / "default.py").read_text())
     found = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = ast.unparse(node.targets[0])
-            if target.startswith("_C.IL.dual_"):
-                found[target[len("_C.IL."):]] = ast.literal_eval(node.value)
+        # _C.IL.<name> = <literal>; attribute chain walked by hand (no
+        # ast.unparse on Python 3.8).
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Attribute)
+            and isinstance(target.value.value, ast.Name)
+            and target.value.value.id == "_C"
+            and target.value.attr == "IL"
+            and target.attr.startswith("dual_")
+        ):
+            continue
+        found[target.attr] = ast.literal_eval(node.value)
     assert found == {
         "dual_enabled": False,
         "dual_llm_weight": 1.0,
