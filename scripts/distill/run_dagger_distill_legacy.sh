@@ -30,8 +30,12 @@
 # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
 set -euo pipefail
 
-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
-TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+# Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
+# (its data/ and pretrained/ must point at the main checkout's) and TORCHRUN
+# for another environment.
+REPO_ROOT="${REPO_ROOT:-/home/xukai/code/ETP-R1-snapshot/ETP-R1}"
+TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
+[[ -x "${TORCHRUN}" ]] || { echo "torchrun not found at ${TORCHRUN}; set TORCHRUN" >&2; exit 1; }
 
 MODE="${1:-}"
 case "${MODE}" in
