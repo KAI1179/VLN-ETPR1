@@ -1,0 +1,359 @@
+From 436ce80965e0c09bfb0d3b715b05647ea6920e56 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 06:07:27 +0000
+Subject: [PATCH] coord-diag: one-job route-leak diagnosis for
+ coordinate-fusion GT runs
+
+scripts/submit/coord-diag.sh [RUN_NAME] [ITER] (ln01, 4 GPUs, sequential):
+own eval coverage check (every val_unseen episode exactly once), then
+training-free variants of one checkpoint on all GPUs: occupancy_only,
+cross_scene donor, nomap, coordinate_fusion off, cell_shuffle and
+mentioned_only, with a summary table and paired SR delta vs own.
+Derived namespaces are built on the fly (skipped when present) and never
+inside the partner checkout; finished evals are skipped on resubmit.
+
+eval_run.sh: EXTRA_ARGS (appended after eval_args.txt, so it overrides)
+and EVAL_SUFFIX (separate result directory, required with EXTRA_ARGS).
+make_ablated_gt_cache.py: --mode cross_scene (GT analogue of the LLM
+raster donor test, same donor rule; assignment written to CSV).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018KbMocArNDLzFB1JmiiY2U
+---
+ scripts/distill/eval_run.sh              |  21 ++-
+ scripts/distill/make_ablated_gt_cache.py |  42 ++++-
+ scripts/submit/coord-diag.sh             | 187 +++++++++++++++++++++++
+ 3 files changed, 243 insertions(+), 7 deletions(-)
+ create mode 100755 scripts/submit/coord-diag.sh
+
+diff --git a/scripts/distill/eval_run.sh b/scripts/distill/eval_run.sh
+index 1552292..640962b 100755
+--- a/scripts/distill/eval_run.sh
++++ b/scripts/distill/eval_run.sh
+@@ -3,8 +3,12 @@
+ #
+ # Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]
+ # Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several processes),
+-#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen).
+-# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>/eval_results/
++#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen),
++#      EXTRA_ARGS ("KEY VALUE ..." appended after eval_args.txt, so it wins;
++#      e.g. a different MODEL.MAP_ENCODER.cache_namespace), EVAL_SUFFIX
++#      (appended to the result directory name; required with EXTRA_ARGS so a
++#      variant never lands in the plain eval's directory).
++# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>[_<EVAL_SUFFIX>]/eval_results/
+ # (the layout summarize_eval.py and paired_analysis.py read).
+ set -euo pipefail
+ 
+@@ -37,8 +41,14 @@ SPLIT="${SPLIT:-val_unseen}"
+ 
+ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+ CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
+-EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}"
+-EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}.log"
++EVAL_SUFFIX="${EVAL_SUFFIX:-}"
++read -ra EXTRA <<< "${EXTRA_ARGS:-}"
++if [[ ${#EXTRA[@]} -gt 0 && -z "${EVAL_SUFFIX}" ]]; then
++    echo "EXTRA_ARGS needs EVAL_SUFFIX" >&2; exit 2
++fi
++(( ${#EXTRA[@]} % 2 == 0 )) || { echo "EXTRA_ARGS must be KEY VALUE pairs: ${EXTRA_ARGS}" >&2; exit 2; }
++EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}${EVAL_SUFFIX:+_${EVAL_SUFFIX}}"
++EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}${EVAL_SUFFIX:+_${EVAL_SUFFIX}}.log"
+ RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
+ [[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
+ 
+@@ -54,6 +64,7 @@ if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
+     while read -r key value; do RUN_ARGS+=("${key}" "${value}"); done < "${RUN_DIR}/eval_args.txt"
+     echo "Using ${RUN_DIR}/eval_args.txt: ${RUN_ARGS[*]}"
+ fi
++[[ ${#EXTRA[@]} -eq 0 ]] || echo "Extra args (override): ${EXTRA[*]}"
+ 
+ cd "${REPO_ROOT}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+@@ -79,7 +90,7 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
+     "${MAP_LOAD_ARGS[@]}" \
+     MODEL.elevation_axis "${ELEVATION_AXIS:-y}" \
+     MODEL.pretrained_path "${PRETRAINED_CKPT}" \
+-    "${RUN_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
++    "${RUN_ARGS[@]}" "${EXTRA[@]}" 2>&1 | tee "${EVAL_LOG}"
+ 
+ "${PYTHON}" - "${RESULT_JSON}" "${RUN_NAME}" "${ITER}" <<'PY'
+ import json, sys
+diff --git a/scripts/distill/make_ablated_gt_cache.py b/scripts/distill/make_ablated_gt_cache.py
+index e786200..9e65b7c 100755
+--- a/scripts/distill/make_ablated_gt_cache.py
++++ b/scripts/distill/make_ablated_gt_cache.py
+@@ -20,6 +20,11 @@ Modes
+   unmentioned_only  channels of categories the instruction mentions zeroed
+                     (complement of make_mentioned_only_gt_cache.py; needs the
+                     spacy extractor, run in etpr1-uv).
++  cross_scene       grid of a random episode from another scene (metadata,
++                    incl. start position and direction vectors, kept): the GT
++                    analogue of make_raster_donor_cache.py --mode cross_scene,
++                    same donor rule and seed, donors drawn only from episodes
++                    whose source npz exists.
+ 
+     python scripts/distill/make_ablated_gt_cache.py --mode occupancy_only
+ """
+@@ -55,8 +60,9 @@ Mode = Literal[
+     "objects_only",
+     "category_scramble",
+     "unmentioned_only",
++    "cross_scene",
+ ]
+-RANDOM_MODES = {"cell_shuffle", "category_scramble"}
++RANDOM_MODES = {"cell_shuffle", "category_scramble", "cross_scene"}
+ NUM_CHANNELS = 37
+ 
+ 
+@@ -109,6 +115,31 @@ def ablate(grid: np.ndarray, mode: str, rng: np.random.Generator, mentioned: Opt
+     raise ValueError(f"unknown mode {mode}")
+ 
+ 
++def _cross_scene_donor_grids(episodes, args: "Args") -> dict:
++    """episode_id -> grid of its donor (another scene, fixed seed, with replacement)."""
++    rng = np.random.default_rng(args.seed)
++    present = []
++    for ep in sorted(episodes, key=lambda e: int(e["episode_id"])):
++        cache_id = f"R2R_{args.split}_{ep['episode_id']}"
++        path = cognitive_map_cache_path(ep["scene_id"], cache_id, namespace=args.namespace)
++        if path.is_file():
++            present.append((str(ep["episode_id"]), Path(ep["scene_id"]).stem, path))
++    grids = {}
++    assignment = []
++    for target_id, target_scene, _ in present:
++        pool = [item for item in present if item[1] != target_scene]
++        donor_id, donor_scene, donor_path = pool[int(rng.integers(len(pool)))]
++        with np.load(donor_path, allow_pickle=True) as data:
++            grids[target_id] = data["grid"]
++        assignment.append((target_id, target_scene, donor_id, donor_scene))
++    target_root = VLNCE_COGNITIVE_MAP_DIR / derived_namespace(args.namespace, args.mode, args.seed)
++    target_root.mkdir(parents=True, exist_ok=True)
++    with open(target_root / f"donor_assignment_{args.split}.csv", "w", encoding="utf-8") as fh:
++        fh.write("episode_id,scene,donor_episode_id,donor_scene\n")
++        fh.writelines(",".join(row) + "\n" for row in assignment)
++    return grids
++
++
+ def main(argv: Optional[Sequence[str]] = None) -> str:
+     args = Args(underscores_to_dashes=True).parse_args(argv)
+     target_ns = derived_namespace(args.namespace, args.mode, args.seed)
+@@ -131,6 +162,10 @@ def main(argv: Optional[Sequence[str]] = None) -> str:
+         target_root.mkdir(parents=True, exist_ok=True)
+         target_boxes.symlink_to(source_boxes.resolve(), target_is_directory=True)
+ 
++    donor_grids = {}
++    if args.mode == "cross_scene":
++        donor_grids = _cross_scene_donor_grids(episodes, args)
++
+     written = 0
+     missing = 0
+     nonzero_before = []
+@@ -151,7 +186,10 @@ def main(argv: Optional[Sequence[str]] = None) -> str:
+             arrays = {name: data[name] for name in data.files}
+         rng = np.random.default_rng([args.seed, int(episode["episode_id"])])
+         grid = arrays["grid"]
+-        new_grid = ablate(grid, args.mode, rng, mentioned)
++        if args.mode == "cross_scene":
++            new_grid = donor_grids[str(episode["episode_id"])]
++        else:
++            new_grid = ablate(grid, args.mode, rng, mentioned)
+         nonzero_before.append(float((grid > 0).sum()))
+         nonzero_after.append(float((new_grid > 0).sum()))
+         arrays["grid"] = np.ascontiguousarray(new_grid, dtype=grid.dtype)
+diff --git a/scripts/submit/coord-diag.sh b/scripts/submit/coord-diag.sh
+new file mode 100755
+index 0000000..e91ddd2
+--- /dev/null
++++ b/scripts/submit/coord-diag.sh
+@@ -0,0 +1,187 @@
++#!/bin/bash
++#SBATCH --job-name=coord-diag
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++#
++# ln01, one job: is the coordinate-fusion GT-legacy policy (SR ~85 on
++# val_unseen vs 68.41 for 18600 without coordinates) reading the route off
++# the map?  The legacy GT raster is a 7x7-cell corridor around the GT path,
++# so with map-frame node coordinates the corridor end is the goal.
++# Training-free, one checkpoint, every eval on all 4 GPUs, one after another:
++#
++#   own            the run's own map (reused from eval-iters.sh if present)
++#   occupancy      corridor geometry only, no semantics      (abl_occupancy_only)
++#   cross_scene    raster of another scene's episode         (abl_cross_scene_s0)
++#   cell_shuffle   semantics/counts kept, geometry destroyed (abl_cell_shuffle_s0)
++#   mentioned      only categories the instruction names     (mentioned_only)
++#   nomap          MODEL.MAP_ENCODER.enabled False
++#   coord_off      MODEL.MAP_ENCODER.coordinate_fusion False
++#
++# Reading: occupancy ~= own -> the policy follows corridor geometry (route
++# leak); cross_scene / cell_shuffle far below nomap -> it trusts the map's
++# geometry blindly; mentioned = what a perfect language-predicted map could
++# give this policy.
++#
++# Step 0 checks the own eval covers every val_unseen episode exactly once.
++# Step 1 derives the ablated namespaces on CPU (skipped when present; a
++# failed derivation drops only its eval).  Evals already done are skipped,
++# so resubmitting after a failure only runs what is missing.  The summary
++# (SR/SPL/OSR/nDTW/NE/PL, paired SR delta vs own with an 11-scene bootstrap
++# CI) goes to data/logs/checkpoints/<RUN>_diag_iter<ITER>/summary.md and the
++# end of the slurm log.
++#
++# Usage (from the repo root):
++#   sbatch scripts/submit/coord-diag.sh [RUN_NAME] [ITER]
++#   defaults: dagger_coordfusion_gt_legacy 16800
++# Env: VARIANTS (subset, space separated, default all of the above but own),
++#      NUM_ENVS (4 per rank).
++set -eo pipefail
++source /data/apps/miniforge3/etc/profile.d/conda.sh
++conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
++set -u
++
++RUN_NAME="${1:-dagger_coordfusion_gt_legacy}"
++ITER="${2:-16800}"
++SPLIT=val_unseen
++cd "${SLURM_SUBMIT_DIR:-$PWD}"
++[[ -f scripts/distill/eval_run.sh ]] || { echo "Submit from the repo root" >&2; exit 2; }
++grep -q EXTRA_ARGS scripts/distill/eval_run.sh || { echo "eval_run.sh lacks EXTRA_ARGS: apply patch 0053" >&2; exit 2; }
++RUN_DIR="data/logs/checkpoints/${RUN_NAME}"
++ARGS_FILE="${RUN_DIR}/eval_args.txt"
++[[ -f "${RUN_DIR}/ckpt.iter${ITER}.pth" ]] || { echo "Missing ${RUN_DIR}/ckpt.iter${ITER}.pth" >&2; exit 1; }
++[[ -f "${ARGS_FILE}" ]] || { echo "Missing ${ARGS_FILE}" >&2; exit 1; }
++arg_of() { awk -v k="$1" '$1 == k {print $2}' "${ARGS_FILE}" | tail -n 1; }
++NS="$(arg_of MODEL.MAP_ENCODER.cache_namespace)"
++PRETRAINED_CKPT="$(arg_of MODEL.pretrained_path)"
++[[ "$(arg_of MODEL.MAP_ENCODER.source)" == prior_gt && -n "${NS}" ]] \
++    || { echo "${RUN_NAME} is not a prior_gt run (eval_args.txt)" >&2; exit 1; }
++[[ -f "${PRETRAINED_CKPT}" ]] || { echo "pretrained_path not found: ${PRETRAINED_CKPT}" >&2; exit 1; }
++
++# Derived namespaces are written next to the source under data/cognitive_maps;
++# never into the partner's read-only checkout.
++CM_REAL="$(readlink -f data/cognitive_maps)"
++PARTNER_REAL="$(readlink -f "${HOME}/run/ETP-R1" || true)"
++if [[ -n "${PARTNER_REAL}" && -d "${PARTNER_REAL}" && "${CM_REAL}/" == "${PARTNER_REAL}/"* ]]; then
++    echo "data/cognitive_maps resolves into the partner repo (${CM_REAL}); refusing to write there" >&2; exit 1
++fi
++[[ -d "data/cognitive_maps/${NS}" ]] || { echo "Source namespace missing: data/cognitive_maps/${NS}" >&2; exit 1; }
++
++export REPO_ROOT="$PWD" PYTHON="$(command -v python)" TORCHRUN="$(command -v torchrun)"
++export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" SPLIT
++OUT="data/logs/checkpoints/${RUN_NAME}_diag_iter${ITER}"
++mkdir -p "${OUT}"
++echo "job=${SLURM_JOB_ID:-none} node=$(hostname) gpus=${CUDA_VISIBLE_DEVICES} run=${RUN_NAME} iter=${ITER} ns=${NS} cognitive_maps=${CM_REAL}"
++
++result_dir() {  # suffix -> eval_results dir ("" = own)
++    echo "data/logs/checkpoints/${RUN_NAME}_eval_iter${ITER}_${SPLIT}${1:+_$1}/eval_results"
++}
++done_eval() { [[ -f "$(result_dir "$1")/stats_ckpt_${ITER}_${SPLIT}.json" ]]; }
++
++# ---- own -------------------------------------------------------------------
++if done_eval ""; then
++    echo "$(date -Is) own: reusing $(result_dir "")"
++else
++    echo "$(date -Is) own: start"
++    bash scripts/distill/eval_run.sh "${RUN_NAME}" "${ITER}" "${PRETRAINED_CKPT}"
++fi
++
++# ---- step 0: coverage of the own eval ----------------------------------------
++PYTHONPATH="$PWD" python - "$(result_dir "")" "${ITER}" "${SPLIT}" <<'PY' | tee "${OUT}/coverage.txt" || true
++import glob, gzip, json, sys
++from collections import Counter
++from prior import R2R_DIR
++d, it, split = sys.argv[1:]
++with gzip.open(R2R_DIR / split / f"{split}.json.gz", "rt") as f:
++    expected = {str(e["episode_id"]) for e in json.load(f)["episodes"]}
++files = sorted(glob.glob(f"{d}/stats_ep_ckpt_{it}_{split}_r*_w*.json"))
++ids = Counter()
++for p in files:
++    ids.update(str(k) for k in json.load(open(p)))
++dup = sum(c - 1 for c in ids.values() if c > 1)
++seen = set(ids)
++print(f"own eval coverage: rank files {len(files)}, episode entries {sum(ids.values())}, "
++      f"unique {len(seen)}, duplicated entries {dup}, expected {len(expected)}, "
++      f"missing {len(expected - seen)}, unexpected {len(seen - expected)}")
++m = json.load(open(f"{d}/stats_ckpt_{it}_{split}.json"))
++print("own aggregate: " + ", ".join(f"{k} {m[k]:.4f}" for k in ("success", "spl", "oracle_success", "distance_to_goal") if k in m))
++print("COVERAGE OK" if not dup and seen == expected else "COVERAGE PROBLEM: the own SR is not over the full split")
++PY
++[[ -s "${OUT}/coverage.txt" ]] || echo "coverage check could not run (see above); continuing"
++
++# ---- step 1: derived namespaces (CPU) ----------------------------------------
++declare -A VAR_ARGS
++derive() {  # variant, python args... ; prints nothing, fills VAR_ARGS on success
++    local variant="$1"; shift
++    local ns
++    if ns="$(PYTHONPATH="$PWD" python "$@" --namespace "${NS}" --split "${SPLIT}" 2>"${OUT}/derive_${variant}.err" | tail -n 1)" \
++        && [[ -d "data/cognitive_maps/${ns}" ]]; then
++        VAR_ARGS[${variant}]="MODEL.MAP_ENCODER.cache_namespace ${ns}"
++        echo "$(date -Is) namespace ${ns}: ready"
++    else
++        echo "$(date -Is) namespace for ${variant}: FAILED, see ${OUT}/derive_${variant}.err"
++    fi
++}
++derive occupancy    scripts/distill/make_ablated_gt_cache.py --mode occupancy_only
++derive cross_scene  scripts/distill/make_ablated_gt_cache.py --mode cross_scene --seed 0
++derive cell_shuffle scripts/distill/make_ablated_gt_cache.py --mode cell_shuffle --seed 0
++derive mentioned    scripts/distill/make_mentioned_only_gt_cache.py
++VAR_ARGS[nomap]="MODEL.MAP_ENCODER.enabled False"
++VAR_ARGS[coord_off]="MODEL.MAP_ENCODER.coordinate_fusion False"
++
++# ---- step 2: evals, one after another on all GPUs ------------------------------
++read -ra VARIANT_LIST <<< "${VARIANTS:-occupancy cross_scene nomap coord_off cell_shuffle mentioned}"
++failed=()
++for v in "${VARIANT_LIST[@]}"; do
++    if done_eval "${v}"; then echo "$(date -Is) ${v}: already evaluated"; continue; fi
++    if [[ -z "${VAR_ARGS[${v}]:-}" ]]; then echo "$(date -Is) ${v}: no namespace, skipped"; failed+=("${v}"); continue; fi
++    echo "$(date -Is) ${v}: start (${VAR_ARGS[${v}]})"
++    if EVAL_SUFFIX="${v}" EXTRA_ARGS="${VAR_ARGS[${v}]}" \
++        bash scripts/distill/eval_run.sh "${RUN_NAME}" "${ITER}" "${PRETRAINED_CKPT}" > "${OUT}/eval_${v}.log" 2>&1; then
++        echo "$(date -Is) ${v}: done"
++    else
++        echo "$(date -Is) ${v}: FAILED, see ${OUT}/eval_${v}.log"; failed+=("${v}")
++    fi
++done
++
++# ---- summary -------------------------------------------------------------------
++python - "$(result_dir "")" "${ITER}" "${SPLIT}" "${VARIANT_LIST[@]}" <<'PY' | tee "${OUT}/summary.md"
++import glob, json, subprocess, sys
++own, it, split, *variants = sys.argv[1:]
++base = own[: -len("/eval_results")]
++
++def stats(d):
++    p = f"{d}/stats_ckpt_{it}_{split}.json"
++    try:
++        return json.load(open(p))
++    except OSError:
++        return None
++
++def paired(d):
++    try:
++        out = subprocess.run([sys.executable, "scripts/distill/paired_analysis.py", "--dir-a", own,
++                              "--dir-b", d, "--split", split, "--reps", "5000"],
++                             capture_output=True, text=True, check=True).stdout
++    except subprocess.CalledProcessError:
++        return "n/a"
++    for line in out.splitlines():
++        if line.startswith("| SR "):
++            c = [x.strip() for x in line.strip("|").split("|")]
++            return f"{c[3]} {c[4]}"
++    return "n/a"
++
++print(f"| variant | SR | SPL | OSR | nDTW | NE | PL | OSR-SR | SR - own [95% CI] |")
++print("|---|---:|---:|---:|---:|---:|---:|---:|---|")
++for name, d in [("own", own)] + [(v, f"{base}_{v}/eval_results") for v in variants]:
++    m = stats(d)
++    if m is None:
++        print(f"| {name} | missing | | | | | | | |")
++        continue
++    ci = "" if name == "own" else paired(d)
++    print(f"| {name} | {m['success']*100:.2f} | {m['spl']*100:.2f} | {m['oracle_success']*100:.2f} | "
++          f"{m.get('ndtw', float('nan'))*100:.2f} | {m['distance_to_goal']:.2f} | {m.get('path_length', float('nan')):.1f} | "
++          f"{(m['oracle_success']-m['success'])*100:.2f} | {ci} |")
++PY
++cat "${OUT}/coverage.txt"
++echo "Summary: ${OUT}/summary.md"
++[[ ${#failed[@]} -eq 0 ]] || { echo "failed/skipped variants: ${failed[*]}" >&2; exit 1; }
+-- 
+2.43.0
+
