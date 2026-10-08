@@ -204,6 +204,10 @@ _C.MODEL.ablate_depth = False
 _C.MODEL.ablate_rgb = False
 _C.MODEL.ablate_instruction = False
 _C.MODEL.elevation_axis = "y"
+# Recompute the 4 cross-modal (x-layer) blocks in the backward pass instead of
+# storing their activations (training only; identical gradients, dropout masks
+# reproduced).  Trades a little compute for a large part of the rollout graph.
+_C.MODEL.activation_checkpointing = False
 
 _C.MODEL.INSTRUCTION_ENCODER = CN()
 _C.MODEL.INSTRUCTION_ENCODER.sensor_uuid = "instruction"

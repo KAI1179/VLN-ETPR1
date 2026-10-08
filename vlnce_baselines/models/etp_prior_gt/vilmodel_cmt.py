@@ -2,6 +2,7 @@ import logging
 import math
 
 import torch
+import torch.utils.checkpoint
 from torch import nn
 
 from transformers import BertPreTrainedModel
@@ -498,18 +499,43 @@ class CrossmodalEncoder(nn.Module):
         self.x_layers = nn.ModuleList(
             [GraphLXRTXLayer(config) for _ in range(self.num_x_layers)]
         )
+        # Activation checkpointing: keep only each layer's inputs during the
+        # forward pass and recompute the layer in the backward pass.  The
+        # gradients are identical; the dropout masks are reproduced (the RNG
+        # state is saved and restored), autocast is re-entered, and the
+        # non-reentrant form works under DDP.  Training-only: in eval or
+        # under no_grad the plain forward runs.
+        self.activation_checkpointing = bool(
+            getattr(config, "activation_checkpointing", False)
+        )
 
     def forward(self, txt_embeds, txt_masks, img_embeds, img_masks, graph_sprels=None):
         extended_txt_masks = extend_neg_masks(txt_masks)
         extended_img_masks = extend_neg_masks(img_masks)  # (N, 1(H), 1(L_q), L_v)
+        use_ckpt = (
+            self.activation_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+        )
         for layer_module in self.x_layers:
-            txt_embeds, img_embeds = layer_module(
-                txt_embeds,
-                extended_txt_masks,
-                img_embeds,
-                extended_img_masks,
-                graph_sprels=graph_sprels,
-            )
+            if use_ckpt:
+                txt_embeds, img_embeds = torch.utils.checkpoint.checkpoint(
+                    layer_module,
+                    txt_embeds,
+                    extended_txt_masks,
+                    img_embeds,
+                    extended_img_masks,
+                    graph_sprels,
+                    use_reentrant=False,
+                )
+            else:
+                txt_embeds, img_embeds = layer_module(
+                    txt_embeds,
+                    extended_txt_masks,
+                    img_embeds,
+                    extended_img_masks,
+                    graph_sprels=graph_sprels,
+                )
         return txt_embeds, img_embeds
 
 
