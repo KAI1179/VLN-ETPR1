@@ -118,6 +118,20 @@ _C.IL.gate_normalize = True
 # Scale on the student's cached start_position when its map is fed to the teacher
 # (1.0 when both caches store the same unit, e.g. legacy GT and LLM-grid).
 _C.IL.gate_teacher_start_position_scale = 1.0
+# Dual-branch distillation for a student deployed WITHOUT the raster: every
+# training step runs the policy twice, with its LLM raster (map branch) and
+# with the raster zeroed but the metadata kept (zero branch, the deployment
+# view, identical to map_ablation metadata_only at evaluation).  Both
+# branches get the CE; the zero branch additionally mimics the map branch
+# (KL, stop-gradient on the map side so the pair cannot collapse); the GT
+# teacher's KL goes to the map branch and/or the zero branch.  Rollout
+# actions come from the deployment (zero) branch by default.
+_C.IL.dual_enabled = False
+_C.IL.dual_llm_weight = 1.0
+_C.IL.dual_ce_on_map_branch = True
+_C.IL.dual_gt_kl_on_map_branch = True
+_C.IL.dual_gt_kl_on_zero_branch = True
+_C.IL.dual_rollout_branch = "zero"
 # it True, start training from the saved epoch
 # -----------------------------------------------------------------------------
 # IL: RXR TRAINER CONFIG

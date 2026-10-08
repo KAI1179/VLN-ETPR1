@@ -16,6 +16,16 @@
 #         gated   action KL with the reachability gate (GATE_TAU required)
 #         full    STOP-factorised KL + gate + counterfactual effect matching
 #                 (GATE_TAU required)
+#         dual    student deployed WITHOUT the raster: each step runs the
+#                 policy with its LLM raster (map branch) and with the raster
+#                 zeroed, metadata kept (zero branch = deployment view); CE on
+#                 both, GT-teacher KL on both (DUAL_GT_ON_MAP / DUAL_GT_ON_ZERO
+#                 give the chain or the parallel ablation), zero branch mimics
+#                 the map branch (DUAL_LLM_WEIGHT, stop-gradient on the map
+#                 side); rollout actions from DUAL_ROLLOUT (zero|map).  No gate,
+#                 no effect matching, no STOP factorisation (STOP_FACTORIZED=True
+#                 adds it).  Evaluate with MODEL.MAP_ENCODER.map_ablation
+#                 metadata_only.
 #
 # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
 # continues from the latest one; re-running after a crash is always safe.
@@ -27,7 +37,9 @@
 # GATE_TAU (absolute JS scale, no default: take gate_js_median from a kl
 # JS_LOG=True run), GATE_MIN (0.2), GATE_NORMALIZE (True), EFFECT_REDUCTION
 # (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
-# DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
+# DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
+# dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
+# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False).
 set -euo pipefail
 
 # Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
@@ -39,9 +51,9 @@ TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
 
 MODE="${1:-}"
 case "${MODE}" in
-    kl|gated|full) ;;
+    kl|gated|full|dual) ;;
     *)
-        echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
+        echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full|dual} [--dry-run]" >&2
         exit 2
         ;;
 esac
@@ -49,7 +61,7 @@ DRY_RUN_ARGS=()
 if [[ "${2:-}" == "--dry-run" ]]; then
     DRY_RUN_ARGS=(--dry-run)
 elif [[ $# -gt 1 ]]; then
-    echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full} [--dry-run]" >&2
+    echo "Usage: bash scripts/distill/run_dagger_distill_legacy.sh {kl|gated|full|dual} [--dry-run]" >&2
     exit 2
 fi
 
@@ -85,6 +97,12 @@ JS_LOG="${JS_LOG:-False}"
 STOP_WEIGHT="${STOP_WEIGHT:-1.0}"
 TEMP="${TEMP:-1.0}"
 DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"
+DUAL_LLM_WEIGHT="${DUAL_LLM_WEIGHT:-1.0}"
+DUAL_GT_ON_MAP="${DUAL_GT_ON_MAP:-True}"
+DUAL_GT_ON_ZERO="${DUAL_GT_ON_ZERO:-True}"
+DUAL_CE_ON_MAP="${DUAL_CE_ON_MAP:-True}"
+DUAL_ROLLOUT="${DUAL_ROLLOUT:-zero}"
+STOP_FACTORIZED="${STOP_FACTORIZED:-False}"
 
 # Mode -> distillation switches.  Every key defaults to the historical plain
 # KL, so the kl arm passes the defaults explicitly for the record.
@@ -127,6 +145,20 @@ case "${MODE}" in
             IL.effect_match_weight 0.0
         )
         ;;
+    dual)
+        DISTILL_ARGS=(
+            IL.dual_enabled True
+            IL.dual_llm_weight "${DUAL_LLM_WEIGHT}"
+            IL.dual_gt_kl_on_map_branch "${DUAL_GT_ON_MAP}"
+            IL.dual_gt_kl_on_zero_branch "${DUAL_GT_ON_ZERO}"
+            IL.dual_ce_on_map_branch "${DUAL_CE_ON_MAP}"
+            IL.dual_rollout_branch "${DUAL_ROLLOUT}"
+            IL.distill_stop_factorized "${STOP_FACTORIZED}"
+            IL.distill_stop_weight "${STOP_WEIGHT}"
+            IL.gate_enabled False
+            IL.effect_match_weight 0.0
+        )
+        ;;
     full)
         _need_tau
         if [[ "${EFFECT_CF}" == "batch_donor" && "${NUM_ENVS}" -lt 2 ]]; then
@@ -147,9 +179,9 @@ case "${MODE}" in
         ;;
 esac
 
-for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction; do
+for key in distill_stop_factorized effect_match_weight gate_enabled gate_normalize effect_reduction dual_enabled; do
     if ! grep -q "_C.IL.${key}" "${REPO_ROOT}/vlnce_baselines/config/default.py"; then
-        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050 and 0053 first" >&2
+        echo "IL.${key} missing from vlnce_baselines/config/default.py: apply patches 0050, 0053 and 0056 first" >&2
         exit 2
     fi
 done
