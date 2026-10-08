@@ -1,0 +1,44 @@
+From 586c1f4fa45153068e21d33925561e6fbce2b4de Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 04:05:01 -0600
+Subject: [PATCH] test_dual_branch: no ast.unparse (Python 3.8 on WZ)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ tests/etp_prior_gt/test_dual_branch.py | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/tests/etp_prior_gt/test_dual_branch.py b/tests/etp_prior_gt/test_dual_branch.py
+index b98486d..10ea094 100644
+--- a/tests/etp_prior_gt/test_dual_branch.py
++++ b/tests/etp_prior_gt/test_dual_branch.py
+@@ -49,10 +49,21 @@ def test_dual_config_defaults():
+     tree = ast.parse((ROOT / "vlnce_baselines" / "config" / "default.py").read_text())
+     found = {}
+     for node in ast.walk(tree):
+-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+-            target = ast.unparse(node.targets[0])
+-            if target.startswith("_C.IL.dual_"):
+-                found[target[len("_C.IL."):]] = ast.literal_eval(node.value)
++        # _C.IL.<name> = <literal>; attribute chain walked by hand (no
++        # ast.unparse on Python 3.8).
++        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
++            continue
++        target = node.targets[0]
++        if not (
++            isinstance(target, ast.Attribute)
++            and isinstance(target.value, ast.Attribute)
++            and isinstance(target.value.value, ast.Name)
++            and target.value.value.id == "_C"
++            and target.value.attr == "IL"
++            and target.attr.startswith("dual_")
++        ):
++            continue
++        found[target.attr] = ast.literal_eval(node.value)
+     assert found == {
+         "dual_enabled": False,
+         "dual_llm_weight": 1.0,
+-- 
+2.43.0
+
