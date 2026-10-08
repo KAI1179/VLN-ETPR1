@@ -1,0 +1,92 @@
+From f0d263e0c44a73ccb30026a1d7c2aba9baaded69 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 05:11:40 -0600
+Subject: [PATCH] GT teacher: store the frozen weights in fp16
+ (IL.gt_teacher_half)
+
+The teacher only runs inside the rollout's fp16 autocast, so fp16 storage
+changes nothing but memory for every autocast-covered op; the two modules
+that deliberately run with autocast disabled in fp32 (map encoder, whose
+spatial tokenizer overflows in fp16, and the graph-map fusion) keep fp32
+weights.  About 1.1 GiB per process; the amount actually freed is logged.
+Default off; the distillation launcher passes TEACHER_HALF (default True).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_distill_legacy.sh |  4 +++-
+ vlnce_baselines/config/default.py            |  4 ++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py    | 20 ++++++++++++++++++++
+ 3 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 7104d4d..5bac4fe 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -39,7 +39,8 @@
+ # (sum|mean), JS_LOG (False), STOP_WEIGHT (1.0), TEMP (1.0),
+ # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
+ # dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
+-# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False).
++# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False);
++# TEACHER_HALF (True: frozen teacher weights in fp16, ~1.1 GiB per process).
+ set -euo pipefail
+ 
+ # Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
+@@ -246,6 +247,7 @@ COMMAND=(
+     IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
+     IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
+     IL.gt_teacher_elevation_axis y
++    IL.gt_teacher_half "${TEACHER_HALF:-True}"
+     IL.gate_teacher_start_position_scale 1.0
+     "${DISTILL_ARGS[@]}"
+ )
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index ac2543b..7d9ed93 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -89,6 +89,10 @@ _C.IL.gt_teacher_ckpt = ""
+ _C.IL.gt_teacher_map_namespace = ""
+ _C.IL.gt_teacher_policy_name = ""
+ _C.IL.gt_teacher_elevation_axis = "z"
++# Store the frozen teacher's weights in fp16 (it only runs under autocast);
++# the map encoder and the graph-map fusion, which run with autocast disabled,
++# keep fp32 weights.  Saves ~1.1 GiB per process.
++_C.IL.gt_teacher_half = False
+ # Distillation terms beyond the plain action KL (see
+ # vlnce_baselines/models/etp_prior_gt/distill_losses.py).  All default to the
+ # historical behaviour (plain KL, no gate, no effect matching).
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index efa0a40..a27ceb8 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -586,6 +586,26 @@ class RLTrainer(BaseVLNCETrainer):
+             self.gt_teacher.to(self.device).eval()
+             for p in self.gt_teacher.parameters():
+                 p.requires_grad_(False)
++            if self.config.IL.gt_teacher_half:
++                # The frozen teacher only ever runs under the rollout's fp16
++                # autocast, so storing its weights in fp16 changes nothing but
++                # memory -- except the two modules that deliberately run with
++                # autocast disabled in fp32 (map encoder: the spatial tokenizer
++                # overflows in fp16; graph-map fusion): those keep fp32 weights.
++                before = torch.cuda.memory_allocated(self.device)
++                self.gt_teacher.half()
++                net = self.gt_teacher.net
++                for name in ("map_encoder",):
++                    if getattr(net, name, None) is not None:
++                        getattr(net, name).float()
++                fusion = getattr(getattr(net, "vln_bert", None), "graph_map_attention", None)
++                if fusion is not None:
++                    fusion.float()
++                torch.cuda.synchronize(self.device)
++                logger.info(
++                    "[gt_teacher] weights stored in fp16 (map encoder and graph-map "
++                    f"fusion kept fp32): {(before - torch.cuda.memory_allocated(self.device)) / 2**30:.2f} GiB freed"
++                )
+ 
+         params = sum(param.numel() for param in self.policy.parameters())
+         params_t = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+-- 
+2.43.0
+
