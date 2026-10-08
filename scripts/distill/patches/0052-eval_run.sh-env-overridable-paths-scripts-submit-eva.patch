@@ -1,0 +1,122 @@
+From 95c88788b3bdd2d3bf9cb6edfbec5bc9aa4ab61b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 7 Oct 2026 21:17:05 -0600
+Subject: [PATCH] eval_run.sh: env-overridable paths;
+ scripts/submit/eval-iters.sh (ln01, serial)
+
+eval_run.sh took REPO_ROOT / PYTHON / TORCHRUN and the EGL vendor directory
+from the WZ checkout; they are now environment-overridable and the EGL
+directory is exported only where it exists, so the same script evaluates
+on ln01.  scripts/submit/eval-iters.sh RUN_NAME ITER... is the sbatch
+wrapper: one 4-GPU job, checkpoints evaluated one after another, evaluated
+iters skipped, a summary table at the end.  PRETRAINED_CKPT is required
+because eval mode rebuilds the policy from the pretraining checkpoint.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/eval_run.sh  | 13 +++++----
+ scripts/submit/eval-iters.sh | 56 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 5 deletions(-)
+ create mode 100755 scripts/submit/eval-iters.sh
+
+diff --git a/scripts/distill/eval_run.sh b/scripts/distill/eval_run.sh
+index fa4e242..1552292 100755
+--- a/scripts/distill/eval_run.sh
++++ b/scripts/distill/eval_run.sh
+@@ -8,14 +8,18 @@
+ # (the layout summarize_eval.py and paired_analysis.py read).
+ set -euo pipefail
+ 
+-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+-PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+-TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# WZ defaults; on ln01 the slurm wrapper (scripts/submit/eval-iters.sh) sets
++# REPO_ROOT / PYTHON / TORCHRUN from the activated env.
++REPO_ROOT="${REPO_ROOT:-/home/xukai/code/ETP-R1-snapshot/ETP-R1}"
++PYTHON="${PYTHON:-/home/xukai/anaconda3/envs/etpr1-py38/bin/python}"
++TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
+ # torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
+ # evals collide; pick a free port instead (override with MASTER_PORT).
+ free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
+ RDZV_PORT="${MASTER_PORT:-$(free_port)}"
+-export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++if [[ -z "${__EGL_VENDOR_LIBRARY_DIRS:-}" && -d /usr/share/glvnd/egl_vendor.d ]]; then
++    export __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d
++fi
+ 
+ if [[ $# -lt 2 || $# -gt 3 ]]; then
+     echo "Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]" >&2
+@@ -53,7 +57,6 @@ fi
+ 
+ cd "${REPO_ROOT}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+-    __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
+     PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" \
+     "${REPO_ROOT}/run.py" \
+     --exp_name "${EVAL_NAME}" \
+diff --git a/scripts/submit/eval-iters.sh b/scripts/submit/eval-iters.sh
+new file mode 100755
+index 0000000..5329f4c
+--- /dev/null
++++ b/scripts/submit/eval-iters.sh
+@@ -0,0 +1,56 @@
++#!/bin/bash
++#SBATCH --job-name=eval-iters
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++#
++# ln01 wrapper: evaluate several checkpoints of one run on val_unseen, one
++# after another, each on all the job's GPUs (eval_run.sh, 4 processes x
++# NUM_ENVS envs, ~15 min per checkpoint).  Already-evaluated iters are skipped.
++#
++# Usage (from the repo root):
++#   PRETRAINED_CKPT=<path> sbatch scripts/submit/eval-iters.sh RUN_NAME ITER [ITER ...]
++#
++# PRETRAINED_CKPT must be the pretraining checkpoint the run started from:
++# eval mode rebuilds the policy from it before loading the DAgger checkpoint,
++# and a non-existent path aborts the job.  eval_run.sh reads the run's
++# eval_args.txt when present (coordinate-fusion runs) and otherwise evaluates
++# as an LLM-Grid try5 policy.  Env passed through: NUM_ENVS, BACK_ALGO, SPLIT.
++set -eo pipefail
++source /data/apps/miniforge3/etc/profile.d/conda.sh
++conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
++set -u
++
++[[ $# -ge 2 ]] || { echo "Usage: sbatch scripts/submit/eval-iters.sh RUN_NAME ITER [ITER ...]" >&2; exit 2; }
++RUN_NAME="$1"; shift
++cd "${SLURM_SUBMIT_DIR:-$PWD}"
++[[ -f scripts/distill/eval_run.sh ]] || { echo "Submit from the repo root" >&2; exit 2; }
++[[ -n "${PRETRAINED_CKPT:-}" && -f "${PRETRAINED_CKPT}" ]] || { echo "PRETRAINED_CKPT missing or not a file: ${PRETRAINED_CKPT:-unset}" >&2; exit 2; }
++
++export REPO_ROOT="$PWD" PYTHON="$(command -v python)" TORCHRUN="$(command -v torchrun)"
++export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
++SPLIT="${SPLIT:-val_unseen}"
++echo "job=${SLURM_JOB_ID} node=$(hostname) gpus=${CUDA_VISIBLE_DEVICES} run=${RUN_NAME} iters=$* pretrained=${PRETRAINED_CKPT}"
++
++failed=()
++for ITER in "$@"; do
++    RESULT="data/logs/checkpoints/${RUN_NAME}_eval_iter${ITER}_${SPLIT}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
++    if [[ -f "${RESULT}" ]]; then echo "$(date -Is) iter ${ITER}: already evaluated, skipping"; continue; fi
++    echo "$(date -Is) iter ${ITER}: start"
++    if ! bash scripts/distill/eval_run.sh "${RUN_NAME}" "${ITER}" "${PRETRAINED_CKPT}"; then
++        echo "$(date -Is) iter ${ITER}: FAILED"; failed+=("${ITER}"); continue
++    fi
++    echo "$(date -Is) iter ${ITER}: done"
++done
++
++echo; echo "| iter | SR | SPL | OSR | NE | OSR-SR |"; echo "|---:|---:|---:|---:|---:|---:|"
++for ITER in "$@"; do
++    RESULT="data/logs/checkpoints/${RUN_NAME}_eval_iter${ITER}_${SPLIT}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
++    [[ -f "${RESULT}" ]] || { echo "| ${ITER} | missing | | | | |"; continue; }
++    python - "${RESULT}" "${ITER}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"| {sys.argv[2]} | {m['success']*100:.2f} | {m['spl']*100:.2f} | {m['oracle_success']*100:.2f} | {m['distance_to_goal']:.2f} | {(m['oracle_success']-m['success'])*100:.2f} |")
++PY
++done
++[[ ${#failed[@]} -eq 0 ]] || { echo "failed iters: ${failed[*]}" >&2; exit 1; }
+-- 
+2.43.0
+
