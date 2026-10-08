@@ -1,0 +1,38 @@
+From 762cccbd6b4e62f789af24def26b8afe0d7707ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 03:01:34 -0600
+Subject: [PATCH] run_dagger_distill_legacy.sh: REPO_ROOT / TORCHRUN
+ overridable
+
+So the distillation can run from a git worktree on WZ (leaving the main
+checkout, where E2 is training, untouched) and from another environment.
+Defaults unchanged.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_distill_legacy.sh | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 1dbcc27..508bffc 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -30,8 +30,12 @@
+ # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT.
+ set -euo pipefail
+ 
+-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+-TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++# Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
++# (its data/ and pretrained/ must point at the main checkout's) and TORCHRUN
++# for another environment.
++REPO_ROOT="${REPO_ROOT:-/home/xukai/code/ETP-R1-snapshot/ETP-R1}"
++TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
++[[ -x "${TORCHRUN}" ]] || { echo "torchrun not found at ${TORCHRUN}; set TORCHRUN" >&2; exit 1; }
+ 
+ MODE="${1:-}"
+ case "${MODE}" in
+-- 
+2.43.0
+
