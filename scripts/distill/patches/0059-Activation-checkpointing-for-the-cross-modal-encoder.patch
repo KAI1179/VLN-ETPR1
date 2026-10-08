@@ -1,0 +1,144 @@
+From 1b1e90af69cbad0f83339c26ebb90877ee231838 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 08:08:10 -0600
+Subject: [PATCH] Activation checkpointing for the cross-modal encoder
+ (MODEL.activation_checkpointing)
+
+The rollout keeps every step's activations until the single backward (node
+embeddings carry gradient across steps), and the dual-branch distillation
+doubles the student's per-step graph; with 4 envs per 24 GiB card that
+overflowed in backward even with the fp16 teacher.  With the switch on, the
+4 x-layers of the cross-modal encoder store only their inputs and are
+recomputed in the backward pass (torch.utils.checkpoint, non-reentrant):
+identical outputs and gradients, dropout masks reproduced from the saved
+RNG state, outer RNG consumption unchanged (so the zero branch's RNG replay
+still matches), autocast re-entered, DDP-safe.  Training only; eval, no_grad
+and the frozen teacher run the plain forward.  Default off; the
+distillation launcher passes ACT_CKPT (default True).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CBCms1itAt1L2773SVd2gS
+---
+ scripts/distill/run_dagger_distill_legacy.sh  |  4 +-
+ vlnce_baselines/config/default.py             |  4 ++
+ .../models/etp_prior_gt/vilmodel_cmt.py       | 40 +++++++++++++++----
+ .../models/etp_prior_gt/vlnbert_init.py       |  3 ++
+ 4 files changed, 43 insertions(+), 8 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 5bac4fe..2fadfae 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -40,7 +40,8 @@
+ # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
+ # dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
+ # DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False);
+-# TEACHER_HALF (True: frozen teacher weights in fp16, ~1.1 GiB per process).
++# TEACHER_HALF (True: frozen teacher weights in fp16, ~1.1 GiB per process);
++# ACT_CKPT (True: recompute the student's x-layers in backward, same gradients).
+ set -euo pipefail
+ 
+ # Defaults are the WZ main checkout; set REPO_ROOT to run from a git worktree
+@@ -248,6 +249,7 @@ COMMAND=(
+     IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
+     IL.gt_teacher_elevation_axis y
+     IL.gt_teacher_half "${TEACHER_HALF:-True}"
++    MODEL.activation_checkpointing "${ACT_CKPT:-True}"
+     IL.gate_teacher_start_position_scale 1.0
+     "${DISTILL_ARGS[@]}"
+ )
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 7d9ed93..a4f9be6 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -204,6 +204,10 @@ _C.MODEL.ablate_depth = False
+ _C.MODEL.ablate_rgb = False
+ _C.MODEL.ablate_instruction = False
+ _C.MODEL.elevation_axis = "y"
++# Recompute the 4 cross-modal (x-layer) blocks in the backward pass instead of
++# storing their activations (training only; identical gradients, dropout masks
++# reproduced).  Trades a little compute for a large part of the rollout graph.
++_C.MODEL.activation_checkpointing = False
+ 
+ _C.MODEL.INSTRUCTION_ENCODER = CN()
+ _C.MODEL.INSTRUCTION_ENCODER.sensor_uuid = "instruction"
+diff --git a/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py b/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
+index 77e46de..f6ca552 100644
+--- a/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
++++ b/vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py
+@@ -2,6 +2,7 @@ import logging
+ import math
+ 
+ import torch
++import torch.utils.checkpoint
+ from torch import nn
+ 
+ from transformers import BertPreTrainedModel
+@@ -498,18 +499,43 @@ class CrossmodalEncoder(nn.Module):
+         self.x_layers = nn.ModuleList(
+             [GraphLXRTXLayer(config) for _ in range(self.num_x_layers)]
+         )
++        # Activation checkpointing: keep only each layer's inputs during the
++        # forward pass and recompute the layer in the backward pass.  The
++        # gradients are identical; the dropout masks are reproduced (the RNG
++        # state is saved and restored), autocast is re-entered, and the
++        # non-reentrant form works under DDP.  Training-only: in eval or
++        # under no_grad the plain forward runs.
++        self.activation_checkpointing = bool(
++            getattr(config, "activation_checkpointing", False)
++        )
+ 
+     def forward(self, txt_embeds, txt_masks, img_embeds, img_masks, graph_sprels=None):
+         extended_txt_masks = extend_neg_masks(txt_masks)
+         extended_img_masks = extend_neg_masks(img_masks)  # (N, 1(H), 1(L_q), L_v)
++        use_ckpt = (
++            self.activation_checkpointing
++            and self.training
++            and torch.is_grad_enabled()
++        )
+         for layer_module in self.x_layers:
+-            txt_embeds, img_embeds = layer_module(
+-                txt_embeds,
+-                extended_txt_masks,
+-                img_embeds,
+-                extended_img_masks,
+-                graph_sprels=graph_sprels,
+-            )
++            if use_ckpt:
++                txt_embeds, img_embeds = torch.utils.checkpoint.checkpoint(
++                    layer_module,
++                    txt_embeds,
++                    extended_txt_masks,
++                    img_embeds,
++                    extended_img_masks,
++                    graph_sprels,
++                    use_reentrant=False,
++                )
++            else:
++                txt_embeds, img_embeds = layer_module(
++                    txt_embeds,
++                    extended_txt_masks,
++                    img_embeds,
++                    extended_img_masks,
++                    graph_sprels=graph_sprels,
++                )
+         return txt_embeds, img_embeds
+ 
+ 
+diff --git a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+index 79b7c97..d4a05f0 100644
+--- a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
++++ b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+@@ -84,6 +84,9 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
+     vis_config.max_txt_task_embeddings = 4
+     vis_config.max_gmap_task_embeddings = 3
+     vis_config.navigation_architecture = config.MAP_ENCODER.architecture
++    vis_config.activation_checkpointing = bool(
++        getattr(config, "activation_checkpointing", False)
++    )
+     vis_config.map_coordinate_fusion = bool(
+         getattr(config.MAP_ENCODER, "enabled", False)
+         and getattr(config.MAP_ENCODER, "coordinate_fusion", False)
+-- 
+2.43.0
+
