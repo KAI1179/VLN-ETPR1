@@ -83,6 +83,8 @@ _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
 _C.IL.is_requeue = False
 # Frozen ground-truth map teacher used only by the DAgger distillation path.
 _C.IL.gt_teacher_enabled = False
+# Keep the GT teacher's map input when the student map branch is disabled.
+_C.IL.gt_teacher_independent_map = False
 _C.IL.distill_weight = 1.0
 _C.IL.distill_temperature = 1.0
 _C.IL.gt_teacher_ckpt = ""

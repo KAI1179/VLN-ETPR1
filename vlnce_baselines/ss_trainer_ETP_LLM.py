@@ -38,7 +38,11 @@ class RLTrainer(PriorGTRLTrainer):
 
     def _finetuning_episodes_allowed(self):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
-        if map_cfg is None or not map_cfg.enabled:
+        independent_teacher = (
+            self.config.IL.gt_teacher_enabled
+            and self.config.IL.gt_teacher_independent_map
+        )
+        if map_cfg is None or (not map_cfg.enabled and not independent_teacher):
             return None
         candidate = CognitiveMapCandidate.parse(
             map_cfg.architecture,

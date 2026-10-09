@@ -406,6 +406,8 @@ class RLTrainer(BaseVLNCETrainer):
 
         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
         freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
+        if config.IL.gt_teacher_independent_map and not map_cfg.enabled:
+            self.policy.net.vln_bert.graph_map_attention.requires_grad_(False)
 
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
@@ -572,6 +574,9 @@ class RLTrainer(BaseVLNCETrainer):
             ), "gt_teacher_enabled=True but teacher configuration is incomplete"
             t_config = self.config.clone()
             t_config.defrost()
+            if self.config.IL.gt_teacher_independent_map:
+                t_config.MODEL.MAP_ENCODER.enabled = True
+                t_config.MODEL.MAP_ENCODER.load_pretrained_map_modules = False
             t_config.MODEL.policy_name = self.config.IL.gt_teacher_policy_name
             t_config.MODEL.MAP_ENCODER.source = "prior_gt"
             t_config.MODEL.MAP_ENCODER.cache_namespace = (
@@ -1953,7 +1958,8 @@ class RLTrainer(BaseVLNCETrainer):
             self._initialize_refiner_state(cognitive_maps)
 
         if self._gtt_on and mode == "train":
-            assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
+            if not self.config.IL.gt_teacher_independent_map:
+                assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
             # Re-load the same episodes from the teacher's immutable GT map cache.
             t_candidate = CognitiveMapCandidate.parse(
                 self.config.MODEL.MAP_ENCODER.architecture, "prior_gt"
@@ -1977,6 +1983,10 @@ class RLTrainer(BaseVLNCETrainer):
                     start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
                 )
             if self._distill_aux_enabled():
+                if cognitive_maps is None:
+                    raise ValueError(
+                        "effect matching / gating require student cognitive-map inputs"
+                    )
                 gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
             del gtt_maps
 
