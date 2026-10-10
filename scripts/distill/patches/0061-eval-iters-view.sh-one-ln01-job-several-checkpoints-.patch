@@ -1,0 +1,135 @@
+From 6ec3cb23b0c6402b036ed6bf20f87ec18e4a8898 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 09:04:43 -0600
+Subject: [PATCH] eval-iters-view.sh: one ln01 job, several checkpoints, chosen
+ map view, one table
+
+Serial 4-GPU evaluation of the checkpoints given on the command line, each
+through eval_run.sh with MODEL.MAP_ENCODER.map_ablation <VIEW> (default
+metadata_only, the deployment view of a dual / gtonly student; VIEWS="metadata_only none"
+adds the map view and the paired SR delta).  Finished (iter, view) pairs are
+skipped, the summary table is printed and saved next to the run.
+PRETRAINED_CKPT defaults to the ln01 copy of the 460000 LLM-grid pretraining.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NwWmCi2jhiho15j8DkAbW4
+---
+ scripts/submit/eval-iters-view.sh | 106 ++++++++++++++++++++++++++++++
+ 1 file changed, 106 insertions(+)
+ create mode 100755 scripts/submit/eval-iters-view.sh
+
+diff --git a/scripts/submit/eval-iters-view.sh b/scripts/submit/eval-iters-view.sh
+new file mode 100755
+index 0000000..66206c6
+--- /dev/null
++++ b/scripts/submit/eval-iters-view.sh
+@@ -0,0 +1,106 @@
++#!/bin/bash
++#SBATCH --job-name=eval-iters-view
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++#
++# ln01 wrapper: evaluate several checkpoints of one run on val_unseen in a
++# chosen map view, one after another, each on all the job's GPUs
++# (eval_run.sh: 4 processes x NUM_ENVS envs, ~15 min per checkpoint), and
++# print one table at the end.  Already-evaluated (iter, view) pairs are
++# skipped, so re-submitting after a failure only runs what is missing.
++#
++# Usage (from the repo root):
++#   sbatch scripts/submit/eval-iters-view.sh RUN_NAME ITER [ITER ...]
++#
++# Env:
++#   VIEWS           space-separated map views, default "metadata_only"
++#                   (the deployment view of a dual / gtonly student: raster
++#                   zeroed, metadata kept).  "none" = the LLM raster as
++#                   trained.  With both, the table adds the paired SR delta
++#                   metadata_only - none per iter.
++#   PRETRAINED_CKPT the pretraining checkpoint the run started from (eval
++#                   mode rebuilds the policy from it, shapes only; the DAgger
++#                   checkpoint overrides every weight).  Default: the ln01
++#                   copy of the 460000 LLM-grid pretraining.
++#   NUM_ENVS, BACK_ALGO, SPLIT, ELEVATION_AXIS: passed through to eval_run.sh.
++#
++# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>_abl_<VIEW>/eval_results/
++set -eo pipefail
++source /data/apps/miniforge3/etc/profile.d/conda.sh
++conda activate etpr1-uv || { echo "conda activate etpr1-uv failed" >&2; exit 2; }
++set -u
++
++[[ $# -ge 2 ]] || { echo "Usage: sbatch scripts/submit/eval-iters-view.sh RUN_NAME ITER [ITER ...]" >&2; exit 2; }
++RUN_NAME="$1"; shift
++cd "${SLURM_SUBMIT_DIR:-$PWD}"
++[[ -f scripts/distill/eval_run.sh ]] || { echo "Submit from the repo root" >&2; exit 2; }
++grep -q 'EXTRA_ARGS' scripts/distill/eval_run.sh || { echo "eval_run.sh has no EXTRA_ARGS support: apply patch 0053 (coord-diag) first" >&2; exit 2; }
++[[ -d "data/logs/checkpoints/${RUN_NAME}" ]] || { echo "Run directory not found: data/logs/checkpoints/${RUN_NAME}" >&2; exit 2; }
++
++PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/home/scze096/run/ETP-R1/pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt}"
++[[ -f "${PRETRAINED_CKPT}" ]] || { echo "PRETRAINED_CKPT not a file: ${PRETRAINED_CKPT}" >&2; exit 2; }
++read -ra VIEW_LIST <<< "${VIEWS:-metadata_only}"
++for v in "${VIEW_LIST[@]}"; do
++    case "${v}" in none|metadata_only|raster_only|no_direction) ;; *) echo "Unknown view: ${v}" >&2; exit 2;; esac
++done
++for ITER in "$@"; do
++    [[ -f "data/logs/checkpoints/${RUN_NAME}/ckpt.iter${ITER}.pth" ]] || { echo "Checkpoint missing: ${RUN_NAME}/ckpt.iter${ITER}.pth" >&2; exit 2; }
++done
++
++export REPO_ROOT="$PWD" PYTHON="$(command -v python)" TORCHRUN="$(command -v torchrun)"
++export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
++SPLIT="${SPLIT:-val_unseen}"
++echo "job=${SLURM_JOB_ID} node=$(hostname) gpus=${CUDA_VISIBLE_DEVICES} run=${RUN_NAME} iters=$* views=${VIEW_LIST[*]} pretrained=${PRETRAINED_CKPT}"
++
++result_json() { echo "data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}_abl_$2/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
++
++failed=()
++for ITER in "$@"; do
++    for VIEW in "${VIEW_LIST[@]}"; do
++        if [[ -f "$(result_json "${ITER}" "${VIEW}")" ]]; then echo "$(date -Is) iter ${ITER} ${VIEW}: already evaluated, skipping"; continue; fi
++        echo "$(date -Is) iter ${ITER} ${VIEW}: start"
++        if ! EXTRA_ARGS="MODEL.MAP_ENCODER.map_ablation ${VIEW}" EVAL_SUFFIX="abl_${VIEW}" \
++             bash scripts/distill/eval_run.sh "${RUN_NAME}" "${ITER}" "${PRETRAINED_CKPT}"; then
++            echo "$(date -Is) iter ${ITER} ${VIEW}: FAILED"; failed+=("${ITER}/${VIEW}"); continue
++        fi
++        echo "$(date -Is) iter ${ITER} ${VIEW}: done"
++    done
++done
++
++echo; echo "## ${RUN_NAME} on ${SPLIT}"
++TABLE="data/logs/checkpoints/${RUN_NAME}/eval_table_${SPLIT}_$(echo "${VIEW_LIST[*]}" | tr ' ' '+').md"
++python - "${RUN_NAME}" "${SPLIT}" "${TABLE}" "${VIEW_LIST[*]}" "$@" <<'PY' | tee "${TABLE}"
++import json, os, sys
++run, split, table, views = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
++iters = sys.argv[5:]
++def load(it, view):
++    p = f"data/logs/checkpoints/{run}_eval_iter{it}_{split}_abl_{view}/eval_results/stats_ckpt_{it}_{split}.json"
++    if not os.path.exists(p):
++        return None
++    m = json.load(open(p))
++    # The episode count is only printed, not saved: take it from the eval log.
++    log = f"data/logs/checkpoints/{run}/eval_iter{it}_{split}_abl_{view}.log"
++    eps = [ln.split()[-1] for ln in open(log, errors="replace") if "Episodes evaluated:" in ln] if os.path.exists(log) else []
++    m["_eps"] = eps[-1] if eps else ""
++    return m
++cols = ["SR", "SPL", "OSR", "NE", "nDTW", "OSR-SR", "eps"]
++head = ["iter", "view"] + cols + (["dSR(meta-none)"] if {"metadata_only", "none"} <= set(views) else [])
++print("| " + " | ".join(head) + " |"); print("|" + "---:|" * len(head))
++for it in iters:
++    rows = {v: load(it, v) for v in views}
++    for v in views:
++        m = rows[v]
++        if m is None:
++            print(f"| {it} | {v} | missing |" + " |" * (len(head) - 3)); continue
++        vals = [f"{m['success']*100:.2f}", f"{m['spl']*100:.2f}", f"{m['oracle_success']*100:.2f}",
++                f"{m['distance_to_goal']:.2f}", f"{m.get('ndtw', float('nan')):.3f}",
++                f"{(m['oracle_success']-m['success'])*100:.2f}", m["_eps"]]
++        line = [it, v] + vals
++        if len(head) > len(cols) + 2:
++            a, b = rows.get("metadata_only"), rows.get("none")
++            line.append(f"{(a['success']-b['success'])*100:+.2f}" if (a and b and v == "metadata_only") else "")
++        print("| " + " | ".join(line) + " |")
++PY
++echo "Table: ${TABLE}"
++[[ ${#failed[@]} -eq 0 ]] || { echo "failed: ${failed[*]}" >&2; exit 1; }
+-- 
+2.43.0
+
