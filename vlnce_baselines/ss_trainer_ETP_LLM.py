@@ -141,6 +141,7 @@ class RLTrainer(PriorGTRLTrainer):
         return aggregated_states
 
     def _cognitive_map_cache_id(self, episode):
-        dataset = self.config.MODEL.task_type.upper()
+        task_type = self.config.MODEL.task_type
+        dataset = "RxR" if task_type.lower() == "rxr" else task_type.upper()
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         return f"{dataset}_{split}_{episode.episode_id}"
