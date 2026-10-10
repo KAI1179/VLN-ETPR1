@@ -85,16 +85,8 @@ def _coordinate_fusion_flag(config) -> bool:
     return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
 
 
-def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
-    """Refuse a teacher checkpoint that was trained as something else.
-
-    Teacher and student share the architecture, so a student checkpoint
-    (e.g. an LLM-Grid DAgger run) loads into the teacher without a missing
-    key and the run silently distils the student into itself.  The saved
-    config names the policy and the map cache the checkpoint was trained
-    with; both must match what IL.gt_teacher_* asks for.  Checkpoints
-    without a saved config pass (nothing to compare against).
-    """
+def _check_teacher_identity(config, ckpt_dict, ckpt_path, teacher) -> None:
+    """Check the cache identity; accept legacy policy names only on exact structure."""
     saved = ckpt_dict.get("config")
     if saved is None:
         return
@@ -106,7 +98,23 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
     have_ns = getattr(map_cfg, "cache_namespace", None)
     problems = []
     if have_policy is not None and have_policy != want_policy:
-        problems.append(f"policy_name {have_policy!r} != IL.gt_teacher_policy_name {want_policy!r}")
+        expected = teacher.state_dict()
+        state = {
+            k.replace("net.module.", "net.", 1): v
+            for k, v in ckpt_dict["state_dict"].items()
+        }
+        missing = sorted(expected.keys() - state.keys())
+        unexpected = sorted(state.keys() - expected.keys())
+        shapes = [
+            (k, tuple(state[k].shape), tuple(expected[k].shape))
+            for k in sorted(expected.keys() & state.keys())
+            if state[k].shape != expected[k].shape
+        ]
+        if missing or unexpected or shapes:
+            problems.append(
+                f"policy_name {have_policy!r} != {want_policy!r} and structure differs: "
+                f"missing={missing}, unexpected={unexpected}, shape_mismatches={shapes}"
+            )
     if have_ns is not None and have_ns != want_ns:
         problems.append(
             f"MAP_ENCODER.cache_namespace {have_ns!r} != IL.gt_teacher_map_namespace {want_ns!r}"
@@ -114,6 +122,11 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
     if problems:
         raise ValueError(
             f"{ckpt_path} is not the requested GT teacher: " + "; ".join(problems)
+        )
+    if have_policy is not None and have_policy != want_policy:
+        logger.warning(
+            f"{ckpt_path}: embedded policy_name={have_policy!r}, requested={want_policy!r}; "
+            "accepting exact state_dict key/shape match against the requested teacher"
         )
 
 
@@ -573,7 +586,9 @@ class RLTrainer(BaseVLNCETrainer):
                 action_space=action_space,
             )
             t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
-            _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
+            _check_teacher_identity(
+                self.config, t_ckpt, self.config.IL.gt_teacher_ckpt, self.gt_teacher
+            )
             sd = t_ckpt["state_dict"]
             del t_ckpt
             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}

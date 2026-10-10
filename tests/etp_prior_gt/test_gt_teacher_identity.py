@@ -8,6 +8,7 @@ with ast instead of being imported.
 """
 
 import ast
+import logging
 import types
 from pathlib import Path
 
@@ -19,9 +20,21 @@ _FN = next(
     n for n in ast.parse(SRC).body
     if isinstance(n, ast.FunctionDef) and n.name == "_check_teacher_identity"
 )
-_NS = {}
+_NS = {"logger": logging.getLogger(__name__)}
 exec(compile(ast.Module([_FN], type_ignores=[]), "ss_trainer_ETP_PriorGT.py", "exec"), _NS)  # noqa: S102
 check = _NS["_check_teacher_identity"]
+
+
+class Teacher:
+    def state_dict(self):
+        return {"net.weight": types.SimpleNamespace(shape=(2, 3))}
+
+
+_check = check
+
+
+def check(config, checkpoint, path):
+    _check(config, checkpoint, path, Teacher())
 
 GT = ("PriorGTTry5Policy", "gt.legacy.r1p5.direction5.v1")
 
@@ -59,3 +72,31 @@ def test_other_gt_namespace_is_rejected():
 
 def test_checkpoint_without_config_passes():
     check(_cfg(*GT), {"state_dict": {}}, "t.pth")
+
+
+def test_legacy_name_exact_structure_passes_with_warning(caplog):
+    checkpoint = _ckpt("PriorGTPolicy", GT[1])
+    checkpoint["state_dict"] = {"net.module.weight": types.SimpleNamespace(shape=(2, 3))}
+    check(_cfg(*GT), checkpoint, "legacy.pth")
+    assert "PriorGTPolicy" in caplog.text
+    assert "PriorGTTry5Policy" in caplog.text
+
+
+@pytest.mark.parametrize("state", [
+    {},
+    {"net.weight": types.SimpleNamespace(shape=(3, 2))},
+    {"net.weight": types.SimpleNamespace(shape=(2, 3)),
+     "net.extra": types.SimpleNamespace(shape=(1,))},
+])
+def test_legacy_name_structure_mismatch_is_rejected(state):
+    checkpoint = _ckpt("PriorGTPolicy", GT[1])
+    checkpoint["state_dict"] = state
+    with pytest.raises(ValueError, match="structure differs"):
+        check(_cfg(*GT), checkpoint, "legacy.pth")
+
+
+def test_legacy_matching_structure_does_not_bypass_namespace():
+    checkpoint = _ckpt("PriorGTPolicy", "wrong-cache")
+    checkpoint["state_dict"] = Teacher().state_dict()
+    with pytest.raises(ValueError, match="cache_namespace"):
+        check(_cfg(*GT), checkpoint, "legacy.pth")
