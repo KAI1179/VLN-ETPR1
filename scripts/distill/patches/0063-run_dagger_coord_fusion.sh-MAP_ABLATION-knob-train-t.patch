@@ -1,6 +1,6 @@
-From 3400d8c53e87544c2985b093757fe87173e140de Mon Sep 17 00:00:00 2001
+From 673f278dfb7d1f4822480c1592d9961b60239f0d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sun, 11 Oct 2026 08:29:53 -0600
+Date: Sun, 11 Oct 2026 08:37:17 -0600
 Subject: [PATCH] run_dagger_coord_fusion.sh: MAP_ABLATION knob (train-time map
  input ablations)
 
@@ -15,7 +15,8 @@ First use: try5 CE-only ablation of the LLM direction vectors
 (MAP_ABLATION=no_direction COORD=False ... llm) - raster and start pose
 kept, the 5 LLM-predicted direction vectors zeroed throughout training.
 No trainer or config change: no_direction already exists in
-ss_trainer_ETP_PriorGT.py.
+ss_trainer_ETP_PriorGT.py. Generated against the launcher at patch 0030
+(the WZ tree); on a tree with 0056 the elevation-axis hunk needs -U2.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SR8CphP4Ry2wrhgxBHNCQs
@@ -24,10 +25,10 @@ Claude-Session: https://claude.ai/code/session_01SR8CphP4Ry2wrhgxBHNCQs
  1 file changed, 15 insertions(+), 2 deletions(-)
 
 diff --git a/scripts/distill/run_dagger_coord_fusion.sh b/scripts/distill/run_dagger_coord_fusion.sh
-index 3fa755c..355c650 100755
+index aaa7d33..a19f24e 100755
 --- a/scripts/distill/run_dagger_coord_fusion.sh
 +++ b/scripts/distill/run_dagger_coord_fusion.sh
-@@ -33,5 +33,6 @@
+@@ -19,5 +19,6 @@
  #      the historical run used 4 cards x 4 envs), NUM_ENVS (4), ITERS (30000),
  #      MASTER_PORT (29500; use distinct ports for concurrent runs),
 -#      PRETRAINED_CKPT (arm default), RUN_NAME (dagger_coordfusion_<arm>).
@@ -35,9 +36,9 @@ index 3fa755c..355c650 100755
 +#      MAP_ABLATION (none; see below).
  # Checkpoint every CKPT_INTERVAL iters (400).
  # Resume: re-running continues from the latest ckpt.iter*.pth in the run dir.
-@@ -59,4 +60,14 @@ case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exi
- ELEVATION_AXIS="${ELEVATION_AXIS:-y}"
- case "${ELEVATION_AXIS}" in y|z) ;; *) echo "ELEVATION_AXIS must be y or z" >&2; exit 2 ;; esac
+@@ -40,4 +41,14 @@ fi
+ COORD="${COORD:-True}"
+ case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
 +# MAP_ABLATION applies MODEL.MAP_ENCODER.map_ablation to the whole DAgger run
 +# (the trainer zeroes the chosen map inputs in _prepare_map_inputs for every
 +# step, training and rollout alike) and is written to eval_args.txt, so the
@@ -49,24 +50,24 @@ index 3fa755c..355c650 100755
 +MAP_ABLATION_ARGS=()
 +[[ "${MAP_ABLATION}" == "none" ]] || MAP_ABLATION_ARGS=(MODEL.MAP_ENCODER.map_ablation "${MAP_ABLATION}")
  
- LOAD_MAP_MODULES=False
-@@ -112,4 +123,5 @@ MODEL_ARGS=(
+ case "${ARM}" in
+@@ -74,4 +85,5 @@ MODEL_ARGS=(
      MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
-     MODEL.elevation_axis "${ELEVATION_AXIS}"
+     MODEL.elevation_axis y
 +    "${MAP_ABLATION_ARGS[@]}"
      MODEL.pretrained_path "${PRETRAINED_CKPT}"
  )
-@@ -138,4 +150,5 @@ if [[ -z "${RUN_NAME:-}" ]]; then
+@@ -90,4 +102,5 @@ if [[ -z "${RUN_NAME:-}" ]]; then
+     RUN_NAME="dagger_coordfusion_${ARM}"
      [[ "${COORD}" == "False" ]] && RUN_NAME="dagger_nocoord_${ARM}"
-     [[ "${ELEVATION_AXIS}" == "z" ]] && RUN_NAME="${RUN_NAME}_dz"
 +    [[ "${MAP_ABLATION}" == "none" ]] || RUN_NAME="${RUN_NAME}_${MAP_ABLATION}"
  fi
  RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
-@@ -193,5 +206,5 @@ COMMAND=(
+@@ -143,5 +156,5 @@ COMMAND=(
      echo "launch_time=$(date -Is)"
      echo "git_commit=$(git rev-parse HEAD)"
--    echo "arm=${ARM} coordinate_fusion=${COORD} elevation_axis=${ELEVATION_AXIS}"
-+    echo "arm=${ARM} coordinate_fusion=${COORD} elevation_axis=${ELEVATION_AXIS} map_ablation=${MAP_ABLATION}"
+-    echo "arm=${ARM} coordinate_fusion=${COORD}"
++    echo "arm=${ARM} coordinate_fusion=${COORD} map_ablation=${MAP_ABLATION}"
      echo "resume_from=${LATEST_CKPT:-none}"
      echo "pretrained=${PRETRAINED_CKPT}"
 -- 
