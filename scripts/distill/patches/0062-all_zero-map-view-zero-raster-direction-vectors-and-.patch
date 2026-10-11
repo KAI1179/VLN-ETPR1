@@ -1,0 +1,148 @@
+From af78a636fb4a37515f35c501b544a62d4e48ba65 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 19:54:22 -0600
+Subject: [PATCH] all_zero map view: zero raster, direction vectors and start
+ metadata (clean KD ablation)
+
+A student whose whole LLM cache is zeroed -- raster, the five route
+direction vectors, start position and start direction vector -- while every
+module (map encoder, fusion, metadata path) stays in place, so the parameter
+set is identical to the map students and only the input differs.
+
+- MODEL.MAP_ENCODER.map_ablation gains the value all_zero (evaluation).
+- IL.dual_zero_view (metadata_only | all_zero, default metadata_only) picks
+  what the dual zero branch sees at training time; the launcher exposes it
+  as DUAL_ZERO_VIEW.  Evaluate with the same view.
+- scripts/submit/eval-iters-view.sh accepts VIEWS=all_zero.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NwWmCi2jhiho15j8DkAbW4
+---
+ scripts/distill/run_dagger_distill_legacy.sh |  5 ++++-
+ scripts/submit/eval-iters-view.sh            |  5 +++--
+ tests/etp_prior_gt/test_dual_branch.py       |  1 +
+ vlnce_baselines/config/default.py            |  6 +++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py    | 23 +++++++++++++++-----
+ 5 files changed, 32 insertions(+), 8 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index bf805cc..c4bea0e 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -47,5 +47,6 @@
+ # DISTILL_WEIGHT (1.0), CKPT_INTERVAL (1000), CUDA_VISIBLE_DEVICES, MASTER_PORT;
+ # dual only: DUAL_LLM_WEIGHT (1.0), DUAL_GT_ON_MAP (True), DUAL_GT_ON_ZERO (True),
+-# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), STOP_FACTORIZED (False).
++# DUAL_CE_ON_MAP (True), DUAL_ROLLOUT (zero), DUAL_ZERO_VIEW (metadata_only|all_zero),
++# STOP_FACTORIZED (False).
+ set -euo pipefail
+ 
+@@ -119,4 +120,5 @@ DUAL_GT_ON_ZERO="${DUAL_GT_ON_ZERO:-True}"
+ DUAL_CE_ON_MAP="${DUAL_CE_ON_MAP:-True}"
+ DUAL_ROLLOUT="${DUAL_ROLLOUT:-zero}"
++DUAL_ZERO_VIEW="${DUAL_ZERO_VIEW:-metadata_only}"
+ STOP_FACTORIZED="${STOP_FACTORIZED:-False}"
+ 
+@@ -170,4 +172,5 @@ case "${MODE}" in
+             IL.dual_ce_on_map_branch "${DUAL_CE_ON_MAP}"
+             IL.dual_rollout_branch "${DUAL_ROLLOUT}"
++            IL.dual_zero_view "${DUAL_ZERO_VIEW}"
+             IL.distill_stop_factorized "${STOP_FACTORIZED}"
+             IL.distill_stop_weight "${STOP_WEIGHT}"
+diff --git a/scripts/submit/eval-iters-view.sh b/scripts/submit/eval-iters-view.sh
+index 66206c6..69ee577 100755
+--- a/scripts/submit/eval-iters-view.sh
++++ b/scripts/submit/eval-iters-view.sh
+@@ -15,5 +15,6 @@
+ #
+ # Env:
+-#   VIEWS           space-separated map views, default "metadata_only"
++#   VIEWS           space-separated map views, default "metadata_only"; all_zero
++#                   = whole LLM cache zeroed (students trained with DUAL_ZERO_VIEW=all_zero)
+ #                   (the deployment view of a dual / gtonly student: raster
+ #                   zeroed, metadata kept).  "none" = the LLM raster as
+@@ -43,5 +44,5 @@ PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/home/scze096/run/ETP-R1/pretrained/r2r
+ read -ra VIEW_LIST <<< "${VIEWS:-metadata_only}"
+ for v in "${VIEW_LIST[@]}"; do
+-    case "${v}" in none|metadata_only|raster_only|no_direction) ;; *) echo "Unknown view: ${v}" >&2; exit 2;; esac
++    case "${v}" in none|metadata_only|raster_only|no_direction|all_zero) ;; *) echo "Unknown view: ${v}" >&2; exit 2;; esac
+ done
+ for ITER in "$@"; do
+diff --git a/tests/etp_prior_gt/test_dual_branch.py b/tests/etp_prior_gt/test_dual_branch.py
+index 10ea094..495162e 100644
+--- a/tests/etp_prior_gt/test_dual_branch.py
++++ b/tests/etp_prior_gt/test_dual_branch.py
+@@ -72,3 +72,4 @@ def test_dual_config_defaults():
+         "dual_gt_kl_on_zero_branch": True,
+         "dual_rollout_branch": "zero",
++        "dual_zero_view": "metadata_only",
+     }
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index a8ae608..512d93f 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -133,4 +133,9 @@ _C.IL.dual_gt_kl_on_map_branch = True
+ _C.IL.dual_gt_kl_on_zero_branch = True
+ _C.IL.dual_rollout_branch = "zero"
++# What the zero branch sees: metadata_only (raster zeroed; start position,
++# start direction and the five route direction vectors kept) or all_zero (the
++# whole LLM cache zeroed -- the clean "no map input, same parameters" student).
++# Evaluate with the same MODEL.MAP_ENCODER.map_ablation value.
++_C.IL.dual_zero_view = "metadata_only"
+ # it True, start training from the saved epoch
+ # -----------------------------------------------------------------------------
+@@ -280,4 +285,5 @@ _C.MODEL.MAP_ENCODER.reinit_spatial_tokenizer = False
+ #   none | metadata_only (zero raster) | raster_only (zero all metadata)
+ #   | no_direction (zero the five route direction vectors only)
++#   | all_zero (zero raster, direction vectors, start position and direction)
+ _C.MODEL.MAP_ENCODER.map_ablation = "none"
+ # Multiply start_position before the map encoder (online GT maps store grid
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index ec308f3..d6e8e45 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1362,8 +1362,13 @@ class RLTrainer(BaseVLNCETrainer):
+         elif ablation == "no_direction":
+             map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
++        elif ablation == "all_zero":
++            cognitive_crops = torch.zeros_like(cognitive_crops)
++            map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
++            start_direction_vectors = torch.zeros_like(start_direction_vectors)
++            start_positions = torch.zeros_like(start_positions)
+         elif ablation != "none":
+             raise ValueError(
+                 "MODEL.MAP_ENCODER.map_ablation must be one of none, "
+-                f"metadata_only, raster_only, no_direction; got {ablation!r}"
++                f"metadata_only, raster_only, no_direction, all_zero; got {ablation!r}"
+             )
+         map_tokens, map_token_masks = self.policy.net(
+@@ -1380,14 +1385,22 @@ class RLTrainer(BaseVLNCETrainer):
+             # Dual-branch distillation: the deployment view of the same
+             # policy, raster zeroed, metadata kept, every module in place
+-            # (identical to evaluation with map_ablation metadata_only).
++            # (identical to evaluation with map_ablation metadata_only), or
++            # the whole cache zeroed (IL.dual_zero_view all_zero = evaluation
++            # with map_ablation all_zero).
+             # Computed with gradient: the metadata path and the fusion are
+             # trained through this branch as well.
++            zero_view = self.config.IL.dual_zero_view
++            if zero_view not in ("metadata_only", "all_zero"):
++                raise ValueError(
++                    f"IL.dual_zero_view must be metadata_only or all_zero, got {zero_view!r}"
++                )
++            keep = zero_view == "metadata_only"
+             nav_inputs["map_tokens_zero"], nav_inputs["map_token_masks_zero"] = (
+                 self.policy.net(
+                     mode="map_encoding",
+                     cognitive_crops=torch.zeros_like(cognitive_crops),
+-                    trajectory_keypoints=map_trajectory_metadata,
+-                    start_direction_vectors=start_direction_vectors,
+-                    start_positions=start_positions,
++                    trajectory_keypoints=map_trajectory_metadata if keep else torch.zeros_like(map_trajectory_metadata),
++                    start_direction_vectors=start_direction_vectors if keep else torch.zeros_like(start_direction_vectors),
++                    start_positions=start_positions if keep else torch.zeros_like(start_positions),
+                 )
+             )
+-- 
+2.43.0
+
