@@ -18,7 +18,8 @@
 #      control, in its own directory), CUDA_VISIBLE_DEVICES (all visible;
 #      the historical run used 4 cards x 4 envs), NUM_ENVS (4), ITERS (30000),
 #      MASTER_PORT (29500; use distinct ports for concurrent runs),
-#      PRETRAINED_CKPT (arm default), RUN_NAME (dagger_coordfusion_<arm>).
+#      PRETRAINED_CKPT (arm default), RUN_NAME (dagger_coordfusion_<arm>),
+#      MAP_ABLATION (none; see below).
 # Checkpoint every CKPT_INTERVAL iters (400).
 # Resume: re-running continues from the latest ckpt.iter*.pth in the run dir.
 # The run dir also gets eval_args.txt, which eval_run.sh / eval_iters.sh /
@@ -39,6 +40,16 @@ elif [[ $# -ne 1 ]]; then
 fi
 COORD="${COORD:-True}"
 case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
+# MAP_ABLATION applies MODEL.MAP_ENCODER.map_ablation to the whole DAgger run
+# (the trainer zeroes the chosen map inputs in _prepare_map_inputs for every
+# step, training and rollout alike) and is written to eval_args.txt, so the
+# run's checkpoints are evaluated under the same ablation. Values: none
+# (default), no_direction (zero the 5 direction vectors, keep raster and
+# start pose), metadata_only, raster_only, and any later value the trainer
+# accepts. The run directory gets a _<ablation> suffix.
+MAP_ABLATION="${MAP_ABLATION:-none}"
+MAP_ABLATION_ARGS=()
+[[ "${MAP_ABLATION}" == "none" ]] || MAP_ABLATION_ARGS=(MODEL.MAP_ENCODER.map_ablation "${MAP_ABLATION}")
 
 case "${ARM}" in
     gt)
@@ -73,6 +84,7 @@ MODEL_ARGS=(
     MODEL.MAP_ENCODER.load_pretrained_map_modules False
     MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
     MODEL.elevation_axis y
+    "${MAP_ABLATION_ARGS[@]}"
     MODEL.pretrained_path "${PRETRAINED_CKPT}"
 )
 
@@ -89,6 +101,7 @@ ITERS="${ITERS:-30000}"
 if [[ -z "${RUN_NAME:-}" ]]; then
     RUN_NAME="dagger_coordfusion_${ARM}"
     [[ "${COORD}" == "False" ]] && RUN_NAME="dagger_nocoord_${ARM}"
+    [[ "${MAP_ABLATION}" == "none" ]] || RUN_NAME="${RUN_NAME}_${MAP_ABLATION}"
 fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -142,7 +155,7 @@ COMMAND=(
 {
     echo "launch_time=$(date -Is)"
     echo "git_commit=$(git rev-parse HEAD)"
-    echo "arm=${ARM} coordinate_fusion=${COORD}"
+    echo "arm=${ARM} coordinate_fusion=${COORD} map_ablation=${MAP_ABLATION}"
     echo "resume_from=${LATEST_CKPT:-none}"
     echo "pretrained=${PRETRAINED_CKPT}"
     echo "iters=${ITERS}"
