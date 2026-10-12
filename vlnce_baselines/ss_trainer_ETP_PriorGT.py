@@ -1096,6 +1096,10 @@ class RLTrainer(BaseVLNCETrainer):
                 print("skipping -- evaluation exists.")
                 return
 
+        if self.config.EVAL.d7d_logging:
+            from scripts.eval_d7.eval_logging import EvalDecisionLog
+
+            self._d7d_log = EvalDecisionLog()
         if self.config.EVAL.fast_eval:
             episodes_allowed = self.traj[::5]
         elif self.config.EVAL.EPISODE_ID:
@@ -1719,6 +1723,7 @@ class RLTrainer(BaseVLNCETrainer):
         num_episodes = len(self.stat_eps)
         local_metric_keys = sorted({
             key for episode_stats in self.stat_eps.values() for key in episode_stats
+            if key != "termination_reason"
         })
         gathered_metric_keys: List[List[str]] = [[] for _ in range(self.world_size)]
         if self.world_size > 1:
@@ -1779,6 +1784,9 @@ class RLTrainer(BaseVLNCETrainer):
         )
         with open(fname, "w") as f:
             json.dump(self.stat_eps, f, indent=2)
+        if self.config.EVAL.d7d_logging:
+            self._d7d_log.write(self.config.RESULTS_DIR, checkpoint_index, split,
+                                self.local_rank, self.world_size)
 
         if self.world_size > 1:
             distr.barrier()
@@ -2299,6 +2307,13 @@ class RLTrainer(BaseVLNCETrainer):
                 raise NotImplementedError
             cpu_a_t = a_t.cpu().numpy()
 
+            if mode == "eval" and self.config.EVAL.d7d_logging:
+                self._d7d_log.decision(
+                    self.envs.current_episodes(), stepk, cur_pos, self.gmaps,
+                    cur_vp, prev_vp, nav_inputs["gmap_vp_ids"], cpu_a_t,
+                    no_vp_left, self.max_len,
+                )
+
             # make equiv action
             env_actions = []
             use_tryout = (
@@ -2432,6 +2447,8 @@ class RLTrainer(BaseVLNCETrainer):
                     metric["sdtw"] = metric["ndtw"] * metric["success"]
                     metric["ghost_cnt"] = self.gmaps[i].ghost_cnt
                     metric["high_level_step"] = stepk
+                    if self.config.EVAL.d7d_logging:
+                        metric["termination_reason"] = self._d7d_log.termination(ep_id)
                     if ep_id in self.stat_eps:
                         print("ERROR!!!!!!!!!! ", ep_id)
                     self.stat_eps[ep_id] = metric
