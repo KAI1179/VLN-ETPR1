@@ -237,6 +237,14 @@ def main():
                     arrays['baseline'], arrays['ours'], subset, features, args.draws)
             analysis_e[str(threshold)][subset_name] = group
     transition = matrix(cats['baseline'], cats['ours'], executed, 'ABCDE')
+    legacy_path = REPO / f'reports/d7b_earlystop_{"kd_full27000" if args.ours == "kd" else "try5_28000"}_control.json'
+    legacy = json.loads(legacy_path.read_text())['per_episode']
+    if set(legacy) != set(ids):
+        raise ValueError('Previous D7-b episode IDs differ from new evaluations')
+    historical_confusion = {
+        name: matrix({eid: legacy[eid][name]['category'] for eid in ids}, cats[name], ids, 'ABCDEU')
+        for name in rows
+    }
     distributions = {}
     for name, other in (('baseline', 'ours'), ('ours', 'baseline')):
         for positive in (True, False):
@@ -257,17 +265,23 @@ def main():
                         'divergence': 'first non-STOP selected target > threshold metres from all GT reference_path nodes; 3D Euclidean',
                         'branch': 'nearest original included connectivity node, <=3m; >=2 included unobstructed off-GT neighbors excluding logged incoming_position (nearest graph node), or previous distinct current node when incoming_position is null',
                         'coordinate': '[pose[3], pose[11]-height, -pose[7]]; prior/etp_r1/__init__.py ConnectivityEntry.position',
+                        'termination_priority': 'budget > no_candidate > stop; all simultaneous flags remain in trajectories',
+                        'proxy_confusion': 'same new evaluation: zero-based final step +1=15 maps to D, earlier maps to C',
+                        'historical_confusion': 'previous saved D7-b proxy categories vs new true categories; includes rerun/rank-induced behavior differences, not pure proxy error',
                         'bootstrap': f'{args.draws} scene-cluster draws seed0; step mean difference uses matched finite episodes; branch conditional proportions and step quantiles use separate model denominators under shared scene resampling; never proportion over all subgroup episodes'},
         'runs': {name: {**{key: value for key, value in run.items() if key != 'rows'},
                         'trajectory_files': trajectory_files[name]} for name, run in runs.items()},
         'comparison': paired(rows['baseline'], rows['ours'], ids, features, args.draws),
         'termination_transition': transition, 'unrun_ids': unrun,
         'proxy_confusion': {name: matrix(proxy[name], cats[name], [eid for eid in ids if cats[name][eid] != 'U'], 'ABCDE') for name in rows},
+        'historical_proxy_confusion': historical_confusion,
+        'simultaneous_budget_stop': {name: sum(steps[-1]['budget_reached'] and steps[-1]['stop_requested'] for steps in data.values())
+                                     for name, data in trajectories.items()},
         'rescue': [{'category': label, 'n': sum(transition[j]), 'to_A': transition[j][0],
                     'rate': transition[j][0]/sum(transition[j]) if sum(transition[j]) else None} for j, label in enumerate('ABCDE')],
         'C_distributions': distributions, 'mcnemar': tests, 'analysis_E': analysis_e,
         'rank_alignment_baseline': {'old_SR': old_sr, 'new_SR': new_sr, 'difference_pp': new_sr-old_sr,
-                                    'over_0_3pp': abs(new_sr-old_sr) > .3},
+                                    'over_0_3pp': bool(abs(new_sr-old_sr) > .3)},
         'per_episode': {eid: {'baseline_category': cats['baseline'][eid], 'ours_category': cats['ours'][eid],
                             'baseline': rows['baseline'][eid], 'ours': rows['ours'][eid]} for eid in ids},
         'per_episode_divergence': per_divergence,
@@ -284,6 +298,8 @@ def main():
     add_table('Paired metrics', ['Metric', 'Baseline', 'Ours', 'Difference', '95% CI'],
               [[key, value['left'], value['right'], value['difference'], value['ci']]
                for key, value in result['comparison']['metrics'].items()])
+    add_table('Baseline rank-aligned comparison', ['Evaluation', 'Rank count', 'SR'],
+              [['Previous baseline control', 4, old_sr], ['Rank-aligned baseline control', 4, new_sr]])
     add_table('Stratified SR', ['Stratum', 'n', 'Baseline', 'Ours', 'Difference pp', '95% CI'],
               [[key, value['n'], value.get('left_sr'), value.get('right_sr'), value.get('difference_pp'), value.get('ci')]
                for key, value in result['comparison']['strata'].items()])
@@ -293,6 +309,10 @@ def main():
     for name, confusion in result['proxy_confusion'].items():
         add_table(name+' proxy → true', ['Proxy → true', *'ABCDE'],
                   [[label, *row] for label, row in zip('ABCDE', confusion)])
+    for name, confusion in historical_confusion.items():
+        add_table(name+' historical eval proxy → new eval true (includes rerun differences)',
+                  ['Old proxy → new true', *'ABCDEU'],
+                  [[label, *row] for label, row in zip('ABCDEU', confusion)])
     add_table('Rescue', ['Category', 'n', 'To A', 'Rate'],
               [[row['category'], row['n'], row['to_A'], row['rate']] for row in result['rescue']])
     add_table('Loss', ['Ours category', 'Baseline A → ours'],
@@ -302,7 +322,7 @@ def main():
                   [[subset, name, group[name]['n'], group[name]['deviated_n'], group[name]['first_step_P25_P50_P75'],
                     group[name]['branch_given_deviation'], group[name]['never_deviated']]
                    for subset, group in groups.items() for name in ('baseline', 'ours')])
-    for key in ('rank_alignment_baseline', 'unrun_ids',
+    for key in ('rank_alignment_baseline', 'unrun_ids', 'simultaneous_budget_stop',
                 'proxy_confusion', 'rescue', 'C_distributions', 'mcnemar', 'analysis_E'):
         lines += ['## '+key, '', '```json', json.dumps(result[key], ensure_ascii=False, indent=2), '```', '']
     output.with_suffix('.md').write_text('\n'.join(lines))
