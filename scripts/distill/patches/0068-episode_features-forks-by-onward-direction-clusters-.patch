@@ -1,0 +1,186 @@
+From bc60e2ea533bf4bf402dc0e806362f6efcaf0cd6 Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Mon, 12 Oct 2026 22:16:11 -0600
+Subject: [PATCH] episode_features: forks by onward direction clusters (edge <=
+ 3.5 m, 60 deg), decoys exclude environmental categories, radius 3 m,
+ n_decoy_categories
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ scripts/analysis/episode_features.py | 80 ++++++++++++++++++++--------
+ scripts/analysis/paired_report.py    |  2 +-
+ 2 files changed, 59 insertions(+), 23 deletions(-)
+
+diff --git a/scripts/analysis/episode_features.py b/scripts/analysis/episode_features.py
+index 557febb..a326581 100644
+--- a/scripts/analysis/episode_features.py
++++ b/scripts/analysis/episode_features.py
+@@ -11,9 +11,10 @@ For R2R <split> the script writes <out> (JSON: episode id -> features):
+                     the MP3D region boxes of the level the path starts on
+   n_rooms           distinct regions the GT path passes through
+   n_forks_graph     decision points along the GT path on the MP3D connectivity
+-                    graph: visited nodes with >= 2 unobstructed onward
+-                    neighbours (the one we came from excluded)
+-  n_forks3_graph    the same with >= 3 onward neighbours
++                    graph: visited nodes whose onward unobstructed neighbours
++                    (within --fork-edge-max, the node we came from excluded)
++                    span >= 2 directions more than --fork-angle apart
++  n_forks3_graph    the same with >= 3 directions
+   n_landmarks       object categories the instruction mentions (prior's
+                     extract_categories: name match + CLIP/spacy nouns)
+   n_room_words      region categories the instruction mentions
+@@ -22,6 +23,9 @@ For R2R <split> the script writes <out> (JSON: episode id -> features):
+                     --decoy-radius of the GT path
+   n_decoys          those instances beyond the first per category, i.e. same-
+                     category objects that could be mistaken for the landmark
++                    (void/structure/other/free-space categories excluded)
++  n_decoy_categories
++                    mentioned categories with >= 2 instances near the path
+   n_spatial_words   directional / ordinal words in the instruction
+   llm_region_hit    fraction of GT points on a cell the episode's LLM map
+                     labels with any region (check_map_frame's number), or null
+@@ -73,10 +77,14 @@ SPATIAL_WORDS = re.compile(
+ class Args(Tap):
+     split: str = "val_unseen"
+     out: str = "data/logs/analysis/features_val_unseen.json"
+-    decoy_radius: float = 5.0
++    decoy_radius: float = 3.0
+     """Metres from the GT path within which a same-category object counts."""
+     snap_radius: float = 1.5
+     """Metres: a GT point is on a connectivity node if within this distance."""
++    fork_edge_max: float = 3.5
++    """Metres: onward connectivity edges longer than this do not count as options."""
++    fork_angle: float = 60.0
++    """Degrees: onward edges closer than this in bearing are one option."""
+     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+     meters_per_unit: float = 1.0
+     """MAP_ENCODER.start_position_meters_per_unit of the LLM cache."""
+@@ -144,7 +152,21 @@ def room_stats(level, level_points) -> Tuple[int, int]:
+     return changes, len(set(seq))
+ 
+ 
+-def fork_stats(scene_id: str, gt_points, snap_radius: float) -> Tuple[int, int]:
++def _direction_clusters(bearings: Sequence[float], angle_deg: float) -> int:
++    thr = math.radians(angle_deg)
++    clusters: List[float] = []
++    for b in bearings:
++        if all(abs((b - c + math.pi) % (2 * math.pi) - math.pi) > thr for c in clusters):
++            clusters.append(b)
++    return len(clusters)
++
++
++def fork_stats(scene_id: str, gt_points, snap_radius: float, edge_max: float, angle_deg: float) -> Tuple[int, int]:
++    """Decision points along the GT path on the MP3D connectivity graph: a
++    visited node whose onward unobstructed neighbours (within edge_max, the
++    node we came from excluded) span >= 2 (>= 3) directions more than
++    angle_deg apart.  Plain neighbour counts are useless here: connectivity
++    graphs link every mutually visible node in a room."""
+     try:
+         conn = ConnectivityEntry.map_for(scene_id)
+     except FileNotFoundError:
+@@ -161,21 +183,32 @@ def fork_stats(scene_id: str, gt_points, snap_radius: float) -> Tuple[int, int]:
+     forks = forks3 = 0
+     for i, node in enumerate(visited[:-1]):
+         prev = visited[i - 1] if i > 0 else None
+-        onward = [
+-            all_ids[j]
+-            for j, ok in enumerate(conn[node].unobstructed)
+-            if ok and j < len(all_ids) and conn[all_ids[j]].included
+-            and all_ids[j] != node and all_ids[j] != prev
+-        ]
+-        forks += len(onward) >= 2
+-        forks3 += len(onward) >= 3
++        here = np.asarray(conn[node].position, dtype=float)
++        bearings = []
++        for j, ok in enumerate(conn[node].unobstructed):
++            if not ok or j >= len(all_ids):
++                continue
++            k = all_ids[j]
++            if k == node or k == prev or not conn[k].included:
++                continue
++            d = np.asarray(conn[k].position, dtype=float) - here
++            if math.hypot(d[0], d[2]) <= edge_max:
++                bearings.append(math.atan2(d[2], d[0]))
++        n = _direction_clusters(bearings, angle_deg)
++        forks += n >= 2
++        forks3 += n >= 3
+     return forks, forks3
+ 
+ 
+-def landmark_stats(level, level_points, mentioned_objects, decoy_radius: float) -> Tuple[int, int]:
+-    instances = decoys = 0
++SKIP_OBJECT_CATEGORIES = {0, 15, 16, 17}  # void, structure, other, free-space
++
++
++def landmark_stats(level, level_points, mentioned_objects, decoy_radius: float) -> Tuple[int, int, int]:
++    """(instances, decoys, decoy categories) over the mentioned object
++    categories, counting instances within decoy_radius of the GT path."""
++    instances = decoys = decoy_cats = 0
+     for cat in mentioned_objects:
+-        if cat >= len(level.objects):
++        if cat in SKIP_OBJECT_CATEGORIES or cat >= len(level.objects):
+             continue
+         near = [
+             box
+@@ -184,7 +217,8 @@ def landmark_stats(level, level_points, mentioned_objects, decoy_radius: float)
+         ]
+         instances += len(near)
+         decoys += max(0, len(near) - 1)
+-    return instances, decoys
++        decoy_cats += len(near) >= 2
++    return instances, decoys, decoy_cats
+ 
+ 
+ def llm_region_hit(episode: VLNCEEpisodeEntry, raw_start_position, args: Args) -> Optional[float]:
+@@ -250,19 +284,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+             f["level"] = None
+             f["n_room_changes"] = f["n_rooms"] = None
+             f["level_error"] = str(exc)[:120]
+-        f["n_forks_graph"], f["n_forks3_graph"] = fork_stats(ep.scene_id, gt, args.snap_radius)
++        f["n_forks_graph"], f["n_forks3_graph"] = fork_stats(
++            ep.scene_id, gt, args.snap_radius, args.fork_edge_max, args.fork_angle
++        )
+         if extract_categories is not None:
+             objs, regs = extract_categories(ep.instruction)
+             f["n_landmarks"] = len(objs)
+             f["n_room_words"] = len(regs)
+             if level is not None:
+-                f["n_landmark_instances"], f["n_decoys"] = landmark_stats(
++                f["n_landmark_instances"], f["n_decoys"], f["n_decoy_categories"] = landmark_stats(
+                     level, level_points, objs, args.decoy_radius
+                 )
+             else:
+-                f["n_landmark_instances"] = f["n_decoys"] = None
++                f["n_landmark_instances"] = f["n_decoys"] = f["n_decoy_categories"] = None
+         else:
+-            f["n_landmarks"] = f["n_room_words"] = f["n_landmark_instances"] = f["n_decoys"] = None
++            f["n_landmarks"] = f["n_room_words"] = f["n_landmark_instances"] = f["n_decoys"] = f["n_decoy_categories"] = None
+         f["llm_region_hit"] = None if args.no_llm else llm_region_hit(ep, ep.start_position, args)
+         features[str(ep.episode_id)] = f
+         if n_done % 200 == 0:
+@@ -277,7 +313,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+         return f"n={len(xs)} mean={np.mean(xs):.2f} p50={np.median(xs):.2f}" if xs else "n/a"
+     print(f"wrote {args.out}: {len(features)} episodes")
+     for key in ("path_len_m", "n_room_changes", "n_forks_graph", "n_forks3_graph",
+-                "n_landmarks", "n_decoys", "n_spatial_words", "llm_region_hit"):
++                "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"):
+         print(f"  {key:22s} {q(key)}")
+ 
+ 
+diff --git a/scripts/analysis/paired_report.py b/scripts/analysis/paired_report.py
+index 469c0c8..6dc31a7 100644
+--- a/scripts/analysis/paired_report.py
++++ b/scripts/analysis/paired_report.py
+@@ -210,7 +210,7 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
+ 
+ 
+ FEATURE_KEYS = ["path_len_m", "n_forks_graph", "n_forks3_graph", "n_room_changes",
+-                "n_landmarks", "n_decoys", "n_spatial_words", "llm_region_hit"]
++                "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
+ 
+ 
+ def feature_profile(features: Dict[str, dict], ids: Sequence[str]) -> List[str]:
+-- 
+2.43.0
+
