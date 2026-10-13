@@ -27,6 +27,17 @@
 #                 adds it).  Evaluate with MODEL.MAP_ENCODER.map_ablation
 #                 metadata_only.
 #
+# COORD=True: coordinate fusion (MODEL.MAP_ENCODER.coordinate_fusion) on the
+# student AND the teacher.  The teacher must then be a checkpoint trained with
+# it (default: the E3 run dagger_coordfusion_gt_legacy, iter 16800, val_unseen
+# SR 86.35); the trainer refuses a teacher whose saved config disagrees.  Each
+# side localises the shared graph nodes in its own raster (teacher: its
+# gt.legacy start_position, IL.gt_teacher_start_position_meters_per_unit 1.0;
+# student: its LLM cache, MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0).
+# The run dir gets eval_args.txt so eval_run.sh / eval_iters_serial.sh evaluate
+# its checkpoints with coordinate fusion on.  Default run name
+# dagger_distill_coord16800_<MODE>.
+#
 # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
 # continues from the latest one; re-running after a crash is always safe.
 #
@@ -80,11 +91,20 @@ GPU_NUMBERS="${#_gpu_list[@]}"
 GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
 NUM_ENVS="${NUM_ENVS:-4}"
 
-RUN_NAME="${RUN_NAME:-dagger_distill_legacy18600_${MODE}}"
+COORD="${COORD:-False}"
+case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
+if [[ "${COORD}" == "True" ]]; then
+    RUN_NAME="${RUN_NAME:-dagger_distill_coord16800_${MODE}}"
+    GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${REPO_ROOT}/data/logs/checkpoints/dagger_coordfusion_gt_legacy/ckpt.iter16800.pth}"
+    grep -q "gt_teacher_start_position_meters_per_unit" "${REPO_ROOT}/vlnce_baselines/config/default.py" \
+        || { echo "IL.gt_teacher_start_position_meters_per_unit missing: apply the coordinate-fusion teacher patch" >&2; exit 2; }
+else
+    RUN_NAME="${RUN_NAME:-dagger_distill_legacy18600_${MODE}}"
+    GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
+fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
-GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
 GT_TEACHER_NAMESPACE="gt.legacy.r1p5.direction5.v1"
 GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
 LOAD_MAP="${LOAD_MAP:-False}"
@@ -196,6 +216,17 @@ export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/
 ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
 mkdir -p "${RUN_DIR}"
 
+# Model/map options every evaluation of this run must use (one "KEY VALUE"
+# per line; eval_run.sh appends them after its LLM-Grid defaults).
+MODEL_ARGS=(
+    MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
+    MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
+    MODEL.elevation_axis y
+)
+TEACHER_COORD_ARGS=()
+[[ "${COORD}" == "True" ]] && TEACHER_COORD_ARGS=(IL.gt_teacher_start_position_meters_per_unit 1.0)
+printf '%s %s\n' "${MODEL_ARGS[@]}" > "${RUN_DIR}/eval_args.txt"
+
 RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
 LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
 if [[ -n "${LATEST_CKPT}" ]]; then
@@ -238,10 +269,10 @@ COMMAND=(
     MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
     MODEL.MAP_ENCODER.refiner_ckpt ""
     MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
-    MODEL.MAP_ENCODER.coordinate_fusion False
-    MODEL.elevation_axis y
+    "${MODEL_ARGS[@]}"
     MODEL.pretrained_path "${PRETRAINED_CKPT}"
     IL.gt_teacher_enabled True
+    "${TEACHER_COORD_ARGS[@]}"
     IL.distill_weight "${DISTILL_WEIGHT}"
     IL.distill_temperature "${TEMP}"
     IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
@@ -261,6 +292,7 @@ COMMAND=(
     echo "run_name=${RUN_NAME}"
     echo "mode=${MODE}"
     echo "teacher=${GT_TEACHER_CKPT} (${GT_TEACHER_NAMESPACE}, dy)"
+    echo "coordinate_fusion=${COORD}"
     echo "pretrained=${PRETRAINED_CKPT} load_pretrained_map_modules=${LOAD_MAP}"
     echo "distill_args=${DISTILL_ARGS[*]}"
     echo "iters=${ITERS:-20000}"

@@ -575,6 +575,10 @@ class RLTrainer(BaseVLNCETrainer):
             )
             t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
             _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
+            # The teacher shares MODEL.MAP_ENCODER.coordinate_fusion with the
+            # student (no weights involved), so a teacher trained with the
+            # other setting would run silently wrong.
+            _check_coordinate_fusion_matches(t_config, t_ckpt, self.config.IL.gt_teacher_ckpt)
             sd = t_ckpt["state_dict"]
             del t_ckpt
             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
@@ -1506,11 +1510,6 @@ class RLTrainer(BaseVLNCETrainer):
         Kept in the per-env dict so it is popped together with the map when
         an env finishes.
         """
-        if self._gtt_on and mode == "train":
-            raise ValueError(
-                "MAP_ENCODER.coordinate_fusion is not supported together with "
-                "the GT teacher (the teacher checkpoint was trained without it)"
-            )
         meters_per_unit = float(
             self.config.MODEL.MAP_ENCODER.start_position_meters_per_unit
         )
@@ -1966,6 +1965,7 @@ class RLTrainer(BaseVLNCETrainer):
             gtt_move_kl = 0.0
             gtt_aux = {}
         prev_vp = [None] * self.envs.num_envs
+        gtt_map_origins = None
 
         # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
@@ -2006,6 +2006,23 @@ class RLTrainer(BaseVLNCETrainer):
                 )
             if self._distill_aux_enabled():
                 gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
+            # Coordinate fusion: the teacher localises the (shared) graph
+            # nodes in ITS raster, so its node coordinates come from its own
+            # cache's start_position (IL.gt_teacher_start_position_meters_per_unit),
+            # not the student's.  Kept as per-env dicts so _gmap_map_coords
+            # applies unchanged; popped together with the env.
+            if getattr(map_cfg, "coordinate_fusion", False):
+                t_meters_per_unit = float(
+                    self.config.IL.gt_teacher_start_position_meters_per_unit
+                )
+                gtt_map_origins = [
+                    {
+                        "map_origin_xz": map_origin_xz(
+                            ep.start_position, m["start_position"], t_meters_per_unit
+                        )
+                    }
+                    for ep, m in zip(self.envs.current_episodes(), gtt_maps)
+                ]
             del gtt_maps
 
         for stepk in range(self.max_len):
@@ -2209,6 +2226,10 @@ class RLTrainer(BaseVLNCETrainer):
                     t_inputs["gmap_pos_fts"] = gtt_pos_fts
                     t_inputs["map_tokens"] = gtt_map_tokens
                     t_inputs["map_token_masks"] = gtt_map_token_masks
+                    if gtt_map_origins is not None:
+                        t_inputs["gmap_map_coords"] = self._gmap_map_coords(
+                            nav_inputs["gmap_vp_ids"], gtt_map_origins
+                        )
                     with torch.no_grad():
                         t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
                     t_probs = F.softmax(t_logits, dim=1)
@@ -2534,6 +2555,8 @@ class RLTrainer(BaseVLNCETrainer):
                         self.gmaps.pop(i)
                         if self._gtt_on and mode == "train":
                             self.gtt_gmaps.pop(i)
+                            if gtt_map_origins is not None:
+                                gtt_map_origins.pop(i)
                         prev_vp.pop(i)
                         if cognitive_maps is not None:
                             cognitive_maps.pop(i)

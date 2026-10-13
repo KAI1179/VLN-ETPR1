@@ -100,6 +100,10 @@ _C.IL.gt_teacher_ckpt = ""
 _C.IL.gt_teacher_map_namespace = ""
 _C.IL.gt_teacher_policy_name = ""
 _C.IL.gt_teacher_elevation_axis = "z"
+# Unit of the teacher cache's start_position for coordinate fusion (same
+# meaning as MODEL.MAP_ENCODER.start_position_meters_per_unit, but for the
+# teacher's own map): 1.0 for gt.legacy caches, 0.5 for gt.online* caches.
+_C.IL.gt_teacher_start_position_meters_per_unit = 1.0
 # Store the frozen teacher's weights in fp16 (it only runs under autocast);
 # the map encoder and the graph-map fusion, which run with autocast disabled,
 # keep fp32 weights.  Saves ~1.1 GiB per process.
