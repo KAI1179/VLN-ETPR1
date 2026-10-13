@@ -80,6 +80,13 @@ before the full leakage controls finish. It does not replace the full run.
 No probe result or improvement claim is available until the corresponding
 output is written and checked. Neither CPU run uses GPU.
 
+Both CPU runs were subsequently stopped after convergence warnings. The
+independent run completed baseline/S without warnings, but its real-label
+Try5/S LOSO fits reached the 1,000-iteration limit. No final between-model
+comparison is available. See `primary/status.md` and `README.md`. The collected
+features and equivalence checks remain valid; this is a readout-optimization
+issue, not a navigation-model or feature-dump failure.
+
 ## Serial launch wrapper
 
 `scripts/submit/d8-dump.sh` calls `scripts/eval_d8/run_all.sh` in the foreground.
