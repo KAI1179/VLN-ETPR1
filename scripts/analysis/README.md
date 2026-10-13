@@ -1,67 +1,65 @@
-# Paired-episode analysis (baseline vs try5 vs KD)
+# Paired-episode analysis (baseline vs try5 vs KD FULL)
 
-Three steps; only step 2 needs GPUs.
+Nothing here changes any existing job: the trainer hook only records, it is
+off unless `EVAL.decision_dump True` is passed, every run writes to its own
+`pa_*` directories, and existing `d7d_*` / `d8_*` results are only read.
+Models and every evaluation setting are those of `scripts/eval_d7/d7d_eval.sh`
+(baseline iter25000 without map; try5 no-KD iter28000 and KD FULL iter27000
+with their own LLM map; control, 4 envs per rank, 150 tokens, 15 high-level
+steps).  GPU jobs follow the D8 rule: GPUs 4-7, one model job at a time.
 
-Nothing here runs unless `EVAL.decision_dump True` is passed explicitly: the
-trainer hooks are inert by default, every dump writes to its own
-`<RUN>_dump_<protocol>_...` directory, and no training, GRPO or existing
-evaluation path is touched.  Models as in reports/d8/setup.md: baseline
-ETP-R1 iter25000 (no map), try5 no-KD iter28000 with its own LLM map, KD FULL
-iter27000 with its own LLM map (`MAP_VIEW=none`).
-
-## 1. Episode features (CPU, once per split)
+## 1. Episode features (CPU only, etpr1-uv)
 
 ```bash
 python scripts/analysis/episode_features.py --split val_unseen --out data/logs/analysis/features_val_unseen.json
 ```
 
-GT-path / scene / instruction features per episode (forks on the MP3D
-connectivity graph, room changes, decoys, spatial words, LLM-map region hit
-rate).  Needs the MP3D `.house`-derived box cache (`prior`), the connectivity
-json and the LLM navigation cache; `--no-llm` / `--no-categories` skip the two
-heavy columns.
+Per-episode strata from the GT path, the MP3D region boxes and connectivity
+graph, and the instruction: turns, forks, room changes, decoys, spatial
+words, LLM-map region hit rate.  The script hides all GPUs from itself.
 
-## 2. Decision dumps (GPU, 6 runs = 3 models x 2 protocols)
+## 2. Decision dumps (GPU 4-7, etpr1-py38, strictly one after another)
 
 ```bash
-# protocol 1: policy drives            protocol 2: expert drives (same states for every model)
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline free   release_r2r_dagger 25000
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline forced release_r2r_dagger 25000
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     free   <TRY5_RUN> <ITER>
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     forced <TRY5_RUN> <ITER>
-CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd free   <KD_RUN> <ITER>
-CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd forced <KD_RUN> <ITER>
+bash scripts/analysis/dump_eval.sh base own
+bash scripts/analysis/dump_eval.sh try5 own
+bash scripts/analysis/dump_eval.sh kd   own
+bash scripts/analysis/dump_eval.sh base shared   # creates the shared states
+bash scripts/analysis/dump_eval.sh try5 shared   # replays them, checked per step
+bash scripts/analysis/dump_eval.sh kd   shared
 ```
 
-`baseline` reads the checkpoint from `CKPT` (default
-`/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth`);
-`try5`/`kd` read `data/logs/checkpoints/<RUN>/ckpt.iter<ITER>.pth` (override
-with `CKPT`) and the run's `eval_args.txt` when present.  Each run writes
-`data/logs/checkpoints/<RUN>_dump_<free|forced>_iter<ITER>_val_unseen/eval_results/decisions_val_unseen_r*_w*.jsonl`
-next to the usual `stats_*.json`.  The free protocol is a normal evaluation
-plus the dump (its SR should match the run's known number); the forced
-protocol's SR is meaningless (the expert drives) -- only its per-step records
-are used.
+* `own` (protocol 1): the policy drives.  Afterwards `scripts/eval_d8/verify.py`
+  compares success / OSR / SPL / steps / NE of every episode with the existing
+  D7-d run of the same model and must print `PASS` -- this proves the dump does
+  not change the rollout.
+* `shared` (protocol 2): the D8 mechanism.  base walks the SPL expert and saves
+  each state; try5 and kd execute the same actions and abort if position or
+  candidate graph ever differ.  Episode set: the 1833 D7-d non-U episodes.
+  The SR printed by these runs is the expert's, not the model's.
+
+Outputs: `data/logs/checkpoints/pa_<model>_<own|shared>_val_unseen/eval_results/decisions_val_unseen_r*_w*.jsonl`
+(plus the usual stats files), and for `shared` the D8-format state files in
+`data/logs/pa_shared/<model>/`.
 
 ## 3. Report (CPU)
 
 ```bash
 python scripts/analysis/paired_report.py --features data/logs/analysis/features_val_unseen.json \
-  --run baseline=data/logs/checkpoints/release_r2r_dagger_dump_free_iter25000_val_unseen/eval_results \
-        try5=data/logs/checkpoints/<TRY5_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
-        kd=data/logs/checkpoints/<KD_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
-  --forced baseline=data/logs/checkpoints/release_r2r_dagger_dump_forced_iter25000_val_unseen/eval_results \
-           try5=data/logs/checkpoints/<TRY5_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
-           kd=data/logs/checkpoints/<KD_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
+  --own    base=data/logs/checkpoints/pa_base_own_val_unseen/eval_results \
+           try5=data/logs/checkpoints/pa_try5_own_val_unseen/eval_results \
+           kd=data/logs/checkpoints/pa_kd_own_val_unseen/eval_results \
+  --shared base=data/logs/checkpoints/pa_base_shared_val_unseen/eval_results \
+           try5=data/logs/checkpoints/pa_try5_shared_val_unseen/eval_results \
+           kd=data/logs/checkpoints/pa_kd_shared_val_unseen/eval_results \
   --out data/logs/analysis/report_val_unseen.md
 ```
 
-The first `--run` is the reference every other run is paired against.  The
-report is markdown: overview + paired 2x2, hard-subset SR/SPL table, profile
-of the discordant episodes, failure modes, efficiency on commonly solved
-episodes, step-level decision accuracy (free and forced, with the per-state
-2x2 for forced), and first-divergence analysis.  Thresholds for the strata
-and the fork definition are options (`--help`).
+The first label is the reference.  Sections: feature distributions, own-rollout
+SR/SPL/OSR + paired 2x2, hard-subset table, discordant-episode features,
+failure modes, efficiency, decision accuracy vs the expert by step category
+(stop / backtrack / turn / straight) on own rollouts and on shared states with
+the per-state 2x2, first divergence.  Counts and means only.
 
-To iterate on the report elsewhere, copy back only `features_val_unseen.json`
-and the six `decisions_*.jsonl` files (a few MB each); nothing else is needed.
+To have the report made elsewhere, copy back `features_val_unseen.json` and the
+`decisions_*.jsonl` files of the six runs; nothing else is needed.

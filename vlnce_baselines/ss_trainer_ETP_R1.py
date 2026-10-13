@@ -1288,7 +1288,7 @@ class RLTrainer(BaseVLNCETrainer):
                 raise NotImplementedError
             cpu_a_t = a_t.cpu().numpy()
             if dump_on:
-                cpu_a_t = self.decision_dumper.choose_actions(
+                self.decision_dumper.record_step(
                     self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
                     self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
                     teacher_actions, no_vp_left,
@@ -1326,8 +1326,6 @@ class RLTrainer(BaseVLNCETrainer):
                     ]
                     stop_scores = [s[1] for s in vp_stop_scores]
                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
-                    if dump_on:
-                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
                     stop_pos = gmap.node_pos[stop_vp]
 
                     if self.config.IL.back_algo == "control":

@@ -1,125 +1,88 @@
 #!/usr/bin/env bash
-# Evaluate one checkpoint on R2R val_unseen with the per-step decision dump
-# (EVAL.decision_dump), in one of two protocols:
-#   free    the policy drives (protocol 1): normal evaluation + dump;
-#   forced  the DAgger expert drives (protocol 2): every policy sees the same
-#           states, the dump records what each would have chosen.
+# Decision dump for the paired-episode analysis, R2R val_unseen.
 #
-# Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL RUN_NAME ITER
-#   MODEL     baseline  mapless ETP-R1 (TRAINER SS-ETP-R1); the checkpoint is
-#                       CKPT (default: the release_r2r_dagger iter25000 path
-#                       below), RUN_NAME/ITER only name the output;
-#             try5      LLM-grid try5 DAgger run (same arguments as
-#                       scripts/distill/eval_run.sh, reads the run's
-#                       eval_args.txt when present);
-#             kd        dual-distillation student, same as try5 plus
-#                       MODEL.MAP_ENCODER.map_ablation ${MAP_VIEW:-none}
-#                       (none = map view, metadata_only = deployment view).
-# Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several ranks),
-#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen), MASTER_PORT,
-#      PRETRAINED_CKPT (shapes only), ELEVATION_AXIS (y), CKPT (baseline),
-#      MAP_VIEW (kd), REPO_ROOT, PYTHON, TORCHRUN.
-# Output: data/logs/checkpoints/<RUN_NAME>_dump_<PROTOCOL>_iter<ITER>_<SPLIT>/eval_results/
-#   stats_ckpt_<ITER>_<SPLIT>.json        aggregate metrics (free protocol)
-#   stats_ep_ckpt_<ITER>_<SPLIT>_r*_w*.json per-episode metrics
-#   decisions_<SPLIT>_r*_w*.jsonl          per-step decisions (one file per rank)
-# Then: python scripts/analysis/episode_features.py --split val_unseen
-#       python scripts/analysis/paired_report.py --help
+# Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL
+#   MODEL     base | try5 | kd -- checkpoints and every evaluation setting come
+#             from scripts/eval_d7/d7d_eval.sh unchanged (baseline iter25000 no
+#             map; try5 no-KD iter28000 and KD FULL iter27000 with their own
+#             LLM map; control, 4 envs/rank, 150 tokens, 15 high-level steps).
+#   PROTOCOL  own     the policy drives (protocol 1).  A normal evaluation with
+#                     the read-only dump; afterwards checked episode by episode
+#                     against the existing D7-d evaluation of the same model.
+#             shared  every model sees the same states (protocol 2), via the D8
+#                     mechanism: base walks the SPL expert and saves its states,
+#                     try5 and kd replay those actions with a per-step check of
+#                     position and candidate graph.  Run base first.  Episode
+#                     set = D7-d non-U episodes (1833), as in D8.
+# Env: GPUS (default 4,5,6,7), MASTER_PORT.  One model job at a time.
+# Output: data/logs/checkpoints/pa_<MODEL>_<PROTOCOL>_val_unseen/eval_results/
+#           decisions_val_unseen_r*_w*.jsonl, stats_ep_*.json, stats_ckpt_*.json
+#         shared protocol also: data/logs/pa_shared/<MODEL>/*.npz (D8 format)
+# Nothing else is touched; existing d7d_*/d8_* results are only read.
 set -euo pipefail
+ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
+PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-PYTHON="${PYTHON:-$(command -v python)}"
-TORCHRUN="${TORCHRUN:-$(dirname "${PYTHON}")/torchrun}"
-free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
-RDZV_PORT="${MASTER_PORT:-$(free_port)}"
-export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
+[[ $# -eq 2 ]] || { echo "Usage: bash scripts/analysis/dump_eval.sh base|try5|kd own|shared" >&2; exit 2; }
+MODEL="$1"; PROTOCOL="$2"
+case "$MODEL" in base) PORT=29820 ;; try5) PORT=29821 ;; kd) PORT=29822 ;;
+    *) echo "MODEL must be base, try5 or kd" >&2; exit 2 ;; esac
 
-if [[ $# -ne 4 ]]; then
-    echo "Usage: bash scripts/analysis/dump_eval.sh MODEL(baseline|try5|kd) PROTOCOL(free|forced) RUN_NAME ITER" >&2
-    exit 2
+EXP_NAME="pa_${MODEL}_${PROTOCOL}_val_unseen"
+RESULT_DIR="$ROOT/data/logs/checkpoints/$EXP_NAME/eval_results"
+SHARED_ROOT="$ROOT/data/logs/pa_shared"
+if compgen -G "$RESULT_DIR/decisions_val_unseen_r*.jsonl" >/dev/null; then
+    echo "Dump already exists in $RESULT_DIR; delete that directory to redo." >&2; exit 1
 fi
-MODEL="$1"; PROTOCOL="$2"; RUN_NAME="$3"; ITER="$4"
-case "${PROTOCOL}" in free) FORCING=False ;; forced) FORCING=True ;; *)
-    echo "PROTOCOL must be free or forced, got '${PROTOCOL}'" >&2; exit 2 ;; esac
 
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
-GPU_NUMBERS="${#_gpu_list[@]}"
-GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
-NUM_ENVS="${NUM_ENVS:-4}"
-BACK_ALGO="${BACK_ALGO:-control}"
-SPLIT="${SPLIT:-val_unseen}"
-RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
-EVAL_NAME="${RUN_NAME}_dump_${PROTOCOL}_iter${ITER}_${SPLIT}"
-EVAL_LOG="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}.log"
-RESULT_DIR="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results"
-
-MODEL_ARGS=()
-case "${MODEL}" in
-    baseline)
-        CKPT_PATH="${CKPT:-/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth}"
-        PRETRAINED_CKPT="${PRETRAINED_CKPT:-${REPO_ROOT}/pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt}"
-        MODEL_ARGS=(TRAINER_NAME SS-ETP-R1 MODEL.pretrained_path "${PRETRAINED_CKPT}")
-        ;;
-    try5|kd)
-        CKPT_PATH="${CKPT:-${RUN_DIR}/ckpt.iter${ITER}.pth}"
-        PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
-        MODEL_ARGS=(
-            TRAINER_NAME SS-ETP-LLM
-            MODEL.policy_name LLMGridTry5Policy
-            MODEL.MAP_ENCODER.enabled True
-            MODEL.MAP_ENCODER.architecture try5
-            MODEL.MAP_ENCODER.source llm_grid
-            MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
-            MODEL.MAP_ENCODER.refiner_ckpt ""
-            MODEL.MAP_ENCODER.load_pretrained_map_modules False
-            MODEL.elevation_axis "${ELEVATION_AXIS:-y}"
-            MODEL.pretrained_path "${PRETRAINED_CKPT}"
-        )
-        if [[ "${MODEL}" == "kd" ]]; then
-            MODEL_ARGS+=(MODEL.MAP_ENCODER.eval_map_source p0 MODEL.MAP_ENCODER.map_ablation "${MAP_VIEW:-none}")
+EXTRA=()
+case "$PROTOCOL" in
+    own) ;;
+    shared)
+        PORT=$((PORT + 3))
+        IDS="$("$PYTHON" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(repr([int(k) for k,v in d["per_episode"].items() if v["ours_category"] != "U"]))' "$ROOT/reports/d7d_kd_control.json")"
+        FEATURE_DIR="$SHARED_ROOT/$MODEL"
+        if compgen -G "$FEATURE_DIR/*.npz" >/dev/null; then
+            echo "$FEATURE_DIR already holds state files; delete it to redo." >&2; exit 1
         fi
-        # Runs started by run_dagger_coord_fusion.sh record the model/map
-        # options their checkpoints need; they override the defaults above.
-        if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
-            while read -r key value; do MODEL_ARGS+=("${key}" "${value}"); done < "${RUN_DIR}/eval_args.txt"
-            echo "Using ${RUN_DIR}/eval_args.txt"
+        REPLAY=""
+        if [[ "$MODEL" != base ]]; then
+            REPLAY="$SHARED_ROOT/base"
+            compgen -G "$ROOT/data/logs/checkpoints/pa_base_shared_val_unseen/eval_results/stats_ckpt_*_val_unseen.json" >/dev/null \
+                || { echo "Run 'dump_eval.sh base shared' to completion first (it creates the shared states)." >&2; exit 1; }
         fi
+        EXTRA=(EVAL.d8_shared_states True EVAL.d8_replay_dir "$REPLAY"
+               EVAL.dump_decision_features "$FEATURE_DIR" EVAL.EPISODE_ID "$IDS")
         ;;
-    *) echo "MODEL must be baseline, try5 or kd, got '${MODEL}'" >&2; exit 2 ;;
+    *) echo "PROTOCOL must be own or shared" >&2; exit 2 ;;
 esac
-[[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
-[[ -f "${PRETRAINED_CKPT}" ]] || { echo "Pretrained checkpoint not found: ${PRETRAINED_CKPT}" >&2; exit 1; }
-if ls "${RESULT_DIR}"/decisions_"${SPLIT}"_r*.jsonl >/dev/null 2>&1; then
-    echo "Dump exists in ${RESULT_DIR}; delete it to redo." >&2; exit 1
-fi
 
-cd "${REPO_ROOT}"
-echo "model=${MODEL} protocol=${PROTOCOL} ckpt=${CKPT_PATH} gpus=${CUDA_VISIBLE_DEVICES} -> ${RESULT_DIR}"
-env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
-    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" \
-    "${REPO_ROOT}/run.py" \
-    --exp_name "${EVAL_NAME}" \
-    --run-type eval \
-    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
-    SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
-    TASK_CONFIG.SEED 100 \
-    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
-    NUM_ENVIRONMENTS "${NUM_ENVS}" \
-    EVAL.SPLIT "${SPLIT}" EVAL.EPISODE_COUNT -1 \
-    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
-    EVAL.decision_dump True EVAL.teacher_forcing "${FORCING}" \
-    IL.back_algo "${BACK_ALGO}" \
-    "${MODEL_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
+echo "$(date -Is) model=$MODEL protocol=$PROTOCOL -> $RESULT_DIR"
+EXP_NAME="$EXP_NAME" MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-4,5,6,7}" \
+    bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
+    EVAL.d7d_logging False EVAL.decision_dump True ${EXTRA[@]+"${EXTRA[@]}"}
 
-"${PYTHON}" - "${RESULT_DIR}" "${SPLIT}" <<'PY'
+"$PYTHON" - "$RESULT_DIR" <<'PY'
 import glob, json, os, sys
-d, split = sys.argv[1:3]
-files = sorted(glob.glob(os.path.join(d, f"decisions_{split}_r*.jsonl")))
+d = sys.argv[1]
+files = sorted(glob.glob(os.path.join(d, "decisions_val_unseen_r*.jsonl")))
 steps = eps = 0
 for f in files:
     for line in open(f):
         k = json.loads(line)["kind"]
         steps += k == "step"; eps += k == "episode"
-print(f"\ndump: {len(files)} file(s), {eps} episodes, {steps} steps in {d}")
+print(f"dump: {len(files)} file(s), {eps} episodes, {steps} steps in {d}")
 PY
+
+if [[ "$PROTOCOL" == own ]]; then
+    REFERENCE="$ROOT/data/logs/checkpoints/d7d_${MODEL}_control_val_unseen/eval_results"
+    if [[ -d "$REFERENCE" ]]; then
+        mkdir -p "$ROOT/reports/analysis"
+        # Exact per-episode identity of success / OSR / SPL / steps / NE with
+        # the D7-d run: proves the dump does not change the rollout.
+        "$PYTHON" "$ROOT/scripts/eval_d8/verify.py" --reference "$REFERENCE" --candidate "$RESULT_DIR" \
+            --output "$ROOT/reports/analysis/pa_${MODEL}_own_equivalence.json"
+    else
+        echo "No D7-d reference at $REFERENCE; equivalence check skipped."
+    fi
+fi

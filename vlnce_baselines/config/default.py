@@ -41,10 +41,9 @@ _C.EVAL.EVAL_NONLEARNING = False
 # Per-step decision dump for the paired-episode analysis
 # (vlnce_baselines/common/decision_dump.py): one JSON line per high-level
 # step plus one per finished episode in <RESULTS_DIR>/decisions_*.jsonl.
+# Read-only: the executed action is whatever the trainer chooses (own argmax,
+# or the D8 shared-state replay when EVAL.d8_shared_states is on).
 _C.EVAL.decision_dump = False
-# Execute the DAgger expert's action instead of the policy's argmax, so
-# policies compared under the dump see identical observations (protocol 2).
-_C.EVAL.teacher_forcing = False
 _C.EVAL.NONLEARNING = CN()
 _C.EVAL.NONLEARNING.AGENT = "RandomAgent"
 

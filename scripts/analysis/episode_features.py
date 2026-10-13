@@ -57,12 +57,16 @@ import sys
 import numpy as np
 from tap import Tap
 
+# CPU only: prior's instruction pass loads CLIP on "cuda" when it can see a
+# GPU, and the GPUs belong to training / evaluation jobs.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from prior.bbox._geometry import _is_position_in_level, _point_to_obb_distance
-from prior.bbox._relevance import _first_touched_level_points, _local_point
+from prior.bbox._geometry import _point_to_obb_distance
+from prior.bbox._relevance import _first_touched_level_points
 from prior.bbox._types import SceneSemanticBoxes
 from prior.etp_r1 import ConnectivityEntry
 from prior.vlnce import VLNCEEpisodeEntry
@@ -315,7 +319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
         if extract_categories is not None:
             objs, regs = extract_categories(ep.instruction)
-            f["n_landmarks"] = len(objs)
+            f["n_landmarks"] = len(set(objs) - SKIP_OBJECT_CATEGORIES)
             f["n_room_words"] = len(regs)
             if level is not None:
                 f["n_landmark_instances"], f["n_decoys"], f["n_decoy_categories"] = landmark_stats(
