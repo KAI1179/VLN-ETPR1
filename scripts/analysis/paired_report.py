@@ -66,7 +66,10 @@ class Args(Tap):
     out: Optional[str] = None
     local_radius: float = 3.0
     fork_angle: float = 45.0
+    fork_key: str = "n_forks3_graph"
+    """Feature used for the multi-fork stratum (n_forks3_graph, n_forks_graph or n_turns)."""
     min_forks: int = 2
+    min_turns: int = 2
     min_room_changes: int = 2
     min_decoys: int = 1
     long_quantile: float = 0.67
@@ -191,8 +194,12 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
     def have(k):
         return [v[k] for v in fs.values() if v.get(k) is not None and v.get(k) != -1]
     out: Dict[str, List[str]] = {"all": list(ids)}
-    out[f"multi-fork (forks>={args.min_forks})"] = [i for i, v in fs.items() if (v.get("n_forks_graph") or 0) >= args.min_forks]
-    out["single-fork (forks<=1)"] = [i for i, v in fs.items() if v.get("n_forks_graph") is not None and 0 <= v["n_forks_graph"] <= 1]
+    fk = args.fork_key
+    out[f"multi-fork ({fk}>={args.min_forks})"] = [i for i, v in fs.items() if (v.get(fk) or 0) >= args.min_forks]
+    out[f"few forks ({fk}<{args.min_forks})"] = [i for i, v in fs.items() if v.get(fk) is not None and 0 <= v[fk] < args.min_forks]
+    if have("n_turns"):
+        out[f"multi-turn (turns>={args.min_turns})"] = [i for i, v in fs.items() if (v.get("n_turns") or 0) >= args.min_turns]
+        out[f"few turns (turns<{args.min_turns})"] = [i for i, v in fs.items() if v.get("n_turns") is not None and v["n_turns"] < args.min_turns]
     out[f"multi-room (changes>={args.min_room_changes})"] = [i for i, v in fs.items() if (v.get("n_room_changes") or 0) >= args.min_room_changes]
     out[f"decoy (decoys>={args.min_decoys})"] = [i for i, v in fs.items() if (v.get("n_decoys") or 0) >= args.min_decoys]
     if have("path_len_m"):
@@ -209,7 +216,7 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
     return out
 
 
-FEATURE_KEYS = ["path_len_m", "n_forks_graph", "n_forks3_graph", "n_room_changes",
+FEATURE_KEYS = ["path_len_m", "n_turns", "n_forks_graph", "n_forks3_graph", "n_room_changes",
                 "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
 
 

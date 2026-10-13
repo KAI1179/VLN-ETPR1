@@ -10,6 +10,8 @@ For R2R <split> the script writes <out> (JSON: episode id -> features):
   n_room_changes    region (room) boundary crossings along the GT path, from
                     the MP3D region boxes of the level the path starts on
   n_rooms           distinct regions the GT path passes through
+  n_turns           heading changes > --turn-angle along the GT path sampled
+                    every --turn-spacing metres (model-free decision points)
   n_forks_graph     decision points along the GT path on the MP3D connectivity
                     graph: visited nodes whose onward unobstructed neighbours
                     (within --fork-edge-max, the node we came from excluded)
@@ -85,6 +87,10 @@ class Args(Tap):
     """Metres: onward connectivity edges longer than this do not count as options."""
     fork_angle: float = 60.0
     """Degrees: onward edges closer than this in bearing are one option."""
+    turn_spacing: float = 1.0
+    """Metres between GT path samples for n_turns."""
+    turn_angle: float = 45.0
+    """Degrees of heading change (over turn_spacing) that counts as a turn."""
     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
     meters_per_unit: float = 1.0
     """MAP_ENCODER.start_position_meters_per_unit of the LLM cache."""
@@ -121,6 +127,25 @@ def name_match_categories(text: str):
         if f" {norm(name)} " in inst:
             regs.add(idx)
     return objs, regs
+
+
+def turn_count(points, spacing: float, angle_deg: float) -> int:
+    """Heading changes above angle_deg along the GT path resampled every
+    spacing metres (x/z plane).  A model-free proxy for decision points:
+    "turn left at the ..." is one of these."""
+    p = np.asarray(points, dtype=float)[:, [0, 2]]
+    if len(p) < 2:
+        return 0
+    seg = np.linalg.norm(p[1:] - p[:-1], axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    if cum[-1] < 2 * spacing:
+        return 0
+    t = np.arange(0.0, cum[-1], spacing)
+    rs = np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], axis=1)
+    d = rs[1:] - rs[:-1]
+    head = np.arctan2(d[:, 1], d[:, 0])
+    dh = np.abs((head[1:] - head[:-1] + np.pi) % (2 * np.pi) - np.pi)
+    return int((dh > math.radians(angle_deg)).sum())
 
 
 def path_length(points: Sequence[Sequence[float]]) -> float:
@@ -269,6 +294,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "scene": ep.scene_id,
             "path_len_m": path_length(gt),
             "n_gt_points": len(gt),
+            "n_turns": turn_count(gt, args.turn_spacing, args.turn_angle),
             "n_spatial_words": len(SPATIAL_WORDS.findall(ep.instruction)),
             "n_words": len(ep.instruction.split()),
         }
@@ -312,7 +338,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         xs = [v[key] for v in vals if v.get(key) is not None and v.get(key) != -1]
         return f"n={len(xs)} mean={np.mean(xs):.2f} p50={np.median(xs):.2f}" if xs else "n/a"
     print(f"wrote {args.out}: {len(features)} episodes")
-    for key in ("path_len_m", "n_room_changes", "n_forks_graph", "n_forks3_graph",
+    for key in ("path_len_m", "n_turns", "n_room_changes", "n_forks_graph", "n_forks3_graph",
                 "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"):
         print(f"  {key:22s} {q(key)}")
 
