@@ -1,0 +1,214 @@
+From b01a902ae6e19f2f7387e0643f586a5463163d3c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 08:41:12 -0600
+Subject: [PATCH] GT teacher under coordinate fusion (COORD=True in
+ run_dagger_distill_legacy.sh)
+
+The trainer refused MODEL.MAP_ENCODER.coordinate_fusion together with the GT
+teacher because the teacher checkpoints so far were trained without it.  The
+E3 run (dagger_coordfusion_gt_legacy, iter 16800, val_unseen SR 86.35) is a
+coordinate-fusion teacher, so:
+
+- the teacher localises the shared graph nodes in ITS raster: per-env map
+  origins are taken from the teacher cache's start_position with the new
+  IL.gt_teacher_start_position_meters_per_unit (1.0 for gt.legacy, 0.5 for
+  gt.online*), and t_inputs["gmap_map_coords"] is recomputed from them each
+  step (the student's coords stay in the student's LLM-map frame);
+- the teacher checkpoint's saved coordinate_fusion flag must match the run's
+  (same check as for a resumed student checkpoint);
+- run_dagger_distill_legacy.sh gets COORD (False keeps every run as before):
+  COORD=True turns coordinate fusion on for student and teacher, defaults the
+  teacher to the E3 iter 16800 checkpoint and the run name to
+  dagger_distill_coord16800_<MODE>, passes the teacher unit, and writes
+  eval_args.txt so eval_run.sh / eval_iters_serial.sh evaluate the
+  checkpoints with coordinate fusion on.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011TvFfJ52sY7drhLGd21hww
+---
+ scripts/distill/run_dagger_distill_legacy.sh | 40 ++++++++++++++++++--
+ vlnce_baselines/config/default.py            |  4 ++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py    | 33 +++++++++++++---
+ 3 files changed, 68 insertions(+), 9 deletions(-)
+
+diff --git a/scripts/distill/run_dagger_distill_legacy.sh b/scripts/distill/run_dagger_distill_legacy.sh
+index 4628c7b..a1b3b1d 100755
+--- a/scripts/distill/run_dagger_distill_legacy.sh
++++ b/scripts/distill/run_dagger_distill_legacy.sh
+@@ -27,6 +27,17 @@
+ #                 adds it).  Evaluate with MODEL.MAP_ENCODER.map_ablation
+ #                 metadata_only.
+ #
++# COORD=True: coordinate fusion (MODEL.MAP_ENCODER.coordinate_fusion) on the
++# student AND the teacher.  The teacher must then be a checkpoint trained with
++# it (default: the E3 run dagger_coordfusion_gt_legacy, iter 16800, val_unseen
++# SR 86.35); the trainer refuses a teacher whose saved config disagrees.  Each
++# side localises the shared graph nodes in its own raster (teacher: its
++# gt.legacy start_position, IL.gt_teacher_start_position_meters_per_unit 1.0;
++# student: its LLM cache, MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0).
++# The run dir gets eval_args.txt so eval_run.sh / eval_iters_serial.sh evaluate
++# its checkpoints with coordinate fusion on.  Default run name
++# dagger_distill_coord16800_<MODE>.
++#
+ # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
+ # continues from the latest one; re-running after a crash is always safe.
+ #
+@@ -80,11 +91,20 @@ GPU_NUMBERS="${#_gpu_list[@]}"
+ GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
+ NUM_ENVS="${NUM_ENVS:-4}"
+ 
+-RUN_NAME="${RUN_NAME:-dagger_distill_legacy18600_${MODE}}"
++COORD="${COORD:-False}"
++case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exit 2 ;; esac
++if [[ "${COORD}" == "True" ]]; then
++    RUN_NAME="${RUN_NAME:-dagger_distill_coord16800_${MODE}}"
++    GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${REPO_ROOT}/data/logs/checkpoints/dagger_coordfusion_gt_legacy/ckpt.iter16800.pth}"
++    grep -q "gt_teacher_start_position_meters_per_unit" "${REPO_ROOT}/vlnce_baselines/config/default.py" \
++        || { echo "IL.gt_teacher_start_position_meters_per_unit missing: apply the coordinate-fusion teacher patch" >&2; exit 2; }
++else
++    RUN_NAME="${RUN_NAME:-dagger_distill_legacy18600_${MODE}}"
++    GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
++fi
+ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+ LOG_PATH="${RUN_DIR}/train.log"
+ PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+-GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
+ GT_TEACHER_NAMESPACE="gt.legacy.r1p5.direction5.v1"
+ GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
+ LOAD_MAP="${LOAD_MAP:-False}"
+@@ -196,6 +216,17 @@ export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/
+ ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
+ mkdir -p "${RUN_DIR}"
+ 
++# Model/map options every evaluation of this run must use (one "KEY VALUE"
++# per line; eval_run.sh appends them after its LLM-Grid defaults).
++MODEL_ARGS=(
++    MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
++    MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
++    MODEL.elevation_axis y
++)
++TEACHER_COORD_ARGS=()
++[[ "${COORD}" == "True" ]] && TEACHER_COORD_ARGS=(IL.gt_teacher_start_position_meters_per_unit 1.0)
++printf '%s %s\n' "${MODEL_ARGS[@]}" > "${RUN_DIR}/eval_args.txt"
++
+ RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
+ LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
+ if [[ -n "${LATEST_CKPT}" ]]; then
+@@ -238,10 +269,10 @@ COMMAND=(
+     MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+     MODEL.MAP_ENCODER.refiner_ckpt ""
+     MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
+-    MODEL.MAP_ENCODER.coordinate_fusion False
+-    MODEL.elevation_axis y
++    "${MODEL_ARGS[@]}"
+     MODEL.pretrained_path "${PRETRAINED_CKPT}"
+     IL.gt_teacher_enabled True
++    "${TEACHER_COORD_ARGS[@]}"
+     IL.distill_weight "${DISTILL_WEIGHT}"
+     IL.distill_temperature "${TEMP}"
+     IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
+@@ -261,6 +292,7 @@ COMMAND=(
+     echo "run_name=${RUN_NAME}"
+     echo "mode=${MODE}"
+     echo "teacher=${GT_TEACHER_CKPT} (${GT_TEACHER_NAMESPACE}, dy)"
++    echo "coordinate_fusion=${COORD}"
+     echo "pretrained=${PRETRAINED_CKPT} load_pretrained_map_modules=${LOAD_MAP}"
+     echo "distill_args=${DISTILL_ARGS[*]}"
+     echo "iters=${ITERS:-20000}"
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 7fbb325..fbb721e 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -94,6 +94,10 @@ _C.IL.gt_teacher_ckpt = ""
+ _C.IL.gt_teacher_map_namespace = ""
+ _C.IL.gt_teacher_policy_name = ""
+ _C.IL.gt_teacher_elevation_axis = "z"
++# Unit of the teacher cache's start_position for coordinate fusion (same
++# meaning as MODEL.MAP_ENCODER.start_position_meters_per_unit, but for the
++# teacher's own map): 1.0 for gt.legacy caches, 0.5 for gt.online* caches.
++_C.IL.gt_teacher_start_position_meters_per_unit = 1.0
+ # Store the frozen teacher's weights in fp16 (it only runs under autocast);
+ # the map encoder and the graph-map fusion, which run with autocast disabled,
+ # keep fp32 weights.  Saves ~1.1 GiB per process.
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index 5fb5d29..d471f94 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -574,6 +574,10 @@ class RLTrainer(BaseVLNCETrainer):
+             )
+             t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
+             _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
++            # The teacher shares MODEL.MAP_ENCODER.coordinate_fusion with the
++            # student (no weights involved), so a teacher trained with the
++            # other setting would run silently wrong.
++            _check_coordinate_fusion_matches(t_config, t_ckpt, self.config.IL.gt_teacher_ckpt)
+             sd = t_ckpt["state_dict"]
+             del t_ckpt
+             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
+@@ -1498,11 +1502,6 @@ class RLTrainer(BaseVLNCETrainer):
+         Kept in the per-env dict so it is popped together with the map when
+         an env finishes.
+         """
+-        if self._gtt_on and mode == "train":
+-            raise ValueError(
+-                "MAP_ENCODER.coordinate_fusion is not supported together with "
+-                "the GT teacher (the teacher checkpoint was trained without it)"
+-            )
+         meters_per_unit = float(
+             self.config.MODEL.MAP_ENCODER.start_position_meters_per_unit
+         )
+@@ -1953,6 +1952,7 @@ class RLTrainer(BaseVLNCETrainer):
+             gtt_move_kl = 0.0
+             gtt_aux = {}
+         prev_vp = [None] * self.envs.num_envs
++        gtt_map_origins = None
+ 
+         # Build cognitive maps for current episodes.
+         map_cfg = self.config.MODEL.MAP_ENCODER
+@@ -1993,6 +1993,23 @@ class RLTrainer(BaseVLNCETrainer):
+                 )
+             if self._distill_aux_enabled():
+                 gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
++            # Coordinate fusion: the teacher localises the (shared) graph
++            # nodes in ITS raster, so its node coordinates come from its own
++            # cache's start_position (IL.gt_teacher_start_position_meters_per_unit),
++            # not the student's.  Kept as per-env dicts so _gmap_map_coords
++            # applies unchanged; popped together with the env.
++            if getattr(map_cfg, "coordinate_fusion", False):
++                t_meters_per_unit = float(
++                    self.config.IL.gt_teacher_start_position_meters_per_unit
++                )
++                gtt_map_origins = [
++                    {
++                        "map_origin_xz": map_origin_xz(
++                            ep.start_position, m["start_position"], t_meters_per_unit
++                        )
++                    }
++                    for ep, m in zip(self.envs.current_episodes(), gtt_maps)
++                ]
+             del gtt_maps
+ 
+         for stepk in range(self.max_len):
+@@ -2196,6 +2213,10 @@ class RLTrainer(BaseVLNCETrainer):
+                     t_inputs["gmap_pos_fts"] = gtt_pos_fts
+                     t_inputs["map_tokens"] = gtt_map_tokens
+                     t_inputs["map_token_masks"] = gtt_map_token_masks
++                    if gtt_map_origins is not None:
++                        t_inputs["gmap_map_coords"] = self._gmap_map_coords(
++                            nav_inputs["gmap_vp_ids"], gtt_map_origins
++                        )
+                     with torch.no_grad():
+                         t_logits = self.gt_teacher.net(**t_inputs)["global_logits"]
+                     t_probs = F.softmax(t_logits, dim=1)
+@@ -2513,6 +2534,8 @@ class RLTrainer(BaseVLNCETrainer):
+                         self.gmaps.pop(i)
+                         if self._gtt_on and mode == "train":
+                             self.gtt_gmaps.pop(i)
++                            if gtt_map_origins is not None:
++                                gtt_map_origins.pop(i)
+                         prev_vp.pop(i)
+                         if cognitive_maps is not None:
+                             cognitive_maps.pop(i)
+-- 
+2.43.0
+
