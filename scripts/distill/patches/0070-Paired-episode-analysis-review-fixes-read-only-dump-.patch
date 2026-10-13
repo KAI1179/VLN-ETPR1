@@ -1,0 +1,1507 @@
+From 482fb4b3333a284127d74733b35f0af0e9b7fbf7 Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Mon, 12 Oct 2026 22:33:01 -0600
+Subject: [PATCH] Paired-episode analysis review fixes: read-only dump, D7-d
+ settings, D8 shared states
+
+- DecisionDumper is a pure observer: records policy argmax, expert and the
+  executed action; EVAL.teacher_forcing removed (it recomputed the SPL
+  expert per model, whose random.choice over merged-ghost positions and
+  run-dependent RNG order could silently desynchronise the 'shared' states).
+- Protocol 2 now uses the D8 replay (base walks the expert, try5/kd replay
+  with per-step position/graph checks); protocol 1 is checked episode by
+  episode against the D7-d evaluation with scripts/eval_d8/verify.py.
+- dump_eval.sh wraps scripts/eval_d7/d7d_eval.sh, so checkpoints and every
+  evaluation setting match D7-d/D8 (the previous launcher missed
+  MODEL.policy_name R1Policy, used wrong baseline/try5/kd paths and omitted
+  several D7-d overrides).
+- Dump records front_cur per vp; the report classifies steps by the
+  reference action (stop / backtrack / turn / straight) instead of a local
+  option count that is >= 2 at nearly every ETP node; backtracks replace
+  revisits; terminal forced stops are not scored; cross-run pairing checks
+  position + graph signatures; feature-distribution section added.
+- episode_features.py hides GPUs (CLIP would load on cuda:0);
+  n_landmarks excludes environmental categories.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ scripts/analysis/README.md                |  90 ++--
+ scripts/analysis/dump_eval.sh             | 173 +++----
+ scripts/analysis/episode_features.py      |  10 +-
+ scripts/analysis/paired_report.py         | 522 ++++++++++++----------
+ tests/test_decision_dump.py               |  96 ++--
+ vlnce_baselines/common/decision_dump.py   | 114 +++--
+ vlnce_baselines/config/default.py         |   5 +-
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py |   4 +-
+ vlnce_baselines/ss_trainer_ETP_R1.py      |   4 +-
+ 9 files changed, 535 insertions(+), 483 deletions(-)
+
+diff --git a/scripts/analysis/README.md b/scripts/analysis/README.md
+index a1d07e6..abb1abc 100644
+--- a/scripts/analysis/README.md
++++ b/scripts/analysis/README.md
+@@ -1,67 +1,65 @@
+-# Paired-episode analysis (baseline vs try5 vs KD)
++# Paired-episode analysis (baseline vs try5 vs KD FULL)
+ 
+-Three steps; only step 2 needs GPUs.
++Nothing here changes any existing job: the trainer hook only records, it is
++off unless `EVAL.decision_dump True` is passed, every run writes to its own
++`pa_*` directories, and existing `d7d_*` / `d8_*` results are only read.
++Models and every evaluation setting are those of `scripts/eval_d7/d7d_eval.sh`
++(baseline iter25000 without map; try5 no-KD iter28000 and KD FULL iter27000
++with their own LLM map; control, 4 envs per rank, 150 tokens, 15 high-level
++steps).  GPU jobs follow the D8 rule: GPUs 4-7, one model job at a time.
+ 
+-Nothing here runs unless `EVAL.decision_dump True` is passed explicitly: the
+-trainer hooks are inert by default, every dump writes to its own
+-`<RUN>_dump_<protocol>_...` directory, and no training, GRPO or existing
+-evaluation path is touched.  Models as in reports/d8/setup.md: baseline
+-ETP-R1 iter25000 (no map), try5 no-KD iter28000 with its own LLM map, KD FULL
+-iter27000 with its own LLM map (`MAP_VIEW=none`).
+-
+-## 1. Episode features (CPU, once per split)
++## 1. Episode features (CPU only, etpr1-uv)
+ 
+ ```bash
+ python scripts/analysis/episode_features.py --split val_unseen --out data/logs/analysis/features_val_unseen.json
+ ```
+ 
+-GT-path / scene / instruction features per episode (forks on the MP3D
+-connectivity graph, room changes, decoys, spatial words, LLM-map region hit
+-rate).  Needs the MP3D `.house`-derived box cache (`prior`), the connectivity
+-json and the LLM navigation cache; `--no-llm` / `--no-categories` skip the two
+-heavy columns.
++Per-episode strata from the GT path, the MP3D region boxes and connectivity
++graph, and the instruction: turns, forks, room changes, decoys, spatial
++words, LLM-map region hit rate.  The script hides all GPUs from itself.
+ 
+-## 2. Decision dumps (GPU, 6 runs = 3 models x 2 protocols)
++## 2. Decision dumps (GPU 4-7, etpr1-py38, strictly one after another)
+ 
+ ```bash
+-# protocol 1: policy drives            protocol 2: expert drives (same states for every model)
+-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline free   release_r2r_dagger 25000
+-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline forced release_r2r_dagger 25000
+-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     free   <TRY5_RUN> <ITER>
+-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     forced <TRY5_RUN> <ITER>
+-CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd free   <KD_RUN> <ITER>
+-CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd forced <KD_RUN> <ITER>
++bash scripts/analysis/dump_eval.sh base own
++bash scripts/analysis/dump_eval.sh try5 own
++bash scripts/analysis/dump_eval.sh kd   own
++bash scripts/analysis/dump_eval.sh base shared   # creates the shared states
++bash scripts/analysis/dump_eval.sh try5 shared   # replays them, checked per step
++bash scripts/analysis/dump_eval.sh kd   shared
+ ```
+ 
+-`baseline` reads the checkpoint from `CKPT` (default
+-`/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth`);
+-`try5`/`kd` read `data/logs/checkpoints/<RUN>/ckpt.iter<ITER>.pth` (override
+-with `CKPT`) and the run's `eval_args.txt` when present.  Each run writes
+-`data/logs/checkpoints/<RUN>_dump_<free|forced>_iter<ITER>_val_unseen/eval_results/decisions_val_unseen_r*_w*.jsonl`
+-next to the usual `stats_*.json`.  The free protocol is a normal evaluation
+-plus the dump (its SR should match the run's known number); the forced
+-protocol's SR is meaningless (the expert drives) -- only its per-step records
+-are used.
++* `own` (protocol 1): the policy drives.  Afterwards `scripts/eval_d8/verify.py`
++  compares success / OSR / SPL / steps / NE of every episode with the existing
++  D7-d run of the same model and must print `PASS` -- this proves the dump does
++  not change the rollout.
++* `shared` (protocol 2): the D8 mechanism.  base walks the SPL expert and saves
++  each state; try5 and kd execute the same actions and abort if position or
++  candidate graph ever differ.  Episode set: the 1833 D7-d non-U episodes.
++  The SR printed by these runs is the expert's, not the model's.
++
++Outputs: `data/logs/checkpoints/pa_<model>_<own|shared>_val_unseen/eval_results/decisions_val_unseen_r*_w*.jsonl`
++(plus the usual stats files), and for `shared` the D8-format state files in
++`data/logs/pa_shared/<model>/`.
+ 
+ ## 3. Report (CPU)
+ 
+ ```bash
+ python scripts/analysis/paired_report.py --features data/logs/analysis/features_val_unseen.json \
+-  --run baseline=data/logs/checkpoints/release_r2r_dagger_dump_free_iter25000_val_unseen/eval_results \
+-        try5=data/logs/checkpoints/<TRY5_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
+-        kd=data/logs/checkpoints/<KD_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
+-  --forced baseline=data/logs/checkpoints/release_r2r_dagger_dump_forced_iter25000_val_unseen/eval_results \
+-           try5=data/logs/checkpoints/<TRY5_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
+-           kd=data/logs/checkpoints/<KD_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
++  --own    base=data/logs/checkpoints/pa_base_own_val_unseen/eval_results \
++           try5=data/logs/checkpoints/pa_try5_own_val_unseen/eval_results \
++           kd=data/logs/checkpoints/pa_kd_own_val_unseen/eval_results \
++  --shared base=data/logs/checkpoints/pa_base_shared_val_unseen/eval_results \
++           try5=data/logs/checkpoints/pa_try5_shared_val_unseen/eval_results \
++           kd=data/logs/checkpoints/pa_kd_shared_val_unseen/eval_results \
+   --out data/logs/analysis/report_val_unseen.md
+ ```
+ 
+-The first `--run` is the reference every other run is paired against.  The
+-report is markdown: overview + paired 2x2, hard-subset SR/SPL table, profile
+-of the discordant episodes, failure modes, efficiency on commonly solved
+-episodes, step-level decision accuracy (free and forced, with the per-state
+-2x2 for forced), and first-divergence analysis.  Thresholds for the strata
+-and the fork definition are options (`--help`).
++The first label is the reference.  Sections: feature distributions, own-rollout
++SR/SPL/OSR + paired 2x2, hard-subset table, discordant-episode features,
++failure modes, efficiency, decision accuracy vs the expert by step category
++(stop / backtrack / turn / straight) on own rollouts and on shared states with
++the per-state 2x2, first divergence.  Counts and means only.
+ 
+-To iterate on the report elsewhere, copy back only `features_val_unseen.json`
+-and the six `decisions_*.jsonl` files (a few MB each); nothing else is needed.
++To have the report made elsewhere, copy back `features_val_unseen.json` and the
++`decisions_*.jsonl` files of the six runs; nothing else is needed.
+diff --git a/scripts/analysis/dump_eval.sh b/scripts/analysis/dump_eval.sh
+index 27c3d7c..0b2f309 100755
+--- a/scripts/analysis/dump_eval.sh
++++ b/scripts/analysis/dump_eval.sh
+@@ -1,125 +1,88 @@
+ #!/usr/bin/env bash
+-# Evaluate one checkpoint on R2R val_unseen with the per-step decision dump
+-# (EVAL.decision_dump), in one of two protocols:
+-#   free    the policy drives (protocol 1): normal evaluation + dump;
+-#   forced  the DAgger expert drives (protocol 2): every policy sees the same
+-#           states, the dump records what each would have chosen.
++# Decision dump for the paired-episode analysis, R2R val_unseen.
+ #
+-# Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL RUN_NAME ITER
+-#   MODEL     baseline  mapless ETP-R1 (TRAINER SS-ETP-R1); the checkpoint is
+-#                       CKPT (default: the release_r2r_dagger iter25000 path
+-#                       below), RUN_NAME/ITER only name the output;
+-#             try5      LLM-grid try5 DAgger run (same arguments as
+-#                       scripts/distill/eval_run.sh, reads the run's
+-#                       eval_args.txt when present);
+-#             kd        dual-distillation student, same as try5 plus
+-#                       MODEL.MAP_ENCODER.map_ablation ${MAP_VIEW:-none}
+-#                       (none = map view, metadata_only = deployment view).
+-# Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several ranks),
+-#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen), MASTER_PORT,
+-#      PRETRAINED_CKPT (shapes only), ELEVATION_AXIS (y), CKPT (baseline),
+-#      MAP_VIEW (kd), REPO_ROOT, PYTHON, TORCHRUN.
+-# Output: data/logs/checkpoints/<RUN_NAME>_dump_<PROTOCOL>_iter<ITER>_<SPLIT>/eval_results/
+-#   stats_ckpt_<ITER>_<SPLIT>.json        aggregate metrics (free protocol)
+-#   stats_ep_ckpt_<ITER>_<SPLIT>_r*_w*.json per-episode metrics
+-#   decisions_<SPLIT>_r*_w*.jsonl          per-step decisions (one file per rank)
+-# Then: python scripts/analysis/episode_features.py --split val_unseen
+-#       python scripts/analysis/paired_report.py --help
++# Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL
++#   MODEL     base | try5 | kd -- checkpoints and every evaluation setting come
++#             from scripts/eval_d7/d7d_eval.sh unchanged (baseline iter25000 no
++#             map; try5 no-KD iter28000 and KD FULL iter27000 with their own
++#             LLM map; control, 4 envs/rank, 150 tokens, 15 high-level steps).
++#   PROTOCOL  own     the policy drives (protocol 1).  A normal evaluation with
++#                     the read-only dump; afterwards checked episode by episode
++#                     against the existing D7-d evaluation of the same model.
++#             shared  every model sees the same states (protocol 2), via the D8
++#                     mechanism: base walks the SPL expert and saves its states,
++#                     try5 and kd replay those actions with a per-step check of
++#                     position and candidate graph.  Run base first.  Episode
++#                     set = D7-d non-U episodes (1833), as in D8.
++# Env: GPUS (default 4,5,6,7), MASTER_PORT.  One model job at a time.
++# Output: data/logs/checkpoints/pa_<MODEL>_<PROTOCOL>_val_unseen/eval_results/
++#           decisions_val_unseen_r*_w*.jsonl, stats_ep_*.json, stats_ckpt_*.json
++#         shared protocol also: data/logs/pa_shared/<MODEL>/*.npz (D8 format)
++# Nothing else is touched; existing d7d_*/d8_* results are only read.
+ set -euo pipefail
++ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
++PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
+ 
+-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+-PYTHON="${PYTHON:-$(command -v python)}"
+-TORCHRUN="${TORCHRUN:-$(dirname "${PYTHON}")/torchrun}"
+-free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
+-RDZV_PORT="${MASTER_PORT:-$(free_port)}"
+-export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++[[ $# -eq 2 ]] || { echo "Usage: bash scripts/analysis/dump_eval.sh base|try5|kd own|shared" >&2; exit 2; }
++MODEL="$1"; PROTOCOL="$2"
++case "$MODEL" in base) PORT=29820 ;; try5) PORT=29821 ;; kd) PORT=29822 ;;
++    *) echo "MODEL must be base, try5 or kd" >&2; exit 2 ;; esac
+ 
+-if [[ $# -ne 4 ]]; then
+-    echo "Usage: bash scripts/analysis/dump_eval.sh MODEL(baseline|try5|kd) PROTOCOL(free|forced) RUN_NAME ITER" >&2
+-    exit 2
++EXP_NAME="pa_${MODEL}_${PROTOCOL}_val_unseen"
++RESULT_DIR="$ROOT/data/logs/checkpoints/$EXP_NAME/eval_results"
++SHARED_ROOT="$ROOT/data/logs/pa_shared"
++if compgen -G "$RESULT_DIR/decisions_val_unseen_r*.jsonl" >/dev/null; then
++    echo "Dump already exists in $RESULT_DIR; delete that directory to redo." >&2; exit 1
+ fi
+-MODEL="$1"; PROTOCOL="$2"; RUN_NAME="$3"; ITER="$4"
+-case "${PROTOCOL}" in free) FORCING=False ;; forced) FORCING=True ;; *)
+-    echo "PROTOCOL must be free or forced, got '${PROTOCOL}'" >&2; exit 2 ;; esac
+ 
+-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+-IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
+-GPU_NUMBERS="${#_gpu_list[@]}"
+-GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
+-NUM_ENVS="${NUM_ENVS:-4}"
+-BACK_ALGO="${BACK_ALGO:-control}"
+-SPLIT="${SPLIT:-val_unseen}"
+-RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+-EVAL_NAME="${RUN_NAME}_dump_${PROTOCOL}_iter${ITER}_${SPLIT}"
+-EVAL_LOG="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}.log"
+-RESULT_DIR="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results"
+-
+-MODEL_ARGS=()
+-case "${MODEL}" in
+-    baseline)
+-        CKPT_PATH="${CKPT:-/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth}"
+-        PRETRAINED_CKPT="${PRETRAINED_CKPT:-${REPO_ROOT}/pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt}"
+-        MODEL_ARGS=(TRAINER_NAME SS-ETP-R1 MODEL.pretrained_path "${PRETRAINED_CKPT}")
+-        ;;
+-    try5|kd)
+-        CKPT_PATH="${CKPT:-${RUN_DIR}/ckpt.iter${ITER}.pth}"
+-        PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+-        MODEL_ARGS=(
+-            TRAINER_NAME SS-ETP-LLM
+-            MODEL.policy_name LLMGridTry5Policy
+-            MODEL.MAP_ENCODER.enabled True
+-            MODEL.MAP_ENCODER.architecture try5
+-            MODEL.MAP_ENCODER.source llm_grid
+-            MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+-            MODEL.MAP_ENCODER.refiner_ckpt ""
+-            MODEL.MAP_ENCODER.load_pretrained_map_modules False
+-            MODEL.elevation_axis "${ELEVATION_AXIS:-y}"
+-            MODEL.pretrained_path "${PRETRAINED_CKPT}"
+-        )
+-        if [[ "${MODEL}" == "kd" ]]; then
+-            MODEL_ARGS+=(MODEL.MAP_ENCODER.eval_map_source p0 MODEL.MAP_ENCODER.map_ablation "${MAP_VIEW:-none}")
++EXTRA=()
++case "$PROTOCOL" in
++    own) ;;
++    shared)
++        PORT=$((PORT + 3))
++        IDS="$("$PYTHON" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(repr([int(k) for k,v in d["per_episode"].items() if v["ours_category"] != "U"]))' "$ROOT/reports/d7d_kd_control.json")"
++        FEATURE_DIR="$SHARED_ROOT/$MODEL"
++        if compgen -G "$FEATURE_DIR/*.npz" >/dev/null; then
++            echo "$FEATURE_DIR already holds state files; delete it to redo." >&2; exit 1
+         fi
+-        # Runs started by run_dagger_coord_fusion.sh record the model/map
+-        # options their checkpoints need; they override the defaults above.
+-        if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
+-            while read -r key value; do MODEL_ARGS+=("${key}" "${value}"); done < "${RUN_DIR}/eval_args.txt"
+-            echo "Using ${RUN_DIR}/eval_args.txt"
++        REPLAY=""
++        if [[ "$MODEL" != base ]]; then
++            REPLAY="$SHARED_ROOT/base"
++            compgen -G "$ROOT/data/logs/checkpoints/pa_base_shared_val_unseen/eval_results/stats_ckpt_*_val_unseen.json" >/dev/null \
++                || { echo "Run 'dump_eval.sh base shared' to completion first (it creates the shared states)." >&2; exit 1; }
+         fi
++        EXTRA=(EVAL.d8_shared_states True EVAL.d8_replay_dir "$REPLAY"
++               EVAL.dump_decision_features "$FEATURE_DIR" EVAL.EPISODE_ID "$IDS")
+         ;;
+-    *) echo "MODEL must be baseline, try5 or kd, got '${MODEL}'" >&2; exit 2 ;;
++    *) echo "PROTOCOL must be own or shared" >&2; exit 2 ;;
+ esac
+-[[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
+-[[ -f "${PRETRAINED_CKPT}" ]] || { echo "Pretrained checkpoint not found: ${PRETRAINED_CKPT}" >&2; exit 1; }
+-if ls "${RESULT_DIR}"/decisions_"${SPLIT}"_r*.jsonl >/dev/null 2>&1; then
+-    echo "Dump exists in ${RESULT_DIR}; delete it to redo." >&2; exit 1
+-fi
+ 
+-cd "${REPO_ROOT}"
+-echo "model=${MODEL} protocol=${PROTOCOL} ckpt=${CKPT_PATH} gpus=${CUDA_VISIBLE_DEVICES} -> ${RESULT_DIR}"
+-env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
+-    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" \
+-    "${REPO_ROOT}/run.py" \
+-    --exp_name "${EVAL_NAME}" \
+-    --run-type eval \
+-    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
+-    SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
+-    TASK_CONFIG.SEED 100 \
+-    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
+-    NUM_ENVIRONMENTS "${NUM_ENVS}" \
+-    EVAL.SPLIT "${SPLIT}" EVAL.EPISODE_COUNT -1 \
+-    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
+-    EVAL.decision_dump True EVAL.teacher_forcing "${FORCING}" \
+-    IL.back_algo "${BACK_ALGO}" \
+-    "${MODEL_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
++echo "$(date -Is) model=$MODEL protocol=$PROTOCOL -> $RESULT_DIR"
++EXP_NAME="$EXP_NAME" MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-4,5,6,7}" \
++    bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
++    EVAL.d7d_logging False EVAL.decision_dump True ${EXTRA[@]+"${EXTRA[@]}"}
+ 
+-"${PYTHON}" - "${RESULT_DIR}" "${SPLIT}" <<'PY'
++"$PYTHON" - "$RESULT_DIR" <<'PY'
+ import glob, json, os, sys
+-d, split = sys.argv[1:3]
+-files = sorted(glob.glob(os.path.join(d, f"decisions_{split}_r*.jsonl")))
++d = sys.argv[1]
++files = sorted(glob.glob(os.path.join(d, "decisions_val_unseen_r*.jsonl")))
+ steps = eps = 0
+ for f in files:
+     for line in open(f):
+         k = json.loads(line)["kind"]
+         steps += k == "step"; eps += k == "episode"
+-print(f"\ndump: {len(files)} file(s), {eps} episodes, {steps} steps in {d}")
++print(f"dump: {len(files)} file(s), {eps} episodes, {steps} steps in {d}")
+ PY
++
++if [[ "$PROTOCOL" == own ]]; then
++    REFERENCE="$ROOT/data/logs/checkpoints/d7d_${MODEL}_control_val_unseen/eval_results"
++    if [[ -d "$REFERENCE" ]]; then
++        mkdir -p "$ROOT/reports/analysis"
++        # Exact per-episode identity of success / OSR / SPL / steps / NE with
++        # the D7-d run: proves the dump does not change the rollout.
++        "$PYTHON" "$ROOT/scripts/eval_d8/verify.py" --reference "$REFERENCE" --candidate "$RESULT_DIR" \
++            --output "$ROOT/reports/analysis/pa_${MODEL}_own_equivalence.json"
++    else
++        echo "No D7-d reference at $REFERENCE; equivalence check skipped."
++    fi
++fi
+diff --git a/scripts/analysis/episode_features.py b/scripts/analysis/episode_features.py
+index a124f6a..88cedbb 100644
+--- a/scripts/analysis/episode_features.py
++++ b/scripts/analysis/episode_features.py
+@@ -57,12 +57,16 @@ import sys
+ import numpy as np
+ from tap import Tap
+ 
++# CPU only: prior's instruction pass loads CLIP on "cuda" when it can see a
++# GPU, and the GPUs belong to training / evaluation jobs.
++os.environ["CUDA_VISIBLE_DEVICES"] = ""
++
+ REPO_ROOT = str(Path(__file__).resolve().parents[2])
+ if REPO_ROOT not in sys.path:
+     sys.path.insert(0, REPO_ROOT)
+ 
+-from prior.bbox._geometry import _is_position_in_level, _point_to_obb_distance
+-from prior.bbox._relevance import _first_touched_level_points, _local_point
++from prior.bbox._geometry import _point_to_obb_distance
++from prior.bbox._relevance import _first_touched_level_points
+ from prior.bbox._types import SceneSemanticBoxes
+ from prior.etp_r1 import ConnectivityEntry
+ from prior.vlnce import VLNCEEpisodeEntry
+@@ -315,7 +319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+         )
+         if extract_categories is not None:
+             objs, regs = extract_categories(ep.instruction)
+-            f["n_landmarks"] = len(objs)
++            f["n_landmarks"] = len(set(objs) - SKIP_OBJECT_CATEGORIES)
+             f["n_room_words"] = len(regs)
+             if level is not None:
+                 f["n_landmark_instances"], f["n_decoys"], f["n_decoy_categories"] = landmark_stats(
+diff --git a/scripts/analysis/paired_report.py b/scripts/analysis/paired_report.py
+index 826ee82..a477693 100644
+--- a/scripts/analysis/paired_report.py
++++ b/scripts/analysis/paired_report.py
+@@ -1,41 +1,45 @@
+ #!/usr/bin/env python3
+ """Paired-episode report from decision dumps (scripts/analysis/dump_eval.sh).
+ 
+-Inputs are the eval_results directories holding decisions_<split>_r*.jsonl.
+-The first --run is the reference (baseline); every other run is paired
+-against it episode by episode.  Optional --forced runs (same labels) hold the
+-teacher-forced dumps (protocol 2), where all models saw identical states.
+-
+-    python scripts/analysis/paired_report.py \
+-        --features data/logs/analysis/features_val_unseen.json \
+-        --run baseline=data/logs/checkpoints/base_dump_free_iter25000_val_unseen/eval_results \
+-              try5=.../try5_dump_free_iter28000_val_unseen/eval_results \
+-              kd=.../kd_dual_dump_free_iter20000_val_unseen/eval_results \
+-        --forced baseline=.../base_dump_forced_iter25000_val_unseen/eval_results \
+-                 try5=... kd=... \
++    python scripts/analysis/paired_report.py \\
++        --features data/logs/analysis/features_val_unseen.json \\
++        --own base=data/logs/checkpoints/pa_base_own_val_unseen/eval_results \\
++              try5=data/logs/checkpoints/pa_try5_own_val_unseen/eval_results \\
++              kd=data/logs/checkpoints/pa_kd_own_val_unseen/eval_results \\
++        --shared base=data/logs/checkpoints/pa_base_shared_val_unseen/eval_results \\
++                 try5=data/logs/checkpoints/pa_try5_shared_val_unseen/eval_results \\
++                 kd=data/logs/checkpoints/pa_kd_shared_val_unseen/eval_results \\
+         --out data/logs/analysis/report_val_unseen.md
+-(all LABEL=DIR pairs of one option follow that option, space separated)
+-
+-Sections (all numbers are plain counts and means; no intervals):
+-  1  per-run SR / SPL / OSR / nDTW / stop error, and the paired 2x2 success
+-     table (both / ref-only / other-only / neither) per pair
+-  2  hard-subset table: SR and SPL of every run on the GT-derived strata
+-     (multi-fork, multi-room, decoy, long path, spatial-language, LLM-map
+-     good/bad) -- the main-text table
+-  3  discordant-pair profile: mean feature values of the episodes only the
+-     reference solves vs only the other run solves
+-  4  failure modes per run (stop error / wrong branch at a fork / off path
+-     elsewhere / other), from the free-rollout dump
+-  5  efficiency on episodes every run solves: steps, path length, revisits
+-  6  step-level decision accuracy vs the DAgger expert, overall and on fork
+-     steps by number of options (free dump, and forced dump when given); for
+-     forced dumps also the per-state 2x2 (ref right/wrong x other right/wrong)
+-  7  first divergence between the reference and each run (free dumps): at
+-     which step the executed actions first differ, whether that state is a
+-     fork, and who matched the expert there
+-
+-A "fork" is a state with >= 2 unvisited ghost nodes within --local-radius of
+-the agent in directions more than --fork-angle apart.
++
++The first label of each option is the reference every other run is paired
++against.  All numbers are counts and means; no intervals.
++
++Reference action of a step ("ref"):
++  own rollouts     the SPL expert's choice at the policy's own state;
++  shared states    the expert action every model executed (D8 replay), so
++                   all models are scored against the same action on the
++                   same state.
++Steps where the episode is cut (last allowed step, or no ghost left) carry a
++forced STOP and are not scored.
++
++Step category, from ref:
++  stop       ref = STOP (agent within 1.5 m of the goal);
++  backtrack  ref is a ghost not observed from the current node (the agent
++             must travel back through the graph to reach it);
++  turn       ref is a candidate of the current node more than --turn-angle
++             away from the agent's heading;
++  straight   the remaining candidate steps.
++
++Sections
++  0  feature distributions (to pick stratum thresholds)
++  1  per-run SR / SPL / OSR / nDTW / OSR-SR on common episodes, paired 2x2
++  2  hard-subset SR / SPL table on GT-derived strata
++  3  mean features of the discordant episodes
++  4  failure modes (own rollouts): stop error / wrong turn / off path / other
++  5  efficiency on episodes every run solves: steps, path length, backtracks
++  6  decision accuracy vs ref by step category: own rollouts; shared states
++     with the per-state 2x2 (same state verified by position + graph)
++  7  first divergence between own rollouts that share a state prefix
+ """
+ 
+ from __future__ import annotations
+@@ -44,64 +48,64 @@ import glob
+ import json
+ import math
+ import os
+-from collections import Counter, defaultdict
+-from typing import Dict, List, Optional, Sequence, Tuple
+-
+ import sys
++from collections import Counter
++from typing import Dict, List, Optional, Sequence, Tuple
+ 
+ import numpy as np
+ from tap import Tap
+ 
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ 
++CATEGORIES = ["stop", "backtrack", "turn", "straight"]
++
+ 
+ class Args(Tap):
+-    run: List[str]
+-    """LABEL=DIR, free-rollout dumps; the first is the reference."""
+-    forced: List[str] = []
+-    """LABEL=DIR, teacher-forced dumps (optional)."""
++    own: List[str]
++    """LABEL=DIR, own-rollout dumps; the first is the reference."""
++    shared: List[str] = []
++    """LABEL=DIR, shared-state dumps (optional)."""
+     features: Optional[str] = None
+-    """episode_features.py output; without it only sections 1, 4-7 are written."""
++    """episode_features.py output; without it sections 0, 2, 3 are skipped."""
+     split: str = "val_unseen"
+     out: Optional[str] = None
+-    local_radius: float = 3.0
+-    fork_angle: float = 45.0
++    turn_angle: float = 45.0
++    option_angle: float = 45.0
++    """Degrees: candidates of the current node closer in bearing are one option."""
+     fork_key: str = "n_forks3_graph"
+-    """Feature used for the multi-fork stratum (n_forks3_graph, n_forks_graph or n_turns)."""
++    """Feature for the multi-fork stratum (n_forks3_graph, n_forks_graph or n_turns)."""
+     min_forks: int = 2
+     min_turns: int = 2
+     min_room_changes: int = 2
+-    min_decoys: int = 1
++    min_decoy_categories: int = 2
+     long_quantile: float = 0.67
+-    """Long-path stratum = path length at or above this quantile."""
+     spatial_quantile: float = 0.5
+-    """Spatial-language stratum = n_spatial_words at or above this quantile."""
+ 
+ 
+ # ----------------------------------------------------------------- loading
+ 
+ 
+-def load_dump(directory: str, split: str) -> Dict[str, dict]:
++def load_dump(directory: str, split: str) -> Tuple[dict, Dict[str, dict]]:
+     files = sorted(glob.glob(os.path.join(directory, f"decisions_{split}_r*.jsonl")))
+     if not files:
+         raise FileNotFoundError(f"no decisions_{split}_r*.jsonl in {directory}")
++    header: dict = {}
+     eps: Dict[str, dict] = {}
+     for f in files:
+         with open(f) as fh:
+             for line in fh:
+                 r = json.loads(line)
+-                if r["kind"] == "step":
+-                    eps.setdefault(str(r["ep"]), {"steps": []})["steps"].append(r)
++                if r["kind"] == "header":
++                    header = header or r
++                elif r["kind"] == "step":
++                    eps.setdefault(str(r["ep"]), {"steps": [], "metric": None})["steps"].append(r)
+                 elif r["kind"] == "episode":
+-                    e = eps.setdefault(str(r["ep"]), {"steps": []})
++                    e = eps.setdefault(str(r["ep"]), {"steps": [], "metric": None})
+                     e["metric"] = r["metric"]
+                     e["traj"] = r.get("traj", [])
+-                    e["scene"] = r.get("scene")
+-    for ep, e in eps.items():
++    for e in eps.values():
+         e["steps"].sort(key=lambda r: r["step"])
+-        if "metric" not in e:  # unfinished episode (killed job)
+-            e["metric"] = None
+-    return eps
++    return header, eps
+ 
+ 
+ def parse_runs(items: Sequence[str]) -> List[Tuple[str, str]]:
+@@ -109,79 +113,100 @@ def parse_runs(items: Sequence[str]) -> List[Tuple[str, str]]:
+     for it in items:
+         if "=" not in it:
+             raise ValueError(f"expected LABEL=DIR, got {it!r}")
+-        label, d = it.split("=", 1)
+-        out.append((label, d))
++        out.append(tuple(it.split("=", 1)))  # type: ignore[arg-type]
+     return out
+ 
+ 
+ # ------------------------------------------------------------ step features
+ 
+ 
+-def local_options(step: dict, radius: float, angle_deg: float) -> Tuple[int, List[int]]:
+-    """Number of distinct directions among unvisited ghosts near the agent, and
+-    the indices (into step['vps']) of those local candidates."""
++def _bearing_from_heading(step: dict, idx: int) -> float:
++    """|angle| between the agent's forward direction and the vp at idx (rad)."""
+     cur = np.asarray(step["cur_pos"], dtype=float)
+-    cands = []
+-    for i, (vp, pos, vis) in enumerate(zip(step["vps"], step["pos"], step["visited"])):
+-        if vp is None or vis or pos is None or not str(vp).startswith("g"):
++    tgt = np.asarray(step["pos"][idx], dtype=float)
++    d = tgt - cur
++    h = step["heading"]
++    fx, fz = -math.sin(h), -math.cos(h)
++    return abs(math.atan2(fx * d[2] - fz * d[0], fx * d[0] + fz * d[2]))
++
++
++def _options(step: dict, angle_deg: float) -> int:
++    cur = np.asarray(step["cur_pos"], dtype=float)
++    thr = math.radians(angle_deg)
++    clusters: List[float] = []
++    for pos, local in zip(step["pos"], step.get("front_cur", [])):
++        if not local:
+             continue
+         d = np.asarray(pos, dtype=float) - cur
+-        dist = math.hypot(d[0], d[2])
+-        if dist <= radius:
+-            cands.append((i, math.atan2(d[2], d[0])))
+-    clusters: List[float] = []
+-    thr = math.radians(angle_deg)
+-    for _, bearing in cands:
+-        if all(abs((bearing - c + math.pi) % (2 * math.pi) - math.pi) > thr for c in clusters):
+-            clusters.append(bearing)
+-    return len(clusters), [i for i, _ in cands]
++        b = math.atan2(d[2], d[0])
++        if all(abs((b - c + math.pi) % (2 * math.pi) - math.pi) > thr for c in clusters):
++            clusters.append(b)
++    return len(clusters)
+ 
+ 
+-def annotate(eps: Dict[str, dict], radius: float, angle: float) -> None:
++def signature(step: dict) -> tuple:
++    return (
++        tuple(round(x, 3) for x in step["cur_pos"]),
++        tuple(step["vps"]),
++        tuple(None if p is None else tuple(round(x, 3) for x in p) for p in step["pos"]),
++    )
++
++
++def annotate(header: dict, eps: Dict[str, dict], args: Args) -> None:
++    shared = bool(header.get("d8_shared_states"))
++    max_steps = int(header.get("max_steps", 15) or 15)
+     for e in eps.values():
+-        seen = set()
+-        e["n_revisits"] = 0
++        e["n_backtracks"] = 0
+         e["first_dev"] = None
+         for s in e["steps"]:
+-            s["n_options"], s["local"] = local_options(s, radius, angle)
+-            s["is_fork"] = s["n_options"] >= 2
+-            s["valid"] = s["teacher"] != -100
+-            s["is_stop"] = s["teacher"] == 0
+-            s["correct"] = bool(s["valid"] and s["student"] == s["teacher"])
+-            if s["cur_vp"] in seen:
+-                e["n_revisits"] += 1
+-            seen.add(s["cur_vp"])
+-            if e["first_dev"] is None and s["valid"] and not s["is_stop"] and not s["correct"]:
++            s["ref"] = s["executed"] if shared else s["teacher"]
++            cut = s["no_vp_left"] or s["step"] >= max_steps - 1
++            s["valid"] = (not cut) and s["ref"] != -100 and s["ref"] < len(s["vps"])
++            s["n_options"] = _options(s, args.option_angle)
++            if not s["valid"]:
++                s["cat"] = None
++            elif s["ref"] == 0:
++                s["cat"] = "stop"
++            elif not s["front_cur"][s["ref"]]:
++                s["cat"] = "backtrack"
++            elif _bearing_from_heading(s, s["ref"]) > math.radians(args.turn_angle):
++                s["cat"] = "turn"
++            else:
++                s["cat"] = "straight"
++            s["correct"] = bool(s["valid"] and s["student"] == s["ref"])
++            ex = s["executed"]
++            if 0 < ex < len(s["vps"]) and not s["front_cur"][ex]:
++                e["n_backtracks"] += 1
++            if e["first_dev"] is None and s["valid"] and s["cat"] != "stop" and not s["correct"]:
+                 e["first_dev"] = s
+         m = e["metric"] or {}
+         if m.get("success", 0) >= 1:
+-            mode = "success"
++            e["mode"] = "success"
+         elif m.get("oracle_success", 0) >= 1:
+-            mode = "stop_error"
+-        elif e["first_dev"] is not None and e["first_dev"]["is_fork"]:
+-            mode = "wrong_branch"
++            e["mode"] = "stop_error"
++        elif e["first_dev"] is not None and e["first_dev"]["cat"] == "turn":
++            e["mode"] = "wrong_turn"
+         elif e["first_dev"] is not None:
+-            mode = "off_path"
++            e["mode"] = "off_path"
+         else:
+-            mode = "other"
+-        e["mode"] = mode
++            e["mode"] = "other"
+ 
+ 
+ # ----------------------------------------------------------------- tables
+ 
+ 
+-def md_table(header: List[str], rows: List[List[str]]) -> str:
++def md_table(header: List[str], rows: List[List]) -> str:
+     lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+     lines += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
+     return "\n".join(lines)
+ 
+ 
+ def pct(x: float) -> str:
+-    return f"{100 * x:.2f}"
++    return "-" if x != x else f"{100 * x:.2f}"
+ 
+ 
+ def mean_metric(eps: Dict[str, dict], ids: Sequence[str], key: str) -> float:
+-    vals = [eps[i]["metric"][key] for i in ids if eps[i]["metric"] is not None]
++    vals = [eps[i]["metric"][key] for i in ids if eps[i]["metric"] is not None and key in eps[i]["metric"]]
+     return float(np.mean(vals)) if vals else float("nan")
+ 
+ 
+@@ -189,43 +214,61 @@ def success_set(eps: Dict[str, dict], ids: Sequence[str]) -> set:
+     return {i for i in ids if eps[i]["metric"] and eps[i]["metric"]["success"] >= 1}
+ 
+ 
++FEATURE_KEYS = ["path_len_m", "n_turns", "n_forks_graph", "n_forks3_graph", "n_room_changes",
++                "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
++
++
++def _vals(features, ids, k):
++    return [features[i][k] for i in ids if i in features and features[i].get(k) is not None and features[i].get(k) != -1]
++
++
++def section_distributions(features, ids) -> str:
++    rows = []
++    for k in FEATURE_KEYS:
++        xs = _vals(features, ids, k)
++        if xs:
++            q = np.quantile(xs, [0.1, 0.25, 0.5, 0.75, 0.9])
++            rows.append([k, len(xs), f"{np.mean(xs):.2f}"] + [f"{v:.2f}" for v in q])
++    return "\n".join(["## 0. Feature distributions (common episodes)", "",
++                      md_table(["feature", "n", "mean", "p10", "p25", "p50", "p75", "p90"], rows), ""])
++
++
+ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[str, List[str]]:
+     fs = {i: features[i] for i in ids if i in features}
+-    def have(k):
+-        return [v[k] for v in fs.values() if v.get(k) is not None and v.get(k) != -1]
+-    out: Dict[str, List[str]] = {"all": list(ids)}
+-    fk = args.fork_key
+-    out[f"multi-fork ({fk}>={args.min_forks})"] = [i for i, v in fs.items() if (v.get(fk) or 0) >= args.min_forks]
+-    out[f"few forks ({fk}<{args.min_forks})"] = [i for i, v in fs.items() if v.get(fk) is not None and 0 <= v[fk] < args.min_forks]
+-    if have("n_turns"):
+-        out[f"multi-turn (turns>={args.min_turns})"] = [i for i, v in fs.items() if (v.get("n_turns") or 0) >= args.min_turns]
+-        out[f"few turns (turns<{args.min_turns})"] = [i for i, v in fs.items() if v.get("n_turns") is not None and v["n_turns"] < args.min_turns]
+-    out[f"multi-room (changes>={args.min_room_changes})"] = [i for i, v in fs.items() if (v.get("n_room_changes") or 0) >= args.min_room_changes]
+-    out[f"decoy (decoys>={args.min_decoys})"] = [i for i, v in fs.items() if (v.get("n_decoys") or 0) >= args.min_decoys]
+-    if have("path_len_m"):
+-        thr = float(np.quantile(have("path_len_m"), args.long_quantile))
+-        out[f"long path (>= {thr:.1f} m)"] = [i for i, v in fs.items() if v.get("path_len_m", 0) >= thr]
+-        out[f"short path (< {thr:.1f} m)"] = [i for i, v in fs.items() if v.get("path_len_m", 0) < thr]
+-    if have("n_spatial_words"):
+-        thr = float(np.quantile(have("n_spatial_words"), args.spatial_quantile))
+-        out[f"spatial language (words>={thr:.0f})"] = [i for i, v in fs.items() if v.get("n_spatial_words", 0) >= thr]
+-    if have("llm_region_hit"):
+-        thr = float(np.median(have("llm_region_hit")))
+-        out[f"LLM map good (hit>={thr:.2f})"] = [i for i, v in fs.items() if v.get("llm_region_hit") is not None and v["llm_region_hit"] >= thr]
+-        out[f"LLM map poor (hit<{thr:.2f})"] = [i for i, v in fs.items() if v.get("llm_region_hit") is not None and v["llm_region_hit"] < thr]
+-    return out
+ 
++    def ge(k, t):
++        return [i for i, v in fs.items() if v.get(k) is not None and v[k] != -1 and v[k] >= t]
+ 
+-FEATURE_KEYS = ["path_len_m", "n_turns", "n_forks_graph", "n_forks3_graph", "n_room_changes",
+-                "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
++    def lt(k, t):
++        return [i for i, v in fs.items() if v.get(k) is not None and v[k] != -1 and v[k] < t]
++
++    out: Dict[str, List[str]] = {"all": list(ids)}
++    fk = args.fork_key
++    out[f"multi-fork ({fk}>={args.min_forks})"] = ge(fk, args.min_forks)
++    out[f"few forks ({fk}<{args.min_forks})"] = lt(fk, args.min_forks)
++    out[f"multi-turn (n_turns>={args.min_turns})"] = ge("n_turns", args.min_turns)
++    out[f"few turns (n_turns<{args.min_turns})"] = lt("n_turns", args.min_turns)
++    out[f"multi-room (n_room_changes>={args.min_room_changes})"] = ge("n_room_changes", args.min_room_changes)
++    out[f"decoys (n_decoy_categories>={args.min_decoy_categories})"] = ge("n_decoy_categories", args.min_decoy_categories)
++    xs = _vals(features, ids, "path_len_m")
++    if xs:
++        t = float(np.quantile(xs, args.long_quantile))
++        out[f"long path (>= {t:.1f} m)"] = ge("path_len_m", t)
++        out[f"short path (< {t:.1f} m)"] = lt("path_len_m", t)
++    xs = _vals(features, ids, "n_spatial_words")
++    if xs:
++        t = float(np.quantile(xs, args.spatial_quantile))
++        out[f"spatial language (words>={t:.0f})"] = ge("n_spatial_words", t)
++    xs = _vals(features, ids, "llm_region_hit")
++    if xs:
++        t = float(np.median(xs))
++        out[f"LLM map good (hit>={t:.2f})"] = ge("llm_region_hit", t)
++        out[f"LLM map poor (hit<{t:.2f})"] = lt("llm_region_hit", t)
++    return {k: v for k, v in out.items() if v}
+ 
+ 
+ def feature_profile(features: Dict[str, dict], ids: Sequence[str]) -> List[str]:
+-    cells = []
+-    for k in FEATURE_KEYS:
+-        xs = [features[i][k] for i in ids if i in features and features[i].get(k) is not None and features[i].get(k) != -1]
+-        cells.append(f"{np.mean(xs):.2f}" if xs else "-")
+-    return cells
++    return [f"{np.mean(xs):.2f}" if (xs := _vals(features, ids, k)) else "-" for k in FEATURE_KEYS]
+ 
+ 
+ # ------------------------------------------------------------- sections
+@@ -235,34 +278,35 @@ def section_overview(runs, eps_by, ids) -> str:
+     rows = []
+     for label, _ in runs:
+         e = eps_by[label]
+-        rows.append([label, len(ids), pct(mean_metric(e, ids, "success")), pct(mean_metric(e, ids, "spl")),
+-                     pct(mean_metric(e, ids, "oracle_success")), pct(mean_metric(e, ids, "ndtw")),
+-                     pct(mean_metric(e, ids, "oracle_success") - mean_metric(e, ids, "success")),
++        sr, osr = mean_metric(e, ids, "success"), mean_metric(e, ids, "oracle_success")
++        rows.append([label, len(ids), pct(sr), pct(mean_metric(e, ids, "spl")), pct(osr),
++                     pct(mean_metric(e, ids, "ndtw")), pct(osr - sr),
+                      f"{mean_metric(e, ids, 'steps_taken'):.1f}", f"{mean_metric(e, ids, 'path_length'):.2f}"])
+-    out = ["## 1. Overview (common episodes)", "",
++    out = ["## 1. Own rollouts on common episodes", "",
+            md_table(["run", "n", "SR", "SPL", "OSR", "nDTW", "OSR-SR", "steps", "PL (m)"], rows), ""]
+-    ref, _ = runs[0]
++    ref = runs[0][0]
+     sref = success_set(eps_by[ref], ids)
+     rows = []
+     for label, _ in runs[1:]:
+         s = success_set(eps_by[label], ids)
+-        both = len(sref & s); ref_only = len(sref - s); other_only = len(s - sref)
+-        neither = len(ids) - both - ref_only - other_only
+-        rows.append([f"{ref} vs {label}", both, ref_only, other_only, neither, other_only - ref_only])
+-    out += [md_table(["pair", "both", f"{ref} only", "other only", "neither", "net"], rows), ""]
++        both, ro, oo = len(sref & s), len(sref - s), len(s - sref)
++        rows.append([f"{ref} vs {label}", both, ro, oo, len(ids) - both - ro - oo, oo - ro])
++    if rows:
++        out += [md_table(["pair", "both succeed", f"{ref} only", "other only", "neither", "net"], rows), ""]
+     return "\n".join(out)
+ 
+ 
+ def section_subsets(runs, eps_by, groups) -> str:
+-    header = ["subset", "n"] + [f"{l} SR" for l, _ in runs] + [f"{l} SPL" for l, _ in runs] + [f"dSR vs {runs[0][0]}" for _ in runs[1:]]
++    ref = runs[0][0]
++    header = ["subset", "n"] + [f"{l} SR" for l, _ in runs] + [f"{l} SPL" for l, _ in runs] \
++        + [f"{l} - {ref} SR" for l, _ in runs[1:]]
+     rows = []
+     for name, ids in groups.items():
+-        if not ids:
+-            continue
+         sr = [mean_metric(eps_by[l], ids, "success") for l, _ in runs]
+         spl = [mean_metric(eps_by[l], ids, "spl") for l, _ in runs]
+-        rows.append([name, len(ids)] + [pct(x) for x in sr] + [pct(x) for x in spl] + [f"{100 * (x - sr[0]):+.2f}" for x in sr[1:]])
+-    return "\n".join(["## 2. Hard subsets (GT-derived strata)", "", md_table(header, rows), ""])
++        rows.append([name, len(ids)] + [pct(x) for x in sr] + [pct(x) for x in spl]
++                    + [f"{100 * (x - sr[0]):+.2f}" for x in sr[1:]])
++    return "\n".join(["## 2. Hard subsets (GT-derived strata, own rollouts)", "", md_table(header, rows), ""])
+ 
+ 
+ def section_discordant(runs, eps_by, ids, features) -> str:
+@@ -271,23 +315,23 @@ def section_discordant(runs, eps_by, ids, features) -> str:
+     rows = []
+     for label, _ in runs[1:]:
+         s = success_set(eps_by[label], ids)
+-        for name, sub in [(f"{ref} only", sorted(sref - s)), (f"{label} only", sorted(s - sref)),
+-                          ("both", sorted(sref & s)), ("neither", sorted(set(ids) - sref - s))]:
+-            rows.append([f"{ref} vs {label}", name, len(sub)] + feature_profile(features, sub))
+-    return "\n".join(["## 3. Discordant-pair profile (mean features)", "",
+-                      md_table(["pair", "set", "n"] + FEATURE_KEYS, rows), ""])
++        for name, sub in [(f"{ref} only", sref - s), (f"{label} only", s - sref),
++                          ("both", sref & s), ("neither", set(ids) - sref - s)]:
++            rows.append([f"{ref} vs {label}", name, len(sub)] + feature_profile(features, sorted(sub)))
++    return "\n".join(["## 3. Mean features of discordant episodes", "",
++                      md_table(["pair", "succeeds", "n"] + FEATURE_KEYS, rows), ""])
+ 
+ 
+-MODES = ["success", "stop_error", "wrong_branch", "off_path", "other"]
++MODES = ["success", "stop_error", "wrong_turn", "off_path", "other"]
+ 
+ 
+ def section_modes(runs, eps_by, ids) -> str:
+-    rows = []
+-    for label, _ in runs:
+-        c = Counter(eps_by[label][i]["mode"] for i in ids)
+-        rows.append([label] + [c.get(m, 0) for m in MODES])
+-    return "\n".join(["## 4. Failure modes (free rollout)", "",
+-                      "stop_error = oracle success without success; wrong_branch = first deviation from the expert at a fork state; off_path = first deviation elsewhere; other = never deviated from the expert yet failed.", "",
++    rows = [[label] + [Counter(eps_by[label][i]["mode"] for i in ids).get(m, 0) for m in MODES]
++            for label, _ in runs]
++    return "\n".join(["## 4. Failure modes (own rollouts)", "",
++                      "stop_error: reached the goal area but stopped elsewhere; wrong_turn: first disagreement "
++                      "with the expert at a turn step; off_path: first disagreement at a straight or backtrack "
++                      "step; other: never disagreed with the expert yet failed.", "",
+                       md_table(["run"] + MODES, rows), ""])
+ 
+ 
+@@ -301,50 +345,57 @@ def section_efficiency(runs, eps_by, ids) -> str:
+         e = eps_by[label]
+         rows.append([label, len(common), f"{mean_metric(e, common, 'steps_taken'):.2f}",
+                      f"{mean_metric(e, common, 'path_length'):.2f}",
+-                     f"{np.mean([e[i]['n_revisits'] for i in common]):.2f}" if common else "-",
++                     f"{np.mean([e[i]['n_backtracks'] for i in common]):.2f}" if common else "-",
+                      pct(mean_metric(e, common, "spl"))])
+     return "\n".join(["## 5. Efficiency on episodes every run solves", "",
+-                      md_table(["run", "n", "steps", "PL (m)", "revisits", "SPL"], rows), ""])
+-
+-
+-def step_accuracy_rows(label: str, eps: Dict[str, dict], ids: Sequence[str]) -> List[List[str]]:
+-    steps = [s for i in ids for s in eps[i]["steps"] if s["valid"]]
+-    def acc(sel):
+-        return (f"{100 * np.mean([s['correct'] for s in sel]):.2f}", len(sel)) if sel else ("-", 0)
+-    groups = [
+-        ("all valid steps", steps),
+-        ("stop steps (expert=STOP)", [s for s in steps if s["is_stop"]]),
+-        ("move, 1 option", [s for s in steps if not s["is_stop"] and s["n_options"] <= 1]),
+-        ("move, 2 options", [s for s in steps if not s["is_stop"] and s["n_options"] == 2]),
+-        ("move, >=3 options", [s for s in steps if not s["is_stop"] and s["n_options"] >= 3]),
+-    ]
+-    rows = []
+-    for name, sel in groups:
+-        a, n = acc(sel)
+-        rows.append([label, name, n, a])
+-    return rows
++                      md_table(["run", "n", "low-level steps", "PL (m)", "backtracks", "SPL"], rows), ""])
++
+ 
++def _acc(sel: List[dict]) -> str:
++    return f"{100 * np.mean([s['correct'] for s in sel]):.2f}" if sel else "-"
+ 
+-def section_steps(title: str, runs, eps_by, ids, paired: bool) -> str:
++
++def section_accuracy(title: str, runs, eps_by, ids) -> str:
++    header = ["run"] + [f"{c} (n / acc%)" for c in CATEGORIES] + ["turn, >=3 options", "all moves"]
+     rows = []
+     for label, _ in runs:
+-        rows += step_accuracy_rows(label, eps_by[label], ids)
+-    out = [f"## {title}", "", md_table(["run", "states", "n", "acc vs expert (%)"], rows), ""]
+-    if paired and len(runs) > 1:
+-        ref = runs[0][0]
+-        prow = []
+-        for label, _ in runs[1:]:
+-            a = {(i, s["step"]): s for i in ids for s in eps_by[ref][i]["steps"] if s["valid"] and not s["is_stop"]}
+-            b = {(i, s["step"]): s for i in ids for s in eps_by[label][i]["steps"] if s["valid"] and not s["is_stop"]}
+-            keys = sorted(set(a) & set(b))
+-            for name, sel in [("all move states", keys), ("fork states", [k for k in keys if a[k]["is_fork"]])]:
+-                both = sum(a[k]["correct"] and b[k]["correct"] for k in sel)
+-                ro = sum(a[k]["correct"] and not b[k]["correct"] for k in sel)
+-                oo = sum(b[k]["correct"] and not a[k]["correct"] for k in sel)
+-                prow.append([f"{ref} vs {label}", name, len(sel), both, ro, oo, len(sel) - both - ro - oo, oo - ro])
+-        out += ["Per-state 2x2 on identical states (teacher-forced):", "",
+-                md_table(["pair", "states", "n", "both right", f"{ref} only", "other only", "neither", "net"], prow), ""]
+-    return "\n".join(out)
++        steps = [s for i in ids for s in eps_by[label][i]["steps"] if s["valid"]]
++        cells = [label]
++        for c in CATEGORIES:
++            sel = [s for s in steps if s["cat"] == c]
++            cells.append(f"{len(sel)} / {_acc(sel)}")
++        sel = [s for s in steps if s["cat"] == "turn" and s["n_options"] >= 3]
++        cells.append(f"{len(sel)} / {_acc(sel)}")
++        sel = [s for s in steps if s["cat"] != "stop"]
++        cells.append(f"{len(sel)} / {_acc(sel)}")
++        rows.append(cells)
++    return "\n".join([f"## {title}", "", md_table(header, rows), ""])
++
++
++def section_shared_pairs(runs, eps_by, ids) -> str:
++    ref = runs[0][0]
++    rows, checked, mismatched = [], 0, 0
++    for label, _ in runs[1:]:
++        pairs = []
++        for i in ids:
++            for a, b in zip(eps_by[ref][i]["steps"], eps_by[label][i]["steps"]):
++                checked += 1
++                same_ref = a["ref"] == b["ref"] or not (a["valid"] and b["valid"])  # cut steps differ by design
++                if a["step"] != b["step"] or signature(a) != signature(b) or not same_ref:
++                    mismatched += 1
++                    break  # states after a mismatch are not shared
++                if a["valid"] and b["valid"]:
++                    pairs.append((a, b))
++        for cat in CATEGORIES[1:] + ["all moves"]:
++            sel = [(a, b) for a, b in pairs if (a["cat"] == cat if cat != "all moves" else a["cat"] != "stop")]
++            both = sum(a["correct"] and b["correct"] for a, b in sel)
++            ro = sum(a["correct"] and not b["correct"] for a, b in sel)
++            oo = sum(b["correct"] and not a["correct"] for a, b in sel)
++            rows.append([f"{ref} vs {label}", cat, len(sel), both, ro, oo, len(sel) - both - ro - oo, oo - ro])
++    note = (f"State check: {checked} step pairs compared, {mismatched} episode(s) cut at a state mismatch "
++            "(position, graph or reference action differ; expected 0 under D8 replay).")
++    return "\n".join(["Per-state 2x2 on identical states:", "", note, "",
++                      md_table(["pair", "category", "n", "both right", f"{ref} only", "other only", "neither", "net"], rows), ""])
+ 
+ 
+ def section_divergence(runs, eps_by, ids) -> str:
+@@ -353,61 +404,76 @@ def section_divergence(runs, eps_by, ids) -> str:
+     for label, _ in runs[1:]:
+         A, B = eps_by[ref], eps_by[label]
+         sa, sb = success_set(A, ids), success_set(B, ids)
+-        rec = Counter()
++        rec: Counter = Counter()
+         for i in ids:
+-            k = None
+-            for sa_, sb_ in zip(A[i]["steps"], B[i]["steps"]):
+-                if sa_["cur_vp"] != sb_["cur_vp"]:
++            found = None
++            for x, y in zip(A[i]["steps"], B[i]["steps"]):
++                if signature(x) != signature(y):
++                    found = "state differs first"
+                     break
+-                ea = sa_["vps"][sa_["executed"]] if sa_["executed"] < len(sa_["vps"]) else None
+-                eb = sb_["vps"][sb_["executed"]] if sb_["executed"] < len(sb_["vps"]) else None
+-                if ea != eb:
+-                    k = (sa_, sb_)
++                if x["executed"] != y["executed"]:
++                    found = (x, y)
+                     break
+-            if k is None:
+-                rec["identical"] += 1
++            if found is None:
++                rec[("identical until one run ends", "", "")] += 1
++                continue
++            if isinstance(found, str):
++                rec[(found, "", "")] += 1
+                 continue
+-            sa_, sb_ = k
+-            outcome = "both" if i in sa and i in sb else f"{ref} only" if i in sa else f"{label} only" if i in sb else "neither"
+-            who = "ref matches expert" if sa_["correct"] else "other matches expert" if sb_["correct"] else "neither matches expert"
+-            rec[(outcome, "fork" if sa_["is_fork"] else "non-fork", who)] += 1
+-        rows.append([f"{ref} vs {label}", "identical trajectories", "", "", rec.pop("identical", 0)])
+-        for (outcome, fork, who), n in sorted(rec.items(), key=lambda kv: (-kv[1])):
+-            rows.append([f"{ref} vs {label}", outcome, fork, who, n])
+-    return "\n".join(["## 7. First divergence between runs (free rollouts)", "",
+-                      "The first step whose executed waypoint differs; the state is shared up to there.", "",
+-                      md_table(["pair", "episode outcome", "state", "who matched expert there", "n"], rows), ""])
++            x, y = found
++            outcome = ("both" if i in sa and i in sb else f"{ref} only" if i in sa
++                       else f"{label} only" if i in sb else "neither")
++            who = (f"{ref} = expert" if x["correct"] and not y["correct"] else
++                   f"{label} = expert" if y["correct"] and not x["correct"] else
++                   "neither = expert" if not x["correct"] and not y["correct"] else "both = expert")
++            rec[(outcome, x["cat"] or "cut", who)] += 1
++        for (outcome, cat, who), n in sorted(rec.items(), key=lambda kv: -kv[1]):
++            rows.append([f"{ref} vs {label}", outcome, cat, who, n])
++    return "\n".join(["## 7. First divergence between own rollouts", "",
++                      "The first step where the two runs, on the same state, execute different actions.", "",
++                      md_table(["pair", "who succeeds", "step category", "who agreed with expert there", "n"], rows), ""])
+ 
+ 
+ # ------------------------------------------------------------------ main
+ 
+ 
++def load_runs(items, args):
++    runs = parse_runs(items)
++    eps_by = {}
++    for label, d in runs:
++        header, eps = load_dump(d, args.split)
++        annotate(header, eps, args)
++        eps_by[label] = eps
++    ids = sorted(set.intersection(*[{i for i, e in eps.items() if e["metric"] is not None}
++                                    for eps in eps_by.values()]), key=lambda x: int(x) if x.isdigit() else x)
++    return runs, eps_by, ids
++
++
+ def main(argv: Optional[Sequence[str]] = None) -> None:
+     args = Args(underscores_to_dashes=True).parse_args(argv)
+-    runs = parse_runs(args.run)
+-    eps_by = {label: load_dump(d, args.split) for label, d in runs}
+-    for e in eps_by.values():
+-        annotate(e, args.local_radius, args.fork_angle)
+-    ids = sorted(set.intersection(*[set(i for i, e in eps.items() if e["metric"] is not None) for eps in eps_by.values()]))
++    runs, eps_by, ids = load_runs(args.own, args)
+     features = json.load(open(args.features)) if args.features else {}
+ 
+-    parts = [f"# Paired-episode report ({args.split}, {len(ids)} common episodes)", ""]
++    parts = [f"# Paired-episode report ({args.split})", "",
++             f"Own rollouts: {len(ids)} episodes common to all runs.", ""]
++    if features:
++        parts.append(section_distributions(features, ids))
+     parts.append(section_overview(runs, eps_by, ids))
+     if features:
+-        groups = strata(features, ids, args)
+-        parts.append(section_subsets(runs, eps_by, groups))
+-        parts.append(section_discordant(runs, eps_by, ids, features))
++        parts.append(section_subsets(runs, eps_by, strata(features, ids, args)))
++        if len(runs) > 1:
++            parts.append(section_discordant(runs, eps_by, ids, features))
+     parts.append(section_modes(runs, eps_by, ids))
+     parts.append(section_efficiency(runs, eps_by, ids))
+-    parts.append(section_steps("6a. Decision accuracy vs expert (free rollout)", runs, eps_by, ids, paired=False))
+-    if args.forced:
+-        forced = parse_runs(args.forced)
+-        f_by = {label: load_dump(d, args.split) for label, d in forced}
+-        for e in f_by.values():
+-            annotate(e, args.local_radius, args.fork_angle)
+-        f_ids = sorted(set.intersection(*[set(e) for e in f_by.values()]))
+-        parts.append(section_steps(f"6b. Decision accuracy vs expert (teacher-forced, {len(f_ids)} episodes)", forced, f_by, f_ids, paired=True))
+-    parts.append(section_divergence(runs, eps_by, ids))
++    parts.append(section_accuracy("6a. Decision accuracy vs expert, own rollouts", runs, eps_by, ids))
++    if args.shared:
++        s_runs, s_eps, s_ids = load_runs(args.shared, args)
++        parts.append(section_accuracy(f"6b. Decision accuracy vs expert, shared states ({len(s_ids)} episodes)",
++                                      s_runs, s_eps, s_ids))
++        if len(s_runs) > 1:
++            parts.append(section_shared_pairs(s_runs, s_eps, s_ids))
++    if len(runs) > 1:
++        parts.append(section_divergence(runs, eps_by, ids))
+     text = "\n".join(parts)
+     if args.out:
+         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+diff --git a/tests/test_decision_dump.py b/tests/test_decision_dump.py
+index a1baf34..9f5e9aa 100644
+--- a/tests/test_decision_dump.py
++++ b/tests/test_decision_dump.py
+@@ -1,5 +1,6 @@
+-"""DecisionDumper: records every step, forces the expert action only when
+-asked, and the config keys it reads exist with their documented defaults."""
++"""DecisionDumper is a pure observer: it records the policy's argmax, the
++expert and the executed action, flags candidates of the current node, skips
++re-runs of finished episodes, and its config key exists defaulting to off."""
+ 
+ import ast
+ import importlib.util
+@@ -8,6 +9,7 @@ from pathlib import Path
+ from types import SimpleNamespace
+ 
+ import numpy as np
++import pytest
+ import torch
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+@@ -22,71 +24,75 @@ class FakeGmap:
+     def __init__(self):
+         self.node_pos = {"0": np.array([0.0, 0.0, 0.0]), "1": np.array([1.0, 0.0, 0.0])}
+         self.ghost_aug_pos = {"g0": np.array([2.0, 0.0, 0.0]), "g1": np.array([0.0, 0.0, 2.0])}
++        self.ghost_fronts = {"g0": ["1"], "g1": ["0"]}
+ 
+ 
+-def _episodes():
+-    return [SimpleNamespace(episode_id=7, scene_id="data/scene_datasets/mp3d/abc/abc.glb")]
++EP = SimpleNamespace(episode_id=7, scene_id="data/scene_datasets/mp3d/abc/abc.glb")
+ 
+ 
+-def _step(dumper):
+-    gmap = FakeGmap()
+-    vps = [None, "0", "1", "g0", "g1"]
+-    probs = torch.tensor([[0.1, 0.0, 0.0, 0.6, 0.3]])
+-    teacher = torch.tensor([4])
+-    return dumper.choose_actions(
+-        _episodes(), 0, ["1"], [np.array([1.0, 0.0, 0.0])], [np.array([0.0, 0.0, 0.0, 1.0])],
+-        [gmap], [vps], probs, np.array([3]), teacher, [False],
++def _record(dumper, executed, teacher):
++    dumper.record_step(
++        [EP], 0, ["1"], [np.array([1.0, 0.0, 0.0])], [np.array([0.0, 0.0, 0.0, 1.0])],
++        [FakeGmap()], [[None, "0", "1", "g0", "g1"]],
++        torch.tensor([[0.1, 0.0, 0.0, 0.6, 0.3, 0.0]]),  # padded beyond len(vps)
++        np.array([executed]), teacher, [False],
+     )
+ 
+ 
+-def test_free_rollout_records_but_keeps_student_action(tmp_path):
++def test_records_student_teacher_executed(tmp_path):
+     path = tmp_path / "d.jsonl"
+-    dumper = dd.DecisionDumper(str(path), teacher_forcing=False, header={})
+-    executed = _step(dumper)
+-    assert executed.tolist() == [3]
+-    assert dumper.stop_vp("0", "1") == "0"
+-    dumper.finish_episode(
+-        _episodes()[0], 0, {"success": 1.0, "spl": np.float64(0.5)},
+-        {"position": {"position": [[0, 0, 0], [1, 0, 0]]}},
+-    )
++    dumper = dd.DecisionDumper(str(path), header={"x": 1})
++    _record(dumper, executed=4, teacher=torch.tensor([4]))  # e.g. replayed expert action
++    dumper.finish_episode(EP, 0, {"success": 1.0, "spl": np.float64(0.5)},
++                          {"position": {"position": [[0, 0, 0], [1, 0, 0]]}})
++    _record(dumper, executed=3, teacher=None)  # a re-run of the finished episode: skipped
++    dumper.finish_episode(EP, 1, {"success": 0.0}, {})
+     dumper.close()
+-    lines = [json.loads(l) for l in path.read_text().splitlines()]
+-    assert [l["kind"] for l in lines] == ["header", "step", "episode"]
++    lines = [json.loads(line) for line in path.read_text().splitlines()]
++    assert [line["kind"] for line in lines] == ["header", "step", "episode"]
+     step = lines[1]
+-    assert step["student"] == 3 and step["teacher"] == 4 and step["executed"] == 3
+-    assert step["vps"] == [None, "0", "1", "g0", "g1"]
+-    assert step["pos"][0] is None and step["pos"][3] == [2.0, 0.0, 0.0]
++    assert step["student"] == 3 and step["teacher"] == 4 and step["executed"] == 4
+     assert step["visited"] == [False, True, True, False, False]
+-    assert step["scene"] == "abc"
++    assert step["front_cur"] == [False, False, False, True, False]
++    assert step["pos"][0] is None and step["pos"][3] == [2.0, 0.0, 0.0]
++    assert len(step["probs"]) == 5 and step["scene"] == "abc"
+     assert lines[2]["traj"] == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+     assert lines[2]["metric"]["spl"] == 0.5
+ 
+ 
+-def test_teacher_forcing_executes_expert_and_stops_here(tmp_path):
+-    path = tmp_path / "d.jsonl"
+-    dumper = dd.DecisionDumper(str(path), teacher_forcing=True, header={})
+-    assert _step(dumper).tolist() == [4]
+-    assert dumper.stop_vp("0", "1") == "1"
+-    # -100 (no ghost left) keeps the student's action.
+-    gmap = FakeGmap()
+-    out = dumper.choose_actions(
+-        _episodes(), 1, ["1"], [np.zeros(3)], [np.array([0.0, 0.0, 0.0, 1.0])],
+-        [gmap], [[None, "0", "1"]], torch.tensor([[0.9, 0.05, 0.05]]), np.array([0]),
+-        torch.tensor([-100]), [True],
+-    )
+-    assert out.tolist() == [0]
++def test_missing_teacher_is_minus_100(tmp_path):
++    dumper = dd.DecisionDumper(str(tmp_path / "d.jsonl"), header={})
++    _record(dumper, executed=3, teacher=None)
+     dumper.close()
++    step = json.loads((tmp_path / "d.jsonl").read_text().splitlines()[1])
++    assert step["teacher"] == -100
++
++
++def test_refuses_to_overwrite(tmp_path):
++    path = tmp_path / "d.jsonl"
++    path.write_text("old\n")
++    with pytest.raises(FileExistsError):
++        dd.DecisionDumper(str(path), header={})
++
++
++def test_heading_convention():
++    # rotation of +90 deg about +y: forward (0,0,-1) -> (-1,0,0)
++    q = [0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)]
++    h = dd._heading(q)
++    assert np.allclose([-np.sin(h), -np.cos(h)], [-1.0, 0.0], atol=1e-6)
+ 
+ 
+-def test_config_keys_exist():
++def test_config_key_exists_and_is_off():
+     src = (ROOT / "vlnce_baselines" / "config" / "default.py").read_text()
+     found = {}
+     for node in ast.walk(ast.parse(src)):
+         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Attribute):
+-            tgt = ast.unparse(node.targets[0]) if hasattr(ast, "unparse") else ""
+-            if tgt in ("_C.EVAL.decision_dump", "_C.EVAL.teacher_forcing"):
+-                found[tgt] = ast.literal_eval(node.value)
+-    assert found == {"_C.EVAL.decision_dump": False, "_C.EVAL.teacher_forcing": False}
++            t = node.targets[0]
++            if isinstance(t.value, ast.Attribute) and t.value.attr == "EVAL" and t.attr in (
++                "decision_dump", "teacher_forcing"
++            ):
++                found[t.attr] = ast.literal_eval(node.value)
++    assert found == {"decision_dump": False}
+ 
+ 
+ def test_enabled_only_in_eval():
+diff --git a/vlnce_baselines/common/decision_dump.py b/vlnce_baselines/common/decision_dump.py
+index 2762b29..b4938bb 100644
+--- a/vlnce_baselines/common/decision_dump.py
++++ b/vlnce_baselines/common/decision_dump.py
+@@ -1,20 +1,20 @@
+-"""Per-step decision dump for the paired-episode analysis.
++"""Per-step decision dump for the paired-episode analysis (eval only, read-only).
+ 
+-Enabled by ``EVAL.decision_dump True`` on an ``--run-type eval`` job.  Every
+-high-level step of every episode is written as one JSON line, followed by one
+-``episode`` line when the episode finishes, to
+-``<RESULTS_DIR>/decisions_<split>_r<rank>_w<world>.jsonl``.
++Enabled by ``EVAL.decision_dump True`` on an ``--run-type eval`` job.  The
++dump never changes which action is executed: it records, at every high-level
++step, the policy's own choice (argmax of its probabilities), the DAgger
++expert's choice, and the action the trainer actually executed.  Normally the
++executed action is the policy's argmax (own rollout); with the D8 shared-state
++flags (``EVAL.d8_shared_states`` / ``EVAL.d8_replay_dir``) it is the replayed
++expert action, so every model is probed on identical, verified states.
+ 
+-With ``EVAL.teacher_forcing True`` the executed action is the DAgger expert's
+-choice (``_teacher_action_new``) instead of the policy's argmax, so two
+-policies evaluated this way see identical observations and the dump compares
+-their per-step decisions on the same states (protocol 2).  Without it the
+-policy drives (protocol 1) and the expert's choice is only recorded.
++The expert needs real candidate positions (``get_cand_real_pos``), which the
++trainers compute only in training, with VIDEO_OPTION or D8 shared states; with
++this dump on they compute them too.  Real positions are stored on the graph
++only (``ghost_real_pos``) and do not enter the policy.
+ 
+-The expert needs the real candidate positions (``get_cand_real_pos``), which
+-the trainers only compute in training or with VIDEO_OPTION; the trainers
+-therefore also compute them when this dump is on.  Real positions are stored
+-on the graph only, the policy inputs are unchanged.
++Output: ``<RESULTS_DIR>/decisions_<split>_r<rank>_w<world>.jsonl``, one JSON
++object per line.
+ 
+ Step line::
+ 
+@@ -22,8 +22,10 @@ Step line::
+      "cur_pos": [x, y, z], "heading": rad, "no_vp_left": false,
+      "vps": [vp ids in the policy's gmap order, index 0 = STOP],
+      "pos": [[x, y, z] per vp, null for STOP], "visited": [bool per vp],
+-     "probs": [policy probability per vp], "student": argmax index,
+-     "teacher": expert index (0 = stop, -100 = none), "executed": index}
++     "front_cur": [bool per vp: ghost observed from the current node],
++     "probs": [policy probability per vp], "student": policy argmax,
++     "teacher": expert index (0 = stop, -100 = none / not computed),
++     "executed": index the trainer executed (0 = stop)}
+ 
+ Episode line::
+ 
+@@ -52,19 +54,26 @@ def _as_list(x) -> Optional[list]:
+ 
+ 
+ def _heading(ori) -> float:
+-    # ori = [qx, qy, qz, qw] (environments.get_pos_ori); rotation about y.
++    # ori = [qx, qy, qz, qw] (environments.get_pos_ori); rotation about +y.
++    # Forward is (-sin h, 0, -cos h) in habitat's (x, y, z).
+     ori = np.asarray(ori, dtype=float)
+     return float(2.0 * np.arctan2(ori[1], ori[3]))
+ 
+ 
++def _scene(episode) -> str:
++    return os.path.basename(episode.scene_id).split(".")[0]
++
++
+ class DecisionDumper:
+-    def __init__(self, path: str, teacher_forcing: bool, header: dict):
++    def __init__(self, path: str, header: dict):
+         os.makedirs(os.path.dirname(path), exist_ok=True)
++        if os.path.exists(path):
++            raise FileExistsError(path)
+         self.path = path
+-        self.teacher_forcing = teacher_forcing
+-        self._traj = {}  # episode_id -> list of positions
++        self._traj = {}  # episode_id -> agent positions at decision steps
++        self._finished = set()
+         self._fh = open(path, "w")
+-        self._write({"kind": "header", "teacher_forcing": teacher_forcing, **header})
++        self._write({"kind": "header", **header})
+ 
+     @classmethod
+     def from_config(cls, config, local_rank: int, world_size: int) -> "DecisionDumper":
+@@ -73,23 +82,26 @@ class DecisionDumper:
+             config.RESULTS_DIR, f"decisions_{split}_r{local_rank}_w{world_size}.jsonl"
+         )
+         header = {
+-            "ckpt": str(getattr(config.IL, "ckpt_to_load", "")),
++            "ckpt": str(config.EVAL.CKPT_PATH_DIR),
+             "split": split,
+             "policy": str(config.MODEL.policy_name),
+             "trainer": str(config.TRAINER_NAME),
+             "expert_policy": str(config.IL.expert_policy),
++            "max_steps": int(getattr(config.IL, "max_traj_len", -1)),
++            "d8_shared_states": bool(getattr(config.EVAL, "d8_shared_states", False)),
++            "d8_replay_dir": str(getattr(config.EVAL, "d8_replay_dir", "")),
+         }
+         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
+         if map_cfg is not None:
+             header["map_enabled"] = bool(map_cfg.enabled)
+             header["map_ablation"] = str(getattr(map_cfg, "map_ablation", "none"))
+-        return cls(path, bool(getattr(config.EVAL, "teacher_forcing", False)), header)
++        return cls(path, header)
+ 
+     def _write(self, record: dict) -> None:
+         self._fh.write(json.dumps(record) + "\n")
+         self._fh.flush()
+ 
+-    def choose_actions(
++    def record_step(
+         self,
+         episodes: Sequence,
+         stepk: int,
+@@ -99,37 +111,44 @@ class DecisionDumper:
+         gmaps: List,
+         gmap_vp_ids: List[List[Optional[str]]],
+         nav_probs,
+-        student_actions: np.ndarray,
++        executed_actions,
+         teacher_actions,
+         no_vp_left: List[bool],
+-    ) -> np.ndarray:
+-        """Record this step for every env and return the actions to execute."""
++    ) -> None:
++        """Record this step for every env.  Pure observer: changes nothing."""
+         probs = nav_probs.detach().float().cpu().numpy()
+-        teacher = teacher_actions.detach().cpu().numpy()
+-        executed = np.array(student_actions, copy=True)
++        executed = np.asarray(executed_actions).reshape(-1)
++        teacher = (
++            teacher_actions.detach().cpu().numpy().reshape(-1)
++            if teacher_actions is not None
++            else np.full(len(episodes), -100)
++        )
+         for i, ep in enumerate(episodes):
++            if ep.episode_id in self._finished:  # an env re-running a done episode
++                continue
+             gmap = gmaps[i]
+             vps = gmap_vp_ids[i]
+-            if self.teacher_forcing and teacher[i] != -100:
+-                executed[i] = int(teacher[i])
+-            pos = []
+-            visited = []
++            p = probs[i, : len(vps)]
++            pos, visited, front_cur = [], [], []
+             for vp in vps:
+                 if vp is None:
+                     pos.append(None)
+                     visited.append(False)
++                    front_cur.append(False)
+                 elif vp in gmap.node_pos:
+                     pos.append(_as_list(gmap.node_pos[vp]))
+                     visited.append(True)
++                    front_cur.append(False)
+                 else:
+                     pos.append(_as_list(gmap.ghost_aug_pos[vp]))
+                     visited.append(False)
++                    front_cur.append(cur_vp[i] in gmap.ghost_fronts.get(vp, ()))
+             self._traj.setdefault(ep.episode_id, []).append(_as_list(cur_pos[i]))
+             self._write(
+                 {
+                     "kind": "step",
+                     "ep": ep.episode_id,
+-                    "scene": os.path.basename(ep.scene_id).split(".")[0],
++                    "scene": _scene(ep),
+                     "step": int(stepk),
+                     "cur_vp": cur_vp[i],
+                     "cur_pos": _as_list(cur_pos[i]),
+@@ -138,23 +157,18 @@ class DecisionDumper:
+                     "vps": vps,
+                     "pos": pos,
+                     "visited": visited,
+-                    "probs": [float(p) for p in probs[i, : len(vps)]],
+-                    "student": int(student_actions[i]),
++                    "front_cur": front_cur,
++                    "probs": [float(x) for x in p],
++                    "student": int(np.argmax(p)),
+                     "teacher": int(teacher[i]),
+                     "executed": int(executed[i]),
+                 }
+             )
+-        return executed
+-
+-    def close(self) -> None:
+-        self._fh.close()
+-
+-    def stop_vp(self, stop_vp: str, cur_vp: str) -> str:
+-        """Under teacher forcing the expert's STOP means stop here, not at the
+-        node with the highest stop score."""
+-        return cur_vp if self.teacher_forcing else stop_vp
+ 
+     def finish_episode(self, episode, stepk: int, metric: dict, info: dict) -> None:
++        if episode.episode_id in self._finished:
++            return
++        self._finished.add(episode.episode_id)
+         traj = self._traj.pop(episode.episode_id, [])
+         if "position" in info and "position" in info["position"]:
+             traj = [_as_list(p) for p in info["position"]["position"]]
+@@ -162,9 +176,15 @@ class DecisionDumper:
+             {
+                 "kind": "episode",
+                 "ep": episode.episode_id,
+-                "scene": os.path.basename(episode.scene_id).split(".")[0],
++                "scene": _scene(episode),
+                 "steps": int(stepk) + 1,
+-                "metric": {k: (float(v) if isinstance(v, (int, float, np.floating)) else v) for k, v in metric.items()},
++                "metric": {
++                    k: (float(v) if isinstance(v, (int, float, np.floating, np.integer)) else v)
++                    for k, v in metric.items()
++                },
+                 "traj": traj,
+             }
+         )
++
++    def close(self) -> None:
++        self._fh.close()
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index 68533c2..52d1abb 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -41,10 +41,9 @@ _C.EVAL.EVAL_NONLEARNING = False
+ # Per-step decision dump for the paired-episode analysis
+ # (vlnce_baselines/common/decision_dump.py): one JSON line per high-level
+ # step plus one per finished episode in <RESULTS_DIR>/decisions_*.jsonl.
++# Read-only: the executed action is whatever the trainer chooses (own argmax,
++# or the D8 shared-state replay when EVAL.d8_shared_states is on).
+ _C.EVAL.decision_dump = False
+-# Execute the DAgger expert's action instead of the policy's argmax, so
+-# policies compared under the dump see identical observations (protocol 2).
+-_C.EVAL.teacher_forcing = False
+ _C.EVAL.NONLEARNING = CN()
+ _C.EVAL.NONLEARNING.AGENT = "RandomAgent"
+ 
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index e84c6e2..7866f73 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -2324,7 +2324,7 @@ class RLTrainer(BaseVLNCETrainer):
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
+             if dump_on:
+-                cpu_a_t = self.decision_dumper.choose_actions(
++                self.decision_dumper.record_step(
+                     self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
+                     self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
+                     teacher_actions, no_vp_left,
+@@ -2362,8 +2362,6 @@ class RLTrainer(BaseVLNCETrainer):
+                     ]
+                     stop_scores = [s[1] for s in vp_stop_scores]
+                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
+-                    if dump_on:
+-                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
+                     stop_pos = gmap.node_pos[stop_vp]
+ 
+                     if self.config.IL.back_algo == "control":
+diff --git a/vlnce_baselines/ss_trainer_ETP_R1.py b/vlnce_baselines/ss_trainer_ETP_R1.py
+index cf48fc3..e4bf54c 100644
+--- a/vlnce_baselines/ss_trainer_ETP_R1.py
++++ b/vlnce_baselines/ss_trainer_ETP_R1.py
+@@ -1288,7 +1288,7 @@ class RLTrainer(BaseVLNCETrainer):
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
+             if dump_on:
+-                cpu_a_t = self.decision_dumper.choose_actions(
++                self.decision_dumper.record_step(
+                     self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
+                     self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
+                     teacher_actions, no_vp_left,
+@@ -1326,8 +1326,6 @@ class RLTrainer(BaseVLNCETrainer):
+                     ]
+                     stop_scores = [s[1] for s in vp_stop_scores]
+                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
+-                    if dump_on:
+-                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
+                     stop_pos = gmap.node_pos[stop_vp]
+ 
+                     if self.config.IL.back_algo == "control":
+-- 
+2.43.0
+
