@@ -206,7 +206,7 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
 
 
 FEATURE_KEYS = ["path_len_m", "n_forks_graph", "n_forks3_graph", "n_room_changes",
-                "n_landmarks", "n_decoys", "n_spatial_words", "llm_region_hit"]
+                "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
 
 
 def feature_profile(features: Dict[str, dict], ids: Sequence[str]) -> List[str]:
