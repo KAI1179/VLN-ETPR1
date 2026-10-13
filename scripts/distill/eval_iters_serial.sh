@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Evaluate several DAgger checkpoints of one run on R2R val_unseen, one
+# checkpoint at a time, each as a single multi-GPU torchrun over all GPUS,
+# then print the summary table.  Serial counterpart of eval_iters.sh (which
+# runs one single-GPU evaluation per GPU in parallel).
+#
+# Usage: bash scripts/distill/eval_iters_serial.sh RUN_NAME ITER [ITER ...]
+# Env: GPUS            comma-separated physical GPU ids used together for
+#                      every checkpoint (default 4,5,6,7 = 4 ranks).
+#      PRETRAINED_CKPT, SPLIT, NUM_ENVS, BACK_ALGO, ELEVATION_AXIS,
+#                      MASTER_PORT: passed through to eval_run.sh.
+# A checkpoint whose result JSON already exists is skipped.  eval_run.sh
+# reads the run's eval_args.txt (written by run_dagger_coord_fusion.sh), so a
+# run trained with MAP_ABLATION=... is evaluated under the same ablation.
+# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>/eval_results/
+# Console: data/logs/checkpoints/<RUN_NAME>/eval_iters_serial_<timestamp>.log
+set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+PYTHON="${PYTHON:-$(command -v python)}"
+EVAL_RUN="${REPO_ROOT}/scripts/distill/eval_run.sh"
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: bash scripts/distill/eval_iters_serial.sh RUN_NAME ITER [ITER ...]" >&2
+    exit 2
+fi
+RUN_NAME="$1"; shift
+SPLIT="${SPLIT:-val_unseen}"
+RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+[[ -d "${RUN_DIR}" ]] || { echo "Run directory not found: ${RUN_DIR}" >&2; exit 1; }
+
+result_json() { echo "${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
+
+ITERS=("$@")
+for it in "${ITERS[@]}"; do
+    [[ "${it}" =~ ^[0-9]+$ ]] || { echo "ITER must be an integer, got '${it}'" >&2; exit 2; }
+    [[ -f "${RUN_DIR}/ckpt.iter${it}.pth" ]] || { echo "Checkpoint not found: ${RUN_DIR}/ckpt.iter${it}.pth" >&2; exit 1; }
+done
+GPUS="${GPUS:-4,5,6,7}"
+
+DRIVER_LOG="${RUN_DIR}/eval_iters_serial_$(date +%Y%m%d-%H%M%S).log"
+{
+    echo "run=${RUN_NAME} split=${SPLIT} gpus=${GPUS} iters=${ITERS[*]}"
+    [[ -f "${RUN_DIR}/eval_args.txt" ]] && echo "eval_args.txt: $(tr '\n' ' ' < "${RUN_DIR}/eval_args.txt")"
+} | tee "${DRIVER_LOG}"
+
+for it in "${ITERS[@]}"; do
+    if [[ -f "$(result_json "${it}")" ]]; then
+        echo "iter ${it}: result exists, skipping" | tee -a "${DRIVER_LOG}"
+        continue
+    fi
+    echo "iter ${it}: start $(date +%H:%M:%S)" | tee -a "${DRIVER_LOG}"
+    # eval_run.sh tees its full console to <RUN_DIR>/eval_iter<ITER>_<SPLIT>.log.
+    if CUDA_VISIBLE_DEVICES="${GPUS}" bash "${EVAL_RUN}" "${RUN_NAME}" "${it}" ${PRETRAINED_CKPT:+"${PRETRAINED_CKPT}"} >/dev/null; then
+        echo "iter ${it}: done  $(date +%H:%M:%S)" | tee -a "${DRIVER_LOG}"
+    else
+        echo "iter ${it}: FAILED, see ${RUN_DIR}/eval_iter${it}_${SPLIT}.log" | tee -a "${DRIVER_LOG}"
+    fi
+done
+
+failed=()
+for it in "${ITERS[@]}"; do [[ -f "$(result_json "${it}")" ]] || failed+=("${it}"); done
+
+cd "${REPO_ROOT}"
+"${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" | tee -a "${DRIVER_LOG}"
+echo "Driver log: ${DRIVER_LOG}"
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Missing results for iters: ${failed[*]}" >&2
+    exit 1
+fi
