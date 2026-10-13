@@ -64,6 +64,22 @@ The first command is strictly sequential; it was started only after the existing
 17600 checkpoint evaluation released GPU 4–7. No D8 model inference overlaps
 another D8 inference. CUDA/conda packages were not changed.
 
+## Completed collection and pending CPU analysis
+
+All six dump groups are complete. Shared-state dumps contain 1,833 episodes
+and 13,992 decisions per model; all checked state fields match exactly.
+Own-rollout dumps contain 1,839 / 1,833 / 1,833 episodes and
+16,157 / 16,071 / 15,983 decisions for baseline / Try5 / KD respectively.
+All three own-rollout equivalence reports have empty changes across the
+five checked metrics and 1,839 episode records.
+
+CPU analysis was resumed with the default 20 permutation draws. An independent
+single-thread run under `reports/d8/primary/` computes the same primary
+statistics with permutation draws disabled, to expose the primary readouts
+before the full leakage controls finish. It does not replace the full run.
+No probe result or improvement claim is available until the corresponding
+output is written and checked. Neither CPU run uses GPU.
+
 ## Serial launch wrapper
 
 `scripts/submit/d8-dump.sh` calls `scripts/eval_d8/run_all.sh` in the foreground.
