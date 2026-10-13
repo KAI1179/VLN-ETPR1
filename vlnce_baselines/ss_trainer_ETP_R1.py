@@ -36,6 +36,7 @@ from vlnce_baselines.common.env_utils import (
     is_slurm_batch_job,
 )
 from vlnce_baselines.common.utils import extract_instruction_tokens
+from vlnce_baselines.common.decision_dump import DecisionDumper, decision_dump_enabled
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
 from vlnce_baselines.utils import reduce_loss
 
@@ -876,6 +877,7 @@ class RLTrainer(BaseVLNCETrainer):
             self.rollout("eval")
 
         self.envs.close()
+        self._close_decision_dumper()
 
         if self.config.EVAL.dump_decision_features:
             self._d8_dump.close()
@@ -1062,6 +1064,12 @@ class RLTrainer(BaseVLNCETrainer):
                 f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
             )
 
+    def _close_decision_dumper(self):
+        dumper = getattr(self, "decision_dumper", None)
+        if dumper is not None:
+            dumper.close()
+            self.decision_dumper = None
+
     def get_pos_ori(self):
         pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
         pos = [x[0] for x in pos_ori]
@@ -1147,7 +1155,12 @@ class RLTrainer(BaseVLNCETrainer):
 
         not_done_index = list(range(self.envs.num_envs))
         shared_eval = mode == "eval" and self.config.EVAL.d8_shared_states
-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval
+        dump_on = decision_dump_enabled(self.config, mode)
+        if dump_on and getattr(self, "decision_dumper", None) is None:
+            self.decision_dumper = DecisionDumper.from_config(
+                self.config, self.local_rank, self.world_size
+            )
+        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on
         ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
         self.gmaps = [
             GraphMap(
@@ -1197,7 +1210,7 @@ class RLTrainer(BaseVLNCETrainer):
                 cand_vp.append(cand_vp_i)
                 cand_pos.append(cand_pos_i)
 
-            if mode == "train" or self.config.VIDEO_OPTION or shared_eval:
+            if mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on:
                 cand_real_pos = []
                 for i in range(self.envs.num_envs):
                     cand_real_pos_i = [
@@ -1243,7 +1256,7 @@ class RLTrainer(BaseVLNCETrainer):
             for i, gmap in enumerate(self.gmaps):
                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
 
-            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir):
+            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir) or dump_on:
                 teacher_actions = self._teacher_action_new(
                     nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
                 )
@@ -1274,6 +1287,12 @@ class RLTrainer(BaseVLNCETrainer):
             else:
                 raise NotImplementedError
             cpu_a_t = a_t.cpu().numpy()
+            if dump_on:
+                cpu_a_t = self.decision_dumper.choose_actions(
+                    self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
+                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
+                    teacher_actions, no_vp_left,
+                )
 
             if mode == "eval" and self.config.EVAL.dump_decision_features:
                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
@@ -1307,6 +1326,8 @@ class RLTrainer(BaseVLNCETrainer):
                     ]
                     stop_scores = [s[1] for s in vp_stop_scores]
                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
+                    if dump_on:
+                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
                     stop_pos = gmap.node_pos[stop_vp]
 
                     if self.config.IL.back_algo == "control":
@@ -1434,6 +1455,8 @@ class RLTrainer(BaseVLNCETrainer):
                         self._d8_dump.finish(ep_id)
                     if trajectory_recorder is not None:
                         trajectory_recorder.finish(ep_id, metric, pred_path)
+                    if dump_on:
+                        self.decision_dumper.finish_episode(curr_eps[i], stepk, metric, info)
                     if self.pbar:
                         self.pbar.update()
 
