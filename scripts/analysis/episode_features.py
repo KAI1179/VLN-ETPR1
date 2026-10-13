@@ -36,7 +36,9 @@ Example:
         --out data/logs/analysis/features_val_unseen.json
 The LLM-map column needs the LLM navigation cache (--llm-model-key); pass
 --no-llm to skip it, --no-categories to skip the CLIP/spacy instruction pass
-(n_landmarks, n_decoys and n_room_words are then null).
+(n_landmarks, n_decoys and n_room_words are then null).  Without spacy/CLIP
+in the environment the instruction pass falls back to category-name
+matching (no noun resolution).
 """
 
 from __future__ import annotations
@@ -48,8 +50,14 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import sys
+
 import numpy as np
 from tap import Tap
+
+REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from prior.bbox._geometry import _is_position_in_level, _point_to_obb_distance
 from prior.bbox._relevance import _first_touched_level_points, _local_point
@@ -84,6 +92,35 @@ class Args(Tap):
     no_categories: bool = False
     limit: int = 0
     """Episodes to process; 0 = all."""
+
+
+def name_match_categories(text: str):
+    """Category ids whose names occur in the instruction (the name-matching
+    part of prior.grid_map._cognitive.extract_categories, without the
+    spacy/CLIP noun pass; used when spacy is not installed)."""
+    from prior.constants import (
+        MAPPED_OBJECT_NAMES, MAPPED_REGION_NAMES, OBJECT_MAPPING, OBJECT_NAMES,
+        REGION_MAPPING, REGION_NAMES,
+    )
+
+    def norm(t: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+
+    inst = f" {norm(text)} "
+    objs, regs = set(), set()
+    for idx, name in enumerate(OBJECT_NAMES):
+        if f" {norm(name)} " in inst:
+            objs.add(OBJECT_MAPPING[idx])
+    for idx, name in enumerate(MAPPED_OBJECT_NAMES):
+        if f" {norm(name)} " in inst:
+            objs.add(idx)
+    for idx, name in enumerate(REGION_NAMES):
+        if f" {norm(name)} " in inst:
+            regs.add(REGION_MAPPING[idx])
+    for idx, name in enumerate(MAPPED_REGION_NAMES):
+        if f" {norm(name)} " in inst:
+            regs.add(idx)
+    return objs, regs
 
 
 def path_length(points: Sequence[Sequence[float]]) -> float:
@@ -213,8 +250,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = Args(underscores_to_dashes=True).parse_args(argv)
     extract_categories = None
     if not args.no_categories:
-        from prior.grid_map._cognitive import extract_categories as _ec
-        extract_categories = _ec
+        try:
+            from prior.grid_map._cognitive import extract_categories as _ec
+            extract_categories = _ec
+        except ImportError as exc:  # spacy / clip not installed in this env
+            print(f"extract_categories unavailable ({exc}); using name matching only")
+            extract_categories = name_match_categories
 
     features: Dict[str, dict] = {}
     scenes: Dict[str, SceneSemanticBoxes] = {}

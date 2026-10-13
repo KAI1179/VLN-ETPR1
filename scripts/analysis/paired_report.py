@@ -47,8 +47,12 @@ import os
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import sys
+
 import numpy as np
 from tap import Tap
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 class Args(Tap):
