@@ -1,0 +1,518 @@
+From 752ccc7e1d35477c82cc684e9b5eca3714e72f39 Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Mon, 12 Oct 2026 20:13:20 -0600
+Subject: [PATCH 65/66] Per-step decision dump for the paired-episode analysis
+ (EVAL.decision_dump, EVAL.teacher_forcing)
+
+One JSON line per high-level step (policy probabilities over the graph,
+argmax, DAgger expert choice, executed action, node/ghost positions) plus
+one per finished episode (metrics, trajectory) in
+<RESULTS_DIR>/decisions_<split>_r<rank>_w<world>.jsonl, from both the
+ETP-R1 and the PriorGT/LLM trainers.  With EVAL.teacher_forcing True the
+expert's choice is executed (its STOP stops at the current node), so two
+policies see identical observations and are compared per step.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ tests/test_decision_dump.py               |  97 ++++++++++++
+ vlnce_baselines/common/decision_dump.py   | 170 ++++++++++++++++++++++
+ vlnce_baselines/config/default.py         |   7 +
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py |  29 +++-
+ vlnce_baselines/ss_trainer_ETP_R1.py      |  29 +++-
+ 5 files changed, 326 insertions(+), 6 deletions(-)
+ create mode 100644 tests/test_decision_dump.py
+ create mode 100644 vlnce_baselines/common/decision_dump.py
+
+diff --git a/tests/test_decision_dump.py b/tests/test_decision_dump.py
+new file mode 100644
+index 0000000..a1baf34
+--- /dev/null
++++ b/tests/test_decision_dump.py
+@@ -0,0 +1,97 @@
++"""DecisionDumper: records every step, forces the expert action only when
++asked, and the config keys it reads exist with their documented defaults."""
++
++import ast
++import importlib.util
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import torch
++
++ROOT = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location(
++    "decision_dump", ROOT / "vlnce_baselines" / "common" / "decision_dump.py"
++)
++dd = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(dd)
++
++
++class FakeGmap:
++    def __init__(self):
++        self.node_pos = {"0": np.array([0.0, 0.0, 0.0]), "1": np.array([1.0, 0.0, 0.0])}
++        self.ghost_aug_pos = {"g0": np.array([2.0, 0.0, 0.0]), "g1": np.array([0.0, 0.0, 2.0])}
++
++
++def _episodes():
++    return [SimpleNamespace(episode_id=7, scene_id="data/scene_datasets/mp3d/abc/abc.glb")]
++
++
++def _step(dumper):
++    gmap = FakeGmap()
++    vps = [None, "0", "1", "g0", "g1"]
++    probs = torch.tensor([[0.1, 0.0, 0.0, 0.6, 0.3]])
++    teacher = torch.tensor([4])
++    return dumper.choose_actions(
++        _episodes(), 0, ["1"], [np.array([1.0, 0.0, 0.0])], [np.array([0.0, 0.0, 0.0, 1.0])],
++        [gmap], [vps], probs, np.array([3]), teacher, [False],
++    )
++
++
++def test_free_rollout_records_but_keeps_student_action(tmp_path):
++    path = tmp_path / "d.jsonl"
++    dumper = dd.DecisionDumper(str(path), teacher_forcing=False, header={})
++    executed = _step(dumper)
++    assert executed.tolist() == [3]
++    assert dumper.stop_vp("0", "1") == "0"
++    dumper.finish_episode(
++        _episodes()[0], 0, {"success": 1.0, "spl": np.float64(0.5)},
++        {"position": {"position": [[0, 0, 0], [1, 0, 0]]}},
++    )
++    dumper.close()
++    lines = [json.loads(l) for l in path.read_text().splitlines()]
++    assert [l["kind"] for l in lines] == ["header", "step", "episode"]
++    step = lines[1]
++    assert step["student"] == 3 and step["teacher"] == 4 and step["executed"] == 3
++    assert step["vps"] == [None, "0", "1", "g0", "g1"]
++    assert step["pos"][0] is None and step["pos"][3] == [2.0, 0.0, 0.0]
++    assert step["visited"] == [False, True, True, False, False]
++    assert step["scene"] == "abc"
++    assert lines[2]["traj"] == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
++    assert lines[2]["metric"]["spl"] == 0.5
++
++
++def test_teacher_forcing_executes_expert_and_stops_here(tmp_path):
++    path = tmp_path / "d.jsonl"
++    dumper = dd.DecisionDumper(str(path), teacher_forcing=True, header={})
++    assert _step(dumper).tolist() == [4]
++    assert dumper.stop_vp("0", "1") == "1"
++    # -100 (no ghost left) keeps the student's action.
++    gmap = FakeGmap()
++    out = dumper.choose_actions(
++        _episodes(), 1, ["1"], [np.zeros(3)], [np.array([0.0, 0.0, 0.0, 1.0])],
++        [gmap], [[None, "0", "1"]], torch.tensor([[0.9, 0.05, 0.05]]), np.array([0]),
++        torch.tensor([-100]), [True],
++    )
++    assert out.tolist() == [0]
++    dumper.close()
++
++
++def test_config_keys_exist():
++    src = (ROOT / "vlnce_baselines" / "config" / "default.py").read_text()
++    found = {}
++    for node in ast.walk(ast.parse(src)):
++        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Attribute):
++            tgt = ast.unparse(node.targets[0]) if hasattr(ast, "unparse") else ""
++            if tgt in ("_C.EVAL.decision_dump", "_C.EVAL.teacher_forcing"):
++                found[tgt] = ast.literal_eval(node.value)
++    assert found == {"_C.EVAL.decision_dump": False, "_C.EVAL.teacher_forcing": False}
++
++
++def test_enabled_only_in_eval():
++    cfg = SimpleNamespace(EVAL=SimpleNamespace(decision_dump=True))
++    assert dd.decision_dump_enabled(cfg, "eval")
++    assert not dd.decision_dump_enabled(cfg, "train")
++    cfg.EVAL.decision_dump = False
++    assert not dd.decision_dump_enabled(cfg, "eval")
+diff --git a/vlnce_baselines/common/decision_dump.py b/vlnce_baselines/common/decision_dump.py
+new file mode 100644
+index 0000000..2762b29
+--- /dev/null
++++ b/vlnce_baselines/common/decision_dump.py
+@@ -0,0 +1,170 @@
++"""Per-step decision dump for the paired-episode analysis.
++
++Enabled by ``EVAL.decision_dump True`` on an ``--run-type eval`` job.  Every
++high-level step of every episode is written as one JSON line, followed by one
++``episode`` line when the episode finishes, to
++``<RESULTS_DIR>/decisions_<split>_r<rank>_w<world>.jsonl``.
++
++With ``EVAL.teacher_forcing True`` the executed action is the DAgger expert's
++choice (``_teacher_action_new``) instead of the policy's argmax, so two
++policies evaluated this way see identical observations and the dump compares
++their per-step decisions on the same states (protocol 2).  Without it the
++policy drives (protocol 1) and the expert's choice is only recorded.
++
++The expert needs the real candidate positions (``get_cand_real_pos``), which
++the trainers only compute in training or with VIDEO_OPTION; the trainers
++therefore also compute them when this dump is on.  Real positions are stored
++on the graph only, the policy inputs are unchanged.
++
++Step line::
++
++    {"kind": "step", "ep": ..., "scene": ..., "step": k, "cur_vp": "0",
++     "cur_pos": [x, y, z], "heading": rad, "no_vp_left": false,
++     "vps": [vp ids in the policy's gmap order, index 0 = STOP],
++     "pos": [[x, y, z] per vp, null for STOP], "visited": [bool per vp],
++     "probs": [policy probability per vp], "student": argmax index,
++     "teacher": expert index (0 = stop, -100 = none), "executed": index}
++
++Episode line::
++
++    {"kind": "episode", "ep": ..., "scene": ..., "steps": k+1,
++     "metric": {success, spl, oracle_success, ndtw, ...},
++     "traj": [[x, y, z] ...] (agent positions during the episode)}
++"""
++
++from __future__ import annotations
++
++import json
++import os
++from typing import List, Optional, Sequence
++
++import numpy as np
++
++
++def decision_dump_enabled(config, mode: str) -> bool:
++    return mode == "eval" and bool(getattr(config.EVAL, "decision_dump", False))
++
++
++def _as_list(x) -> Optional[list]:
++    if x is None:
++        return None
++    return [float(v) for v in np.asarray(x).reshape(-1)]
++
++
++def _heading(ori) -> float:
++    # ori = [qx, qy, qz, qw] (environments.get_pos_ori); rotation about y.
++    ori = np.asarray(ori, dtype=float)
++    return float(2.0 * np.arctan2(ori[1], ori[3]))
++
++
++class DecisionDumper:
++    def __init__(self, path: str, teacher_forcing: bool, header: dict):
++        os.makedirs(os.path.dirname(path), exist_ok=True)
++        self.path = path
++        self.teacher_forcing = teacher_forcing
++        self._traj = {}  # episode_id -> list of positions
++        self._fh = open(path, "w")
++        self._write({"kind": "header", "teacher_forcing": teacher_forcing, **header})
++
++    @classmethod
++    def from_config(cls, config, local_rank: int, world_size: int) -> "DecisionDumper":
++        split = config.TASK_CONFIG.DATASET.SPLIT
++        path = os.path.join(
++            config.RESULTS_DIR, f"decisions_{split}_r{local_rank}_w{world_size}.jsonl"
++        )
++        header = {
++            "ckpt": str(getattr(config.IL, "ckpt_to_load", "")),
++            "split": split,
++            "policy": str(config.MODEL.policy_name),
++            "trainer": str(config.TRAINER_NAME),
++            "expert_policy": str(config.IL.expert_policy),
++        }
++        map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
++        if map_cfg is not None:
++            header["map_enabled"] = bool(map_cfg.enabled)
++            header["map_ablation"] = str(getattr(map_cfg, "map_ablation", "none"))
++        return cls(path, bool(getattr(config.EVAL, "teacher_forcing", False)), header)
++
++    def _write(self, record: dict) -> None:
++        self._fh.write(json.dumps(record) + "\n")
++        self._fh.flush()
++
++    def choose_actions(
++        self,
++        episodes: Sequence,
++        stepk: int,
++        cur_vp: List[str],
++        cur_pos: List,
++        cur_ori: List,
++        gmaps: List,
++        gmap_vp_ids: List[List[Optional[str]]],
++        nav_probs,
++        student_actions: np.ndarray,
++        teacher_actions,
++        no_vp_left: List[bool],
++    ) -> np.ndarray:
++        """Record this step for every env and return the actions to execute."""
++        probs = nav_probs.detach().float().cpu().numpy()
++        teacher = teacher_actions.detach().cpu().numpy()
++        executed = np.array(student_actions, copy=True)
++        for i, ep in enumerate(episodes):
++            gmap = gmaps[i]
++            vps = gmap_vp_ids[i]
++            if self.teacher_forcing and teacher[i] != -100:
++                executed[i] = int(teacher[i])
++            pos = []
++            visited = []
++            for vp in vps:
++                if vp is None:
++                    pos.append(None)
++                    visited.append(False)
++                elif vp in gmap.node_pos:
++                    pos.append(_as_list(gmap.node_pos[vp]))
++                    visited.append(True)
++                else:
++                    pos.append(_as_list(gmap.ghost_aug_pos[vp]))
++                    visited.append(False)
++            self._traj.setdefault(ep.episode_id, []).append(_as_list(cur_pos[i]))
++            self._write(
++                {
++                    "kind": "step",
++                    "ep": ep.episode_id,
++                    "scene": os.path.basename(ep.scene_id).split(".")[0],
++                    "step": int(stepk),
++                    "cur_vp": cur_vp[i],
++                    "cur_pos": _as_list(cur_pos[i]),
++                    "heading": _heading(cur_ori[i]),
++                    "no_vp_left": bool(no_vp_left[i]),
++                    "vps": vps,
++                    "pos": pos,
++                    "visited": visited,
++                    "probs": [float(p) for p in probs[i, : len(vps)]],
++                    "student": int(student_actions[i]),
++                    "teacher": int(teacher[i]),
++                    "executed": int(executed[i]),
++                }
++            )
++        return executed
++
++    def close(self) -> None:
++        self._fh.close()
++
++    def stop_vp(self, stop_vp: str, cur_vp: str) -> str:
++        """Under teacher forcing the expert's STOP means stop here, not at the
++        node with the highest stop score."""
++        return cur_vp if self.teacher_forcing else stop_vp
++
++    def finish_episode(self, episode, stepk: int, metric: dict, info: dict) -> None:
++        traj = self._traj.pop(episode.episode_id, [])
++        if "position" in info and "position" in info["position"]:
++            traj = [_as_list(p) for p in info["position"]["position"]]
++        self._write(
++            {
++                "kind": "episode",
++                "ep": episode.episode_id,
++                "scene": os.path.basename(episode.scene_id).split(".")[0],
++                "steps": int(stepk) + 1,
++                "metric": {k: (float(v) if isinstance(v, (int, float, np.floating)) else v) for k, v in metric.items()},
++                "traj": traj,
++            }
++        )
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index ac2543b..b111ecd 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -33,6 +33,13 @@ _C.EVAL.LANGUAGES = ["en-US", "en-IN"]
+ _C.EVAL.SAMPLE = False
+ _C.EVAL.SAVE_RESULTS = True
+ _C.EVAL.EVAL_NONLEARNING = False
++# Per-step decision dump for the paired-episode analysis
++# (vlnce_baselines/common/decision_dump.py): one JSON line per high-level
++# step plus one per finished episode in <RESULTS_DIR>/decisions_*.jsonl.
++_C.EVAL.decision_dump = False
++# Execute the DAgger expert's action instead of the policy's argmax, so
++# policies compared under the dump see identical observations (protocol 2).
++_C.EVAL.teacher_forcing = False
+ _C.EVAL.NONLEARNING = CN()
+ _C.EVAL.NONLEARNING.AGENT = "RandomAgent"
+ 
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index efa0a40..4258203 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -29,6 +29,7 @@ from habitat_baselines.utils.common import batch_obs
+ from vlnce_baselines.common.base_il_trainer import BaseVLNCETrainer
+ from vlnce_baselines.common.env_utils import construct_envs, is_slurm_batch_job
+ from vlnce_baselines.common.utils import extract_instruction_tokens
++from vlnce_baselines.common.decision_dump import DecisionDumper, decision_dump_enabled
+ from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
+ 
+ from .utils import get_camera_orientations12
+@@ -1120,6 +1121,7 @@ class RLTrainer(BaseVLNCETrainer):
+             self.rollout("eval")
+ 
+         self.envs.close()
++        self._close_decision_dumper()
+ 
+         self._write_eval_results(writer, checkpoint_index)
+ 
+@@ -1254,6 +1256,12 @@ class RLTrainer(BaseVLNCETrainer):
+                 f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
+             )
+ 
++    def _close_decision_dumper(self):
++        dumper = getattr(self, "decision_dumper", None)
++        if dumper is not None:
++            dumper.close()
++            self.decision_dumper = None
++
+     def get_pos_ori(self):
+         pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
+         pos = [x[0] for x in pos_ori]
+@@ -1860,7 +1868,12 @@ class RLTrainer(BaseVLNCETrainer):
+         student_ce = 0.0
+ 
+         not_done_index = list(range(self.envs.num_envs))
+-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
++        dump_on = decision_dump_enabled(self.config, mode)
++        if dump_on and getattr(self, "decision_dumper", None) is None:
++            self.decision_dumper = DecisionDumper.from_config(
++                self.config, self.local_rank, self.world_size
++            )
++        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or dump_on
+         ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
+         self.gmaps = [
+             GraphMap(
+@@ -1982,7 +1995,7 @@ class RLTrainer(BaseVLNCETrainer):
+                 cand_vp.append(cand_vp_i)
+                 cand_pos.append(cand_pos_i)
+ 
+-            if mode == "train" or self.config.VIDEO_OPTION:
++            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+                 cand_real_pos = []
+                 for i in range(self.envs.num_envs):
+                     cand_real_pos_i = [
+@@ -2092,7 +2105,7 @@ class RLTrainer(BaseVLNCETrainer):
+             for i, gmap in enumerate(self.gmaps):
+                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
+ 
+-            if mode == "train" or self.config.VIDEO_OPTION:
++            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+                 teacher_actions = self._teacher_action_new(
+                     nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
+                 )
+@@ -2253,6 +2266,12 @@ class RLTrainer(BaseVLNCETrainer):
+             else:
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
++            if dump_on:
++                cpu_a_t = self.decision_dumper.choose_actions(
++                    self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
++                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
++                    teacher_actions, no_vp_left,
++                )
+ 
+             # make equiv action
+             env_actions = []
+@@ -2269,6 +2288,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     ]
+                     stop_scores = [s[1] for s in vp_stop_scores]
+                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
++                    if dump_on:
++                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
+                     stop_pos = gmap.node_pos[stop_vp]
+ 
+                     if self.config.IL.back_algo == "control":
+@@ -2390,6 +2411,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
++                    if dump_on:
++                        self.decision_dumper.finish_episode(curr_eps[i], stepk, metric, info)
+                     if self.pbar:
+                         self.pbar.update()
+ 
+diff --git a/vlnce_baselines/ss_trainer_ETP_R1.py b/vlnce_baselines/ss_trainer_ETP_R1.py
+index 967b9b4..9d7cb33 100644
+--- a/vlnce_baselines/ss_trainer_ETP_R1.py
++++ b/vlnce_baselines/ss_trainer_ETP_R1.py
+@@ -36,6 +36,7 @@ from vlnce_baselines.common.env_utils import (
+     is_slurm_batch_job,
+ )
+ from vlnce_baselines.common.utils import extract_instruction_tokens
++from vlnce_baselines.common.decision_dump import DecisionDumper, decision_dump_enabled
+ from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
+ from vlnce_baselines.utils import reduce_loss
+ 
+@@ -863,6 +864,7 @@ class RLTrainer(BaseVLNCETrainer):
+             self.rollout("eval")
+ 
+         self.envs.close()
++        self._close_decision_dumper()
+ 
+         if self.world_size > 1:
+             distr.barrier()
+@@ -1042,6 +1044,12 @@ class RLTrainer(BaseVLNCETrainer):
+                 f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
+             )
+ 
++    def _close_decision_dumper(self):
++        dumper = getattr(self, "decision_dumper", None)
++        if dumper is not None:
++            dumper.close()
++            self.decision_dumper = None
++
+     def get_pos_ori(self):
+         pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
+         pos = [x[0] for x in pos_ori]
+@@ -1117,7 +1125,12 @@ class RLTrainer(BaseVLNCETrainer):
+         total_actions = 0.0
+ 
+         not_done_index = list(range(self.envs.num_envs))
+-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
++        dump_on = decision_dump_enabled(self.config, mode)
++        if dump_on and getattr(self, "decision_dumper", None) is None:
++            self.decision_dumper = DecisionDumper.from_config(
++                self.config, self.local_rank, self.world_size
++            )
++        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or dump_on
+         ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
+         self.gmaps = [
+             GraphMap(
+@@ -1167,7 +1180,7 @@ class RLTrainer(BaseVLNCETrainer):
+                 cand_vp.append(cand_vp_i)
+                 cand_pos.append(cand_pos_i)
+ 
+-            if mode == "train" or self.config.VIDEO_OPTION:
++            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+                 cand_real_pos = []
+                 for i in range(self.envs.num_envs):
+                     cand_real_pos_i = [
+@@ -1213,7 +1226,7 @@ class RLTrainer(BaseVLNCETrainer):
+             for i, gmap in enumerate(self.gmaps):
+                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
+ 
+-            if mode == "train" or self.config.VIDEO_OPTION:
++            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+                 teacher_actions = self._teacher_action_new(
+                     nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
+                 )
+@@ -1237,6 +1250,12 @@ class RLTrainer(BaseVLNCETrainer):
+             else:
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
++            if dump_on:
++                cpu_a_t = self.decision_dumper.choose_actions(
++                    self.envs.current_episodes(), stepk, cur_vp, cur_pos, cur_ori,
++                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs, cpu_a_t,
++                    teacher_actions, no_vp_left,
++                )
+ 
+             # make equiv action
+             env_actions = []
+@@ -1253,6 +1272,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     ]
+                     stop_scores = [s[1] for s in vp_stop_scores]
+                     stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
++                    if dump_on:
++                        stop_vp = self.decision_dumper.stop_vp(stop_vp, cur_vp[i])
+                     stop_pos = gmap.node_pos[stop_vp]
+ 
+                     if self.config.IL.back_algo == "control":
+@@ -1372,6 +1393,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
++                    if dump_on:
++                        self.decision_dumper.finish_episode(curr_eps[i], stepk, metric, info)
+                     if self.pbar:
+                         self.pbar.update()
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,897 @@
+From 4503bd6a102ba9ae492921fd69dc6ce47831ec55 Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Mon, 12 Oct 2026 20:19:56 -0600
+Subject: [PATCH 66/66] Paired-episode analysis: dump launcher, GT-derived
+ episode features, report
+
+scripts/analysis/dump_eval.sh MODEL(baseline|try5|kd) PROTOCOL(free|forced)
+RUN ITER runs one val_unseen evaluation with the decision dump; the forced
+protocol lets the DAgger expert drive so every model sees the same states.
+episode_features.py derives per-episode strata from the GT path, the MP3D
+region boxes and connectivity graph and the instruction (forks, room
+changes, decoys, spatial words, LLM-map region hit rate).
+paired_report.py pairs the dumps episode by episode against the first run:
+2x2 success table, hard-subset SR/SPL, discordant-pair feature profile,
+failure modes, efficiency on commonly solved episodes, per-step decision
+accuracy (free and forced, per-state 2x2), first-divergence analysis.
+Counts and means only, no intervals.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ scripts/analysis/README.md           |  60 ++++
+ scripts/analysis/dump_eval.sh        | 125 ++++++++
+ scripts/analysis/episode_features.py | 244 ++++++++++++++++
+ scripts/analysis/paired_report.py    | 410 +++++++++++++++++++++++++++
+ 4 files changed, 839 insertions(+)
+ create mode 100644 scripts/analysis/README.md
+ create mode 100755 scripts/analysis/dump_eval.sh
+ create mode 100644 scripts/analysis/episode_features.py
+ create mode 100644 scripts/analysis/paired_report.py
+
+diff --git a/scripts/analysis/README.md b/scripts/analysis/README.md
+new file mode 100644
+index 0000000..184d536
+--- /dev/null
++++ b/scripts/analysis/README.md
+@@ -0,0 +1,60 @@
++# Paired-episode analysis (baseline vs try5 vs KD)
++
++Three steps; only step 2 needs GPUs.
++
++## 1. Episode features (CPU, once per split)
++
++```bash
++python scripts/analysis/episode_features.py --split val_unseen --out data/logs/analysis/features_val_unseen.json
++```
++
++GT-path / scene / instruction features per episode (forks on the MP3D
++connectivity graph, room changes, decoys, spatial words, LLM-map region hit
++rate).  Needs the MP3D `.house`-derived box cache (`prior`), the connectivity
++json and the LLM navigation cache; `--no-llm` / `--no-categories` skip the two
++heavy columns.
++
++## 2. Decision dumps (GPU, 6 runs = 3 models x 2 protocols)
++
++```bash
++# protocol 1: policy drives            protocol 2: expert drives (same states for every model)
++CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline free   release_r2r_dagger 25000
++CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh baseline forced release_r2r_dagger 25000
++CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     free   <TRY5_RUN> <ITER>
++CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/analysis/dump_eval.sh try5     forced <TRY5_RUN> <ITER>
++CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd free   <KD_RUN> <ITER>
++CUDA_VISIBLE_DEVICES=0,1,2,3 MAP_VIEW=none bash scripts/analysis/dump_eval.sh kd forced <KD_RUN> <ITER>
++```
++
++`baseline` reads the checkpoint from `CKPT` (default
++`/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth`);
++`try5`/`kd` read `data/logs/checkpoints/<RUN>/ckpt.iter<ITER>.pth` (override
++with `CKPT`) and the run's `eval_args.txt` when present.  Each run writes
++`data/logs/checkpoints/<RUN>_dump_<free|forced>_iter<ITER>_val_unseen/eval_results/decisions_val_unseen_r*_w*.jsonl`
++next to the usual `stats_*.json`.  The free protocol is a normal evaluation
++plus the dump (its SR should match the run's known number); the forced
++protocol's SR is meaningless (the expert drives) -- only its per-step records
++are used.
++
++## 3. Report (CPU)
++
++```bash
++python scripts/analysis/paired_report.py --features data/logs/analysis/features_val_unseen.json \
++  --run baseline=data/logs/checkpoints/release_r2r_dagger_dump_free_iter25000_val_unseen/eval_results \
++        try5=data/logs/checkpoints/<TRY5_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
++        kd=data/logs/checkpoints/<KD_RUN>_dump_free_iter<ITER>_val_unseen/eval_results \
++  --forced baseline=data/logs/checkpoints/release_r2r_dagger_dump_forced_iter25000_val_unseen/eval_results \
++           try5=data/logs/checkpoints/<TRY5_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
++           kd=data/logs/checkpoints/<KD_RUN>_dump_forced_iter<ITER>_val_unseen/eval_results \
++  --out data/logs/analysis/report_val_unseen.md
++```
++
++The first `--run` is the reference every other run is paired against.  The
++report is markdown: overview + paired 2x2, hard-subset SR/SPL table, profile
++of the discordant episodes, failure modes, efficiency on commonly solved
++episodes, step-level decision accuracy (free and forced, with the per-state
++2x2 for forced), and first-divergence analysis.  Thresholds for the strata
++and the fork definition are options (`--help`).
++
++To iterate on the report elsewhere, copy back only `features_val_unseen.json`
++and the six `decisions_*.jsonl` files (a few MB each); nothing else is needed.
+diff --git a/scripts/analysis/dump_eval.sh b/scripts/analysis/dump_eval.sh
+new file mode 100755
+index 0000000..27c3d7c
+--- /dev/null
++++ b/scripts/analysis/dump_eval.sh
+@@ -0,0 +1,125 @@
++#!/usr/bin/env bash
++# Evaluate one checkpoint on R2R val_unseen with the per-step decision dump
++# (EVAL.decision_dump), in one of two protocols:
++#   free    the policy drives (protocol 1): normal evaluation + dump;
++#   forced  the DAgger expert drives (protocol 2): every policy sees the same
++#           states, the dump records what each would have chosen.
++#
++# Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL RUN_NAME ITER
++#   MODEL     baseline  mapless ETP-R1 (TRAINER SS-ETP-R1); the checkpoint is
++#                       CKPT (default: the release_r2r_dagger iter25000 path
++#                       below), RUN_NAME/ITER only name the output;
++#             try5      LLM-grid try5 DAgger run (same arguments as
++#                       scripts/distill/eval_run.sh, reads the run's
++#                       eval_args.txt when present);
++#             kd        dual-distillation student, same as try5 plus
++#                       MODEL.MAP_ENCODER.map_ablation ${MAP_VIEW:-none}
++#                       (none = map view, metadata_only = deployment view).
++# Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several ranks),
++#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen), MASTER_PORT,
++#      PRETRAINED_CKPT (shapes only), ELEVATION_AXIS (y), CKPT (baseline),
++#      MAP_VIEW (kd), REPO_ROOT, PYTHON, TORCHRUN.
++# Output: data/logs/checkpoints/<RUN_NAME>_dump_<PROTOCOL>_iter<ITER>_<SPLIT>/eval_results/
++#   stats_ckpt_<ITER>_<SPLIT>.json        aggregate metrics (free protocol)
++#   stats_ep_ckpt_<ITER>_<SPLIT>_r*_w*.json per-episode metrics
++#   decisions_<SPLIT>_r*_w*.jsonl          per-step decisions (one file per rank)
++# Then: python scripts/analysis/episode_features.py --split val_unseen
++#       python scripts/analysis/paired_report.py --help
++set -euo pipefail
++
++REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
++PYTHON="${PYTHON:-$(command -v python)}"
++TORCHRUN="${TORCHRUN:-$(dirname "${PYTHON}")/torchrun}"
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++
++if [[ $# -ne 4 ]]; then
++    echo "Usage: bash scripts/analysis/dump_eval.sh MODEL(baseline|try5|kd) PROTOCOL(free|forced) RUN_NAME ITER" >&2
++    exit 2
++fi
++MODEL="$1"; PROTOCOL="$2"; RUN_NAME="$3"; ITER="$4"
++case "${PROTOCOL}" in free) FORCING=False ;; forced) FORCING=True ;; *)
++    echo "PROTOCOL must be free or forced, got '${PROTOCOL}'" >&2; exit 2 ;; esac
++
++CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
++IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
++GPU_NUMBERS="${#_gpu_list[@]}"
++GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
++NUM_ENVS="${NUM_ENVS:-4}"
++BACK_ALGO="${BACK_ALGO:-control}"
++SPLIT="${SPLIT:-val_unseen}"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++EVAL_NAME="${RUN_NAME}_dump_${PROTOCOL}_iter${ITER}_${SPLIT}"
++EVAL_LOG="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}.log"
++RESULT_DIR="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results"
++
++MODEL_ARGS=()
++case "${MODEL}" in
++    baseline)
++        CKPT_PATH="${CKPT:-/data/xukai/etp-r1-prior/logs/checkpoints/release_r2r_dagger/store/ckpt.iter25000.pth}"
++        PRETRAINED_CKPT="${PRETRAINED_CKPT:-${REPO_ROOT}/pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt}"
++        MODEL_ARGS=(TRAINER_NAME SS-ETP-R1 MODEL.pretrained_path "${PRETRAINED_CKPT}")
++        ;;
++    try5|kd)
++        CKPT_PATH="${CKPT:-${RUN_DIR}/ckpt.iter${ITER}.pth}"
++        PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
++        MODEL_ARGS=(
++            TRAINER_NAME SS-ETP-LLM
++            MODEL.policy_name LLMGridTry5Policy
++            MODEL.MAP_ENCODER.enabled True
++            MODEL.MAP_ENCODER.architecture try5
++            MODEL.MAP_ENCODER.source llm_grid
++            MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++            MODEL.MAP_ENCODER.refiner_ckpt ""
++            MODEL.MAP_ENCODER.load_pretrained_map_modules False
++            MODEL.elevation_axis "${ELEVATION_AXIS:-y}"
++            MODEL.pretrained_path "${PRETRAINED_CKPT}"
++        )
++        if [[ "${MODEL}" == "kd" ]]; then
++            MODEL_ARGS+=(MODEL.MAP_ENCODER.eval_map_source p0 MODEL.MAP_ENCODER.map_ablation "${MAP_VIEW:-none}")
++        fi
++        # Runs started by run_dagger_coord_fusion.sh record the model/map
++        # options their checkpoints need; they override the defaults above.
++        if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
++            while read -r key value; do MODEL_ARGS+=("${key}" "${value}"); done < "${RUN_DIR}/eval_args.txt"
++            echo "Using ${RUN_DIR}/eval_args.txt"
++        fi
++        ;;
++    *) echo "MODEL must be baseline, try5 or kd, got '${MODEL}'" >&2; exit 2 ;;
++esac
++[[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
++[[ -f "${PRETRAINED_CKPT}" ]] || { echo "Pretrained checkpoint not found: ${PRETRAINED_CKPT}" >&2; exit 1; }
++if ls "${RESULT_DIR}"/decisions_"${SPLIT}"_r*.jsonl >/dev/null 2>&1; then
++    echo "Dump exists in ${RESULT_DIR}; delete it to redo." >&2; exit 1
++fi
++
++cd "${REPO_ROOT}"
++echo "model=${MODEL} protocol=${PROTOCOL} ckpt=${CKPT_PATH} gpus=${CUDA_VISIBLE_DEVICES} -> ${RESULT_DIR}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node="${GPU_NUMBERS}" \
++    "${REPO_ROOT}/run.py" \
++    --exp_name "${EVAL_NAME}" \
++    --run-type eval \
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
++    SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
++    TASK_CONFIG.SEED 100 \
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
++    NUM_ENVIRONMENTS "${NUM_ENVS}" \
++    EVAL.SPLIT "${SPLIT}" EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
++    EVAL.decision_dump True EVAL.teacher_forcing "${FORCING}" \
++    IL.back_algo "${BACK_ALGO}" \
++    "${MODEL_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
++
++"${PYTHON}" - "${RESULT_DIR}" "${SPLIT}" <<'PY'
++import glob, json, os, sys
++d, split = sys.argv[1:3]
++files = sorted(glob.glob(os.path.join(d, f"decisions_{split}_r*.jsonl")))
++steps = eps = 0
++for f in files:
++    for line in open(f):
++        k = json.loads(line)["kind"]
++        steps += k == "step"; eps += k == "episode"
++print(f"\ndump: {len(files)} file(s), {eps} episodes, {steps} steps in {d}")
++PY
+diff --git a/scripts/analysis/episode_features.py b/scripts/analysis/episode_features.py
+new file mode 100644
+index 0000000..d8e6aa8
+--- /dev/null
++++ b/scripts/analysis/episode_features.py
+@@ -0,0 +1,244 @@
++#!/usr/bin/env python3
++"""Per-episode difficulty features for the paired-episode analysis.
++
++Everything is derived from the ground-truth path, the scene structure and the
++instruction -- never from a policy -- so the same strata apply to every model.
++For R2R <split> the script writes <out> (JSON: episode id -> features):
++
++  path_len_m        length of the GT trajectory (metres)
++  n_gt_points       number of GT trajectory points
++  n_room_changes    region (room) boundary crossings along the GT path, from
++                    the MP3D region boxes of the level the path starts on
++  n_rooms           distinct regions the GT path passes through
++  n_forks_graph     decision points along the GT path on the MP3D connectivity
++                    graph: visited nodes with >= 2 unobstructed onward
++                    neighbours (the one we came from excluded)
++  n_forks3_graph    the same with >= 3 onward neighbours
++  n_landmarks       object categories the instruction mentions (prior's
++                    extract_categories: name match + CLIP/spacy nouns)
++  n_room_words      region categories the instruction mentions
++  n_landmark_instances
++                    instances of the mentioned object categories within
++                    --decoy-radius of the GT path
++  n_decoys          those instances beyond the first per category, i.e. same-
++                    category objects that could be mistaken for the landmark
++  n_spatial_words   directional / ordinal words in the instruction
++  llm_region_hit    fraction of GT points on a cell the episode's LLM map
++                    labels with any region (check_map_frame's number), or null
++                    when the LLM cache has no map for the episode
++
++Example:
++    python scripts/analysis/episode_features.py --split val_unseen \
++        --out data/logs/analysis/features_val_unseen.json
++The LLM-map column needs the LLM navigation cache (--llm-model-key); pass
++--no-llm to skip it, --no-categories to skip the CLIP/spacy instruction pass
++(n_landmarks, n_decoys and n_room_words are then null).
++"""
++
++from __future__ import annotations
++
++import json
++import math
++import os
++import re
++from pathlib import Path
++from typing import Dict, List, Optional, Sequence, Tuple
++
++import numpy as np
++from tap import Tap
++
++from prior.bbox._geometry import _is_position_in_level, _point_to_obb_distance
++from prior.bbox._relevance import _first_touched_level_points, _local_point
++from prior.bbox._types import SceneSemanticBoxes
++from prior.etp_r1 import ConnectivityEntry
++from prior.vlnce import VLNCEEpisodeEntry
++
++SPATIAL_WORDS = re.compile(
++    r"\b(left|right|turn|straight|ahead|forward|past|through|around|behind|"
++    r"across|along|towards?|toward|into|out of|up|down|first|second|third|"
++    r"next|last|end of|corner|opposite|between|beside|next to|front of|"
++    r"back|u-turn|veer|bear|cross)\b",
++    re.IGNORECASE,
++)
++
++
++class Args(Tap):
++    split: str = "val_unseen"
++    out: str = "data/logs/analysis/features_val_unseen.json"
++    decoy_radius: float = 5.0
++    """Metres from the GT path within which a same-category object counts."""
++    snap_radius: float = 1.5
++    """Metres: a GT point is on a connectivity node if within this distance."""
++    llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++    meters_per_unit: float = 1.0
++    """MAP_ENCODER.start_position_meters_per_unit of the LLM cache."""
++    no_llm: bool = False
++    no_categories: bool = False
++    limit: int = 0
++    """Episodes to process; 0 = all."""
++
++
++def path_length(points: Sequence[Sequence[float]]) -> float:
++    p = np.asarray(points, dtype=float)
++    if len(p) < 2:
++        return 0.0
++    return float(np.linalg.norm(p[1:] - p[:-1], axis=1).sum())
++
++
++def region_sequence(level, level_points) -> List[Optional[Tuple[int, int]]]:
++    """Smallest region box containing each 2D point, as (category, index)."""
++    out = []
++    for x, z in level_points:
++        best = None
++        best_area = math.inf
++        for cat, boxes in enumerate(level.regions):
++            for j, box in enumerate(boxes):
++                if box.min[0] <= x <= box.max[0] and box.min[1] <= z <= box.max[1]:
++                    area = (box.max[0] - box.min[0]) * (box.max[1] - box.min[1])
++                    if area < best_area:
++                        best, best_area = (cat, j), area
++        out.append(best)
++    return out
++
++
++def room_stats(level, level_points) -> Tuple[int, int]:
++    seq = [r for r in region_sequence(level, level_points) if r is not None]
++    changes = sum(1 for a, b in zip(seq, seq[1:]) if a != b)
++    return changes, len(set(seq))
++
++
++def fork_stats(scene_id: str, gt_points, snap_radius: float) -> Tuple[int, int]:
++    try:
++        conn = ConnectivityEntry.map_for(scene_id)
++    except FileNotFoundError:
++        return -1, -1
++    all_ids = list(conn.keys())  # file order = index order of `unobstructed`
++    ids = [k for k in all_ids if conn[k].included]
++    pos = np.array([conn[k].position for k in ids], dtype=float)
++    visited: List[str] = []
++    for p in np.asarray(gt_points, dtype=float):
++        d = np.linalg.norm(pos - p, axis=1)
++        j = int(np.argmin(d))
++        if d[j] <= snap_radius and (not visited or visited[-1] != ids[j]):
++            visited.append(ids[j])
++    forks = forks3 = 0
++    for i, node in enumerate(visited[:-1]):
++        prev = visited[i - 1] if i > 0 else None
++        onward = [
++            all_ids[j]
++            for j, ok in enumerate(conn[node].unobstructed)
++            if ok and j < len(all_ids) and conn[all_ids[j]].included
++            and all_ids[j] != node and all_ids[j] != prev
++        ]
++        forks += len(onward) >= 2
++        forks3 += len(onward) >= 3
++    return forks, forks3
++
++
++def landmark_stats(level, level_points, mentioned_objects, decoy_radius: float) -> Tuple[int, int]:
++    instances = decoys = 0
++    for cat in mentioned_objects:
++        if cat >= len(level.objects):
++            continue
++        near = [
++            box
++            for box in level.objects[cat]
++            if any(_point_to_obb_distance(pt, box) <= decoy_radius for pt in level_points)
++        ]
++        instances += len(near)
++        decoys += max(0, len(near) - 1)
++    return instances, decoys
++
++
++def llm_region_hit(episode: VLNCEEpisodeEntry, raw_start_position, args: Args) -> Optional[float]:
++    import torch
++    from vlnce_baselines.models.etp_llm.navigation import llm_cached_cognitive_map_to_tensors
++    from vlnce_baselines.models.etp_prior_gt.map_utils import SIZE, map_origin_xz, world_to_map_cells
++
++    cache_id = f"R2R_{args.split}_{episode.episode_id}"
++    try:
++        cm = llm_cached_cognitive_map_to_tensors(
++            episode.scene_id, cache_id, "R2R", args.split,
++            metadata_schema="direction5", model_key=args.llm_model_key,
++        )
++    except FileNotFoundError:
++        return None
++    grid = cm["grid"].float()
++    origin = map_origin_xz(raw_start_position, cm["start_position"], args.meters_per_unit)
++    cells = world_to_map_cells(np.asarray(episode.ground_truth_trajectory, dtype=np.float64), origin)
++    index = torch.floor(cells).long()
++    inside = ((index >= 0) & (index < SIZE)).all(dim=-1)
++    if not bool(inside.any()):
++        return 0.0
++    regions = grid[27:37]
++    hits = regions[:, index[inside, 0], index[inside, 1]].amax(dim=0) > 0
++    return float(hits.sum()) / float(len(cells))
++
++
++def main(argv: Optional[Sequence[str]] = None) -> None:
++    args = Args(underscores_to_dashes=True).parse_args(argv)
++    extract_categories = None
++    if not args.no_categories:
++        from prior.grid_map._cognitive import extract_categories as _ec
++        extract_categories = _ec
++
++    features: Dict[str, dict] = {}
++    scenes: Dict[str, SceneSemanticBoxes] = {}
++    n_done = 0
++    for ep in VLNCEEpisodeEntry.iter_from("R2R", splits=[args.split]):
++        if args.limit and n_done >= args.limit:
++            break
++        n_done += 1
++        gt = ep.ground_truth_trajectory
++        f: dict = {
++            "scene": ep.scene_id,
++            "path_len_m": path_length(gt),
++            "n_gt_points": len(gt),
++            "n_spatial_words": len(SPATIAL_WORDS.findall(ep.instruction)),
++            "n_words": len(ep.instruction.split()),
++        }
++        scene = scenes.get(ep.scene_id)
++        if scene is None:
++            scene = scenes[ep.scene_id] = SceneSemanticBoxes.from_scene_id(ep.scene_id)
++        try:
++            level_idx, level, level_points = _first_touched_level_points(scene, gt)
++            f["level"] = level_idx
++            f["n_room_changes"], f["n_rooms"] = room_stats(level, level_points)
++        except Exception as exc:  # level selection can fail on odd scenes
++            level = level_points = None
++            f["level"] = None
++            f["n_room_changes"] = f["n_rooms"] = None
++            f["level_error"] = str(exc)[:120]
++        f["n_forks_graph"], f["n_forks3_graph"] = fork_stats(ep.scene_id, gt, args.snap_radius)
++        if extract_categories is not None:
++            objs, regs = extract_categories(ep.instruction)
++            f["n_landmarks"] = len(objs)
++            f["n_room_words"] = len(regs)
++            if level is not None:
++                f["n_landmark_instances"], f["n_decoys"] = landmark_stats(
++                    level, level_points, objs, args.decoy_radius
++                )
++            else:
++                f["n_landmark_instances"] = f["n_decoys"] = None
++        else:
++            f["n_landmarks"] = f["n_room_words"] = f["n_landmark_instances"] = f["n_decoys"] = None
++        f["llm_region_hit"] = None if args.no_llm else llm_region_hit(ep, ep.start_position, args)
++        features[str(ep.episode_id)] = f
++        if n_done % 200 == 0:
++            print(f"{n_done} episodes", flush=True)
++
++    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
++    with open(args.out, "w") as fh:
++        json.dump(features, fh)
++    vals = list(features.values())
++    def q(key):
++        xs = [v[key] for v in vals if v.get(key) is not None and v.get(key) != -1]
++        return f"n={len(xs)} mean={np.mean(xs):.2f} p50={np.median(xs):.2f}" if xs else "n/a"
++    print(f"wrote {args.out}: {len(features)} episodes")
++    for key in ("path_len_m", "n_room_changes", "n_forks_graph", "n_forks3_graph",
++                "n_landmarks", "n_decoys", "n_spatial_words", "llm_region_hit"):
++        print(f"  {key:22s} {q(key)}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/analysis/paired_report.py b/scripts/analysis/paired_report.py
+new file mode 100644
+index 0000000..46d7144
+--- /dev/null
++++ b/scripts/analysis/paired_report.py
+@@ -0,0 +1,410 @@
++#!/usr/bin/env python3
++"""Paired-episode report from decision dumps (scripts/analysis/dump_eval.sh).
++
++Inputs are the eval_results directories holding decisions_<split>_r*.jsonl.
++The first --run is the reference (baseline); every other run is paired
++against it episode by episode.  Optional --forced runs (same labels) hold the
++teacher-forced dumps (protocol 2), where all models saw identical states.
++
++    python scripts/analysis/paired_report.py \
++        --features data/logs/analysis/features_val_unseen.json \
++        --run baseline=data/logs/checkpoints/base_dump_free_iter25000_val_unseen/eval_results \
++              try5=.../try5_dump_free_iter28000_val_unseen/eval_results \
++              kd=.../kd_dual_dump_free_iter20000_val_unseen/eval_results \
++        --forced baseline=.../base_dump_forced_iter25000_val_unseen/eval_results \
++                 try5=... kd=... \
++        --out data/logs/analysis/report_val_unseen.md
++(all LABEL=DIR pairs of one option follow that option, space separated)
++
++Sections (all numbers are plain counts and means; no intervals):
++  1  per-run SR / SPL / OSR / nDTW / stop error, and the paired 2x2 success
++     table (both / ref-only / other-only / neither) per pair
++  2  hard-subset table: SR and SPL of every run on the GT-derived strata
++     (multi-fork, multi-room, decoy, long path, spatial-language, LLM-map
++     good/bad) -- the main-text table
++  3  discordant-pair profile: mean feature values of the episodes only the
++     reference solves vs only the other run solves
++  4  failure modes per run (stop error / wrong branch at a fork / off path
++     elsewhere / other), from the free-rollout dump
++  5  efficiency on episodes every run solves: steps, path length, revisits
++  6  step-level decision accuracy vs the DAgger expert, overall and on fork
++     steps by number of options (free dump, and forced dump when given); for
++     forced dumps also the per-state 2x2 (ref right/wrong x other right/wrong)
++  7  first divergence between the reference and each run (free dumps): at
++     which step the executed actions first differ, whether that state is a
++     fork, and who matched the expert there
++
++A "fork" is a state with >= 2 unvisited ghost nodes within --local-radius of
++the agent in directions more than --fork-angle apart.
++"""
++
++from __future__ import annotations
++
++import glob
++import json
++import math
++import os
++from collections import Counter, defaultdict
++from typing import Dict, List, Optional, Sequence, Tuple
++
++import numpy as np
++from tap import Tap
++
++
++class Args(Tap):
++    run: List[str]
++    """LABEL=DIR, free-rollout dumps; the first is the reference."""
++    forced: List[str] = []
++    """LABEL=DIR, teacher-forced dumps (optional)."""
++    features: Optional[str] = None
++    """episode_features.py output; without it only sections 1, 4-7 are written."""
++    split: str = "val_unseen"
++    out: Optional[str] = None
++    local_radius: float = 3.0
++    fork_angle: float = 45.0
++    min_forks: int = 2
++    min_room_changes: int = 2
++    min_decoys: int = 1
++    long_quantile: float = 0.67
++    """Long-path stratum = path length at or above this quantile."""
++    spatial_quantile: float = 0.5
++    """Spatial-language stratum = n_spatial_words at or above this quantile."""
++
++
++# ----------------------------------------------------------------- loading
++
++
++def load_dump(directory: str, split: str) -> Dict[str, dict]:
++    files = sorted(glob.glob(os.path.join(directory, f"decisions_{split}_r*.jsonl")))
++    if not files:
++        raise FileNotFoundError(f"no decisions_{split}_r*.jsonl in {directory}")
++    eps: Dict[str, dict] = {}
++    for f in files:
++        with open(f) as fh:
++            for line in fh:
++                r = json.loads(line)
++                if r["kind"] == "step":
++                    eps.setdefault(str(r["ep"]), {"steps": []})["steps"].append(r)
++                elif r["kind"] == "episode":
++                    e = eps.setdefault(str(r["ep"]), {"steps": []})
++                    e["metric"] = r["metric"]
++                    e["traj"] = r.get("traj", [])
++                    e["scene"] = r.get("scene")
++    for ep, e in eps.items():
++        e["steps"].sort(key=lambda r: r["step"])
++        if "metric" not in e:  # unfinished episode (killed job)
++            e["metric"] = None
++    return eps
++
++
++def parse_runs(items: Sequence[str]) -> List[Tuple[str, str]]:
++    out = []
++    for it in items:
++        if "=" not in it:
++            raise ValueError(f"expected LABEL=DIR, got {it!r}")
++        label, d = it.split("=", 1)
++        out.append((label, d))
++    return out
++
++
++# ------------------------------------------------------------ step features
++
++
++def local_options(step: dict, radius: float, angle_deg: float) -> Tuple[int, List[int]]:
++    """Number of distinct directions among unvisited ghosts near the agent, and
++    the indices (into step['vps']) of those local candidates."""
++    cur = np.asarray(step["cur_pos"], dtype=float)
++    cands = []
++    for i, (vp, pos, vis) in enumerate(zip(step["vps"], step["pos"], step["visited"])):
++        if vp is None or vis or pos is None or not str(vp).startswith("g"):
++            continue
++        d = np.asarray(pos, dtype=float) - cur
++        dist = math.hypot(d[0], d[2])
++        if dist <= radius:
++            cands.append((i, math.atan2(d[2], d[0])))
++    clusters: List[float] = []
++    thr = math.radians(angle_deg)
++    for _, bearing in cands:
++        if all(abs((bearing - c + math.pi) % (2 * math.pi) - math.pi) > thr for c in clusters):
++            clusters.append(bearing)
++    return len(clusters), [i for i, _ in cands]
++
++
++def annotate(eps: Dict[str, dict], radius: float, angle: float) -> None:
++    for e in eps.values():
++        seen = set()
++        e["n_revisits"] = 0
++        e["first_dev"] = None
++        for s in e["steps"]:
++            s["n_options"], s["local"] = local_options(s, radius, angle)
++            s["is_fork"] = s["n_options"] >= 2
++            s["valid"] = s["teacher"] != -100
++            s["is_stop"] = s["teacher"] == 0
++            s["correct"] = bool(s["valid"] and s["student"] == s["teacher"])
++            if s["cur_vp"] in seen:
++                e["n_revisits"] += 1
++            seen.add(s["cur_vp"])
++            if e["first_dev"] is None and s["valid"] and not s["is_stop"] and not s["correct"]:
++                e["first_dev"] = s
++        m = e["metric"] or {}
++        if m.get("success", 0) >= 1:
++            mode = "success"
++        elif m.get("oracle_success", 0) >= 1:
++            mode = "stop_error"
++        elif e["first_dev"] is not None and e["first_dev"]["is_fork"]:
++            mode = "wrong_branch"
++        elif e["first_dev"] is not None:
++            mode = "off_path"
++        else:
++            mode = "other"
++        e["mode"] = mode
++
++
++# ----------------------------------------------------------------- tables
++
++
++def md_table(header: List[str], rows: List[List[str]]) -> str:
++    lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
++    lines += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
++    return "\n".join(lines)
++
++
++def pct(x: float) -> str:
++    return f"{100 * x:.2f}"
++
++
++def mean_metric(eps: Dict[str, dict], ids: Sequence[str], key: str) -> float:
++    vals = [eps[i]["metric"][key] for i in ids if eps[i]["metric"] is not None]
++    return float(np.mean(vals)) if vals else float("nan")
++
++
++def success_set(eps: Dict[str, dict], ids: Sequence[str]) -> set:
++    return {i for i in ids if eps[i]["metric"] and eps[i]["metric"]["success"] >= 1}
++
++
++def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[str, List[str]]:
++    fs = {i: features[i] for i in ids if i in features}
++    def have(k):
++        return [v[k] for v in fs.values() if v.get(k) is not None and v.get(k) != -1]
++    out: Dict[str, List[str]] = {"all": list(ids)}
++    out[f"multi-fork (forks>={args.min_forks})"] = [i for i, v in fs.items() if (v.get("n_forks_graph") or 0) >= args.min_forks]
++    out["single-fork (forks<=1)"] = [i for i, v in fs.items() if v.get("n_forks_graph") is not None and 0 <= v["n_forks_graph"] <= 1]
++    out[f"multi-room (changes>={args.min_room_changes})"] = [i for i, v in fs.items() if (v.get("n_room_changes") or 0) >= args.min_room_changes]
++    out[f"decoy (decoys>={args.min_decoys})"] = [i for i, v in fs.items() if (v.get("n_decoys") or 0) >= args.min_decoys]
++    if have("path_len_m"):
++        thr = float(np.quantile(have("path_len_m"), args.long_quantile))
++        out[f"long path (>= {thr:.1f} m)"] = [i for i, v in fs.items() if v.get("path_len_m", 0) >= thr]
++        out[f"short path (< {thr:.1f} m)"] = [i for i, v in fs.items() if v.get("path_len_m", 0) < thr]
++    if have("n_spatial_words"):
++        thr = float(np.quantile(have("n_spatial_words"), args.spatial_quantile))
++        out[f"spatial language (words>={thr:.0f})"] = [i for i, v in fs.items() if v.get("n_spatial_words", 0) >= thr]
++    if have("llm_region_hit"):
++        thr = float(np.median(have("llm_region_hit")))
++        out[f"LLM map good (hit>={thr:.2f})"] = [i for i, v in fs.items() if v.get("llm_region_hit") is not None and v["llm_region_hit"] >= thr]
++        out[f"LLM map poor (hit<{thr:.2f})"] = [i for i, v in fs.items() if v.get("llm_region_hit") is not None and v["llm_region_hit"] < thr]
++    return out
++
++
++FEATURE_KEYS = ["path_len_m", "n_forks_graph", "n_forks3_graph", "n_room_changes",
++                "n_landmarks", "n_decoys", "n_spatial_words", "llm_region_hit"]
++
++
++def feature_profile(features: Dict[str, dict], ids: Sequence[str]) -> List[str]:
++    cells = []
++    for k in FEATURE_KEYS:
++        xs = [features[i][k] for i in ids if i in features and features[i].get(k) is not None and features[i].get(k) != -1]
++        cells.append(f"{np.mean(xs):.2f}" if xs else "-")
++    return cells
++
++
++# ------------------------------------------------------------- sections
++
++
++def section_overview(runs, eps_by, ids) -> str:
++    rows = []
++    for label, _ in runs:
++        e = eps_by[label]
++        rows.append([label, len(ids), pct(mean_metric(e, ids, "success")), pct(mean_metric(e, ids, "spl")),
++                     pct(mean_metric(e, ids, "oracle_success")), pct(mean_metric(e, ids, "ndtw")),
++                     pct(mean_metric(e, ids, "oracle_success") - mean_metric(e, ids, "success")),
++                     f"{mean_metric(e, ids, 'steps_taken'):.1f}", f"{mean_metric(e, ids, 'path_length'):.2f}"])
++    out = ["## 1. Overview (common episodes)", "",
++           md_table(["run", "n", "SR", "SPL", "OSR", "nDTW", "OSR-SR", "steps", "PL (m)"], rows), ""]
++    ref, _ = runs[0]
++    sref = success_set(eps_by[ref], ids)
++    rows = []
++    for label, _ in runs[1:]:
++        s = success_set(eps_by[label], ids)
++        both = len(sref & s); ref_only = len(sref - s); other_only = len(s - sref)
++        neither = len(ids) - both - ref_only - other_only
++        rows.append([f"{ref} vs {label}", both, ref_only, other_only, neither, other_only - ref_only])
++    out += [md_table(["pair", "both", f"{ref} only", "other only", "neither", "net"], rows), ""]
++    return "\n".join(out)
++
++
++def section_subsets(runs, eps_by, groups) -> str:
++    header = ["subset", "n"] + [f"{l} SR" for l, _ in runs] + [f"{l} SPL" for l, _ in runs] + [f"dSR vs {runs[0][0]}" for _ in runs[1:]]
++    rows = []
++    for name, ids in groups.items():
++        if not ids:
++            continue
++        sr = [mean_metric(eps_by[l], ids, "success") for l, _ in runs]
++        spl = [mean_metric(eps_by[l], ids, "spl") for l, _ in runs]
++        rows.append([name, len(ids)] + [pct(x) for x in sr] + [pct(x) for x in spl] + [f"{100 * (x - sr[0]):+.2f}" for x in sr[1:]])
++    return "\n".join(["## 2. Hard subsets (GT-derived strata)", "", md_table(header, rows), ""])
++
++
++def section_discordant(runs, eps_by, ids, features) -> str:
++    ref = runs[0][0]
++    sref = success_set(eps_by[ref], ids)
++    rows = []
++    for label, _ in runs[1:]:
++        s = success_set(eps_by[label], ids)
++        for name, sub in [(f"{ref} only", sorted(sref - s)), (f"{label} only", sorted(s - sref)),
++                          ("both", sorted(sref & s)), ("neither", sorted(set(ids) - sref - s))]:
++            rows.append([f"{ref} vs {label}", name, len(sub)] + feature_profile(features, sub))
++    return "\n".join(["## 3. Discordant-pair profile (mean features)", "",
++                      md_table(["pair", "set", "n"] + FEATURE_KEYS, rows), ""])
++
++
++MODES = ["success", "stop_error", "wrong_branch", "off_path", "other"]
++
++
++def section_modes(runs, eps_by, ids) -> str:
++    rows = []
++    for label, _ in runs:
++        c = Counter(eps_by[label][i]["mode"] for i in ids)
++        rows.append([label] + [c.get(m, 0) for m in MODES])
++    return "\n".join(["## 4. Failure modes (free rollout)", "",
++                      "stop_error = oracle success without success; wrong_branch = first deviation from the expert at a fork state; off_path = first deviation elsewhere; other = never deviated from the expert yet failed.", "",
++                      md_table(["run"] + MODES, rows), ""])
++
++
++def section_efficiency(runs, eps_by, ids) -> str:
++    common = set(ids)
++    for label, _ in runs:
++        common &= success_set(eps_by[label], ids)
++    common = sorted(common)
++    rows = []
++    for label, _ in runs:
++        e = eps_by[label]
++        rows.append([label, len(common), f"{mean_metric(e, common, 'steps_taken'):.2f}",
++                     f"{mean_metric(e, common, 'path_length'):.2f}",
++                     f"{np.mean([e[i]['n_revisits'] for i in common]):.2f}" if common else "-",
++                     pct(mean_metric(e, common, "spl"))])
++    return "\n".join(["## 5. Efficiency on episodes every run solves", "",
++                      md_table(["run", "n", "steps", "PL (m)", "revisits", "SPL"], rows), ""])
++
++
++def step_accuracy_rows(label: str, eps: Dict[str, dict], ids: Sequence[str]) -> List[List[str]]:
++    steps = [s for i in ids for s in eps[i]["steps"] if s["valid"]]
++    def acc(sel):
++        return (f"{100 * np.mean([s['correct'] for s in sel]):.2f}", len(sel)) if sel else ("-", 0)
++    groups = [
++        ("all valid steps", steps),
++        ("stop steps (expert=STOP)", [s for s in steps if s["is_stop"]]),
++        ("move, 1 option", [s for s in steps if not s["is_stop"] and s["n_options"] <= 1]),
++        ("move, 2 options", [s for s in steps if not s["is_stop"] and s["n_options"] == 2]),
++        ("move, >=3 options", [s for s in steps if not s["is_stop"] and s["n_options"] >= 3]),
++    ]
++    rows = []
++    for name, sel in groups:
++        a, n = acc(sel)
++        rows.append([label, name, n, a])
++    return rows
++
++
++def section_steps(title: str, runs, eps_by, ids, paired: bool) -> str:
++    rows = []
++    for label, _ in runs:
++        rows += step_accuracy_rows(label, eps_by[label], ids)
++    out = [f"## {title}", "", md_table(["run", "states", "n", "acc vs expert (%)"], rows), ""]
++    if paired and len(runs) > 1:
++        ref = runs[0][0]
++        prow = []
++        for label, _ in runs[1:]:
++            a = {(i, s["step"]): s for i in ids for s in eps_by[ref][i]["steps"] if s["valid"] and not s["is_stop"]}
++            b = {(i, s["step"]): s for i in ids for s in eps_by[label][i]["steps"] if s["valid"] and not s["is_stop"]}
++            keys = sorted(set(a) & set(b))
++            for name, sel in [("all move states", keys), ("fork states", [k for k in keys if a[k]["is_fork"]])]:
++                both = sum(a[k]["correct"] and b[k]["correct"] for k in sel)
++                ro = sum(a[k]["correct"] and not b[k]["correct"] for k in sel)
++                oo = sum(b[k]["correct"] and not a[k]["correct"] for k in sel)
++                prow.append([f"{ref} vs {label}", name, len(sel), both, ro, oo, len(sel) - both - ro - oo, oo - ro])
++        out += ["Per-state 2x2 on identical states (teacher-forced):", "",
++                md_table(["pair", "states", "n", "both right", f"{ref} only", "other only", "neither", "net"], prow), ""]
++    return "\n".join(out)
++
++
++def section_divergence(runs, eps_by, ids) -> str:
++    ref = runs[0][0]
++    rows = []
++    for label, _ in runs[1:]:
++        A, B = eps_by[ref], eps_by[label]
++        sa, sb = success_set(A, ids), success_set(B, ids)
++        rec = Counter()
++        for i in ids:
++            k = None
++            for sa_, sb_ in zip(A[i]["steps"], B[i]["steps"]):
++                if sa_["cur_vp"] != sb_["cur_vp"]:
++                    break
++                ea = sa_["vps"][sa_["executed"]] if sa_["executed"] < len(sa_["vps"]) else None
++                eb = sb_["vps"][sb_["executed"]] if sb_["executed"] < len(sb_["vps"]) else None
++                if ea != eb:
++                    k = (sa_, sb_)
++                    break
++            if k is None:
++                rec["identical"] += 1
++                continue
++            sa_, sb_ = k
++            outcome = "both" if i in sa and i in sb else f"{ref} only" if i in sa else f"{label} only" if i in sb else "neither"
++            who = "ref matches expert" if sa_["correct"] else "other matches expert" if sb_["correct"] else "neither matches expert"
++            rec[(outcome, "fork" if sa_["is_fork"] else "non-fork", who)] += 1
++        rows.append([f"{ref} vs {label}", "identical trajectories", "", "", rec.pop("identical", 0)])
++        for (outcome, fork, who), n in sorted(rec.items(), key=lambda kv: (-kv[1])):
++            rows.append([f"{ref} vs {label}", outcome, fork, who, n])
++    return "\n".join(["## 7. First divergence between runs (free rollouts)", "",
++                      "The first step whose executed waypoint differs; the state is shared up to there.", "",
++                      md_table(["pair", "episode outcome", "state", "who matched expert there", "n"], rows), ""])
++
++
++# ------------------------------------------------------------------ main
++
++
++def main(argv: Optional[Sequence[str]] = None) -> None:
++    args = Args(underscores_to_dashes=True).parse_args(argv)
++    runs = parse_runs(args.run)
++    eps_by = {label: load_dump(d, args.split) for label, d in runs}
++    for e in eps_by.values():
++        annotate(e, args.local_radius, args.fork_angle)
++    ids = sorted(set.intersection(*[set(i for i, e in eps.items() if e["metric"] is not None) for eps in eps_by.values()]))
++    features = json.load(open(args.features)) if args.features else {}
++
++    parts = [f"# Paired-episode report ({args.split}, {len(ids)} common episodes)", ""]
++    parts.append(section_overview(runs, eps_by, ids))
++    if features:
++        groups = strata(features, ids, args)
++        parts.append(section_subsets(runs, eps_by, groups))
++        parts.append(section_discordant(runs, eps_by, ids, features))
++    parts.append(section_modes(runs, eps_by, ids))
++    parts.append(section_efficiency(runs, eps_by, ids))
++    parts.append(section_steps("6a. Decision accuracy vs expert (free rollout)", runs, eps_by, ids, paired=False))
++    if args.forced:
++        forced = parse_runs(args.forced)
++        f_by = {label: load_dump(d, args.split) for label, d in forced}
++        for e in f_by.values():
++            annotate(e, args.local_radius, args.fork_angle)
++        f_ids = sorted(set.intersection(*[set(e) for e in f_by.values()]))
++        parts.append(section_steps(f"6b. Decision accuracy vs expert (teacher-forced, {len(f_ids)} episodes)", forced, f_by, f_ids, paired=True))
++    parts.append(section_divergence(runs, eps_by, ids))
++    text = "\n".join(parts)
++    if args.out:
++        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
++        with open(args.out, "w") as fh:
++            fh.write(text)
++        print(f"wrote {args.out}")
++    print(text)
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.43.0
+
