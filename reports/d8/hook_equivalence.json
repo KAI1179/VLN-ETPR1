@@ -1,0 +1,13 @@
+{
+  "n": 4,
+  "fields": [
+    "success",
+    "oracle_success",
+    "spl",
+    "steps_taken",
+    "distance_to_goal"
+  ],
+  "changes": [],
+  "reference": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d8_smoke_off_single/eval_results",
+  "candidate": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d8_smoke_on_single/eval_results"
+}

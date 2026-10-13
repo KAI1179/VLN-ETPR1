@@ -832,6 +832,9 @@ class RLTrainer(BaseVLNCETrainer):
             episodes_allowed = self.config.EVAL.EPISODE_ID
         else:
             episodes_allowed = self.traj
+        if self.config.EVAL.d8_shared_states:
+            rank_ids = set(map(str, self.traj))
+            episodes_allowed = [eid for eid in episodes_allowed if str(eid) in rank_ids]
         self.envs = construct_envs(
             self.config,
             get_env_class(self.config.ENV_NAME),
@@ -854,6 +857,12 @@ class RLTrainer(BaseVLNCETrainer):
         self.policy.eval()
         self.waypoint_predictor.eval()
 
+        if self.config.EVAL.dump_decision_features:
+            from scripts.eval_d8.feature_dump import DecisionFeatureDump
+
+            network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
+            self._d8_dump = DecisionFeatureDump(network, self.config.EVAL.dump_decision_features,
+                                              self.config.EVAL.d8_shared_states, self.config.EVAL.d8_replay_dir)
         if self.config.EVAL.EPISODE_COUNT == -1:
             eps_to_eval = sum(self.envs.number_of_episodes)
         else:
@@ -868,6 +877,8 @@ class RLTrainer(BaseVLNCETrainer):
 
         self.envs.close()
 
+        if self.config.EVAL.dump_decision_features:
+            self._d8_dump.close()
         if self.world_size > 1:
             distr.barrier()
         aggregated_states = {}
@@ -1126,7 +1137,8 @@ class RLTrainer(BaseVLNCETrainer):
         total_actions = 0.0
 
         not_done_index = list(range(self.envs.num_envs))
-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
+        shared_eval = mode == "eval" and self.config.EVAL.d8_shared_states
+        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval
         ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
         self.gmaps = [
             GraphMap(
@@ -1176,7 +1188,7 @@ class RLTrainer(BaseVLNCETrainer):
                 cand_vp.append(cand_vp_i)
                 cand_pos.append(cand_pos_i)
 
-            if mode == "train" or self.config.VIDEO_OPTION:
+            if mode == "train" or self.config.VIDEO_OPTION or shared_eval:
                 cand_real_pos = []
                 for i in range(self.envs.num_envs):
                     cand_real_pos_i = [
@@ -1222,7 +1234,7 @@ class RLTrainer(BaseVLNCETrainer):
             for i, gmap in enumerate(self.gmaps):
                 gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
 
-            if mode == "train" or self.config.VIDEO_OPTION:
+            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir):
                 teacher_actions = self._teacher_action_new(
                     nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
                 )
@@ -1242,10 +1254,22 @@ class RLTrainer(BaseVLNCETrainer):
                 )
 
             elif feedback == "argmax":
-                a_t = nav_logits.argmax(dim=-1)
+                if shared_eval:
+                    a_t = (self._d8_dump.replay_actions(
+                        self.envs.current_episodes(), stepk, cur_pos, nav_inputs["gmap_vp_ids"], self.gmaps, nav_logits.device
+                    ) if self.config.EVAL.d8_replay_dir else teacher_actions)
+                    if (a_t < 0).any():
+                        raise RuntimeError("Shared expert replay has no valid next action")
+                else:
+                    a_t = nav_logits.argmax(dim=-1)
             else:
                 raise NotImplementedError
             cpu_a_t = a_t.cpu().numpy()
+
+            if mode == "eval" and self.config.EVAL.dump_decision_features:
+                self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                                       self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                                       cpu_a_t, no_vp_left, self.max_len)
 
             if mode == "eval" and self.config.EVAL.d7d_logging:
                 self._d7d_log.decision(
@@ -1390,6 +1414,8 @@ class RLTrainer(BaseVLNCETrainer):
                     if ep_id in self.stat_eps:
                         print("ERROR!!!!!!!!!! ", ep_id)
                     self.stat_eps[ep_id] = metric
+                    if self.config.EVAL.dump_decision_features:
+                        self._d8_dump.finish(ep_id)
                     if self.pbar:
                         self.pbar.update()
 

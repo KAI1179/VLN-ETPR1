@@ -1,0 +1,336 @@
+{
+  "definitions": {
+    "protocol": "control, 4 ranks, baseline no map; Try5 and KD with map",
+    "classes": {
+      "A": "success",
+      "B": "failure with oracle_success",
+      "C": "never reached + stop",
+      "D": "never reached + budget",
+      "E": "never reached + no_candidate",
+      "U": "cache missing, not run"
+    },
+    "length_cuts_m": [
+      8.236761794539953,
+      10.376267476756617
+    ],
+    "bootstrap": "scene-cluster, 2000 draws, seed 0"
+  },
+  "files": {
+    "baseline": [
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_base_control_val_unseen/eval_results/stats_ep_ckpt_25000_val_unseen_r0_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_base_control_val_unseen/eval_results/stats_ep_ckpt_25000_val_unseen_r1_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_base_control_val_unseen/eval_results/stats_ep_ckpt_25000_val_unseen_r2_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_base_control_val_unseen/eval_results/stats_ep_ckpt_25000_val_unseen_r3_w4.json"
+    ],
+    "Try5": [
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_try5_control_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_try5_control_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r1_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_try5_control_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r2_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_try5_control_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r3_w4.json"
+    ],
+    "KD": [
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_kd_control_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_kd_control_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r1_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_kd_control_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r2_w4.json",
+      "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/d7d_kd_control_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r3_w4.json"
+    ]
+  },
+  "counts": [
+    {
+      "model": "baseline",
+      "group": "all",
+      "n": 1839,
+      "counts": {
+        "A": 1159,
+        "B": 101,
+        "C": 382,
+        "D": 197,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "Try5",
+      "group": "all",
+      "n": 1839,
+      "counts": {
+        "A": 1196,
+        "B": 98,
+        "C": 350,
+        "D": 189,
+        "E": 0,
+        "U": 6
+      }
+    },
+    {
+      "model": "KD",
+      "group": "all",
+      "n": 1839,
+      "counts": {
+        "A": 1237,
+        "B": 89,
+        "C": 335,
+        "D": 172,
+        "E": 0,
+        "U": 6
+      }
+    },
+    {
+      "model": "baseline",
+      "group": "T1",
+      "n": 612,
+      "counts": {
+        "A": 479,
+        "B": 45,
+        "C": 49,
+        "D": 39,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "Try5",
+      "group": "T1",
+      "n": 612,
+      "counts": {
+        "A": 489,
+        "B": 42,
+        "C": 50,
+        "D": 31,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "KD",
+      "group": "T1",
+      "n": 612,
+      "counts": {
+        "A": 500,
+        "B": 38,
+        "C": 48,
+        "D": 26,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "baseline",
+      "group": "T2",
+      "n": 612,
+      "counts": {
+        "A": 379,
+        "B": 46,
+        "C": 127,
+        "D": 60,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "Try5",
+      "group": "T2",
+      "n": 612,
+      "counts": {
+        "A": 403,
+        "B": 39,
+        "C": 116,
+        "D": 53,
+        "E": 0,
+        "U": 1
+      }
+    },
+    {
+      "model": "KD",
+      "group": "T2",
+      "n": 612,
+      "counts": {
+        "A": 419,
+        "B": 36,
+        "C": 109,
+        "D": 47,
+        "E": 0,
+        "U": 1
+      }
+    },
+    {
+      "model": "baseline",
+      "group": "T3",
+      "n": 615,
+      "counts": {
+        "A": 301,
+        "B": 10,
+        "C": 206,
+        "D": 98,
+        "E": 0,
+        "U": 0
+      }
+    },
+    {
+      "model": "Try5",
+      "group": "T3",
+      "n": 615,
+      "counts": {
+        "A": 304,
+        "B": 17,
+        "C": 184,
+        "D": 105,
+        "E": 0,
+        "U": 5
+      }
+    },
+    {
+      "model": "KD",
+      "group": "T3",
+      "n": 615,
+      "counts": {
+        "A": 318,
+        "B": 15,
+        "C": 178,
+        "D": 99,
+        "E": 0,
+        "U": 5
+      }
+    }
+  ],
+  "c_rate_differences": [
+    {
+      "group": "all",
+      "comparison": "KD - baseline",
+      "n": 1833,
+      "difference_pp": -2.5095471903982545,
+      "ci_pp": [
+        -4.0269070973768955,
+        -0.8812322743784365
+      ]
+    },
+    {
+      "group": "all",
+      "comparison": "KD - Try5",
+      "n": 1833,
+      "difference_pp": -0.8183306055646482,
+      "ci_pp": [
+        -2.1896511578679987,
+        0.5266779041488377
+      ]
+    },
+    {
+      "group": "all",
+      "comparison": "Try5 - baseline",
+      "n": 1833,
+      "difference_pp": -1.691216584833606,
+      "ci_pp": [
+        -3.272358511785191,
+        -0.21607326466949003
+      ]
+    },
+    {
+      "group": "T1",
+      "comparison": "KD - baseline",
+      "n": 612,
+      "difference_pp": -0.16339869281045752,
+      "ci_pp": [
+        -2.0751091584628316,
+        2.070393374741201
+      ]
+    },
+    {
+      "group": "T1",
+      "comparison": "KD - Try5",
+      "n": 612,
+      "difference_pp": -0.32679738562091504,
+      "ci_pp": [
+        -2.094405825157288,
+        1.2424301242236013
+      ]
+    },
+    {
+      "group": "T1",
+      "comparison": "Try5 - baseline",
+      "n": 612,
+      "difference_pp": 0.16339869281045752,
+      "ci_pp": [
+        -1.297111764891968,
+        1.7779761904761893
+      ]
+    },
+    {
+      "group": "T2",
+      "comparison": "KD - baseline",
+      "n": 611,
+      "difference_pp": -2.9459901800327333,
+      "ci_pp": [
+        -6.054835464015151,
+        -0.8786640668094883
+      ]
+    },
+    {
+      "group": "T2",
+      "comparison": "KD - Try5",
+      "n": 611,
+      "difference_pp": -1.1456628477905073,
+      "ci_pp": [
+        -2.761413383364603,
+        0.41248471571224565
+      ]
+    },
+    {
+      "group": "T2",
+      "comparison": "Try5 - baseline",
+      "n": 611,
+      "difference_pp": -1.800327332242226,
+      "ci_pp": [
+        -4.938419280524544,
+        0.7463385320588066
+      ]
+    },
+    {
+      "group": "T3",
+      "comparison": "KD - baseline",
+      "n": 610,
+      "difference_pp": -4.426229508196721,
+      "ci_pp": [
+        -7.192661765298544,
+        -1.8176374523679941
+      ]
+    },
+    {
+      "group": "T3",
+      "comparison": "KD - Try5",
+      "n": 610,
+      "difference_pp": -0.9836065573770493,
+      "ci_pp": [
+        -3.7109784625312576,
+        2.0413423101199215
+      ]
+    },
+    {
+      "group": "T3",
+      "comparison": "Try5 - baseline",
+      "n": 610,
+      "difference_pp": -3.4426229508196724,
+      "ci_pp": [
+        -7.233499725478147,
+        -0.35546886020240176
+      ]
+    }
+  ],
+  "reverse_loss": [
+    {
+      "group": "all",
+      "baseline_A_to_KD_C": 79
+    },
+    {
+      "group": "T1",
+      "baseline_A_to_KD_C": 13
+    },
+    {
+      "group": "T2",
+      "baseline_A_to_KD_C": 27
+    },
+    {
+      "group": "T3",
+      "baseline_A_to_KD_C": 39
+    }
+  ]
+}
