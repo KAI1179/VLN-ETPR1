@@ -1,4 +1,4 @@
-From 752ccc7e1d35477c82cc684e9b5eca3714e72f39 Mon Sep 17 00:00:00 2001
+From fd7e782ee8d4d116e413380cd74d16d96948afc6 Mon Sep 17 00:00:00 2001
 From: claude <claude@local>
 Date: Mon, 12 Oct 2026 20:13:20 -0600
 Subject: [PATCH 65/66] Per-step decision dump for the paired-episode analysis
@@ -304,12 +304,12 @@ index 0000000..2762b29
 +            }
 +        )
 diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
-index ac2543b..b111ecd 100755
+index 7fbb325..68533c2 100755
 --- a/vlnce_baselines/config/default.py
 +++ b/vlnce_baselines/config/default.py
-@@ -33,6 +33,13 @@ _C.EVAL.LANGUAGES = ["en-US", "en-IN"]
- _C.EVAL.SAMPLE = False
- _C.EVAL.SAVE_RESULTS = True
+@@ -38,6 +38,13 @@ _C.EVAL.dump_decision_features = ""
+ _C.EVAL.d8_shared_states = False
+ _C.EVAL.d8_replay_dir = ""
  _C.EVAL.EVAL_NONLEARNING = False
 +# Per-step decision dump for the paired-episode analysis
 +# (vlnce_baselines/common/decision_dump.py): one JSON line per high-level
@@ -322,7 +322,7 @@ index ac2543b..b111ecd 100755
  _C.EVAL.NONLEARNING.AGENT = "RandomAgent"
  
 diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
-index efa0a40..4258203 100644
+index 5fb5d29..e84c6e2 100644
 --- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
 +++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
 @@ -29,6 +29,7 @@ from habitat_baselines.utils.common import batch_obs
@@ -333,15 +333,15 @@ index efa0a40..4258203 100644
  from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
  
  from .utils import get_camera_orientations12
-@@ -1120,6 +1121,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -1153,6 +1154,7 @@ class RLTrainer(BaseVLNCETrainer):
              self.rollout("eval")
  
          self.envs.close()
 +        self._close_decision_dumper()
  
-         self._write_eval_results(writer, checkpoint_index)
- 
-@@ -1254,6 +1256,12 @@ class RLTrainer(BaseVLNCETrainer):
+         if self.config.EVAL.dump_decision_features:
+             self._d8_dump.close()
+@@ -1289,6 +1291,12 @@ class RLTrainer(BaseVLNCETrainer):
                  f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
              )
  
@@ -354,39 +354,39 @@ index efa0a40..4258203 100644
      def get_pos_ori(self):
          pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
          pos = [x[0] for x in pos_ori]
-@@ -1860,7 +1868,12 @@ class RLTrainer(BaseVLNCETrainer):
-         student_ce = 0.0
+@@ -1910,7 +1918,12 @@ class RLTrainer(BaseVLNCETrainer):
  
          not_done_index = list(range(self.envs.num_envs))
--        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
+         shared_eval = mode == "eval" and self.config.EVAL.d8_shared_states
+-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval
 +        dump_on = decision_dump_enabled(self.config, mode)
 +        if dump_on and getattr(self, "decision_dumper", None) is None:
 +            self.decision_dumper = DecisionDumper.from_config(
 +                self.config, self.local_rank, self.world_size
 +            )
-+        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or dump_on
++        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on
          ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
          self.gmaps = [
              GraphMap(
-@@ -1982,7 +1995,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -2032,7 +2045,7 @@ class RLTrainer(BaseVLNCETrainer):
                  cand_vp.append(cand_vp_i)
                  cand_pos.append(cand_pos_i)
  
--            if mode == "train" or self.config.VIDEO_OPTION:
-+            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+-            if mode == "train" or self.config.VIDEO_OPTION or shared_eval:
++            if mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on:
                  cand_real_pos = []
                  for i in range(self.envs.num_envs):
                      cand_real_pos_i = [
-@@ -2092,7 +2105,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -2142,7 +2155,7 @@ class RLTrainer(BaseVLNCETrainer):
              for i, gmap in enumerate(self.gmaps):
                  gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
  
--            if mode == "train" or self.config.VIDEO_OPTION:
-+            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+-            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir):
++            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir) or dump_on:
                  teacher_actions = self._teacher_action_new(
                      nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
                  )
-@@ -2253,6 +2266,12 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -2310,6 +2323,12 @@ class RLTrainer(BaseVLNCETrainer):
              else:
                  raise NotImplementedError
              cpu_a_t = a_t.cpu().numpy()
@@ -397,9 +397,9 @@ index efa0a40..4258203 100644
 +                    teacher_actions, no_vp_left,
 +                )
  
-             # make equiv action
-             env_actions = []
-@@ -2269,6 +2288,8 @@ class RLTrainer(BaseVLNCETrainer):
+             if mode == "eval" and self.config.EVAL.dump_decision_features:
+                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+@@ -2343,6 +2362,8 @@ class RLTrainer(BaseVLNCETrainer):
                      ]
                      stop_scores = [s[1] for s in vp_stop_scores]
                      stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
@@ -408,17 +408,17 @@ index efa0a40..4258203 100644
                      stop_pos = gmap.node_pos[stop_vp]
  
                      if self.config.IL.back_algo == "control":
-@@ -2390,6 +2411,8 @@ class RLTrainer(BaseVLNCETrainer):
-                     if ep_id in self.stat_eps:
-                         print("ERROR!!!!!!!!!! ", ep_id)
-                     self.stat_eps[ep_id] = metric
+@@ -2472,6 +2493,8 @@ class RLTrainer(BaseVLNCETrainer):
+                         self._d8_dump.finish(ep_id)
+                     if trajectory_recorder is not None:
+                         trajectory_recorder.finish(ep_id, metric, pred_path)
 +                    if dump_on:
 +                        self.decision_dumper.finish_episode(curr_eps[i], stepk, metric, info)
                      if self.pbar:
                          self.pbar.update()
  
 diff --git a/vlnce_baselines/ss_trainer_ETP_R1.py b/vlnce_baselines/ss_trainer_ETP_R1.py
-index 967b9b4..9d7cb33 100644
+index 3884a33..cf48fc3 100644
 --- a/vlnce_baselines/ss_trainer_ETP_R1.py
 +++ b/vlnce_baselines/ss_trainer_ETP_R1.py
 @@ -36,6 +36,7 @@ from vlnce_baselines.common.env_utils import (
@@ -429,15 +429,15 @@ index 967b9b4..9d7cb33 100644
  from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST
  from vlnce_baselines.utils import reduce_loss
  
-@@ -863,6 +864,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -876,6 +877,7 @@ class RLTrainer(BaseVLNCETrainer):
              self.rollout("eval")
  
          self.envs.close()
 +        self._close_decision_dumper()
  
-         if self.world_size > 1:
-             distr.barrier()
-@@ -1042,6 +1044,12 @@ class RLTrainer(BaseVLNCETrainer):
+         if self.config.EVAL.dump_decision_features:
+             self._d8_dump.close()
+@@ -1062,6 +1064,12 @@ class RLTrainer(BaseVLNCETrainer):
                  f"Predictions saved to: {self.config.INFERENCE.PREDICTIONS_FILE}"
              )
  
@@ -450,39 +450,39 @@ index 967b9b4..9d7cb33 100644
      def get_pos_ori(self):
          pos_ori = self.envs.call(["get_pos_ori"] * self.envs.num_envs)
          pos = [x[0] for x in pos_ori]
-@@ -1117,7 +1125,12 @@ class RLTrainer(BaseVLNCETrainer):
-         total_actions = 0.0
+@@ -1147,7 +1155,12 @@ class RLTrainer(BaseVLNCETrainer):
  
          not_done_index = list(range(self.envs.num_envs))
--        have_real_pos = mode == "train" or self.config.VIDEO_OPTION
+         shared_eval = mode == "eval" and self.config.EVAL.d8_shared_states
+-        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval
 +        dump_on = decision_dump_enabled(self.config, mode)
 +        if dump_on and getattr(self, "decision_dumper", None) is None:
 +            self.decision_dumper = DecisionDumper.from_config(
 +                self.config, self.local_rank, self.world_size
 +            )
-+        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or dump_on
++        have_real_pos = mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on
          ghost_aug = self.config.IL.ghost_aug if mode == "train" else 0
          self.gmaps = [
              GraphMap(
-@@ -1167,7 +1180,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -1197,7 +1210,7 @@ class RLTrainer(BaseVLNCETrainer):
                  cand_vp.append(cand_vp_i)
                  cand_pos.append(cand_pos_i)
  
--            if mode == "train" or self.config.VIDEO_OPTION:
-+            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+-            if mode == "train" or self.config.VIDEO_OPTION or shared_eval:
++            if mode == "train" or self.config.VIDEO_OPTION or shared_eval or dump_on:
                  cand_real_pos = []
                  for i in range(self.envs.num_envs):
                      cand_real_pos_i = [
-@@ -1213,7 +1226,7 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -1243,7 +1256,7 @@ class RLTrainer(BaseVLNCETrainer):
              for i, gmap in enumerate(self.gmaps):
                  gmap.node_stop_scores[cur_vp[i]] = nav_probs[i, 0].data.item()
  
--            if mode == "train" or self.config.VIDEO_OPTION:
-+            if mode == "train" or self.config.VIDEO_OPTION or dump_on:
+-            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir):
++            if mode == "train" or self.config.VIDEO_OPTION or (shared_eval and not self.config.EVAL.d8_replay_dir) or dump_on:
                  teacher_actions = self._teacher_action_new(
                      nav_inputs["gmap_vp_ids"], no_vp_left, mode == "train"
                  )
-@@ -1237,6 +1250,12 @@ class RLTrainer(BaseVLNCETrainer):
+@@ -1274,6 +1287,12 @@ class RLTrainer(BaseVLNCETrainer):
              else:
                  raise NotImplementedError
              cpu_a_t = a_t.cpu().numpy()
@@ -493,9 +493,9 @@ index 967b9b4..9d7cb33 100644
 +                    teacher_actions, no_vp_left,
 +                )
  
-             # make equiv action
-             env_actions = []
-@@ -1253,6 +1272,8 @@ class RLTrainer(BaseVLNCETrainer):
+             if mode == "eval" and self.config.EVAL.dump_decision_features:
+                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+@@ -1307,6 +1326,8 @@ class RLTrainer(BaseVLNCETrainer):
                      ]
                      stop_scores = [s[1] for s in vp_stop_scores]
                      stop_vp = vp_stop_scores[np.argmax(stop_scores)][0]
@@ -504,10 +504,10 @@ index 967b9b4..9d7cb33 100644
                      stop_pos = gmap.node_pos[stop_vp]
  
                      if self.config.IL.back_algo == "control":
-@@ -1372,6 +1393,8 @@ class RLTrainer(BaseVLNCETrainer):
-                     if ep_id in self.stat_eps:
-                         print("ERROR!!!!!!!!!! ", ep_id)
-                     self.stat_eps[ep_id] = metric
+@@ -1434,6 +1455,8 @@ class RLTrainer(BaseVLNCETrainer):
+                         self._d8_dump.finish(ep_id)
+                     if trajectory_recorder is not None:
+                         trajectory_recorder.finish(ep_id, metric, pred_path)
 +                    if dump_on:
 +                        self.decision_dumper.finish_episode(curr_eps[i], stepk, metric, info)
                      if self.pbar:

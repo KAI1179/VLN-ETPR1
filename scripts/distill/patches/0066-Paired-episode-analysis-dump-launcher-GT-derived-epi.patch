@@ -1,4 +1,4 @@
-From 4503bd6a102ba9ae492921fd69dc6ce47831ec55 Mon Sep 17 00:00:00 2001
+From 31182a50a75ceafd8fca1190183d0b0dbdbd90d5 Mon Sep 17 00:00:00 2001
 From: claude <claude@local>
 Date: Mon, 12 Oct 2026 20:19:56 -0600
 Subject: [PATCH 66/66] Paired-episode analysis: dump launcher, GT-derived
@@ -19,11 +19,11 @@ Counts and means only, no intervals.
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
 ---
- scripts/analysis/README.md           |  60 ++++
+ scripts/analysis/README.md           |  67 +++++
  scripts/analysis/dump_eval.sh        | 125 ++++++++
  scripts/analysis/episode_features.py | 244 ++++++++++++++++
  scripts/analysis/paired_report.py    | 410 +++++++++++++++++++++++++++
- 4 files changed, 839 insertions(+)
+ 4 files changed, 846 insertions(+)
  create mode 100644 scripts/analysis/README.md
  create mode 100755 scripts/analysis/dump_eval.sh
  create mode 100644 scripts/analysis/episode_features.py
@@ -31,13 +31,20 @@ Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
 
 diff --git a/scripts/analysis/README.md b/scripts/analysis/README.md
 new file mode 100644
-index 0000000..184d536
+index 0000000..a1d07e6
 --- /dev/null
 +++ b/scripts/analysis/README.md
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,67 @@
 +# Paired-episode analysis (baseline vs try5 vs KD)
 +
 +Three steps; only step 2 needs GPUs.
++
++Nothing here runs unless `EVAL.decision_dump True` is passed explicitly: the
++trainer hooks are inert by default, every dump writes to its own
++`<RUN>_dump_<protocol>_...` directory, and no training, GRPO or existing
++evaluation path is touched.  Models as in reports/d8/setup.md: baseline
++ETP-R1 iter25000 (no map), try5 no-KD iter28000 with its own LLM map, KD FULL
++iter27000 with its own LLM map (`MAP_VIEW=none`).
 +
 +## 1. Episode features (CPU, once per split)
 +
