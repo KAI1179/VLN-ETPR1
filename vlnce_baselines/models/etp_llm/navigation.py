@@ -288,7 +288,7 @@ def llm_navigation_cache_report(
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
 ) -> LLMNavigationCacheReport:
-    canonical_dataset = dataset.upper()
+    canonical_dataset = "RxR" if dataset.lower() == "rxr" else dataset.upper()
     if canonical_dataset not in ("R2R", "RxR"):
         raise ValueError(f"Unsupported dataset: {dataset}")
     vlnce_dataset = cast(Literal["R2R", "RxR"], canonical_dataset)

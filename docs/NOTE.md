@@ -1,5 +1,7 @@
 # 基于指令的先验认知地图 Instruction-based prior
 
+最新 D1 探针：LLM Try5 `iter28000` 的五字段跨场景替换在 val_unseen 得到 SR 65.42，高于历史 own 64.33；因 rank/代码时点不同且五字段同换，尚不能归因单个字段。详见 [2026-10-08 每日记录](daily/2026-10-08.md)和[完整报告](../reports/d1_full_probe_result.md)。
+
 ## 结果对比
 
 ### 地图编码器 GT

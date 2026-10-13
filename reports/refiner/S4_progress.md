@@ -20,3 +20,11 @@
 | s4_try5_refiner | 15000 | 64.60 | 54.28 | 3.969 | 68.90 |
 | dagger_distill_gt_teacher | 10000 | 65.63 | 54.14 | 3.892 | 72.16 |
 | dagger_distill_gt_teacher | 10000 | 65.52 | 54.12 | 3.870 | 72.00 |
+| dagger_distill_gt_teacher_llmpt | 5000 | 60.96 | 53.11 | 4.395 | 65.80 |
+| dagger_distill_gt_teacher_llmpt | 5000 | 60.96 | 53.11 | 4.395 | 65.80 |
+| dagger_distill_gt_teacher_llmpt | 7000 | 63.02 | 54.19 | 4.265 | 68.68 |
+| dagger_distill_gt_teacher_llmpt | 10000 | 63.30 | 53.92 | 3.929 | 68.46 |
+| dagger_distill_gt_teacher_llmpt | 13000 | 65.31 | 55.56 | 3.850 | 70.96 |
+| dagger_distill_gt_teacher_llmpt | 15000 | 65.20 | 54.35 | 3.913 | 70.91 |
+| dagger_distill_gt_teacher_llmpt | 17000 | 66.72 | 56.02 | 3.817 | 72.43 |
+| dagger_distill_gt_teacher_llmpt | 20000 | 65.25 | 55.56 | 4.033 | 70.91 |

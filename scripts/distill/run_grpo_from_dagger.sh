@@ -88,10 +88,10 @@ IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
 GPU_NUMBERS="${#_gpu_list[@]}"
 GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
 NUM_ENVS="${NUM_ENVS:-4}"
-ITERS="${ITERS:-500}"
+ITERS="${ITERS:-800}"
 LOG_EVERY="${LOG_EVERY:-50}"
-LR="${LR:-2e-5}"
-SEED="${SEED:-100}"
+LR="${LR:-2e-6}"
+SEED="${SEED:-10}"
 
 cd "${REPO_ROOT}"
 for key in require_complete_checkpoint trainable_profile; do

@@ -1122,6 +1122,15 @@ class RLTrainer(BaseVLNCETrainer):
                     k = curr_eps[i].instruction.instruction_id
                     self.inst_ids[ep_id] = int(k)
 
+        trajectory_recorder = None
+        if mode == "eval" and self.config.EVAL.dump_trajectory:
+            from scripts.eval_d7.case.trajectory_recorder import TrajectoryRecorder
+
+            trajectory_recorder = TrajectoryRecorder(
+                os.path.join(os.path.dirname(self.config.RESULTS_DIR.rstrip("/")), "trajectories"),
+                self.envs.current_episodes(),
+            )
+
         # encode instructions
         all_txt_ids = batch["instruction"]
         all_txt_task_encoding = batch["txt_task_encoding"]
@@ -1270,12 +1279,17 @@ class RLTrainer(BaseVLNCETrainer):
                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
                                        self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
                                        cpu_a_t, no_vp_left, self.max_len)
-
             if mode == "eval" and self.config.EVAL.d7d_logging:
                 self._d7d_log.decision(
                     self.envs.current_episodes(), stepk, cur_pos, self.gmaps,
                     cur_vp, prev_vp, nav_inputs["gmap_vp_ids"], cpu_a_t,
                     no_vp_left, self.max_len,
+                )
+            if trajectory_recorder is not None:
+                trajectory_recorder.decision(
+                    self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                    cpu_a_t, no_vp_left, self.max_len,
                 )
 
             # make equiv action
@@ -1371,6 +1385,8 @@ class RLTrainer(BaseVLNCETrainer):
                     if self.config.MODEL.consume_ghost:
                         gmap.delete_ghost(ghost_vp)
 
+            if trajectory_recorder is not None:
+                trajectory_recorder.executed(self.envs.current_episodes(), env_actions)
             outputs = self.envs.step(env_actions)
             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
 
@@ -1416,6 +1432,8 @@ class RLTrainer(BaseVLNCETrainer):
                     self.stat_eps[ep_id] = metric
                     if self.config.EVAL.dump_decision_features:
                         self._d8_dump.finish(ep_id)
+                    if trajectory_recorder is not None:
+                        trajectory_recorder.finish(ep_id, metric, pred_path)
                     if self.pbar:
                         self.pbar.update()
 

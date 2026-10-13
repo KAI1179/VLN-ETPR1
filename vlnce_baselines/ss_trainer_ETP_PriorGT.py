@@ -85,8 +85,16 @@ def _coordinate_fusion_flag(config) -> bool:
     return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
 
 
-def _check_teacher_identity(config, ckpt_dict, ckpt_path, teacher) -> None:
-    """Check the cache identity; accept legacy policy names only on exact structure."""
+def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
+    """Refuse a teacher checkpoint that was trained as something else.
+
+    Teacher and student share the architecture, so a student checkpoint
+    (e.g. an LLM-Grid DAgger run) loads into the teacher without a missing
+    key and the run silently distils the student into itself.  The saved
+    config names the policy and the map cache the checkpoint was trained
+    with; both must match what IL.gt_teacher_* asks for.  Checkpoints
+    without a saved config pass (nothing to compare against).
+    """
     saved = ckpt_dict.get("config")
     if saved is None:
         return
@@ -98,23 +106,7 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path, teacher) -> None:
     have_ns = getattr(map_cfg, "cache_namespace", None)
     problems = []
     if have_policy is not None and have_policy != want_policy:
-        expected = teacher.state_dict()
-        state = {
-            k.replace("net.module.", "net.", 1): v
-            for k, v in ckpt_dict["state_dict"].items()
-        }
-        missing = sorted(expected.keys() - state.keys())
-        unexpected = sorted(state.keys() - expected.keys())
-        shapes = [
-            (k, tuple(state[k].shape), tuple(expected[k].shape))
-            for k in sorted(expected.keys() & state.keys())
-            if state[k].shape != expected[k].shape
-        ]
-        if missing or unexpected or shapes:
-            problems.append(
-                f"policy_name {have_policy!r} != {want_policy!r} and structure differs: "
-                f"missing={missing}, unexpected={unexpected}, shape_mismatches={shapes}"
-            )
+        problems.append(f"policy_name {have_policy!r} != IL.gt_teacher_policy_name {want_policy!r}")
     if have_ns is not None and have_ns != want_ns:
         problems.append(
             f"MAP_ENCODER.cache_namespace {have_ns!r} != IL.gt_teacher_map_namespace {want_ns!r}"
@@ -122,11 +114,6 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path, teacher) -> None:
     if problems:
         raise ValueError(
             f"{ckpt_path} is not the requested GT teacher: " + "; ".join(problems)
-        )
-    if have_policy is not None and have_policy != want_policy:
-        logger.warning(
-            f"{ckpt_path}: embedded policy_name={have_policy!r}, requested={want_policy!r}; "
-            "accepting exact state_dict key/shape match against the requested teacher"
         )
 
 
@@ -406,8 +393,6 @@ class RLTrainer(BaseVLNCETrainer):
 
         map_cfg = getattr(config.MODEL, "MAP_ENCODER", None)
         freeze_base = map_cfg is not None and getattr(map_cfg, "freeze_base", False)
-        if config.IL.gt_teacher_independent_map and not map_cfg.enabled:
-            self.policy.net.vln_bert.graph_map_attention.requires_grad_(False)
 
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
@@ -574,9 +559,6 @@ class RLTrainer(BaseVLNCETrainer):
             ), "gt_teacher_enabled=True but teacher configuration is incomplete"
             t_config = self.config.clone()
             t_config.defrost()
-            if self.config.IL.gt_teacher_independent_map:
-                t_config.MODEL.MAP_ENCODER.enabled = True
-                t_config.MODEL.MAP_ENCODER.load_pretrained_map_modules = False
             t_config.MODEL.policy_name = self.config.IL.gt_teacher_policy_name
             t_config.MODEL.MAP_ENCODER.source = "prior_gt"
             t_config.MODEL.MAP_ENCODER.cache_namespace = (
@@ -591,9 +573,7 @@ class RLTrainer(BaseVLNCETrainer):
                 action_space=action_space,
             )
             t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
-            _check_teacher_identity(
-                self.config, t_ckpt, self.config.IL.gt_teacher_ckpt, self.gt_teacher
-            )
+            _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
             sd = t_ckpt["state_dict"]
             del t_ckpt
             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
@@ -1695,7 +1675,8 @@ class RLTrainer(BaseVLNCETrainer):
         return {key: (tokens, masks) for key, (tokens, masks) in out.items()}
 
     def _cognitive_map_cache_id(self, episode):
-        dataset = self.config.MODEL.task_type.upper()
+        task_type = self.config.MODEL.task_type
+        dataset = "RxR" if task_type.lower() == "rxr" else task_type.upper()
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         return f"{dataset}_{split}_{episode.episode_id}"
 
@@ -1892,6 +1873,15 @@ class RLTrainer(BaseVLNCETrainer):
                     k = curr_eps[i].instruction.instruction_id
                     self.inst_ids[ep_id] = int(k)
 
+        trajectory_recorder = None
+        if mode == "eval" and self.config.EVAL.dump_trajectory:
+            from scripts.eval_d7.case.trajectory_recorder import TrajectoryRecorder
+
+            trajectory_recorder = TrajectoryRecorder(
+                os.path.join(os.path.dirname(self.config.RESULTS_DIR.rstrip("/")), "trajectories"),
+                self.envs.current_episodes(),
+            )
+
         # encode instructions
         all_txt_ids = batch["instruction"]
         all_txt_task_encoding = batch["txt_task_encoding"]
@@ -1978,8 +1968,7 @@ class RLTrainer(BaseVLNCETrainer):
             self._initialize_refiner_state(cognitive_maps)
 
         if self._gtt_on and mode == "train":
-            if not self.config.IL.gt_teacher_independent_map:
-                assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
+            assert cognitive_maps is not None, "GT teacher requires enabled cognitive-map inputs"
             # Re-load the same episodes from the teacher's immutable GT map cache.
             t_candidate = CognitiveMapCandidate.parse(
                 self.config.MODEL.MAP_ENCODER.architecture, "prior_gt"
@@ -2003,10 +1992,6 @@ class RLTrainer(BaseVLNCETrainer):
                     start_positions=torch.stack([m["start_position"] for m in gtt_maps]).to(self.device),
                 )
             if self._distill_aux_enabled():
-                if cognitive_maps is None:
-                    raise ValueError(
-                        "effect matching / gating require student cognitive-map inputs"
-                    )
                 gtt_aux = self._build_distill_aux_tokens(cognitive_maps, gtt_maps)
             del gtt_maps
 
@@ -2330,12 +2315,17 @@ class RLTrainer(BaseVLNCETrainer):
                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
                                        self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
                                        cpu_a_t, no_vp_left, self.max_len)
-
             if mode == "eval" and self.config.EVAL.d7d_logging:
                 self._d7d_log.decision(
                     self.envs.current_episodes(), stepk, cur_pos, self.gmaps,
                     cur_vp, prev_vp, nav_inputs["gmap_vp_ids"], cpu_a_t,
                     no_vp_left, self.max_len,
+                )
+            if trajectory_recorder is not None:
+                trajectory_recorder.decision(
+                    self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                    cpu_a_t, no_vp_left, self.max_len,
                 )
 
             # make equiv action
@@ -2433,6 +2423,8 @@ class RLTrainer(BaseVLNCETrainer):
                         if self._gtt_on and mode == "train":
                             self.gtt_gmaps[i].delete_ghost(ghost_vp)
 
+            if trajectory_recorder is not None:
+                trajectory_recorder.executed(self.envs.current_episodes(), env_actions)
             outputs = self.envs.step(env_actions)
             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
 
@@ -2478,6 +2470,8 @@ class RLTrainer(BaseVLNCETrainer):
                     self.stat_eps[ep_id] = metric
                     if self.config.EVAL.dump_decision_features:
                         self._d8_dump.finish(ep_id)
+                    if trajectory_recorder is not None:
+                        trajectory_recorder.finish(ep_id, metric, pred_path)
                     if self.pbar:
                         self.pbar.update()
 

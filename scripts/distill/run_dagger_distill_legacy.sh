@@ -209,7 +209,7 @@ COMMAND=(
     "${TORCHRUN}" --nproc_per_node="${GPU_NUMBERS}" --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
     --exp_name "${RUN_NAME}"
     --run-type dagger
-    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
+    --exp-config "${EXP_CONFIG:-${REPO_ROOT}/run_r2r/iter_train.yaml}"
     "${DRY_RUN_ARGS[@]}"
     SIMULATOR_GPU_IDS "${GPU_IDS}"
     TORCH_GPU_IDS "${GPU_IDS}"
