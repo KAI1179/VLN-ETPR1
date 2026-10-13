@@ -1,0 +1,125 @@
+From 786cb32fcaed7971247850998287ea2d156c7d76 Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Mon, 12 Oct 2026 22:22:39 -0600
+Subject: [PATCH] episode_features: n_turns (GT heading changes > 45 deg per 1
+ m); paired_report: --fork-key (default n_forks3_graph) and multi-turn strata
+
+n_forks_graph (>= 2 onward directions) holds at nearly every node of a
+visibility graph, so it no longer drives the multi-fork stratum.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ scripts/analysis/episode_features.py | 28 +++++++++++++++++++++++++++-
+ scripts/analysis/paired_report.py    | 13 ++++++++++---
+ 2 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/scripts/analysis/episode_features.py b/scripts/analysis/episode_features.py
+index a326581..a124f6a 100644
+--- a/scripts/analysis/episode_features.py
++++ b/scripts/analysis/episode_features.py
+@@ -10,6 +10,8 @@ For R2R <split> the script writes <out> (JSON: episode id -> features):
+   n_room_changes    region (room) boundary crossings along the GT path, from
+                     the MP3D region boxes of the level the path starts on
+   n_rooms           distinct regions the GT path passes through
++  n_turns           heading changes > --turn-angle along the GT path sampled
++                    every --turn-spacing metres (model-free decision points)
+   n_forks_graph     decision points along the GT path on the MP3D connectivity
+                     graph: visited nodes whose onward unobstructed neighbours
+                     (within --fork-edge-max, the node we came from excluded)
+@@ -85,6 +87,10 @@ class Args(Tap):
+     """Metres: onward connectivity edges longer than this do not count as options."""
+     fork_angle: float = 60.0
+     """Degrees: onward edges closer than this in bearing are one option."""
++    turn_spacing: float = 1.0
++    """Metres between GT path samples for n_turns."""
++    turn_angle: float = 45.0
++    """Degrees of heading change (over turn_spacing) that counts as a turn."""
+     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+     meters_per_unit: float = 1.0
+     """MAP_ENCODER.start_position_meters_per_unit of the LLM cache."""
+@@ -123,6 +129,25 @@ def name_match_categories(text: str):
+     return objs, regs
+ 
+ 
++def turn_count(points, spacing: float, angle_deg: float) -> int:
++    """Heading changes above angle_deg along the GT path resampled every
++    spacing metres (x/z plane).  A model-free proxy for decision points:
++    "turn left at the ..." is one of these."""
++    p = np.asarray(points, dtype=float)[:, [0, 2]]
++    if len(p) < 2:
++        return 0
++    seg = np.linalg.norm(p[1:] - p[:-1], axis=1)
++    cum = np.concatenate([[0.0], np.cumsum(seg)])
++    if cum[-1] < 2 * spacing:
++        return 0
++    t = np.arange(0.0, cum[-1], spacing)
++    rs = np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], axis=1)
++    d = rs[1:] - rs[:-1]
++    head = np.arctan2(d[:, 1], d[:, 0])
++    dh = np.abs((head[1:] - head[:-1] + np.pi) % (2 * np.pi) - np.pi)
++    return int((dh > math.radians(angle_deg)).sum())
++
++
+ def path_length(points: Sequence[Sequence[float]]) -> float:
+     p = np.asarray(points, dtype=float)
+     if len(p) < 2:
+@@ -269,6 +294,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+             "scene": ep.scene_id,
+             "path_len_m": path_length(gt),
+             "n_gt_points": len(gt),
++            "n_turns": turn_count(gt, args.turn_spacing, args.turn_angle),
+             "n_spatial_words": len(SPATIAL_WORDS.findall(ep.instruction)),
+             "n_words": len(ep.instruction.split()),
+         }
+@@ -312,7 +338,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+         xs = [v[key] for v in vals if v.get(key) is not None and v.get(key) != -1]
+         return f"n={len(xs)} mean={np.mean(xs):.2f} p50={np.median(xs):.2f}" if xs else "n/a"
+     print(f"wrote {args.out}: {len(features)} episodes")
+-    for key in ("path_len_m", "n_room_changes", "n_forks_graph", "n_forks3_graph",
++    for key in ("path_len_m", "n_turns", "n_room_changes", "n_forks_graph", "n_forks3_graph",
+                 "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"):
+         print(f"  {key:22s} {q(key)}")
+ 
+diff --git a/scripts/analysis/paired_report.py b/scripts/analysis/paired_report.py
+index 6dc31a7..826ee82 100644
+--- a/scripts/analysis/paired_report.py
++++ b/scripts/analysis/paired_report.py
+@@ -66,7 +66,10 @@ class Args(Tap):
+     out: Optional[str] = None
+     local_radius: float = 3.0
+     fork_angle: float = 45.0
++    fork_key: str = "n_forks3_graph"
++    """Feature used for the multi-fork stratum (n_forks3_graph, n_forks_graph or n_turns)."""
+     min_forks: int = 2
++    min_turns: int = 2
+     min_room_changes: int = 2
+     min_decoys: int = 1
+     long_quantile: float = 0.67
+@@ -191,8 +194,12 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
+     def have(k):
+         return [v[k] for v in fs.values() if v.get(k) is not None and v.get(k) != -1]
+     out: Dict[str, List[str]] = {"all": list(ids)}
+-    out[f"multi-fork (forks>={args.min_forks})"] = [i for i, v in fs.items() if (v.get("n_forks_graph") or 0) >= args.min_forks]
+-    out["single-fork (forks<=1)"] = [i for i, v in fs.items() if v.get("n_forks_graph") is not None and 0 <= v["n_forks_graph"] <= 1]
++    fk = args.fork_key
++    out[f"multi-fork ({fk}>={args.min_forks})"] = [i for i, v in fs.items() if (v.get(fk) or 0) >= args.min_forks]
++    out[f"few forks ({fk}<{args.min_forks})"] = [i for i, v in fs.items() if v.get(fk) is not None and 0 <= v[fk] < args.min_forks]
++    if have("n_turns"):
++        out[f"multi-turn (turns>={args.min_turns})"] = [i for i, v in fs.items() if (v.get("n_turns") or 0) >= args.min_turns]
++        out[f"few turns (turns<{args.min_turns})"] = [i for i, v in fs.items() if v.get("n_turns") is not None and v["n_turns"] < args.min_turns]
+     out[f"multi-room (changes>={args.min_room_changes})"] = [i for i, v in fs.items() if (v.get("n_room_changes") or 0) >= args.min_room_changes]
+     out[f"decoy (decoys>={args.min_decoys})"] = [i for i, v in fs.items() if (v.get("n_decoys") or 0) >= args.min_decoys]
+     if have("path_len_m"):
+@@ -209,7 +216,7 @@ def strata(features: Dict[str, dict], ids: Sequence[str], args: Args) -> Dict[st
+     return out
+ 
+ 
+-FEATURE_KEYS = ["path_len_m", "n_forks_graph", "n_forks3_graph", "n_room_changes",
++FEATURE_KEYS = ["path_len_m", "n_turns", "n_forks_graph", "n_forks3_graph", "n_room_changes",
+                 "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"]
+ 
+ 
+-- 
+2.43.0
+
