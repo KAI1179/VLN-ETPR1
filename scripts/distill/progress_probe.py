@@ -34,10 +34,12 @@ class Args(Tap):
     permutations: int = 20
     draws: int = 2000
     threads: int = 1
-    workers: int = 4
+    workers: int = 11
+    resume: bool = False
     check_shared_only: bool = False
 
     def configure(self):
+        self.add_argument("--resume", action="store_true", default=False, required=False)
         self.add_argument("--check-shared-only", action="store_true", dest="check_shared_only", default=False, required=False)
 
 
@@ -233,12 +235,38 @@ def execute(args):
                               "script_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                               "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
                "accounting": accounting, "probes": {}, "paired": {}, "curves": {}}
+    execution = {key: results["definitions"][key] for key in
+                 ("script_commit", "script_sha256", "workers", "worker_blas_threads")}
+    if args.resume:
+        results = json.loads((output / "progress_probe_partial.json").read_text())
+        definitions = results["definitions"]
+        history = definitions.setdefault("execution_history", [
+            {key: definitions[key] for key in execution}
+        ])
+        history.append(dict(execution, stage="resume"))
+        definitions["workers"] = args.workers
+        definitions["resume_script_commit"] = execution["script_commit"]
+        definitions["resume_script_sha256"] = execution["script_sha256"]
+        if definitions["permutation_draws"] != args.permutations:
+            raise ValueError("Resume permutation count differs from the saved run")
+        if results["accounting"] != accounting:
+            raise ValueError("Resume label accounting differs from the saved run")
+    else:
+        results["definitions"]["execution_history"] = [dict(execution, stage="initial")]
     for source in ("S", "O"):
         source_dir = output / ("probe_s" if source == "S" else "probe_o")
         source_dir.mkdir(parents=True, exist_ok=True)
         predictions = {}
         for model in MODELS:
             data = datasets[model, source]
+            if f"{model}/{source}" in results["probes"]:
+                with np.load(source_dir / f"{model}_oof.npz", allow_pickle=False) as saved:
+                    for key in ("y", "eid", "step", "scene"):
+                        if not np.array_equal(saved[key], data[key]):
+                            raise ValueError(f"Resume OOF {model}/{source}: {key} differs")
+                    predictions[model] = saved["pred"].copy()
+                print(f"Reusing completed {model}/{source}", flush=True)
+                continue
             print(f"Fitting {model}/{source}: {len(data['y'])} frames, {len(np.unique(data['scene']))} scenes", flush=True)
             pred, majority, folds = readout(data["x"], data["y"], data["scene"], args.workers, f"{model}/{source}/feature")
             step = data["step"].astype(float)
@@ -258,6 +286,8 @@ def execute(args):
             print(f"Completed {model}/{source}: BA={row['model']['balanced_accuracy']:.4f}", flush=True)
         if source == "S":
             for left, right in (("kd", "base"), ("kd", "try5"), ("try5", "base")):
+                if f"{left}-{right}/S" in results["paired"]:
+                    continue
                 data = datasets[left, source]
                 results["paired"][f"{left}-{right}/S"] = paired_ci(data["y"], predictions[left], predictions[right], data["scene"], args.draws)
                 results["paired"][f"{left}-{right}/S"]["provisional"] = not (
@@ -269,12 +299,17 @@ def execute(args):
         for model in MODELS:
             data = datasets[model, source]
             row = results["probes"][f"{model}/{source}"]
+            completed_draws = len(row["permutations"])
+            if completed_draws > args.permutations:
+                raise ValueError(f"Too many saved permutations for {model}/{source}")
             rng = np.random.default_rng(0)
             for draw in range(args.permutations):
                 labels = data["y"].copy()
                 for scene in np.unique(data["scene"]):
                     indices = np.flatnonzero(data["scene"] == scene)
                     labels[indices] = rng.permutation(labels[indices])
+                if draw < completed_draws:
+                    continue
                 null_pred, _, null_folds = readout(data["x"], labels, data["scene"], args.workers,
                                                 f"{model}/{source}/permutation{draw+1}")
                 null_row = metrics(labels, null_pred)

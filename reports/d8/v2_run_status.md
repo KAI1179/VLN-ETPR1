@@ -65,3 +65,23 @@ These primary results do not meet the prespecified positive-improvement rule.
 This is not proof that the representations are equivalent. The permutation
 controls and O-side analysis are still pending. Primary tables and the S STOP
 figure are available under `probe_s/`; no complete-task claim is made.
+
+## Authorized concurrency update
+
+The user relaxed the worker cap to 11. Every worker still uses one BLAS
+thread; features, labels, estimator, solver, C, cap and statistics are unchanged.
+The old four-worker process group was stopped after 58 full S permutations
+were saved (base 20, Try5 20, KD 18). A partly executed KD draw 19 was not
+saved as a complete draw and will be recomputed; no completed draw is discarded.
+
+Explicit `--resume` reloads finished OOF predictions, validates their frame
+identity/labels, preserves earlier results and regenerates the seed-0 label
+permutation sequence before skipping completed draws. Original code provenance
+is retained and a resume entry records the new code version and worker cap.
+
+```bash
+/home/xukai/anaconda3/envs/etpr1-py38/bin/python /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/distill/progress_probe.py --workers 11 --resume
+```
+
+Resumed output is appended to the existing `probe_v2_run.log`. The old task
+book's four-worker cap is superseded by this explicit user instruction.

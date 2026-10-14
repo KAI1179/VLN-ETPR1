@@ -63,10 +63,10 @@ def _fit_fold(x, y, scene, held, label):
     return np.flatnonzero(test), predicted, int(np.bincount(y[train], minlength=5).argmax()), fold
 
 
-def readout(x, y, scene, workers=4, label=""):
+def readout(x, y, scene, workers=11, label=""):
     """Fit each held-out scene once, returning pooled predictions and fold records."""
-    if not 1 <= workers <= 4:
-        raise ValueError("D8 fits require between 1 and 4 worker processes")
+    if not 1 <= workers <= 11:
+        raise ValueError("D8 fits require between 1 and 11 worker processes")
     held_scenes = np.unique(scene)
     workers = min(workers, len(held_scenes))
     mem = {}
