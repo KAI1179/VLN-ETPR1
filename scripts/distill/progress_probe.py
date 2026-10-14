@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ[name] = "1"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import spearmanr
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 from tap import Tap
 from threadpoolctl import threadpool_limits
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+from scripts.eval_d8.probe_fit import readout
+from scripts.eval_d8.probe_report import write_final_report, write_source_report
 MODELS = ("base", "try5", "kd")
 MISSING = {"308", "349", "455", "804", "1318", "1331"}
 
@@ -33,7 +33,8 @@ class Args(Tap):
     output: str = str(REPO / "reports/d8")
     permutations: int = 20
     draws: int = 2000
-    threads: int = 4
+    threads: int = 1
+    workers: int = 4
     check_shared_only: bool = False
 
     def configure(self):
@@ -153,23 +154,6 @@ def labelled(dumps, episodes):
     return output, accounting
 
 
-def readout(x, y, scene):
-    pred = np.empty_like(y)
-    majority = np.empty_like(y)
-    folds = []
-    for held in np.unique(scene):
-        test = scene == held
-        train = ~test
-        estimator = make_pipeline(StandardScaler(), LogisticRegression(C=1, solver="lbfgs", max_iter=1000, multi_class="multinomial"))
-        estimator.fit(x[train].astype(np.float64), y[train])
-        pred[test] = estimator.predict(x[test].astype(np.float64))
-        majority[test] = np.bincount(y[train], minlength=5).argmax()
-        folds.append({"scene": str(held), "n": int(test.sum()),
-                      "accuracy": float(accuracy_score(y[test], pred[test])),
-                      "balanced_accuracy": float(balanced_accuracy_score(y[test], pred[test]))})
-    return pred, majority, folds
-
-
 def metrics(y, pred):
     return {"accuracy": float(accuracy_score(y, pred)), "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
             "spearman": float(spearmanr(y, pred).correlation) if np.unique(pred).size > 1 else None,
@@ -180,12 +164,16 @@ def metrics(y, pred):
 def paired_ci(y, left, right, scene, draws):
     rng = np.random.default_rng(0)
     groups = [np.flatnonzero(scene == s) for s in np.unique(scene)]
-    values = []
+    values, accuracies = [], []
     for _ in range(draws):
         indices = np.concatenate([groups[i] for i in rng.integers(0, len(groups), len(groups))])
         values.append(balanced_accuracy_score(y[indices], left[indices]) - balanced_accuracy_score(y[indices], right[indices]))
-    return {"difference": float(balanced_accuracy_score(y, left)-balanced_accuracy_score(y, right)),
-            "ci": np.quantile(values, [0.025, 0.975]).tolist()}
+        accuracies.append(accuracy_score(y[indices], left[indices])-accuracy_score(y[indices], right[indices]))
+    return {"balanced_accuracy": {
+                "difference": float(balanced_accuracy_score(y, left)-balanced_accuracy_score(y, right)),
+                "ci": np.quantile(values, [0.025, 0.975]).tolist()},
+            "accuracy": {"difference": float(accuracy_score(y, left)-accuracy_score(y, right)),
+                         "ci": np.quantile(accuracies, [0.025, 0.975]).tolist()}}
 
 
 def curves(data, draws):
@@ -237,82 +225,67 @@ def execute(args):
                               "inputs": "base no map; try5/kd WITH MAP; control; 4 rank", "step_control": "t,t/15",
                               "main": "shared S; all-frame metadata checked; LOSO; balanced accuracy",
                               "O_filter": "distance to GT polyline <=1m", "curve_filter": "geodesic distance>3m",
-                              "S_expert": "existing SPL/geodesic expert replay, possibly shortcuts; off-GT S frames retained as diagnostic, not filtered"},
+                              "S_expert": "existing SPL/geodesic expert replay, possibly shortcuts; off-GT S frames retained as diagnostic, not filtered",
+                              "max_iter": 5000, "C": 1, "solver": "lbfgs",
+                              "bootstrap": "2000 scene-cluster draws; fixed out-of-fold predictions; no refitting",
+                              "workers": args.workers, "worker_blas_threads": 1,
+                              "permutation_draws": args.permutations,
+                              "script_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+                              "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
                "accounting": accounting, "probes": {}, "paired": {}, "curves": {}}
     for source in ("S", "O"):
+        source_dir = output / ("probe_s" if source == "S" else "probe_o")
+        source_dir.mkdir(parents=True, exist_ok=True)
         predictions = {}
         for model in MODELS:
             data = datasets[model, source]
             print(f"Fitting {model}/{source}: {len(data['y'])} frames, {len(np.unique(data['scene']))} scenes", flush=True)
-            pred, majority, folds = readout(data["x"], data["y"], data["scene"])
+            pred, majority, folds = readout(data["x"], data["y"], data["scene"], args.workers, f"{model}/{source}/feature")
             step = data["step"].astype(float)
-            step_pred, _, step_folds = readout(np.column_stack([step, step/15]), data["y"], data["scene"])
+            step_pred, _, step_folds = readout(np.column_stack([step, step/15]), data["y"], data["scene"], args.workers, f"{model}/{source}/step")
             row = {"model": metrics(data["y"], pred), "step_only": metrics(data["y"], step_pred),
-                   "majority": metrics(data["y"], majority), "permutations": [], "folds": folds, "step_folds": step_folds}
-            rng = np.random.default_rng(0)
-            for draw in range(args.permutations):
-                labels = data["y"].copy()
-                for scene in np.unique(data["scene"]):
-                    indices = np.flatnonzero(data["scene"] == scene)
-                    labels[indices] = rng.permutation(labels[indices])
-                null_pred, _, _ = readout(data["x"], labels, data["scene"])
-                row["permutations"].append(metrics(labels, null_pred))
-                print(f"{source}/{model} permutation {draw+1}/{args.permutations}", flush=True)
+                   "majority": metrics(data["y"], majority), "permutations": [], "folds": folds, "step_folds": step_folds,
+                   "converged": all(f["converged"] for f in folds),
+                   "step_converged": all(f["converged"] for f in step_folds)}
             results["probes"][f"{model}/{source}"] = row
             results["paired"][f"{model}-step/{source}"] = paired_ci(data["y"], pred, step_pred, data["scene"], args.draws)
+            results["paired"][f"{model}-step/{source}"]["provisional"] = not (row["converged"] and row["step_converged"])
             results["curves"][f"{model}/{source}"] = curves(data, args.draws)
             predictions[model] = pred
+            np.savez(source_dir / f"{model}_oof.npz", pred=pred, step_pred=step_pred, majority=majority,
+                     y=data["y"], scene=data["scene"], eid=data["eid"], step=data["step"])
             (output / "progress_probe_partial.json").write_text(json.dumps(results, indent=2, allow_nan=False)+"\n")
             print(f"Completed {model}/{source}: BA={row['model']['balanced_accuracy']:.4f}", flush=True)
         if source == "S":
             for left, right in (("kd", "base"), ("kd", "try5"), ("try5", "base")):
                 data = datasets[left, source]
                 results["paired"][f"{left}-{right}/S"] = paired_ci(data["y"], predictions[left], predictions[right], data["scene"], args.draws)
-    (output / "progress_probe.json").write_text(json.dumps(results, indent=2, allow_nan=False) + "\n")
-    lines = ["# D8 goal-proximity probe", "", "Baseline: no map. Try5/KD: with map. All control, four ranks.", "",
-             "|Model/source|Accuracy|Balanced accuracy|Spearman|Step BA|Majority BA|", "|---|---:|---:|---:|---:|---:|"]
-    for name, row in results["probes"].items():
-        m = row["model"]
-        lines.append(f"|{name}|{m['accuracy']:.4f}|{m['balanced_accuracy']:.4f}|{m['spearman']}|{row['step_only']['balanced_accuracy']:.4f}|{row['majority']['balanced_accuracy']:.4f}|")
-    lines += ["", "|Paired BA difference|Difference|95% scene-bootstrap CI|", "|---|---:|---|"]
-    for name, row in results["paired"].items():
-        lines.append(f"|{name}|{row['difference']:.4f}|{row['ci']}|")
-    lines += ["", "## Frame accounting", "", "```json", json.dumps(accounting, indent=2), "```",
-              "", "All confusion matrices, label histograms and permutation draws are in progress_probe.json."]
-    lines += ["", "## Held-out scene metrics", "", "|Model/source|Scene|Frames|Accuracy|Balanced accuracy|", "|---|---|---:|---:|---:|"]
-    for name, row in results["probes"].items():
-        for fold in row["folds"]:
-            lines.append(f"|{name}|{fold['scene']}|{fold['n']}|{fold['accuracy']:.4f}|{fold['balanced_accuracy']:.4f}|")
-    lines += ["", "## Permutation leakage control", "", "|Model/source|Draws|Accuracy mean ± SD|Balanced accuracy mean ± SD|", "|---|---:|---|---|"]
-    for name, row in results["probes"].items():
-        permutations = row["permutations"]
-        if permutations:
-            acc = np.array([p["accuracy"] for p in permutations])
-            ba = np.array([p["balanced_accuracy"] for p in permutations])
-            lines.append(f"|{name}|{len(permutations)}|{acc.mean():.4f} ± {acc.std():.4f}|{ba.mean():.4f} ± {ba.std():.4f}|")
-    lines += ["", "## Per-bin confusion matrices", "", "Rows: true bin; columns: predicted bin."]
-    for name, row in results["probes"].items():
-        lines += ["", f"### {name}", "", "|True bin|0|1|2|3|4|", "|---|---:|---:|---:|---:|---:|"]
-        for label, values in enumerate(row["model"]["confusion"]):
-            lines.append("|"+"|".join(map(str, [label]+values))+"|")
-    (output / "progress_probe.md").write_text("\n".join(lines) + "\n")
-    figure, axes = plt.subplots(1, 2, figsize=(10, 4))
-    curve_lines = ["# STOP probability by goal proximity", "", "Frames restricted to geodesic distance >3m. O additionally on-GT <=1m.", "", "|Model/source|Bin|Frames|Mean|95% episode-bootstrap CI|", "|---|---:|---:|---:|---|"]
-    for axis, source in zip(axes, ("S", "O")):
+                results["paired"][f"{left}-{right}/S"]["provisional"] = not (
+                    results["probes"][f"{left}/S"]["converged"] and results["probes"][f"{right}/S"]["converged"])
+        # Save the primary comparisons and curves before the expensive null fits.
+        (source_dir / "progress_probe.json").write_text(json.dumps(results, indent=2, allow_nan=False)+"\n")
+        (output / "progress_probe_partial.json").write_text(json.dumps(results, indent=2, allow_nan=False)+"\n")
+        write_source_report(results, source_dir, source)
         for model in MODELS:
-            rows = results["curves"][f"{model}/{source}"]
-            valid = [r for r in rows if r["mean"] is not None]
-            axis.plot([r["bin"] for r in valid], [r["mean"] for r in valid], label=model, marker="o")
-            axis.fill_between([r["bin"] for r in valid], [r["ci"][0] for r in valid], [r["ci"][1] for r in valid], alpha=0.15)
-            for row in rows:
-                curve_lines.append(f"|{model}/{source}|{row['bin']}|{row['n']}|{row['mean']}|{row['ci']}|")
-        axis.set(title=source, xlabel="Proximity bin", ylabel="STOP probability")
-        axis.legend()
-    figure.tight_layout()
-    figure.savefig(output / "stop_prob_by_progress.png", dpi=180)
-    plt.close(figure)
-    (output / "stop_prob_by_progress.md").write_text("\n".join(curve_lines)+"\n")
-    (output / "README.md").write_text("# D8\n\n[Linear probe](progress_probe.md) · [STOP curves](stop_prob_by_progress.md)\n\nPrimary comparison: shared states, balanced accuracy. Positive paired CI lower bound is required for an improvement claim. These are experimental representation readouts, not instruction-stage labels.\n")
+            data = datasets[model, source]
+            row = results["probes"][f"{model}/{source}"]
+            rng = np.random.default_rng(0)
+            for draw in range(args.permutations):
+                labels = data["y"].copy()
+                for scene in np.unique(data["scene"]):
+                    indices = np.flatnonzero(data["scene"] == scene)
+                    labels[indices] = rng.permutation(labels[indices])
+                null_pred, _, null_folds = readout(data["x"], labels, data["scene"], args.workers,
+                                                f"{model}/{source}/permutation{draw+1}")
+                null_row = metrics(labels, null_pred)
+                null_row.update(folds=null_folds, converged=all(f["converged"] for f in null_folds))
+                row["permutations"].append(null_row)
+                (source_dir / "progress_probe.json").write_text(json.dumps(results, indent=2, allow_nan=False)+"\n")
+                (output / "progress_probe_partial.json").write_text(json.dumps(results, indent=2, allow_nan=False)+"\n")
+                write_source_report(results, source_dir, source)
+                print(f"{source}/{model} permutation {draw+1}/{args.permutations}", flush=True)
+    (output / "progress_probe.json").write_text(json.dumps(results, indent=2, allow_nan=False) + "\n")
+    write_final_report(results, output)
 
 
 if __name__ == "__main__":
