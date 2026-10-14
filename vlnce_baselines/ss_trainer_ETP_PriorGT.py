@@ -1966,6 +1966,10 @@ class RLTrainer(BaseVLNCETrainer):
             gtt_aux = {}
         prev_vp = [None] * self.envs.num_envs
         gtt_map_origins = None
+        # Auxiliary teacher/student map tokens (gate, effect matching); empty
+        # unless _distill_aux_enabled(), but always defined because the
+        # env-pause bookkeeping iterates over it.
+        gtt_aux = {}
 
         # Build cognitive maps for current episodes.
         map_cfg = self.config.MODEL.MAP_ENCODER
