@@ -42,3 +42,26 @@ incrementally. Reports must distinguish finished real-label fits from pending
 permutation controls and secondary fits.
 
 This setup record does not claim that the numerical experiment is complete.
+
+## Shared-state primary readout completed
+
+| Model | Accuracy (%) | Balanced accuracy (%) | Feature-fold convergence |
+|---|---:|---:|---|
+| Baseline | 64.99 | 62.90 | 11/11 |
+| Try5 | 65.40 | 63.09 | 10/11; provisional |
+| KD | 65.82 | 63.58 | 11/11 |
+
+All step-only folds converge, with identical BA 41.1604% across models.
+Try5's held-out `x8F5xyUWy9e` fold reaches 5,000 iterations without
+convergence. It is retained, not dropped; its model comparisons are provisional.
+
+| S comparison | BA difference (pp) | 95% scene-bootstrap CI (pp) | Reading status |
+|---|---:|---|---|
+| KD − baseline | +0.68 | [−0.89,+2.69] | No positive difference detected |
+| KD − Try5 | +0.49 | [−0.19,+1.45] | Provisional |
+| Try5 − baseline | +0.19 | [−1.26,+2.04] | Provisional |
+
+These primary results do not meet the prespecified positive-improvement rule.
+This is not proof that the representations are equivalent. The permutation
+controls and O-side analysis are still pending. Primary tables and the S STOP
+figure are available under `probe_s/`; no complete-task claim is made.

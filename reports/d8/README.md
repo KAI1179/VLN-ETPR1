@@ -1,5 +1,19 @@
 # D8 execution status
 
+**Update: D8-B v2 is running with the authorized 5,000-iteration cap.**
+See [v2 execution](v2_run_status.md), `probe_v2_run.log`, and the incremental
+`progress_probe_partial.json`. The stopped 1,000-iteration run below is a
+historical record, not the status of the new run. Final results will replace
+this status page only after all prescribed stages finish.
+
+The new S primary comparison is available in
+[paired differences](probe_s/paired_differences.md) and
+[STOP curves](probe_s/stop_prob_by_progress.md). BA: baseline 62.90%,
+Try5 63.09% (one unconverged fold; provisional), KD 63.58%.
+KD−baseline BA difference +0.68 pp, 95% CI [−0.89,+2.69] pp:
+the prespecified positive-improvement rule is not met. Permutations and
+secondary O analysis remain pending; the full task is not complete.
+
 ## Completed
 
 All six feature dumps passed coverage, shape and finite-value checks.
