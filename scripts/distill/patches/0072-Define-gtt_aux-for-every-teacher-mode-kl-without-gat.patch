@@ -1,0 +1,36 @@
+From becdfef08484d59fe79618f32e96f7420e3e6860 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 14 Oct 2026 02:22:09 -0600
+Subject: [PATCH] Define gtt_aux for every teacher mode (kl without gate
+ crashed at env pause)
+
+gtt_aux was only initialised on the dual path and by
+_build_distill_aux_tokens (gate / effect matching).  Plain action-KL
+distillation with neither (MODE=kl) therefore raised UnboundLocalError at
+the first finished episode, where the env-pause bookkeeping iterates over
+gtt_aux.  Initialise it to {} at rollout start.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011TvFfJ52sY7drhLGd21hww
+---
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index d471f94..d5b273e 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1953,6 +1953,10 @@ class RLTrainer(BaseVLNCETrainer):
+             gtt_aux = {}
+         prev_vp = [None] * self.envs.num_envs
+         gtt_map_origins = None
++        # Auxiliary teacher/student map tokens (gate, effect matching); empty
++        # unless _distill_aux_enabled(), but always defined because the
++        # env-pause bookkeeping iterates over it.
++        gtt_aux = {}
+ 
+         # Build cognitive maps for current episodes.
+         map_cfg = self.config.MODEL.MAP_ENCODER
+-- 
+2.43.0
+
