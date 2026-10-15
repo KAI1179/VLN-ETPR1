@@ -48,7 +48,13 @@ def check_metrics(args):
                if reference[eid][key] != candidate[eid][key]]
     result = dict(episodes=len(reference), fields=METRICS, changes=changes,
                   reference=args.reference_metrics, candidate=args.candidate_metrics)
+    result['comparison_only'] = args.mode == 'comparison'
+    if args.mode == 'comparison':
+        result['note'] = 'Different rank/environment partition from D8; descriptive comparison, not an equivalence check.'
     Path(args.output).write_text(json.dumps(result, indent=2) + '\n')
+    if args.mode == 'comparison':
+        print(f'Comparison only: {len(reference)} episodes, {len(changes)} changed metric values; {args.output}', flush=True)
+        return
     if changes:
         raise ValueError(f'{len(changes)} metric mismatches: {args.output}')
     print(f'PASS exact equivalence: {len(reference)} episodes, five metrics', flush=True)
@@ -112,7 +118,7 @@ def check_dump(args):
 
 def main():
     args = Args(underscores_to_dashes=True).parse_args()
-    if args.mode == 'metrics':
+    if args.mode in ('metrics', 'comparison'):
         check_metrics(args)
     elif args.mode == 'dump':
         check_dump(args)

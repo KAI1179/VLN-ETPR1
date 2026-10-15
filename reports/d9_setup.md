@@ -64,6 +64,14 @@ four-rank episode partition, collection waits for GPUs 4–7 together rather
 than changing to one rank. It starts only after the launcher's documented
 free-memory/utilisation checks pass. No running GPU process is killed.
 
+The user subsequently authorised sharing GPUs **4 and 5** with existing jobs,
+provided memory stays modest. This supersedes the initial four-idle-GPU plan:
+the local collection now uses two ranks with one environment per rank and
+checks free memory before each inference. GPU 0–3 and 6–7 are not used.
+Hook-on/off equivalence is checked under this same two-rank configuration.
+The D8 four-rank own-rollout numbers are not claimed to be exactly reproduced
+under the changed partition; shared-state replay alignment remains strict.
+
 The unattended driver log and final status are recorded under `reports/d9/`.
 This file documents setup, not completed experimental results.
 
@@ -97,11 +105,12 @@ Local unattended driver: `scripts/eval_d9/run_all.sh`.
 Slurm entrypoint: `scripts/submit/d9-dump.sh` (not submitted by this run).
 
 ```bash
-GPUS=4,5,6,7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d9/run_all.sh
+GPUS=4,5 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d9/run_all.sh
 ```
 
-The local driver is launched with `nohup`; do not launch another copy while
-the existing lock is held. It performs the prescribed finite smoke checks,
+The local driver runs in a persistent execution session; do not launch another
+copy while the existing lock is held. An initial `nohup` launch did not survive
+the command session and did not start inference. The driver performs the finite smoke checks,
 then six full collection passes and CPU statistics. It never retries a
 failed check or silently overwrites a partial episode dump.
 

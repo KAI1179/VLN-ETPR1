@@ -3,7 +3,10 @@
 set -euo pipefail
 ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
 PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
-export GPUS="${GPUS:-4,5,6,7}"
+export GPUS="${GPUS:-4,5}"
+IFS=',' read -ra GPU_LIST <<< "$GPUS"
+WORLD=${#GPU_LIST[@]}
+SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w${WORLD}"
 export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 mkdir -p "$ROOT/reports/d9"
@@ -12,7 +15,7 @@ flock -n 9 || { echo 'Another D9 pipeline owns run.lock' >&2; exit 1; }
 STAGE=initializing
 write_status() {
     "$PYTHON" -c 'import datetime,json,os,pathlib,sys
-pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3],gpus=sys.argv[4],pid=os.getppid(),updated_at=datetime.datetime.now().astimezone().isoformat(),exit_code=int(sys.argv[5])),indent=2)+"\n")' \
+pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3],gpus=sys.argv[4],world_size=len(sys.argv[4].split(",")),num_environments_per_rank=1,pid=os.getppid(),updated_at=datetime.datetime.now().astimezone().isoformat(),exit_code=int(sys.argv[5])),indent=2)+"\n")' \
         "$ROOT/reports/d9/status.json" "$1" "$STAGE" "$GPUS" "${2:-0}"
 }
 trap 'code=$?; if [[ $code == 0 ]]; then write_status completed "$code"; else write_status failed "$code"; fi; echo "$(date -Is) D9 pipeline exited with status $code"; exit "$code"' EXIT
@@ -25,8 +28,8 @@ requested={int(x) for x in sys.argv[1].split(",")}
 rows={int(v[0]): (int(v[1]),int(v[2])) for v in (line.strip().split(",") for line in sys.stdin) if v[0].strip()}
 if requested-rows.keys():
     raise ValueError("Requested GPU does not exist")
-sys.exit(0 if all(rows[g][0]>=16000 and rows[g][1]<10 for g in requested) else 1)' "$GPUS"; do
-        echo "$(date -Is) Waiting for GPUs $GPUS: each needs >=16000 MiB free and <10% utilization"
+sys.exit(0 if all(rows[g][0]>=10000 for g in requested) else 1)' "$GPUS"; do
+        echo "$(date -Is) Waiting for GPUs $GPUS: each needs >=10000 MiB free (existing GPU jobs are allowed)"
         write_status waiting_for_gpus
         sleep 60
     done
@@ -36,33 +39,33 @@ sys.exit(0 if all(rows[g][0]>=16000 and rows[g][1]<10 for g in requested) else 1
 SMOKE_IDS="$ROOT/scripts/eval_d8/smoke_episodes.json"
 for MODEL in base try5 kd; do
     STAGE="smoke_${MODEL}_O"
-    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence.json"
+    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w${WORLD}.json"
     if [[ ! -f "$REPORT" ]]; then
         for HOOK in off on; do
             wait_for_gpus
             EXTRA=()
             [[ "$HOOK" == on ]] || EXTRA=(EVAL.dump_attention '')
             D9_EPISODES_JSON="$SMOKE_IDS" \
-            D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/$HOOK" \
-            EXP_NAME="d9_smoke_${MODEL}_${HOOK}" \
+            D9_DUMP_ROOT="$SMOKE_ROOT/$HOOK" \
+            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w${WORLD}" \
                 bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" O "${EXTRA[@]}"
         done
     fi
     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 4 \
-        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off/eval_results" \
-        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on/eval_results" \
+        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w${WORLD}/eval_results" \
+        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w${WORLD}/eval_results" \
         --output "$REPORT"
     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source O \
-        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
+        --directory "$SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
     STAGE="smoke_${MODEL}_S"
-    if [[ ! -f "$ROOT/data/logs/d9_smoke/on/$MODEL/S/.complete.json" ]]; then
+    if [[ ! -f "$SMOKE_ROOT/on/$MODEL/S/.complete.json" ]]; then
         wait_for_gpus
         D9_EPISODES_JSON="$SMOKE_IDS" \
-        D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/on" EXP_NAME="d9_smoke_${MODEL}_S" \
+        D9_DUMP_ROOT="$SMOKE_ROOT/on" EXP_NAME="d9_smoke_${MODEL}_S_w${WORLD}" \
             bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" S
     fi
     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source S \
-        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/S" --episodes-json "$SMOKE_IDS" \
+        --directory "$SMOKE_ROOT/on/$MODEL/S" --episodes-json "$SMOKE_IDS" \
         --reference-dump "$ROOT/data/logs/d8_dump/$MODEL/S"
 done
 
@@ -80,10 +83,10 @@ for SOURCE in S O; do
         "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source "$SOURCE" \
             --directory "$DIRECTORY" "${REFERENCE[@]}"
         if [[ "$SOURCE" == O ]]; then
-            "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 1839 \
+            "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode comparison --expected 1839 \
                 --reference-metrics "$ROOT/data/logs/checkpoints/d8_${MODEL}_O_control_val_unseen/eval_results" \
-                --candidate-metrics "$ROOT/data/logs/checkpoints/d9_${MODEL}_O_control_val_unseen/eval_results" \
-                --output "$ROOT/reports/d9/${MODEL}_own_equivalence.json"
+                --candidate-metrics "$ROOT/data/logs/checkpoints/d9_${MODEL}_O_control_val_unseen_w${WORLD}/eval_results" \
+                --output "$ROOT/reports/d9/${MODEL}_own_d8_comparison_w${WORLD}.json"
         fi
     done
 done

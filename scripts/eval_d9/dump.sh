@@ -18,9 +18,12 @@ if [[ -n "${D9_EPISODES_JSON:-}" ]]; then
     IDS="$("$PYTHON" -c 'import json,sys; print(repr(json.load(open(sys.argv[1]))))' "$D9_EPISODES_JSON")"
 fi
 case "$MODEL" in base) PORT=29830 ;; try5) PORT=29831 ;; kd) PORT=29832 ;; *) exit 2 ;; esac
-export EXP_NAME="${EXP_NAME:-d9_${MODEL}_${SOURCE}_control_val_unseen}"
-MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-4,5,6,7}" \
+GPUS="${GPUS:-4,5}"
+IFS=',' read -ra GPU_LIST <<< "$GPUS"
+WORLD=${#GPU_LIST[@]}
+export EXP_NAME="${EXP_NAME:-d9_${MODEL}_${SOURCE}_control_val_unseen_w${WORLD}}"
+MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="$GPUS" \
     bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
     EVAL.dump_attention "$D9_DUMP_ROOT/$MODEL/$SOURCE" \
     EVAL.d8_shared_states "$SHARED" EVAL.d8_replay_dir "$REPLAY" \
-    EVAL.EPISODE_ID "$IDS" "$@"
+    EVAL.EPISODE_ID "$IDS" NUM_ENVIRONMENTS 1 "$@"
