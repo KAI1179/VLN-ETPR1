@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# GRPO continuation of a distilled LLM-Grid Try5 DAgger run (R11' and successors).
+# GRPO continuation of a distilled LLM-Grid Try5 DAgger run.
 #
-# Usage: DAGGER_ITER=<N> CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/distill/run_grpo_from_dagger.sh [--dry-run]
+# Usage: DAGGER_RUN=<run> DAGGER_ITER=<N> CUDA_VISIBLE_DEVICES=0,1,2,3 \
+#        bash scripts/distill/run_grpo_from_dagger.sh [--dry-run]
 #
 # What is loaded, and from where
 #   * Every policy weight (BERT backbone, nav heads, graph_map_attention fusion,
@@ -17,22 +18,32 @@
 #     (trainer behaviour), so the KL anchor is the DAgger checkpoint.
 #   * The optimizer is fresh. DAgger's optimizer state is not reused.
 #
-# What trains, and at which learning rate
-#   * GRPO has one learning rate (GRPO.lr) for everything it trains; there is
-#     no per-module LR in the trainer. Two AdamW groups differ only in weight
-#     decay (0.01 / 0 for biases and LayerNorm).
-#   * PROFILE=nav4 (default, the SR 66.50 recipe): global_encoder,
-#     graph_query_text, graph_attentioned_txt_embeds_transform, global_sap_head
-#     (234 tensors). map_encoder and graph_map_attention stay frozen, i.e. the
-#     raster path is kept exactly as DAgger left it. The trainer raises if the
-#     frozen map_encoder ever receives a gradient.
-#   * PROFILE=nav4-fusion additionally trains graph_map_attention (6 tensors).
-#     That profile lost to nav4 historically (65.42 vs 66.50); use it only as a
-#     deliberate second arm.
-#   * Schedule: LR 2e-5, no warmup, cosine to 0.25x over ITERS (500) iterations,
-#     grad-norm clip 2.0, G=8 samples per episode, beta 0.04, epsilon 0.2,
-#     dropout 0.10 on, AMP off, waypoint aug on, train_10 split, seed 100,
-#     one process per visible GPU with NUM_ENVS (4) environments each.
+# Recipe (the release ETP-R1 DAgger -> GRPO transition, main_server.bash
+# GRPO_ARGS, applied to the map student)
+#   * Trainable: PROFILE=nav4 = the four modules the release GRPO-R1 trainer
+#     unfreezes (global_encoder, graph_query_text,
+#     graph_attentioned_txt_embeds_transform, global_sap_head; 234 tensors).
+#     map_encoder and graph_map_attention stay frozen: the map path is kept
+#     exactly as DAgger left it (the trainer raises if the frozen map_encoder
+#     ever receives a gradient).  PROFILE=nav4-fusion additionally trains
+#     graph_map_attention; it lost to nav4 on the CE student (65.42 vs
+#     66.50) and is only a deliberate second arm.
+#   * Schedule as the release: LR 2e-5 (DAgger used 1e-5), no warmup, cosine
+#     to 0.25x over ITERS (500), grad-norm clip 2.0, G=8 samples per episode,
+#     beta 0.04, epsilon 0.2, dropout 0.10 on in sampling, AMP off, waypoint
+#     aug on, train_10 split, seed 100, one process per visible GPU with
+#     NUM_ENVS (4) environments each.
+#   * ADV_STD_NORM (default False) sets GRPO.advantage_std_normalize.  The
+#     release normalises each group's advantages by the group's reward std,
+#     which gives a group whose 8 samples all succeed and differ only in
+#     SPL / NE the same unit-scale advantages as a group split between
+#     success and failure.  For a student that already succeeds on most
+#     train_10 episodes those all-success groups dominate the update and push
+#     toward shorter paths rather than more arrivals (the R7 iter17000 GRPO
+#     continuation: PL -0.9 m, steps -7, SR -1.25).  False uses plain
+#     reward - mean (Dr. GRPO), so a group's weight is its reward spread.
+#     ADV_STD_NORM=True reproduces the release behaviour exactly.
+#     grpo/group_reward_std and grpo/group_all_success are logged either way.
 #
 # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
 # continues from the latest one (GRPO.is_requeue True restores weights,
@@ -41,13 +52,13 @@
 #
 # Checkpoints are written every LOG_EVERY (50) iterations (GRPO ignores
 # CHECKPOINT_INTERVAL); each is about 2.75 GB. Evaluate them with
-#   bash scripts/distill/eval_iters.sh <RUN_NAME> 100 200 300 400 500
+#   GPUS=4,5,6,7 bash scripts/distill/eval_iters_serial.sh <RUN_NAME> 100 200 300 400 500
 #
-# Env: DAGGER_RUN (dagger_distill_gt_teacher_llmpt_reinit_tok), DAGGER_ITER (required),
-#      RUN_NAME (<DAGGER_RUN>_grpo_i<DAGGER_ITER>), PROFILE (nav4|nav4-fusion),
-#      ITERS (500), LOG_EVERY (50), LR (2e-5), NUM_ENVS (4), SEED (100),
-#      CUDA_VISIBLE_DEVICES (required), MASTER_PORT (free port), PREFLIGHT (1),
-#      ALLOW_DEAD_TOKENIZER (0), PRETRAINED_CKPT (460000 file, shapes only).
+# Env: DAGGER_RUN (kd_dual), DAGGER_ITER (required),
+#      RUN_NAME (<DAGGER_RUN>_grpo_i<DAGGER_ITER>[_advstd]), PROFILE (nav4|nav4-fusion),
+#      ADV_STD_NORM (False), ITERS (500), LOG_EVERY (50), LR (2e-5), NUM_ENVS (4),
+#      SEED (100), CUDA_VISIBLE_DEVICES (required), MASTER_PORT (free port),
+#      PREFLIGHT (1), ALLOW_DEAD_TOKENIZER (0), PRETRAINED_CKPT (460000 file, shapes only).
 set -euo pipefail
 
 REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
@@ -62,7 +73,7 @@ elif [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-DAGGER_RUN="${DAGGER_RUN:-dagger_distill_gt_teacher_llmpt_reinit_tok}"
+DAGGER_RUN="${DAGGER_RUN:-kd_dual}"
 DAGGER_DIR="${REPO_ROOT}/data/logs/checkpoints/${DAGGER_RUN}"
 if [[ -z "${DAGGER_ITER:-}" ]]; then
     echo "DAGGER_ITER is required. Checkpoints in ${DAGGER_DIR}:" >&2
@@ -75,7 +86,13 @@ DAGGER_CKPT="${DAGGER_DIR}/ckpt.iter${DAGGER_ITER}.pth"
 
 PROFILE="${PROFILE:-nav4}"
 case "${PROFILE}" in nav4|nav4-fusion) ;; *) echo "PROFILE must be nav4 or nav4-fusion, got '${PROFILE}'" >&2; exit 2 ;; esac
-RUN_NAME="${RUN_NAME:-${DAGGER_RUN}_grpo_i${DAGGER_ITER}}"
+ADV_STD_NORM="${ADV_STD_NORM:-False}"
+case "${ADV_STD_NORM}" in True|False) ;; *) echo "ADV_STD_NORM must be True or False, got '${ADV_STD_NORM}'" >&2; exit 2 ;; esac
+if [[ -z "${RUN_NAME:-}" ]]; then
+    RUN_NAME="${DAGGER_RUN}_grpo_i${DAGGER_ITER}"
+    [[ "${PROFILE}" == "nav4" ]] || RUN_NAME="${RUN_NAME}_${PROFILE}"
+    [[ "${ADV_STD_NORM}" == "False" ]] || RUN_NAME="${RUN_NAME}_advstd"
+fi
 [[ "${RUN_NAME}" != "${DAGGER_RUN}" ]] || { echo "RUN_NAME must differ from DAGGER_RUN (GRPO would resume from the DAgger directory)" >&2; exit 2; }
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -88,13 +105,13 @@ IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
 GPU_NUMBERS="${#_gpu_list[@]}"
 GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
 NUM_ENVS="${NUM_ENVS:-4}"
-ITERS="${ITERS:-800}"
+ITERS="${ITERS:-500}"
 LOG_EVERY="${LOG_EVERY:-50}"
-LR="${LR:-2e-6}"
-SEED="${SEED:-10}"
+LR="${LR:-2e-5}"
+SEED="${SEED:-100}"
 
 cd "${REPO_ROOT}"
-for key in require_complete_checkpoint trainable_profile; do
+for key in require_complete_checkpoint trainable_profile advantage_std_normalize; do
     grep -q "GRPO.${key}" vlnce_baselines/config/default.py || { echo "checkout lacks GRPO.${key}; wrong branch?" >&2; exit 2; }
 done
 grep -q "load_pretrained_map_modules" vlnce_baselines/config/default.py || { echo "checkout lacks MODEL.MAP_ENCODER.load_pretrained_map_modules (patch 0001)" >&2; exit 2; }
@@ -181,6 +198,7 @@ COMMAND=(
     MODEL.elevation_axis y
     MODEL.pretrained_path "${PRETRAINED_CKPT}"
     GRPO.trainable_profile "${PROFILE}"
+    GRPO.advantage_std_normalize "${ADV_STD_NORM}"
     GRPO.require_complete_checkpoint True
     "${RESUME_ARGS[@]}"
     GRPO.ckpt_to_load "${DAGGER_CKPT}"
@@ -209,7 +227,7 @@ COMMAND=(
     echo "dagger_ckpt=${DAGGER_CKPT}"
     echo "resume_from=${LATEST_CKPT:-none}"
     echo "preflight=${PREFLIGHT_SUMMARY}"
-    echo "profile=${PROFILE}"
+    echo "profile=${PROFILE} advantage_std_normalize=${ADV_STD_NORM}"
     echo "load_pretrained_map_modules=False (all map weights from the DAgger checkpoint)"
     echo "pretrained_path=${PRETRAINED_CKPT} (backbone shapes only)"
     echo "iters=${ITERS} log_every=${LOG_EVERY} lr=${LR} warmup=0 min_lr_ratio=0.25 G=8 beta=0.04 eps=0.2 clip=2.0"

@@ -933,17 +933,32 @@ class RLTrainer(BaseVLNCETrainer):
                 if reward_val is not None:
                     rewards_per_original_env_slot[original_env_idx].append(reward_val)
 
+        # GRPO.advantage_std_normalize True (historical): A = (r - mean) / std,
+        # so a group whose 8 samples all succeed and differ only in SPL/NE
+        # gets the same unit-scale advantages as a group split between
+        # success and failure.  False: A = r - mean (Dr. GRPO), so a group's
+        # weight in the update is its reward spread.  group_reward_std and
+        # group_all_success are logged either way.
+        normalize_std = bool(self.config.GRPO.advantage_std_normalize)
         for original_env_idx in range(self.initial_num_envs):
             rewards_for_this_slot = rewards_per_original_env_slot[original_env_idx]
             if len(rewards_for_this_slot) > 1:
                 mean_r = np.mean(rewards_for_this_slot)
                 std_r = np.std(rewards_for_this_slot)
+                self.logs["group_reward_std"].append(float(std_r))
+                # reward = spl + success + (1 - NE/6): every sample succeeded
+                # iff min reward > 1 (a failure has success = spl = 0 and the
+                # NE term is at most 1 - 1.5/6).
+                self.logs["group_all_success"].append(
+                    float(min(rewards_for_this_slot) > 1.0)
+                )
                 for s_idx in range(self.config.GRPO.sample_num):
                     reward_val = self.data_buffer[s_idx]["reward"][original_env_idx]
                     if reward_val is not None:
-                        advantages_all_ep_all_samples[s_idx][original_env_idx] = (
-                            reward_val - mean_r
-                        ) / (std_r + 1e-8)
+                        advantage = reward_val - mean_r
+                        if normalize_std:
+                            advantage = advantage / (std_r + 1e-8)
+                        advantages_all_ep_all_samples[s_idx][original_env_idx] = advantage
 
         all_spls_in_buffer = []
         for s_idx in range(self.config.GRPO.sample_num):

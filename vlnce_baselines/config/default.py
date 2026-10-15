@@ -76,6 +76,10 @@ _C.GRPO.grpo_epsilon = 0.2
 _C.GRPO.max_grad_norm = 1.0
 _C.GRPO.trainable_profile = "nav4"
 _C.GRPO.require_complete_checkpoint = False
+# True (historical): group advantages are divided by the group's reward std.
+# False: plain reward - group mean (Dr. GRPO), so groups whose samples differ
+# only marginally (e.g. all successful) contribute proportionally less.
+_C.GRPO.advantage_std_normalize = True
 # -----------------------------------------------------------------------------
 # IMITATION LEARNING CONFIG
 # -----------------------------------------------------------------------------
