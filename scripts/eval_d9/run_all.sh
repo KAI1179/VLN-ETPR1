@@ -7,6 +7,7 @@ export GPUS="${GPUS:-4,5}"
 IFS=',' read -ra GPU_LIST <<< "$GPUS"
 WORLD=${#GPU_LIST[@]}
 SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w${WORLD}"
+OWN_SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w1"
 export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 mkdir -p "$ROOT/reports/d9"
@@ -39,24 +40,24 @@ sys.exit(0 if all(rows[g][0]>=10000 for g in requested) else 1)' "$GPUS"; do
 SMOKE_IDS="$ROOT/scripts/eval_d8/smoke_episodes.json"
 for MODEL in base try5 kd; do
     STAGE="smoke_${MODEL}_O"
-    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w${WORLD}.json"
+    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w1.json"
     if [[ ! -f "$REPORT" ]]; then
         for HOOK in off on; do
             wait_for_gpus
             EXTRA=()
             [[ "$HOOK" == on ]] || EXTRA=(EVAL.dump_attention '')
             D9_EPISODES_JSON="$SMOKE_IDS" \
-            D9_DUMP_ROOT="$SMOKE_ROOT/$HOOK" \
-            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w${WORLD}" \
+            GPUS="${GPU_LIST[0]}" D9_DUMP_ROOT="$OWN_SMOKE_ROOT/$HOOK" \
+            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w1" \
                 bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" O "${EXTRA[@]}"
         done
     fi
     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 4 \
-        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w${WORLD}/eval_results" \
-        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w${WORLD}/eval_results" \
+        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w1/eval_results" \
+        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w1/eval_results" \
         --output "$REPORT"
     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source O \
-        --directory "$SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
+        --directory "$OWN_SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
     STAGE="smoke_${MODEL}_S"
     if [[ ! -f "$SMOKE_ROOT/on/$MODEL/S/.complete.json" ]]; then
         wait_for_gpus

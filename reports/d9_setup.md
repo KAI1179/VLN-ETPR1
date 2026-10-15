@@ -68,7 +68,12 @@ The user subsequently authorised sharing GPUs **4 and 5** with existing jobs,
 provided memory stays modest. This supersedes the initial four-idle-GPU plan:
 the local collection now uses two ranks with one environment per rank and
 checks free memory before each inference. GPU 0–3 and 6–7 are not used.
-Hook-on/off equivalence is checked under this same two-rank configuration.
+Hook-on/off equivalence uses one GPU for the four-episode subset. The existing
+own-rollout evaluator does not shard an explicit `EVAL.EPISODE_ID` list across
+ranks, so the first two-rank subset smoke failed on a duplicate output file.
+Its files/logs are retained. Only the smoke launcher was changed; no model or
+episode-selection source code was changed. Full collection and the shared
+replay smoke still use two ranks and ordinary rank-sharded episode sets.
 The D8 four-rank own-rollout numbers are not claimed to be exactly reproduced
 under the changed partition; shared-state replay alignment remains strict.
 
@@ -96,7 +101,9 @@ CPU checks completed before launch:
 - `ruff` and `ty` are unavailable in PATH and the existing conda environment;
   no packages were installed to obtain them.
 
-The GPU equivalence and replay checks are **pending**, not represented as
+The first two-rank smoke reached inference at about 5 GiB additional GPU
+memory per rank, then failed because of duplicate episode writes as described
+above. The corrected GPU equivalence and replay checks are **pending**, not represented as
 passed by these CPU checks.
 
 ## Driver and outputs
