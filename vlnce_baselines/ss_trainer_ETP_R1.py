@@ -858,7 +858,13 @@ class RLTrainer(BaseVLNCETrainer):
         self.policy.eval()
         self.waypoint_predictor.eval()
 
-        if self.config.EVAL.dump_decision_features:
+        if self.config.EVAL.dump_attention:
+            from scripts.eval_d9.attention_dump import AttentionDump
+
+            network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
+            self._d8_dump = AttentionDump(network, self.config.EVAL.dump_attention,
+                                          self.config.EVAL.d8_shared_states, self.config.EVAL.d8_replay_dir)
+        elif self.config.EVAL.dump_decision_features:
             from scripts.eval_d8.feature_dump import DecisionFeatureDump
 
             network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
@@ -879,7 +885,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.envs.close()
         self._close_decision_dumper()
 
-        if self.config.EVAL.dump_decision_features:
+        if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
             self._d8_dump.close()
         if self.world_size > 1:
             distr.barrier()
@@ -1294,7 +1300,11 @@ class RLTrainer(BaseVLNCETrainer):
                     teacher_actions, no_vp_left,
                 )
 
-            if mode == "eval" and self.config.EVAL.dump_decision_features:
+            if mode == "eval" and self.config.EVAL.dump_attention:
+                self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                                       self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                                       cpu_a_t, no_vp_left, self.max_len, all_txt_ids)
+            elif mode == "eval" and self.config.EVAL.dump_decision_features:
                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
                                        self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
                                        cpu_a_t, no_vp_left, self.max_len)
@@ -1449,7 +1459,7 @@ class RLTrainer(BaseVLNCETrainer):
                     if ep_id in self.stat_eps:
                         print("ERROR!!!!!!!!!! ", ep_id)
                     self.stat_eps[ep_id] = metric
-                    if self.config.EVAL.dump_decision_features:
+                    if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
                         self._d8_dump.finish(ep_id)
                     if trajectory_recorder is not None:
                         trajectory_recorder.finish(ep_id, metric, pred_path)

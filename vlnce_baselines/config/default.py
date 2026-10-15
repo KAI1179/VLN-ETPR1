@@ -35,6 +35,7 @@ _C.EVAL.SAVE_RESULTS = True
 _C.EVAL.dump_trajectory = False
 _C.EVAL.d7d_logging = False
 _C.EVAL.dump_decision_features = ""
+_C.EVAL.dump_attention = ""
 _C.EVAL.d8_shared_states = False
 _C.EVAL.d8_replay_dir = ""
 _C.EVAL.EVAL_NONLEARNING = False
