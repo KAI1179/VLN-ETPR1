@@ -1,0 +1,37 @@
+From 3b0097555ff8f60afaf41ce578789ddcb5e4e4c5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 15 Oct 2026 23:44:23 -0600
+Subject: [PATCH] eval_iters_serial.sh: do not exit when the run has no
+ eval_args.txt
+
+The header block ended with `[[ -f eval_args.txt ]] && echo ...`; for a run
+without that file (GRPO runs use eval_run.sh's LLM-Grid defaults) the test
+fails, the pipeline status is non-zero and set -e ends the script after the
+first line.  Print which defaults apply instead.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011TvFfJ52sY7drhLGd21hww
+---
+ scripts/distill/eval_iters_serial.sh | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/distill/eval_iters_serial.sh b/scripts/distill/eval_iters_serial.sh
+index 3a012e6..ad5fe79 100755
+--- a/scripts/distill/eval_iters_serial.sh
++++ b/scripts/distill/eval_iters_serial.sh
+@@ -41,7 +41,11 @@ GPUS="${GPUS:-4,5,6,7}"
+ DRIVER_LOG="${RUN_DIR}/eval_iters_serial_$(date +%Y%m%d-%H%M%S).log"
+ {
+     echo "run=${RUN_NAME} split=${SPLIT} gpus=${GPUS} iters=${ITERS[*]}"
+-    [[ -f "${RUN_DIR}/eval_args.txt" ]] && echo "eval_args.txt: $(tr '\n' ' ' < "${RUN_DIR}/eval_args.txt")"
++    if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
++        echo "eval_args.txt: $(tr '\n' ' ' < "${RUN_DIR}/eval_args.txt")"
++    else
++        echo "no eval_args.txt: LLM-Grid try5 defaults of eval_run.sh"
++    fi
+ } | tee "${DRIVER_LOG}"
+ 
+ for it in "${ITERS[@]}"; do
+-- 
+2.43.0
+
