@@ -55,6 +55,8 @@ class AttentionDump(DecisionFeatureDump):
         self.text = None
         self.maps = None
         self.map_config = map_config
+        self.replay_rotations = None
+        self.replay_waypoints = None
         tokenizer_path = Path(__file__).resolve().parents[2] / "bert_config/xlm-roberta-base"
         self.tokenizer = XLMRobertaTokenizerFast.from_pretrained(
             str(tokenizer_path), local_files_only=True
@@ -63,6 +65,75 @@ class AttentionDump(DecisionFeatureDump):
         fusion = getattr(network.vln_bert, "graph_map_attention", None)
         if fusion is not None:
             self.handles.append(fusion.register_forward_pre_hook(self._map))
+
+    def set_replay_context(self, rotations, waypoint_outputs):
+        self.replay_rotations = rotations
+        self.replay_waypoints = {
+            key: waypoint_outputs[key] for key in ("cand_angles", "cand_distances")
+        }
+
+    def replay_actions(self, episodes, step, positions, candidate_ids, graphs, device):
+        from vlnce_baselines.models.graph_utils import heading_from_quaternion
+
+        try:
+            actions = super().replay_actions(
+                episodes, step, positions, candidate_ids, graphs, device
+            )
+            for index, episode in enumerate(episodes):
+                eid = str(episode.episode_id)
+                reference = self.references[eid]
+                if "heading" not in reference:
+                    with np.load(self.replay_directory / f"{eid}.npz", allow_pickle=False) as data:
+                        reference["heading"] = data["heading"].copy()
+                if float(heading_from_quaternion(self.replay_rotations[index])) != float(reference["heading"][step]):
+                    raise ValueError(f"{eid}/{step}: shared replay heading differs")
+            return actions
+        except ValueError as error:
+            diagnostics = []
+            for index, episode in enumerate(episodes):
+                eid = str(episode.episode_id)
+                if not str(error).startswith((f"{eid}/", f"{eid}:")):
+                    continue
+                with np.load(self.replay_directory / f"{eid}.npz", allow_pickle=False) as data:
+                    reference = {key: data[key].copy() for key in (
+                        "step", "pos", "heading", "candidate_ids", "candidate_positions"
+                    )}
+                graph = graphs[index]
+                ids = [node for node in candidate_ids[index]
+                       if node is not None and node.startswith("g")]
+                expected_ids = json.loads(str(reference["candidate_ids"][step]))
+                expected_positions = json.loads(str(reference["candidate_positions"][step]))
+                actual_positions = [np.asarray(graph.ghost_aug_pos[node]).tolist() for node in ids]
+                matched_differences = {
+                    node: (np.asarray(actual_positions[ids.index(node)]) - np.asarray(expected_positions[expected_ids.index(node)])).tolist()
+                    for node in ids if node in expected_ids
+                }
+                history = self.records.get(eid, {}).get("steps", [])
+                diagnostics.append({
+                    "episode_id": eid, "step": step, "error": str(error),
+                    "actual_position": positions[index], "reference_position": reference["pos"][step],
+                    "actual_heading": float(heading_from_quaternion(self.replay_rotations[index])),
+                    "reference_heading": float(reference["heading"][step]),
+                    "actual_rotation": self.replay_rotations[index],
+                    "actual_candidate_ids": ids, "reference_candidate_ids": expected_ids,
+                    "actual_candidate_positions": actual_positions,
+                    "reference_candidate_positions": expected_positions,
+                    "coordinate_differences": matched_differences,
+                    "max_abs_coordinate_difference": max(
+                        (float(np.abs(value).max()) for value in matched_differences.values()), default=None
+                    ),
+                    "ghost_position_histories": {node: graph.ghost_pos[node] for node in ids},
+                    "waypoint_angles": self.replay_waypoints["cand_angles"][index],
+                    "waypoint_distances": self.replay_waypoints["cand_distances"][index],
+                    "actual_prior_step_geometry": [
+                        {key: row[key] for key in ("step", "pos", "heading", "candidate_ids", "candidate_positions")}
+                        for row in history
+                    ],
+                    "reference_step_geometry": reference,
+                })
+            path = self.directory / f"replay_mismatch_step{step}.json"
+            path.write_text(json.dumps(diagnostics, indent=2, default=lambda value: np.asarray(value).tolist(), allow_nan=False) + "\n")
+            raise
 
     def _text(self, module, inputs, output):
         self.text = output[1].softmax(dim=-1).detach().cpu()

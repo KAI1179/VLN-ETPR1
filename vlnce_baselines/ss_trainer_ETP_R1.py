@@ -1283,6 +1283,8 @@ class RLTrainer(BaseVLNCETrainer):
 
             elif feedback == "argmax":
                 if shared_eval:
+                    if self.config.EVAL.dump_attention:
+                        self._d8_dump.set_replay_context(cur_ori, wp_outputs)
                     a_t = (self._d8_dump.replay_actions(
                         self.envs.current_episodes(), stepk, cur_pos, nav_inputs["gmap_vp_ids"], self.gmaps, nav_logits.device
                     ) if self.config.EVAL.d8_replay_dir else teacher_actions)
