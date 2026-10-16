@@ -1,0 +1,20 @@
+{
+  "inference_commit": "b89f2cc",
+  "analysis_commit": "19a25ca",
+  "physical_gpus": [4, 5],
+  "logical_reference_world_size": 4,
+  "environments_per_logical_rank": 4,
+  "max_simultaneous_models_per_gpu": 1,
+  "seed": 100,
+  "dump_root": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/d9_reference_layout",
+  "reference_dump_root": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/d8_dump",
+  "driver_log": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/d9/reference_layout.log",
+  "script_sha256": {
+    "scripts/eval_d9/run_shard.py": "c3829881b2aee5401af7b116b4b14a8699bfd9cd181fbcd3dceafb5fc147175a",
+    "scripts/eval_d9/dump_shard.sh": "20573c86bfcdeca4e59fc737d7f10c6ea1b7d5460f2e299308cdacf94ac2c004",
+    "scripts/eval_d9/run_reference_layout.sh": "05c7a676de9270c1cf3658f157b393a0c1746f4dbf4a21f3c7cab2f59f1746d1",
+    "scripts/eval_d9/attention_dump.py": "68690372956429d341f71cdbb3a0a76ca41ecafef466b63fa2397ae159636098",
+    "scripts/distill/attention_stats.py": "dc48fce8f43ec2139736441d9f32b2281bdd3b9a5f2fdcd96c6ebb7bf9c1a8f1",
+    "scripts/eval_d9/attention_report.py": "4671fe32cadd21898afd2701f1fc39b04167f844a0623037a04dc2efc5e6649d"
+  }
+}

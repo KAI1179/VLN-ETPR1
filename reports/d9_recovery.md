@@ -75,11 +75,12 @@ is the strict validation of the actual collection states.
 
 ## Status
 
-The recovered full logical-rank collection has now passed **all 15 frames of
-episode 1423** with exact equality of position, heading, candidates and
-executed actions to D8. Restoring the original batching repairs the previously
-failing case without modifying graph coordinates or tolerances. The full
-split remains under validation. Initial measured additional memory is about
+The recovered baseline/S collection has now passed **all 1,833 episodes and
+13,992 frames**, including every frame of episode 1423, with exact equality
+of position, heading, candidates and executed actions to D8. Restoring the
+original batching repairs the previously failing full baseline run without
+modifying graph coordinates or tolerances. Try5/S and subsequent groups are
+running next automatically. Initial measured additional memory is about
 4–5 GiB per physical GPU, with approximately 6–7 GiB still free.
 
 A CPU audit using the real 25 shared smoke frames per model passed geodesic
