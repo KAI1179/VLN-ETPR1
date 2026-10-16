@@ -41,7 +41,11 @@ GPUS="${GPUS:-4,5,6,7}"
 DRIVER_LOG="${RUN_DIR}/eval_iters_serial_$(date +%Y%m%d-%H%M%S).log"
 {
     echo "run=${RUN_NAME} split=${SPLIT} gpus=${GPUS} iters=${ITERS[*]}"
-    [[ -f "${RUN_DIR}/eval_args.txt" ]] && echo "eval_args.txt: $(tr '\n' ' ' < "${RUN_DIR}/eval_args.txt")"
+    if [[ -f "${RUN_DIR}/eval_args.txt" ]]; then
+        echo "eval_args.txt: $(tr '\n' ' ' < "${RUN_DIR}/eval_args.txt")"
+    else
+        echo "no eval_args.txt: LLM-Grid try5 defaults of eval_run.sh"
+    fi
 } | tee "${DRIVER_LOG}"
 
 for it in "${ITERS[@]}"; do
