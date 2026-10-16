@@ -100,7 +100,8 @@ def map_values(row, index, geom, field):
     chosen = str(row["policy_argmax_id"][index])
     ids = json.loads(str(row["candidate_ids"][index]))
     coords = json.loads(str(row["candidate_positions"][index]))
-    candidate = None if chosen == "-1" else np.asarray(coords[ids.index(chosen)])[[0, 2]]
+    # STOP is a non-spatial query, including when the policy chooses another node.
+    candidate = None if field == "stop_map" or chosen == "-1" else np.asarray(coords[ids.index(chosen)])[[0, 2]]
     disc = np.zeros(len(cell), dtype=bool) if candidate is None else np.linalg.norm(cell-candidate, axis=1) <= 1.5
 
     def coverage(mask):
@@ -388,10 +389,12 @@ def main():
                                "heads": {model: {"graph_query_text": int(next(iter(rows.values()))["txt_attn"].shape[1]),
                                                  "graph_map_attention": int(next(iter(rows.values()))["map_attn"].shape[1]) if model != "base" else None}
                                          for model, rows in dumps.items()},
-                               "A4": "unpaired high-minus-low scene-cluster bootstrap; candidate contrast omitted (high argmax STOP)",
+                               "A4": "unpaired high-minus-low scene-cluster bootstrap; STOP query has no candidate; other uses agent union route in both groups",
                                "registration": "assumed registration; upstream map attention before graph-text interaction",
                                "patch_distance": "mean distance conditional on spatial-token mass (metadata excluded)",
-                               "special_flag": ">0.8; paired words use neither-flagged common frames", "undefined": "NA, never zero"},
+                               "special_flag": ">0.8; paired words use neither-flagged common frames",
+                               "head_spread": "NA if any head has zero word mass after float16 storage; summary n counts defined frames",
+                               "undefined": "NA, never zero"},
               "statistics": aggregate(data, args.draws)}
     # Keep raw frame values so every aggregate is reproducible without GPU dumps.
     for model, row in data.items():

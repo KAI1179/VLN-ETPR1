@@ -75,5 +75,20 @@ is the strict validation of the actual collection states.
 
 ## Status
 
-Recovery implementation prepared; exact-layout full replay and peak memory
-still require runtime verification. This is not a completed result report.
+The recovered full logical-rank collection has now passed **all 15 frames of
+episode 1423** with exact equality of position, heading, candidates and
+executed actions to D8. Restoring the original batching repairs the previously
+failing case without modifying graph coordinates or tolerances. The full
+split remains under validation. Initial measured additional memory is about
+4–5 GiB per physical GPU, with approximately 6–7 GiB still free.
+
+A CPU audit using the real 25 shared smoke frames per model passed geodesic
+labelling, A1–A4 aggregation and strict JSON serialization. For A4, STOP-query
+"other" consistently excludes agent ∪ route in **both** groups; no candidate
+region is defined for a nonspatial STOP query. A3 selected-query geometry is
+unchanged. If a float16 head has zero retained word mass, its word statistics
+and the corresponding head spread stay NA; summary counts expose how many
+frames are defined rather than filling them with zero.
+
+This is a recovery/protocol record, not a completed result report. The final
+tables are written only after all full dumps pass validation.

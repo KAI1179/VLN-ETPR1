@@ -22,7 +22,7 @@ def write_report(result, directory):
     stats = result["statistics"]
     lines = ["# D9 attention statistics", "", "Raw tables precede any reading. All attention is descriptive, not causal.",
              "Map attention is upstream of graph–text interaction; world overlays use **assumed registration**.", "",
-             "Undefined statistics are NA. Selected-node word statistics use attention averaged across heads before word renormalisation; head spread is retained separately.", "",
+             "Undefined statistics are NA. Selected-node word statistics use attention averaged across heads before word renormalisation; head spread is retained separately. If any head has zero word mass after float16 storage, word-level head spread is NA; each summary's frame count includes only defined values.", "",
              "## A1–A2: instruction attention", ""]
     rows = []
     for model, subsets in stats["text"].items():
@@ -58,7 +58,7 @@ def write_report(result, directory):
         for metric, item in metrics.items():
             rows.append([label, metric, item["n"], *estimate(item), *estimate(metrics["text_special"])])
     table(lines, ["KD − Try5: bin", "Metric", "Common defined frames", "Difference", "Scene CI", "Special difference (all bin frames)", "Special CI"], rows)
-    lines += ["## A4: high versus low STOP tendency", "", "High stop probability >0.5 minus low <0.1, actual geodesic distance >3m. These are between-group contrasts, not paired-frame contrasts. Candidate-region comparison is omitted because high-tendency argmax is STOP. Other then uses agent ∪ route. Flagged STOP-row word statistics are kept separate.", ""]
+    lines += ["## A4: high versus low STOP tendency", "", "High stop probability >0.5 minus low <0.1, actual geodesic distance >3m. These are between-group contrasts, not paired-frame contrasts. The STOP query has no spatial candidate, regardless of policy argmax; candidate-region comparison is omitted. Other uses agent ∪ route in both groups. Flagged STOP-row word statistics are kept separate.", ""]
     rows, counts = [], []
     for model, metrics in stats["A4"].items():
         for metric, item in metrics.items():
