@@ -1,0 +1,70 @@
+From 9136185fdaeb490d6590369d8537499c5d85aaac Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 15 Oct 2026 22:17:32 -0600
+Subject: [PATCH] GT map ablation: presence_broadcast (category set only, no
+ layout)
+
+Every channel with any non-zero cell is set to 1.0 over the whole grid,
+empty channels stay 0. All 100 spatial tokens become identical, so the
+raster carries only the set of present categories. Added to the default
+job list of eval_gt_ablations.sh (finished jobs are skipped).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DsB1w4AGouveUHoVC6Pbm2
+---
+ scripts/distill/eval_gt_ablations.sh     |  1 +
+ scripts/distill/make_ablated_gt_cache.py | 12 ++++++++++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/scripts/distill/eval_gt_ablations.sh b/scripts/distill/eval_gt_ablations.sh
+index fcc0c35..eb617c4 100755
+--- a/scripts/distill/eval_gt_ablations.sh
++++ b/scripts/distill/eval_gt_ablations.sh
+@@ -32,6 +32,7 @@ DEFAULT_JOBS=(
+     "${NS}.abl_objects_only"
+     "${NS}.abl_category_scramble_s0"
+     "${NS}.abl_unmentioned_only"
++    "${NS}.abl_presence_broadcast"
+     "${NS}.mentioned_only"
+     "${NS}:metadata_only"
+     "${NS}:raster_only"
+diff --git a/scripts/distill/make_ablated_gt_cache.py b/scripts/distill/make_ablated_gt_cache.py
+index e786200..34c6a51 100755
+--- a/scripts/distill/make_ablated_gt_cache.py
++++ b/scripts/distill/make_ablated_gt_cache.py
+@@ -20,6 +20,12 @@ Modes
+   unmentioned_only  channels of categories the instruction mentions zeroed
+                     (complement of make_mentioned_only_gt_cache.py; needs the
+                     spacy extractor, run in etpr1-uv).
++  presence_broadcast every channel with any non-zero cell set to 1.0 over the
++                    whole 100x100 grid, empty channels stay 0: only the set of
++                    present categories survives (no layout, counts, footprint
++                    or 0.6/1.0 mention level).  All 100 spatial tokens become
++                    identical, so the raster reaches the policy as a function
++                    of the 37-bit presence vector alone.
+ 
+     python scripts/distill/make_ablated_gt_cache.py --mode occupancy_only
+ """
+@@ -55,6 +61,7 @@ Mode = Literal[
+     "objects_only",
+     "category_scramble",
+     "unmentioned_only",
++    "presence_broadcast",
+ ]
+ RANDOM_MODES = {"cell_shuffle", "category_scramble"}
+ NUM_CHANNELS = 37
+@@ -106,6 +113,11 @@ def ablate(grid: np.ndarray, mode: str, rng: np.random.Generator, mentioned: Opt
+     if mode == "unmentioned_only":
+         assert mentioned is not None
+         return grid * (~mentioned)[:, None, None].astype(grid.dtype)
++    if mode == "presence_broadcast":
++        present = (grid > 0).reshape(channels, -1).any(axis=1)
++        out = np.zeros_like(grid)
++        out[present] = 1.0
++        return out
+     raise ValueError(f"unknown mode {mode}")
+ 
+ 
+-- 
+2.43.0
+
