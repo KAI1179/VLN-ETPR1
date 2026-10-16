@@ -32,6 +32,7 @@ DEFAULT_JOBS=(
     "${NS}.abl_objects_only"
     "${NS}.abl_category_scramble_s0"
     "${NS}.abl_unmentioned_only"
+    "${NS}.abl_presence_broadcast"
     "${NS}.mentioned_only"
     "${NS}:metadata_only"
     "${NS}:raster_only"

@@ -20,6 +20,12 @@ Modes
   unmentioned_only  channels of categories the instruction mentions zeroed
                     (complement of make_mentioned_only_gt_cache.py; needs the
                     spacy extractor, run in etpr1-uv).
+  presence_broadcast every channel with any non-zero cell set to 1.0 over the
+                    whole 100x100 grid, empty channels stay 0: only the set of
+                    present categories survives (no layout, counts, footprint
+                    or 0.6/1.0 mention level).  All 100 spatial tokens become
+                    identical, so the raster reaches the policy as a function
+                    of the 37-bit presence vector alone.
 
     python scripts/distill/make_ablated_gt_cache.py --mode occupancy_only
 """
@@ -55,6 +61,7 @@ Mode = Literal[
     "objects_only",
     "category_scramble",
     "unmentioned_only",
+    "presence_broadcast",
 ]
 RANDOM_MODES = {"cell_shuffle", "category_scramble"}
 NUM_CHANNELS = 37
@@ -106,6 +113,11 @@ def ablate(grid: np.ndarray, mode: str, rng: np.random.Generator, mentioned: Opt
     if mode == "unmentioned_only":
         assert mentioned is not None
         return grid * (~mentioned)[:, None, None].astype(grid.dtype)
+    if mode == "presence_broadcast":
+        present = (grid > 0).reshape(channels, -1).any(axis=1)
+        out = np.zeros_like(grid)
+        out[present] = 1.0
+        return out
     raise ValueError(f"unknown mode {mode}")
 
 
