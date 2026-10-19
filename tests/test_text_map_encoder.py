@@ -14,7 +14,7 @@ from vlnce_baselines.models.etp_prior_gt.text_map_encoder import (
 class _Embeddings(nn.Module):
     def __init__(self, hidden):
         super().__init__()
-        self.word = nn.Embedding(30522, hidden)
+        self.word = nn.Embedding(250002, hidden)
 
     def forward(self, input_ids, txt_task_encoding, token_type_ids=None):
         return self.word(input_ids) + txt_task_encoding.unsqueeze(-1).float()
@@ -38,7 +38,8 @@ class _VlnBert(nn.Module):
 
 def _grid():
     grid = np.zeros((37, 100, 100), dtype=np.float32)
-    grid[2, 10:14, 20:26] = 1.0  # object
+    grid[2, 10:14, 20:26] = 1.0  # object, instance 1
+    grid[2, 80:84, 80:84] = 1.0  # object, instance 2 (same category)
     grid[30, 30:50, 40:60] = 0.6  # region (channels >= 27)
     return grid
 
@@ -46,16 +47,19 @@ def _grid():
 def test_entities_sentences():
     directions = np.array([[0, 1], [1, 0], [0, -1], [-1, 0], [0, 1]], dtype=np.float32)
     sentences = map_text_entities(_grid(), directions, scale=2)
-    assert len(sentences) == 3
-    assert sentences[0].startswith("object ") and "6 cells, center (6,11), extent 2x3" in sentences[0]
-    assert sentences[1].startswith("region ") and "100 cells, center (20,24), extent 10x10" in sentences[1]
-    assert sentences[2].startswith("heading: (0.00,1.00)")
+    assert len(sentences) == 4
+    assert "6 cells, level 1.0, center (6,11), extent 2x3" in sentences[0]
+    assert "4 cells, level 1.0, center (40,40), extent 2x2" in sentences[1]
+    assert sentences[0].split(":")[0] == sentences[1].split(":")[0]
+    assert "100 cells, level 0.6, center (20,24), extent 10x10" in sentences[2]
+    assert sentences[3].startswith("heading: (0.00,1.00)")
 
 
 def test_tokenizer_and_encoder():
-    tokenizer = MapTextTokenizer("bert_config/bert-base-uncased", max_length=32)
-    ids = tokenizer(["object chair: 3 cells, center (12,30), extent 2x2", "heading: (0.00,1.00)"])
-    assert ids.shape == (2, 32) and ids[0, 0].item() == 101 and (ids == 1).any()
+    tokenizer = MapTextTokenizer("bert_config/xlm-roberta-base", max_length=32)
+    ids = tokenizer(["object chair: 3 cells, level 1.0, center (12,30), extent 2x2", "heading: (0.00,1.00)"])
+    assert ids.shape == (2, 32) and ids[0, 0].item() == 0 and (ids == 1).any()
+    assert tokenizer.tokenizer.decode(ids[0][ids[0] != 1], skip_special_tokens=True).startswith("object chair")
 
     hidden = 16
     bert = _VlnBert(hidden)
