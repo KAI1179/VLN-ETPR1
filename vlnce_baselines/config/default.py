@@ -293,6 +293,13 @@ _C.MODEL.MAP_ENCODER.reinit_spatial_tokenizer = False
 #   none | metadata_only (zero raster) | raster_only (zero all metadata)
 #   | no_direction (zero the five route direction vectors only)
 _C.MODEL.MAP_ENCODER.map_ablation = "none"
+# Form of the cognitive map given to the policy: "raster" (dense 37-channel
+# grid through EmbeddingGridMapEncoder) or "text" (one sentence per entity
+# through a frozen instruction-encoder copy, text_map_encoder.py; the raster
+# encoder is not built). text_scale downsamples the grid before serialising
+# (2 -> 50x50 cells).
+_C.MODEL.MAP_ENCODER.input_form = "raster"
+_C.MODEL.MAP_ENCODER.text_scale = 2
 # Multiply start_position before the map encoder (online GT maps store grid
 # cells = 2x metres; cached GT/LLM maps store metres).
 _C.MODEL.MAP_ENCODER.start_position_scale = 1.0

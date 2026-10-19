@@ -26,6 +26,7 @@ from habitat_baselines.rl.ppo.policy import Net
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
 from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
+from vlnce_baselines.models.etp_prior_gt.text_map_encoder import TextMapEncoder
 from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
 from vlnce_baselines.models.encoders.resnet_encoders import (
     VlnResnetDepthEncoder,
@@ -165,7 +166,31 @@ class ETP_PriorGT(Net):
         self.map_encoder_enabled = map_cfg is not None and getattr(
             map_cfg, "enabled", False
         )
-        if self.map_encoder_enabled:
+        self.map_input_form = (
+            getattr(map_cfg, "input_form", "raster") if self.map_encoder_enabled else "raster"
+        )
+        if self.map_input_form not in ("raster", "text"):
+            raise ValueError(
+                f"MODEL.MAP_ENCODER.input_form must be raster or text, got {self.map_input_form!r}"
+            )
+        if self.map_encoder_enabled and self.map_input_form == "text":
+            # Text-form ablation: no raster encoder at all; entity sentences
+            # through a frozen copy of the instruction encoder (see
+            # text_map_encoder.py). Fusion is unchanged.
+            assert not getattr(map_cfg, "coordinate_fusion", False), (
+                "input_form text has no raster to localise nodes on; set coordinate_fusion False"
+            )
+            map_hidden_size = self.vln_bert.config.hidden_size
+            self.text_map_encoder = TextMapEncoder(
+                self.vln_bert,
+                map_hidden_size,
+                task_type=2 if getattr(model_config, "task_type", "r2r") == "rxr" else 1,
+            )
+            print(
+                "  Map encoder enabled (input_form text): frozen instruction-encoder copy "
+                f"-> entity tokens (N+1, {map_hidden_size}); raster encoder not built"
+            )
+        elif self.map_encoder_enabled:
             map_hidden_size = self.vln_bert.config.hidden_size
             self.map_encoder = EmbeddingGridMapEncoder(
                 hidden_size=map_hidden_size,
@@ -279,6 +304,8 @@ class ETP_PriorGT(Net):
         map_tokens=None,
         map_token_masks=None,
         gmap_map_coords=None,
+        map_text_ids=None,
+        map_text_masks=None,
     ):
 
         if mode == "language":
@@ -458,6 +485,13 @@ class ETP_PriorGT(Net):
             assert self.map_encoder_enabled, (
                 "map_encoding mode requires MAP_ENCODER.enabled=True"
             )
+            if self.map_input_form == "text":
+                return self.text_map_encoder(
+                    map_text_ids,
+                    map_text_masks,
+                    start_direction_vectors,
+                    start_positions,
+                )
             return self.map_encoder(
                 cognitive_crops,
                 trajectory_keypoints,

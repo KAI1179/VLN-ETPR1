@@ -52,6 +52,10 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
     world_to_map_cells,
 )
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+from vlnce_baselines.models.etp_prior_gt.text_map_encoder import (
+    MapTextTokenizer,
+    map_text_entities,
+)
 from vlnce_baselines.models.etp_prior_gt.nan_guard import (
     NonFiniteOutputGuard,
     assert_finite_parameters,
@@ -1446,6 +1450,34 @@ class RLTrainer(BaseVLNCETrainer):
         if start_position_scale != 1.0:
             start_positions = start_positions * start_position_scale
         ablation = getattr(map_cfg, "map_ablation", "none")
+        if getattr(map_cfg, "input_form", "raster") == "text":
+            # Text-form ablation: entity sentences instead of the raster; the
+            # direction vectors travel inside the heading sentence.
+            if ablation != "none":
+                raise ValueError("map_ablation is not supported with input_form text")
+            text_ids = [
+                cognitive_map["map_text_ids"]
+                for cognitive_map in cognitive_maps[: self.envs.num_envs]
+            ]
+            entity_count = max(ids.shape[0] for ids in text_ids)
+            token_len = text_ids[0].shape[1]
+            map_text_ids = torch.full(
+                (len(text_ids), entity_count, token_len), 1, dtype=torch.long
+            )
+            map_text_masks = torch.zeros(len(text_ids), entity_count, dtype=torch.bool)
+            for i, ids in enumerate(text_ids):
+                map_text_ids[i, : ids.shape[0]] = ids
+                map_text_masks[i, : ids.shape[0]] = True
+            map_tokens, map_token_masks = self.policy.net(
+                mode="map_encoding",
+                map_text_ids=map_text_ids.to(self.device),
+                map_text_masks=map_text_masks.to(self.device),
+                start_direction_vectors=start_direction_vectors,
+                start_positions=start_positions,
+            )
+            nav_inputs["map_tokens"] = map_tokens
+            nav_inputs["map_token_masks"] = map_token_masks
+            return None
         if ablation == "metadata_only":
             cognitive_crops = torch.zeros_like(cognitive_crops)
         elif ablation == "raster_only":
@@ -1686,7 +1718,7 @@ class RLTrainer(BaseVLNCETrainer):
             map_cfg.architecture,
             map_cfg.source,
         )
-        return [
+        cognitive_maps = [
             cached_cognitive_map_to_tensors(
                 ep.scene_id,
                 self._cognitive_map_cache_id(ep),
@@ -1696,6 +1728,23 @@ class RLTrainer(BaseVLNCETrainer):
             )
             for ep in self.envs.current_episodes()
         ]
+        if getattr(map_cfg, "input_form", "raster") == "text":
+            self._attach_map_text_ids(cognitive_maps, map_cfg)
+        return cognitive_maps
+
+    def _attach_map_text_ids(self, cognitive_maps, map_cfg):
+        """input_form text: serialise each map once per episode into entity
+        sentences and store their word-piece ids (N, L) under map_text_ids."""
+        if getattr(self, "_map_text_tokenizer", None) is None:
+            self._map_text_tokenizer = MapTextTokenizer("bert_config/bert-base-uncased")
+        scale = int(getattr(map_cfg, "text_scale", 2))
+        for cognitive_map in cognitive_maps:
+            sentences = map_text_entities(
+                cognitive_map["grid"].numpy(),
+                cognitive_map["map_trajectory_metadata"].numpy(),
+                scale=scale,
+            )
+            cognitive_map["map_text_ids"] = self._map_text_tokenizer(sentences)
 
     def _prepare_eval_episodes_allowed(self, episodes_allowed):
         return episodes_allowed
