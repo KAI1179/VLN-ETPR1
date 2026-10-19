@@ -38,16 +38,44 @@ def _downsample_max(grid: NDArray[np.float32], scale: int) -> NDArray[np.float32
     return grid.reshape(channels, rows // scale, scale, cols // scale, scale).max(axis=(2, 4))
 
 
+def _connected_components(mask: NDArray[np.bool_]) -> List[NDArray[np.int64]]:
+    """8-connected components of a 2-D mask, each as an (n, 2) array of cells,
+    ordered by their first cell in row-major order."""
+    rows, cols = mask.shape
+    seen = np.zeros_like(mask, dtype=bool)
+    components = []
+    for r0, c0 in np.argwhere(mask):
+        if seen[r0, c0]:
+            continue
+        stack = [(int(r0), int(c0))]
+        seen[r0, c0] = True
+        cells = []
+        while stack:
+            r, c = stack.pop()
+            cells.append((r, c))
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < rows and 0 <= cc < cols and mask[rr, cc] and not seen[rr, cc]:
+                        seen[rr, cc] = True
+                        stack.append((rr, cc))
+        components.append(np.array(sorted(cells), dtype=np.int64))
+    return components
+
+
 def map_text_entities(
     grid: ArrayLike,
     direction_vectors: ArrayLike,
     scale: int = 2,
 ) -> List[str]:
-    """One sentence per nonzero category plus one heading sentence.
+    """One sentence per connected component of every nonzero category (an
+    instance), plus one heading sentence.
 
     Coordinates are on the downsampled grid (scale 2 -> 50x50 cells, the LLM
-    output resolution). Example:
-    ``region hallway: 23 cells, center (14,27), extent 6x11``.
+    output resolution); the cell value level of the component is kept (the
+    legacy cache uses 0.6 and 1.0). Example:
+    ``region hallway: 23 cells, level 1.0, center (14,27), extent 6x11``.
+    What is not kept is the exact shape inside a component's bounding box.
     """
     sampled = _downsample_max(np.asarray(grid, dtype=np.float32), scale)
     directions = np.asarray(direction_vectors, dtype=np.float32)
@@ -55,20 +83,22 @@ def map_text_entities(
         raise ValueError(f"direction_vectors must be (5, 2), got {directions.shape}")
     sentences: List[str] = []
     for category in range(sampled.shape[0]):
-        cells = np.argwhere(sampled[category] > 0)
-        if len(cells) == 0:
+        channel = sampled[category]
+        if not (channel > 0).any():
             continue
         if category < OBJECT_CATEGORIES:
             kind, name = "object", MAPPED_OBJECT_NAMES[category]
         else:
             kind, name = "region", MAPPED_REGION_NAMES[category - OBJECT_CATEGORIES]
-        center = cells.mean(axis=0)
-        extent = cells.max(axis=0) - cells.min(axis=0) + 1
-        sentences.append(
-            f"{kind} {name.replace('_', ' ')}: {len(cells)} cells, "
-            f"center ({int(round(center[0]))},{int(round(center[1]))}), "
-            f"extent {int(extent[0])}x{int(extent[1])}"
-        )
+        for cells in _connected_components(channel > 0):
+            center = cells.mean(axis=0)
+            extent = cells.max(axis=0) - cells.min(axis=0) + 1
+            level = float(channel[cells[:, 0], cells[:, 1]].max())
+            sentences.append(
+                f"{kind} {name.replace('_', ' ')}: {len(cells)} cells, level {level:.1f}, "
+                f"center ({int(round(center[0]))},{int(round(center[1]))}), "
+                f"extent {int(extent[0])}x{int(extent[1])}"
+            )
     heading = " ".join(
         f"({v[0]:.{HEADING_DECIMALS}f},{v[1]:.{HEADING_DECIMALS}f})" for v in directions
     )
@@ -77,16 +107,19 @@ def map_text_entities(
 
 
 class MapTextTokenizer:
-    """BERT word-piece ids for entity sentences, [CLS] ... [SEP], padded."""
+    """Entity sentences -> ids of the instruction encoder's own tokenizer
+    (XLM-R, bert_config/xlm-roberta-base: <s>=0 ... </s>=2, pad=1), padded."""
 
-    def __init__(self, vocab_dir: str, pad_id: int = 1, max_length: int = MAX_ENTITY_TOKENS):
-        from transformers import BertTokenizer
+    def __init__(self, tokenizer_dir: str, max_length: int = MAX_ENTITY_TOKENS):
+        from transformers import AutoTokenizer
 
-        self.tokenizer = BertTokenizer.from_pretrained(vocab_dir)
-        self.pad_id = pad_id
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
+        self.pad_id = self.tokenizer.pad_token_id
         self.max_length = max_length
         self.cls_id = self.tokenizer.cls_token_id
         self.sep_id = self.tokenizer.sep_token_id
+        if self.pad_id != 1:
+            raise ValueError(f"expected the XLM-R pad id 1 (instruction pad), got {self.pad_id}")
 
     def __call__(self, sentences: Sequence[str]) -> torch.Tensor:
         """(N, max_length) long tensor, one row per sentence."""

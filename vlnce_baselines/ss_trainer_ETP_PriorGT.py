@@ -1736,7 +1736,7 @@ class RLTrainer(BaseVLNCETrainer):
         """input_form text: serialise each map once per episode into entity
         sentences and store their word-piece ids (N, L) under map_text_ids."""
         if getattr(self, "_map_text_tokenizer", None) is None:
-            self._map_text_tokenizer = MapTextTokenizer("bert_config/bert-base-uncased")
+            self._map_text_tokenizer = MapTextTokenizer("bert_config/xlm-roberta-base")
         scale = int(getattr(map_cfg, "text_scale", 2))
         for cognitive_map in cognitive_maps:
             sentences = map_text_entities(
