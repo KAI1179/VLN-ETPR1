@@ -1,0 +1,205 @@
+From 9f614509e30a3034c03a0287a94dd6fb1bebceef Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 19 Oct 2026 03:44:04 -0600
+Subject: [PATCH] input_form text: XLM-R tokenizer; one sentence per instance
+ with value level
+
+Two fixes to 0076 found in review on WZ, before any training:
+
+- Tokenizer: the instruction encoder is XLM-R (vlnbert_init.py builds it
+  from bert_config/xlm-roberta-base; instructions are padded with 1). 0076
+  tokenised map sentences with BERT, whose ids index unrelated XLM-R word
+  pieces. MapTextTokenizer now loads bert_config/xlm-roberta-base with
+  AutoTokenizer (local files only; <s>=0, </s>=2, pad=1, checked).
+- Content: one sentence per category merged every instance and dropped the
+  cell value. Sentences are now one per 8-connected component (instance) of
+  each nonzero channel on the downsampled grid, with its cell count, value
+  level (legacy cache: 0.6 / 1.0), center and extent. The remaining loss
+  versus the raster is the exact shape inside each instance's bounding box.
+
+On the R2R_val_unseen_895 GT map: 30 sentences, at most 40 tokens each.
+Raster path unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SR8CphP4Ry2wrhgxBHNCQs
+---
+ tests/test_text_map_encoder.py                | 22 +++---
+ .../models/etp_prior_gt/text_map_encoder.py   | 67 ++++++++++++++-----
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     |  2 +-
+ 3 files changed, 64 insertions(+), 27 deletions(-)
+
+diff --git a/tests/test_text_map_encoder.py b/tests/test_text_map_encoder.py
+index 4214dab..2140491 100644
+--- a/tests/test_text_map_encoder.py
++++ b/tests/test_text_map_encoder.py
+@@ -14,7 +14,7 @@ from vlnce_baselines.models.etp_prior_gt.text_map_encoder import (
+ class _Embeddings(nn.Module):
+     def __init__(self, hidden):
+         super().__init__()
+-        self.word = nn.Embedding(30522, hidden)
++        self.word = nn.Embedding(250002, hidden)
+ 
+     def forward(self, input_ids, txt_task_encoding, token_type_ids=None):
+         return self.word(input_ids) + txt_task_encoding.unsqueeze(-1).float()
+@@ -38,7 +38,8 @@ class _VlnBert(nn.Module):
+ 
+ def _grid():
+     grid = np.zeros((37, 100, 100), dtype=np.float32)
+-    grid[2, 10:14, 20:26] = 1.0  # object
++    grid[2, 10:14, 20:26] = 1.0  # object, instance 1
++    grid[2, 80:84, 80:84] = 1.0  # object, instance 2 (same category)
+     grid[30, 30:50, 40:60] = 0.6  # region (channels >= 27)
+     return grid
+ 
+@@ -46,16 +47,19 @@ def _grid():
+ def test_entities_sentences():
+     directions = np.array([[0, 1], [1, 0], [0, -1], [-1, 0], [0, 1]], dtype=np.float32)
+     sentences = map_text_entities(_grid(), directions, scale=2)
+-    assert len(sentences) == 3
+-    assert sentences[0].startswith("object ") and "6 cells, center (6,11), extent 2x3" in sentences[0]
+-    assert sentences[1].startswith("region ") and "100 cells, center (20,24), extent 10x10" in sentences[1]
+-    assert sentences[2].startswith("heading: (0.00,1.00)")
++    assert len(sentences) == 4
++    assert "6 cells, level 1.0, center (6,11), extent 2x3" in sentences[0]
++    assert "4 cells, level 1.0, center (40,40), extent 2x2" in sentences[1]
++    assert sentences[0].split(":")[0] == sentences[1].split(":")[0]
++    assert "100 cells, level 0.6, center (20,24), extent 10x10" in sentences[2]
++    assert sentences[3].startswith("heading: (0.00,1.00)")
+ 
+ 
+ def test_tokenizer_and_encoder():
+-    tokenizer = MapTextTokenizer("bert_config/bert-base-uncased", max_length=32)
+-    ids = tokenizer(["object chair: 3 cells, center (12,30), extent 2x2", "heading: (0.00,1.00)"])
+-    assert ids.shape == (2, 32) and ids[0, 0].item() == 101 and (ids == 1).any()
++    tokenizer = MapTextTokenizer("bert_config/xlm-roberta-base", max_length=32)
++    ids = tokenizer(["object chair: 3 cells, level 1.0, center (12,30), extent 2x2", "heading: (0.00,1.00)"])
++    assert ids.shape == (2, 32) and ids[0, 0].item() == 0 and (ids == 1).any()
++    assert tokenizer.tokenizer.decode(ids[0][ids[0] != 1], skip_special_tokens=True).startswith("object chair")
+ 
+     hidden = 16
+     bert = _VlnBert(hidden)
+diff --git a/vlnce_baselines/models/etp_prior_gt/text_map_encoder.py b/vlnce_baselines/models/etp_prior_gt/text_map_encoder.py
+index 6d7f555..6dec0e6 100644
+--- a/vlnce_baselines/models/etp_prior_gt/text_map_encoder.py
++++ b/vlnce_baselines/models/etp_prior_gt/text_map_encoder.py
+@@ -38,16 +38,44 @@ def _downsample_max(grid: NDArray[np.float32], scale: int) -> NDArray[np.float32
+     return grid.reshape(channels, rows // scale, scale, cols // scale, scale).max(axis=(2, 4))
+ 
+ 
++def _connected_components(mask: NDArray[np.bool_]) -> List[NDArray[np.int64]]:
++    """8-connected components of a 2-D mask, each as an (n, 2) array of cells,
++    ordered by their first cell in row-major order."""
++    rows, cols = mask.shape
++    seen = np.zeros_like(mask, dtype=bool)
++    components = []
++    for r0, c0 in np.argwhere(mask):
++        if seen[r0, c0]:
++            continue
++        stack = [(int(r0), int(c0))]
++        seen[r0, c0] = True
++        cells = []
++        while stack:
++            r, c = stack.pop()
++            cells.append((r, c))
++            for dr in (-1, 0, 1):
++                for dc in (-1, 0, 1):
++                    rr, cc = r + dr, c + dc
++                    if 0 <= rr < rows and 0 <= cc < cols and mask[rr, cc] and not seen[rr, cc]:
++                        seen[rr, cc] = True
++                        stack.append((rr, cc))
++        components.append(np.array(sorted(cells), dtype=np.int64))
++    return components
++
++
+ def map_text_entities(
+     grid: ArrayLike,
+     direction_vectors: ArrayLike,
+     scale: int = 2,
+ ) -> List[str]:
+-    """One sentence per nonzero category plus one heading sentence.
++    """One sentence per connected component of every nonzero category (an
++    instance), plus one heading sentence.
+ 
+     Coordinates are on the downsampled grid (scale 2 -> 50x50 cells, the LLM
+-    output resolution). Example:
+-    ``region hallway: 23 cells, center (14,27), extent 6x11``.
++    output resolution); the cell value level of the component is kept (the
++    legacy cache uses 0.6 and 1.0). Example:
++    ``region hallway: 23 cells, level 1.0, center (14,27), extent 6x11``.
++    What is not kept is the exact shape inside a component's bounding box.
+     """
+     sampled = _downsample_max(np.asarray(grid, dtype=np.float32), scale)
+     directions = np.asarray(direction_vectors, dtype=np.float32)
+@@ -55,20 +83,22 @@ def map_text_entities(
+         raise ValueError(f"direction_vectors must be (5, 2), got {directions.shape}")
+     sentences: List[str] = []
+     for category in range(sampled.shape[0]):
+-        cells = np.argwhere(sampled[category] > 0)
+-        if len(cells) == 0:
++        channel = sampled[category]
++        if not (channel > 0).any():
+             continue
+         if category < OBJECT_CATEGORIES:
+             kind, name = "object", MAPPED_OBJECT_NAMES[category]
+         else:
+             kind, name = "region", MAPPED_REGION_NAMES[category - OBJECT_CATEGORIES]
+-        center = cells.mean(axis=0)
+-        extent = cells.max(axis=0) - cells.min(axis=0) + 1
+-        sentences.append(
+-            f"{kind} {name.replace('_', ' ')}: {len(cells)} cells, "
+-            f"center ({int(round(center[0]))},{int(round(center[1]))}), "
+-            f"extent {int(extent[0])}x{int(extent[1])}"
+-        )
++        for cells in _connected_components(channel > 0):
++            center = cells.mean(axis=0)
++            extent = cells.max(axis=0) - cells.min(axis=0) + 1
++            level = float(channel[cells[:, 0], cells[:, 1]].max())
++            sentences.append(
++                f"{kind} {name.replace('_', ' ')}: {len(cells)} cells, level {level:.1f}, "
++                f"center ({int(round(center[0]))},{int(round(center[1]))}), "
++                f"extent {int(extent[0])}x{int(extent[1])}"
++            )
+     heading = " ".join(
+         f"({v[0]:.{HEADING_DECIMALS}f},{v[1]:.{HEADING_DECIMALS}f})" for v in directions
+     )
+@@ -77,16 +107,19 @@ def map_text_entities(
+ 
+ 
+ class MapTextTokenizer:
+-    """BERT word-piece ids for entity sentences, [CLS] ... [SEP], padded."""
++    """Entity sentences -> ids of the instruction encoder's own tokenizer
++    (XLM-R, bert_config/xlm-roberta-base: <s>=0 ... </s>=2, pad=1), padded."""
+ 
+-    def __init__(self, vocab_dir: str, pad_id: int = 1, max_length: int = MAX_ENTITY_TOKENS):
+-        from transformers import BertTokenizer
++    def __init__(self, tokenizer_dir: str, max_length: int = MAX_ENTITY_TOKENS):
++        from transformers import AutoTokenizer
+ 
+-        self.tokenizer = BertTokenizer.from_pretrained(vocab_dir)
+-        self.pad_id = pad_id
++        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
++        self.pad_id = self.tokenizer.pad_token_id
+         self.max_length = max_length
+         self.cls_id = self.tokenizer.cls_token_id
+         self.sep_id = self.tokenizer.sep_token_id
++        if self.pad_id != 1:
++            raise ValueError(f"expected the XLM-R pad id 1 (instruction pad), got {self.pad_id}")
+ 
+     def __call__(self, sentences: Sequence[str]) -> torch.Tensor:
+         """(N, max_length) long tensor, one row per sentence."""
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index a7ba459..87ee105 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1736,7 +1736,7 @@ class RLTrainer(BaseVLNCETrainer):
+         """input_form text: serialise each map once per episode into entity
+         sentences and store their word-piece ids (N, L) under map_text_ids."""
+         if getattr(self, "_map_text_tokenizer", None) is None:
+-            self._map_text_tokenizer = MapTextTokenizer("bert_config/bert-base-uncased")
++            self._map_text_tokenizer = MapTextTokenizer("bert_config/xlm-roberta-base")
+         scale = int(getattr(map_cfg, "text_scale", 2))
+         for cognitive_map in cognitive_maps:
+             sentences = map_text_entities(
+-- 
+2.43.0
+
