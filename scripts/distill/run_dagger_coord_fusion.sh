@@ -35,7 +35,7 @@ DRY_RUN_ARGS=()
 if [[ "${2:-}" == "--dry-run" ]]; then
     DRY_RUN_ARGS=(--dry-run)
 elif [[ $# -ne 1 ]]; then
-    echo "Usage: bash scripts/distill/run_dagger_coord_fusion.sh {gt|llm} [--dry-run]" >&2
+    echo "Usage: bash scripts/distill/run_dagger_coord_fusion.sh {gt|llm|gt_legacy} [--dry-run]" >&2
     exit 2
 fi
 COORD="${COORD:-True}"
@@ -50,6 +50,14 @@ case "${COORD}" in True|False) ;; *) echo "COORD must be True or False" >&2; exi
 MAP_ABLATION="${MAP_ABLATION:-none}"
 MAP_ABLATION_ARGS=()
 [[ "${MAP_ABLATION}" == "none" ]] || MAP_ABLATION_ARGS=(MODEL.MAP_ENCODER.map_ablation "${MAP_ABLATION}")
+# INPUT_FORM=text replaces the raster map encoder with entity sentences
+# through a frozen instruction-encoder copy (MODEL.MAP_ENCODER.input_form,
+# text_map_encoder.py); map modules cannot be loaded from pretraining then.
+# Written to eval_args.txt like the other model options. Suffix _text.
+INPUT_FORM="${INPUT_FORM:-raster}"
+case "${INPUT_FORM}" in raster|text) ;; *) echo "INPUT_FORM must be raster or text" >&2; exit 2 ;; esac
+INPUT_FORM_ARGS=()
+[[ "${INPUT_FORM}" == "raster" ]] || INPUT_FORM_ARGS=(MODEL.MAP_ENCODER.input_form text)
 
 case "${ARM}" in
     gt)
@@ -70,7 +78,20 @@ case "${ARM}" in
             MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
             MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
         ) ;;
-    *) echo "ARM must be gt or llm" >&2; exit 2 ;;
+    gt_legacy)
+        # The 18600 recipe (440000 pretrain, legacy GT cache, dy). On this
+        # launcher map modules are never loaded from pretraining, so the
+        # raster control for this arm is the 18600 checkpoint itself
+        # (68.41); the arm exists here for INPUT_FORM=text.
+        PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/model_step_440000.pt}"
+        ARM_ARGS=(
+            TRAINER_NAME SS-ETP-PriorGT
+            MODEL.policy_name PriorGTTry5Policy
+            MODEL.MAP_ENCODER.source prior_gt
+            MODEL.MAP_ENCODER.cache_namespace gt.legacy.r1p5.direction5.v1
+            MODEL.MAP_ENCODER.start_position_meters_per_unit 1.0
+        ) ;;
+    *) echo "ARM must be gt, llm or gt_legacy" >&2; exit 2 ;;
 esac
 [[ -f "${PRETRAINED_CKPT}" ]] || { echo "Missing pretraining checkpoint ${PRETRAINED_CKPT}" >&2; exit 1; }
 grep -q "coordinate_fusion" "${REPO_ROOT}/vlnce_baselines/config/default.py" \
@@ -85,6 +106,7 @@ MODEL_ARGS=(
     MODEL.MAP_ENCODER.coordinate_fusion "${COORD}"
     MODEL.elevation_axis y
     "${MAP_ABLATION_ARGS[@]}"
+    "${INPUT_FORM_ARGS[@]}"
     MODEL.pretrained_path "${PRETRAINED_CKPT}"
 )
 
@@ -102,6 +124,7 @@ if [[ -z "${RUN_NAME:-}" ]]; then
     RUN_NAME="dagger_coordfusion_${ARM}"
     [[ "${COORD}" == "False" ]] && RUN_NAME="dagger_nocoord_${ARM}"
     [[ "${MAP_ABLATION}" == "none" ]] || RUN_NAME="${RUN_NAME}_${MAP_ABLATION}"
+    [[ "${INPUT_FORM}" == "raster" ]] || RUN_NAME="${RUN_NAME}_${INPUT_FORM}"
 fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
@@ -155,7 +178,7 @@ COMMAND=(
 {
     echo "launch_time=$(date -Is)"
     echo "git_commit=$(git rev-parse HEAD)"
-    echo "arm=${ARM} coordinate_fusion=${COORD} map_ablation=${MAP_ABLATION}"
+    echo "arm=${ARM} coordinate_fusion=${COORD} map_ablation=${MAP_ABLATION} input_form=${INPUT_FORM}"
     echo "resume_from=${LATEST_CKPT:-none}"
     echo "pretrained=${PRETRAINED_CKPT}"
     echo "iters=${ITERS}"
