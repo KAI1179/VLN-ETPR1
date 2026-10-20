@@ -13,6 +13,7 @@ import gzip
 import json
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List
 
@@ -32,6 +33,7 @@ class Args(Tap):
     translated_key: str = "llm-grid-rxr-translated-hi-te-grid2-epoch10-v1"
     merged_key: str = "llm-grid-rxr-all-en-tagfree-hite-translated-v1"
     splits: List[str] = ["train", "val_seen", "val_unseen"]
+    workers: int = 32
 
 
 def _link(src: Path, dst: Path) -> bool:
@@ -51,22 +53,30 @@ def main():
     for split in args.splits:
         with gzip.open(RxR_DIR / split / f"{split}_guide.json.gz", "rt") as stream:
             episodes = json.load(stream)["episodes"]
-        linked, missing, created = Counter(), Counter(), 0
-        for ep in episodes:
+        def one(ep):
             lang = ep["instruction"]["language"]
             key = args.en_key if lang.startswith("en-") else args.translated_key
             cache_id = f"RxR_{split}_{ep['episode_id']}"
             scene = ep["scene_id"]
             if not llm_navigation_cache_complete(scene, cache_id, "rxr", split,
                                                  cache_dir=cache_dir, model_key=key):
-                missing[lang] += 1
-                continue
+                return lang, False, 0
+            made = 0
             for path_fn in (llm_navigation_cognitive_map_raster_path, llm_navigation_status_path):
                 src = path_fn(scene, cache_id, "rxr", split, cache_dir=cache_dir, model_key=key)
                 dst = path_fn(scene, cache_id, "rxr", split, cache_dir=cache_dir,
                               model_key=args.merged_key)
-                created += _link(src.resolve(), dst)
-            linked[lang] += 1
+                made += _link(src, dst)
+            return lang, True, made
+
+        linked, missing, created = Counter(), Counter(), 0
+        # Network filesystem: the work is latency-bound, threads overlap it.
+        with ThreadPoolExecutor(args.workers) as pool:
+            for n, (lang, ok, made) in enumerate(pool.map(one, episodes), 1):
+                (linked if ok else missing)[lang] += 1
+                created += made
+                if n % 5000 == 0 or n == len(episodes):
+                    print(f"  {split}: {n}/{len(episodes)} episodes", flush=True)
         summary[split] = {"linked": dict(linked), "missing": dict(missing), "new_links": created}
         print(split, json.dumps(summary[split]), flush=True)
     out = cache_dir / args.merged_key / "rxr" / "merge_manifest.json"

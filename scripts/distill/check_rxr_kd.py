@@ -19,6 +19,7 @@ import subprocess
 import sys
 import traceback
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,6 +98,17 @@ def guarded(title):
                 return None
         return run
     return wrap
+
+
+def _pmap(fn, items, label, workers=32):
+    """Thread-pool map in input order with progress (network filesystem: latency-bound)."""
+    out = []
+    with ThreadPoolExecutor(workers) as pool:
+        for n, r in enumerate(pool.map(fn, items), 1):
+            out.append(r)
+            if n % 5000 == 0 or n == len(items):
+                print(f"       {label}: {n}/{len(items)}", flush=True)
+    return out
 
 
 # ----------------------------------------------------------------- code
@@ -274,6 +286,7 @@ def check_maps(s, max_load):
     R.section(f"[{s.name}] student LLM maps / teacher GT maps")
     cfg, eps, E = s.cfg, s.episodes, s.env
     trainer = SimpleNamespace(config=cfg)
+    R.info(f"scanning LLM status files for {len(eps)} episodes (trainer allow-list, sequential) ...")
     allowed = LLMTrainer._finetuning_episodes_allowed(trainer)  # the trainer's own allow-list
     final = [e for e in map(str, allowed) if e in eps]
     lang = lambda e: eps[e]["instruction"]["language"]
@@ -284,20 +297,22 @@ def check_maps(s, max_load):
 
     cache_id = lambda e: LLMTrainer._cognitive_map_cache_id(trainer, SimpleNamespace(episode_id=e))
     ns = cfg.IL.gt_teacher_map_namespace
-    no_gt = [e for e in final if not cognitive_map_cache_path(eps[e]["scene_id"], cache_id(e), namespace=ns).is_file()]
+    R.info(f"checking teacher GT files for {len(final)} episodes ...")
+    gt_exists = _pmap(lambda e: cognitive_map_cache_path(eps[e]["scene_id"], cache_id(e), namespace=ns).is_file(),
+                      final, "teacher GT exists")
+    no_gt = [e for e, ok in zip(final, gt_exists) if not ok]
     R.check(not no_gt, f"teacher GT map exists for every trained episode (missing {len(no_gt)}"
             + (f", first {no_gt[:10]})" if no_gt else ")"))
 
     me = cfg.MODEL.MAP_ENCODER
     cache_dir = me.llm_cache_dir or None
     if s.name == "all":
-        wrong = []
-        for e in final:
+        def link_ok(e):
             src = navigation.llm_navigation_cognitive_map_raster_path(
                 eps[e]["scene_id"], cache_id(e), "rxr", "train", cache_dir=cache_dir, model_key=me.llm_cache_model_key)
             want = E["LLM_EN_KEY"] if lang(e).startswith("en-") else E["LLM_TRANSLATED_KEY"]
-            if f"/{want}/" not in os.path.realpath(src):
-                wrong.append(e)
+            return f"/{want}/" in os.readlink(src) if src.is_symlink() else False
+        wrong = [e for e, ok in zip(final, _pmap(link_ok, final, "merged links")) if not ok]
         R.check(not wrong, f"merged key links: en-* -> {E['LLM_EN_KEY']}, others -> {E['LLM_TRANSLATED_KEY']}"
                 + (f" (wrong {len(wrong)}, first {wrong[:5]})" if wrong else ""))
 
@@ -310,10 +325,10 @@ def check_maps(s, max_load):
         todo = todo[:max_load]
     shapes, bad, stats = {}, [], defaultdict(list)
     samples = {}
-    for n, e in enumerate(todo, 1):
+    def load(e):
         sc = eps[e]["scene_id"]
         try:
-            pair = {
+            return {
                 "student": navigation.llm_cached_cognitive_map_to_tensors(
                     sc, cache_id(e), "rxr", "train", metadata_schema=s_schema,
                     cache_dir=cache_dir, model_key=me.llm_cache_model_key),
@@ -321,7 +336,12 @@ def check_maps(s, max_load):
                     sc, cache_id(e), namespace=ns, metadata_schema=t_schema),
             }
         except Exception as exc:
-            bad.append((e, f"{type(exc).__name__}: {exc}"))
+            return f"{type(exc).__name__}: {exc}"
+
+    R.info(f"loading {len(todo)} student+teacher map pairs ...")
+    for e, pair in zip(todo, _pmap(load, todo, "maps loaded")):
+        if isinstance(pair, str):
+            bad.append((e, pair))
             continue
         for who, m in pair.items():
             for k in MAP_KEYS:
@@ -331,8 +351,6 @@ def check_maps(s, max_load):
                     bad.append((e, f"{who}.{k} non-finite"))
             stats[(who, lang(e))].append(float((m["grid"] != 0).float().mean()))
         samples.setdefault(lang(e), (e, pair))
-        if n % 5000 == 0:
-            print(f"       loaded {n}/{len(todo)}", flush=True)
     R.check(not bad, f"loaded {len(todo)} student+teacher maps through the trainer loaders"
             + (f"; {len(bad)} bad, first {bad[:5]}" if bad else ""))
     for (who, k), shp in sorted(shapes.items()):
