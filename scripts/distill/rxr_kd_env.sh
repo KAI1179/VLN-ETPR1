@@ -5,9 +5,11 @@
 case "${SETTING:-}" in en|all) ;; *) echo "SETTING must be en or all" >&2; return 2 ;; esac
 : "${REPO_ROOT:?REPO_ROOT not set}"
 
-export GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${HOME}/run/ETP-R1/data/logs/checkpoints/priorgt_rxr_native_policy_translated_map_dagger/ckpt.iter15000.pth}"
+# The RxR GT teacher was trained in the partner repo's worktree (read-only use).
+TEACHER_WT="${TEACHER_WT:-${HOME}/run/ETP-R1/.worktrees/priorgt-rxr-native-policy-translated-map-dagger}"
+export GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${TEACHER_WT}/data/logs/checkpoints/priorgt_rxr_native_policy_translated_map_dagger/ckpt.iter15000.pth}"
 export GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.rxr-translated-mention-97525891.v1}"
-export TEACHER_NS_SRC="${TEACHER_NS_SRC:-${HOME}/run/ETP-R1/data/cognitive_maps/${GT_TEACHER_NAMESPACE}}"
+export TEACHER_NS_SRC="${TEACHER_NS_SRC:-${TEACHER_WT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}}"
 export GT_TEACHER_POLICY_NAME="${GT_TEACHER_POLICY_NAME:-PriorGTTry5Policy}"
 export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${HOME}/run/ETP-R1/pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt}"
 
