@@ -190,14 +190,18 @@ for key in distill_stop_factorized effect_match_weight gate_enabled gate_normali
         exit 2
     fi
 done
+# EMIT_OPTS=<file>: write the exact torchrun command (one argument per line)
+# and exit before touching the run directory; used by check_rxr_kd.sh, which
+# checks the files itself.
+if [[ -z "${EMIT_OPTS:-}" ]]; then
 [[ -f "${GT_TEACHER_CKPT}" ]] || { echo "Teacher checkpoint not found: ${GT_TEACHER_CKPT}" >&2; exit 1; }
 [[ -d "${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" ]] \
     || { echo "Teacher namespace not found: ${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" >&2; exit 1; }
+fi
 
 cd "${REPO_ROOT}"
 export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
 ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
-mkdir -p "${RUN_DIR}"
 
 RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
 LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
@@ -232,7 +236,7 @@ COMMAND=(
     IL.min_lr_ratio 1.0
     "${RESUME_ARGS[@]}"
     IL.waypoint_aug True
-    TASK_CONFIG.DATASET.SUFFIX "${DATASET_SUFFIX:-_90}"
+    TASK_CONFIG.DATASET.SUFFIX "${DATASET_SUFFIX-_90}"
     TRAINER_NAME SS-ETP-LLM
     MODEL.policy_name LLMGridTry5Policy
     MODEL.MAP_ENCODER.enabled True
@@ -257,6 +261,12 @@ COMMAND=(
     IL.gate_teacher_start_position_scale 1.0
     "${DISTILL_ARGS[@]}"
 )
+
+if [[ -n "${EMIT_OPTS:-}" ]]; then
+    printf '%s\n' "${COMMAND[@]}" > "${EMIT_OPTS}"
+    exit 0
+fi
+mkdir -p "${RUN_DIR}"
 
 {
     echo "launch_time=$(date -Is)"
