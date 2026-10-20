@@ -7,7 +7,7 @@ other language to the cache generated from translated instructions
 and the status record); the source caches are not modified.  Re-running is
 safe: correct links are kept, stale ones are replaced.
 
-  python scripts/distill/merge_rxr_llm_caches.py --cache-dir ~/ETP-R1/data/llm_navigation
+  python scripts/distill/merge_rxr_llm_caches.py --cache-dir ~/run/ETP-R1/data/llm_navigation
 """
 import gzip
 import json

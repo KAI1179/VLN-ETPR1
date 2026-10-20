@@ -11,7 +11,7 @@ export TEACHER_NS_SRC="${TEACHER_NS_SRC:-${HOME}/run/ETP-R1/data/cognitive_maps/
 export GT_TEACHER_POLICY_NAME="${GT_TEACHER_POLICY_NAME:-PriorGTTry5Policy}"
 export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${HOME}/run/ETP-R1/pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt}"
 
-export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${HOME}/ETP-R1/data/llm_navigation}"
+export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${HOME}/run/ETP-R1/data/llm_navigation}"
 export LLM_EN_KEY="${LLM_EN_KEY:-llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree}"
 export LLM_TRANSLATED_KEY="${LLM_TRANSLATED_KEY:-llm-grid-rxr-translated-hi-te-grid2-epoch10-v1}"
 export LLM_MERGED_KEY="${LLM_MERGED_KEY:-llm-grid-rxr-all-en-tagfree-hite-translated-v1}"
