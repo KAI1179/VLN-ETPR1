@@ -32,6 +32,11 @@ for s in ${SETTINGS:-en all}; do
     ARGS+=(--setting "${s}" "${TMP}/${s}.cmd" "${TMP}/${s}.env")
 done
 
+# ln01 kills login-node processes above 4 cores: one compute thread per
+# library, CHECK_WORKERS (default 3) I/O threads for the file scans.
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export CHECK_WORKERS="${CHECK_WORKERS:-3}"
+
 mkdir -p data/logs
 LOG="data/logs/check_rxr_kd_$(date +%Y%m%d_%H%M%S).log"
 set +e

@@ -22,6 +22,8 @@ else
     echo "linked ${NS_DST} -> ${TEACHER_NS_SRC}"
 fi
 
-CUDA_VISIBLE_DEVICES='' PYTHONPATH="${REPO_ROOT}" python "${REPO_ROOT}/scripts/distill/merge_rxr_llm_caches.py" \
+# ln01 kills login-node processes above 4 cores; the merge is I/O-bound.
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 CUDA_VISIBLE_DEVICES='' PYTHONPATH="${REPO_ROOT}" \
+    python "${REPO_ROOT}/scripts/distill/merge_rxr_llm_caches.py" --workers "${MERGE_WORKERS:-8}" \
     --cache-dir "${LLM_CACHE_DIR}" --en-key "${LLM_EN_KEY}" \
     --translated-key "${LLM_TRANSLATED_KEY}" --merged-key "${LLM_MERGED_KEY}"

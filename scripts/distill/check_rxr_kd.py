@@ -100,7 +100,7 @@ def guarded(title):
     return wrap
 
 
-def _pmap(fn, items, label, workers=32):
+def _pmap(fn, items, label, workers=int(os.environ.get("CHECK_WORKERS", "3"))):
     """Thread-pool map in input order with progress (network filesystem: latency-bound)."""
     out = []
     with ThreadPoolExecutor(workers) as pool:
@@ -518,6 +518,8 @@ def main():
     ap.add_argument("--max-load", type=int, default=0, help="0 = load every trained episode's maps")
     args = ap.parse_args()
     assert not torch.cuda.is_available(), "run with CUDA_VISIBLE_DEVICES=''"
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
     check_code()
     settings = [load_setting(*triple) for triple in args.setting]
