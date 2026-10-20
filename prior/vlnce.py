@@ -7,7 +7,7 @@ from gzip import open as gzip_open
 from itertools import islice
 from json import load
 from pathlib import Path
-from typing import Iterable, Iterator, Literal, Sequence, Tuple
+from typing import Iterable, Iterator, Literal, Optional, Sequence, Tuple
 
 from prior import R2R_DIR, RxR_DIR
 from prior.directions import DirectionVector, start_rotation_to_direction_vector
@@ -34,8 +34,14 @@ class VLNCEEpisodeEntry:
     def iter_from(
         dataset: Literal["R2R", "RxR"],
         splits: Iterable[str] = DEFAULT_SPLITS,
+        languages: Optional[Sequence[str]] = None,
     ) -> Iterator["VLNCEEpisodeEntry"]:
-        """Iterate R2R/RxR VLN-CE episodes with ground-truth trajectories."""
+        """Iterate R2R/RxR VLN-CE episodes with ground-truth trajectories.
+
+        ``languages`` None keeps English only (the LLM map generators' input);
+        otherwise it is a habitat ``DATASET.LANGUAGES`` list ("*" = all).
+        """
+        keep_all = languages is not None and "*" in languages
         for split in splits:
             data_path, gt_path = _files_for_split(dataset, split)
             if not data_path.exists():
@@ -51,7 +57,10 @@ class VLNCEEpisodeEntry:
             for episode in raw_data["episodes"]:
                 instruction_data = episode["instruction"]
                 language = instruction_data.get("language", "en-US")
-                if not language.startswith("en-"):
+                if languages is None:
+                    if not language.startswith("en-"):
+                        continue
+                elif not keep_all and language not in languages:
                     continue
 
                 episode_id = episode["episode_id"]

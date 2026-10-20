@@ -7,7 +7,9 @@ set -eo pipefail
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# sbatch runs a spooled copy of this file: submit from the repo root.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
+[[ -f "${REPO_ROOT}/run.py" ]] || { echo "submit from the repo root (got ${REPO_ROOT})" >&2; exit 1; }
 export TORCHRUN="$(command -v torchrun)"
 # Slurm normally exports the allocated ids; fall back to what the cgroup shows.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd,)}"

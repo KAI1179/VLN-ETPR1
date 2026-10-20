@@ -41,6 +41,7 @@ class RLTrainer(PriorGTGRPOTrainer):
                 "llm_train_reference_model_key",
                 "",
             ),
+            languages=list(self.config.TASK_CONFIG.DATASET.LANGUAGES),
         )
 
     def _build_cognitive_maps(self):

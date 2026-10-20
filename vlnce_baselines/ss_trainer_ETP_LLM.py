@@ -62,6 +62,7 @@ class RLTrainer(PriorGTRLTrainer):
                 "llm_train_reference_model_key",
                 "",
             ),
+            languages=list(self.config.TASK_CONFIG.DATASET.LANGUAGES),
         )
 
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
@@ -110,6 +111,7 @@ class RLTrainer(PriorGTRLTrainer):
             require_boxes=candidate.requires_box_targets,
             cache_dir=getattr(map_cfg, "llm_cache_dir", None),
             model_key=model_key,
+            languages=list(self.config.TASK_CONFIG.DATASET.LANGUAGES),
         )
         self._llm_eval_missing_cache_episode_ids = report.missing_episode_ids
         if report.missing_episode_ids:

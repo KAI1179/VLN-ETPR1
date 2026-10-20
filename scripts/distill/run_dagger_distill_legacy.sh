@@ -30,7 +30,8 @@
 # Resume: if data/logs/checkpoints/<RUN_NAME>/ckpt.iter*.pth exists the run
 # continues from the latest one; re-running after a crash is always safe.
 #
-# Env overrides: RUN_NAME (dagger_distill_legacy18600_<MODE>), ITERS (20000),
+# Env overrides: EXP_CONFIG, GT_TEACHER_NAMESPACE, GT_TEACHER_POLICY_NAME,
+# LLM_CACHE_KEY, LLM_CACHE_DIR (defaults = the R2R recipe), RUN_NAME (dagger_distill_legacy18600_<MODE>), ITERS (20000),
 # NUM_ENVS (4 per process; batch_donor needs >= 2), PRETRAINED_CKPT (460000),
 # LOAD_MAP (False: map modules train from initialisation, as the teacher's
 # did), GT_TEACHER_CKPT, EFFECT_WEIGHT (1.0), EFFECT_CF (batch_donor|zero),
@@ -85,8 +86,10 @@ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
 GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/priorgt-nogaussian-18600-20260929/ckpt.iter18600.pth}"
-GT_TEACHER_NAMESPACE="gt.legacy.r1p5.direction5.v1"
-GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
+GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.v1}"
+GT_TEACHER_POLICY_NAME="${GT_TEACHER_POLICY_NAME:-PriorGTTry5Policy}"
+LLM_CACHE_KEY="${LLM_CACHE_KEY:-llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree}"
+LLM_CACHE_DIR="${LLM_CACHE_DIR:-}"
 LOAD_MAP="${LOAD_MAP:-False}"
 
 EFFECT_WEIGHT="${EFFECT_WEIGHT:-1.0}"
@@ -229,13 +232,14 @@ COMMAND=(
     IL.min_lr_ratio 1.0
     "${RESUME_ARGS[@]}"
     IL.waypoint_aug True
-    TASK_CONFIG.DATASET.SUFFIX _90
+    TASK_CONFIG.DATASET.SUFFIX "${DATASET_SUFFIX:-_90}"
     TRAINER_NAME SS-ETP-LLM
     MODEL.policy_name LLMGridTry5Policy
     MODEL.MAP_ENCODER.enabled True
     MODEL.MAP_ENCODER.architecture try5
     MODEL.MAP_ENCODER.source llm_grid
-    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+    MODEL.MAP_ENCODER.llm_cache_model_key "${LLM_CACHE_KEY}"
+    MODEL.MAP_ENCODER.llm_cache_dir "${LLM_CACHE_DIR}"
     MODEL.MAP_ENCODER.refiner_ckpt ""
     MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
     MODEL.MAP_ENCODER.coordinate_fusion False
@@ -262,6 +266,8 @@ COMMAND=(
     echo "mode=${MODE}"
     echo "teacher=${GT_TEACHER_CKPT} (${GT_TEACHER_NAMESPACE}, dy)"
     echo "pretrained=${PRETRAINED_CKPT} load_pretrained_map_modules=${LOAD_MAP}"
+    echo "exp_config=${EXP_CONFIG:-${REPO_ROOT}/run_r2r/iter_train.yaml}"
+    echo "llm_cache=${LLM_CACHE_DIR:-<default>}/${LLM_CACHE_KEY}"
     echo "distill_args=${DISTILL_ARGS[*]}"
     echo "iters=${ITERS:-20000}"
     echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"

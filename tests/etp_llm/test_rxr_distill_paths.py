@@ -27,7 +27,7 @@ def test_episode_cache_id_preserves_canonical_dataset_case(trainer, dataset, pre
 def test_cache_report_accepts_rxr_and_keeps_r2r_behavior(monkeypatch, dataset, canonical):
     calls = []
 
-    def entries(name, splits):
+    def entries(name, splits, languages=None):
         calls.append((name, splits))
         return [SimpleNamespace(episode_id="42", scene_id="scene", unique_id=f"{canonical}_train_42")]
 

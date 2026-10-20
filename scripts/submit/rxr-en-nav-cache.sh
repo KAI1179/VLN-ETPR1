@@ -19,7 +19,9 @@ set -eo pipefail
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
 set -u
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# sbatch runs a spooled copy of this file: submit from the repo root.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
+[[ -f "${REPO_ROOT}/run.py" ]] || { echo "submit from the repo root (got ${REPO_ROOT})" >&2; exit 1; }
 cd "${REPO_ROOT}"
 MODEL="${LLM_LORA:-outputs/llm_grid/r2r-rxr-legacy-r1p5-direction5-s2-no-dataset-tag/checkpoints/final}"
 [[ -d "${MODEL}" ]] || { echo "LLM checkpoint not found: ${MODEL} (set LLM_LORA)" >&2; exit 1; }

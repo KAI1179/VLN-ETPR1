@@ -127,6 +127,18 @@ def test_vlnce_episode_entry_iter_from_skips_non_english_instructions(
 
     assert [entry.episode_id for entry in entries] == [12]
 
+    def ids(languages):
+        return [
+            e.episode_id
+            for e in vlnce.VLNCEEpisodeEntry.iter_from(
+                "RxR", splits=["val_seen"], languages=languages
+            )
+        ]
+
+    assert ids(["*"]) == [12, 13]
+    assert ids(["hi-IN"]) == [13]
+    assert ids(["en-US", "en-IN"]) == [12]
+
 
 def test_vlnce_episode_entry_iter_from_fails_when_gt_file_missing(
     tmp_path, monkeypatch

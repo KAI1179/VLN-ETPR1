@@ -1,0 +1,14 @@
+# Experiment-only overlay for the RxR-CE KD student (setting: all).
+# Existing R2R launchers keep their original profile.
+BASE_TASK_CONFIG_PATH: run_rxr/rxr_vlnce.yaml
+TASK_CONFIG:
+  DATASET:
+    LANGUAGES: ['*']
+    ROLES: [guide]
+EVAL:
+  LANGUAGES: ['*']
+IL:
+  max_traj_len: 25
+  max_text_len: 250
+MODEL:
+  task_type: rxr
