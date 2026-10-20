@@ -396,6 +396,10 @@ def _pretrain_coverage(net, path):
         k = k[7:] if k.startswith("module.") else k
         ckpt[k] = v
         ckpt["bert." + k] = v
+        # HF from_pretrained strips the base_model_prefix ("bert.") when the
+        # model has no `bert` attribute, so pretrain "bert.x" lands on "x".
+        if k.startswith("bert."):
+            ckpt.setdefault(k[len("bert."):], v)
     model = net.vln_bert.state_dict()
     loaded, missed = 0, Counter()
     for k, v in model.items():
@@ -417,8 +421,10 @@ def check_models(s):
     R.ok(f"student {cfg.MODEL.policy_name} builds "
          f"({sum(p.numel() for p in student.parameters()) / 1e6:.1f} M params)")
     loaded, total, missed = _pretrain_coverage(student.net, cfg.MODEL.pretrained_path)
-    R.check(loaded / total > 0.9, f"student vln_bert holds pretrain values in {loaded}/{total} tensors")
-    R.info(f"not from pretrain (expected: map fusion, fresh heads): {dict(missed.most_common(8))}")
+    unexpected_fresh = {k: n for k, n in missed.items() if not k.startswith("graph_map_attention")}
+    R.check(not unexpected_fresh,
+            f"student vln_bert holds pretrain values in {loaded}/{total} tensors; "
+            f"not from pretrain: {dict(missed.most_common(8))} (only graph_map_attention expected, LOAD_MAP False)")
     assert_finite_parameters(student, "student")
     R.ok("student parameters finite")
 
