@@ -30,7 +30,9 @@ export DATASET_SUFFIX="${DATASET_SUFFIX-_90}"
 export EXP_CONFIG="${REPO_ROOT}/run_rxr/iter_train.yaml,${REPO_ROOT}/run_rxr/kd_${SETTING}.yaml"
 export RUN_NAME="${RUN_NAME:-kd_rxr_${SETTING}_gt15000_kl}"
 export ITERS="${ITERS:-30000}"
-export CKPT_INTERVAL="${CKPT_INTERVAL:-1000}"
+export CKPT_INTERVAL="${CKPT_INTERVAL:-200}"
+# older checkpoints keep weights only (~2 GiB instead of ~5 GiB with Adam state)
+export CKPT_OPTIM_LATEST_ONLY="${CKPT_OPTIM_LATEST_ONLY:-True}"
 export NUM_ENVS="${NUM_ENVS:-4}"
 export LOAD_MAP=False
 export DISTILL_WEIGHT="${DISTILL_WEIGHT:-1.0}"

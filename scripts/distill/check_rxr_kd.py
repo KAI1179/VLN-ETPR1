@@ -51,6 +51,7 @@ from vlnce_baselines.ss_trainer_ETP_LLM import RLTrainer as LLMTrainer  # noqa: 
 from vlnce_baselines.ss_trainer_ETP_PriorGT import _check_teacher_identity  # noqa: E402
 
 BRANCH = "exp/rxr-kd-gt15000"
+CKPT_BYTES = {}
 MAP_KEYS = ("grid", "map_trajectory_metadata", "start_direction_vector", "start_position")
 EXPECTED_LANGUAGES = {"en": ["en-US", "en-IN"], "all": ["*"]}
 
@@ -200,6 +201,7 @@ def check_config(s):
         ("IL.max_traj_len", cfg.IL.max_traj_len, 25),
         ("IL.iters", cfg.IL.iters, int(E["ITERS"])),
         ("CHECKPOINT_INTERVAL", cfg.CHECKPOINT_INTERVAL, int(E["CKPT_INTERVAL"])),
+        ("IL.ckpt_optim_latest_only", cfg.IL.ckpt_optim_latest_only, E["CKPT_OPTIM_LATEST_ONLY"] == "True"),
         ("NUM_ENVIRONMENTS", cfg.NUM_ENVIRONMENTS, int(E["NUM_ENVS"])),
         ("GPU_NUMBERS", cfg.GPU_NUMBERS, 4),
         ("DATASET.SPLIT", cfg.TASK_CONFIG.DATASET.SPLIT, "train"),
@@ -427,6 +429,10 @@ def check_models(s):
             f"not from pretrain: {dict(missed.most_common(8))} (only graph_map_attention expected, LOAD_MAP False)")
     assert_finite_parameters(student, "student")
     R.ok("student parameters finite")
+    weights = sum(t.numel() * t.element_size() for t in student.state_dict().values())
+    adam = 2 * 4 * sum(p.numel() for p in student.parameters() if p.requires_grad)
+    CKPT_BYTES.update(weights=weights, optim=adam)
+    R.info(f"checkpoint size: weights {weights / 2**30:.2f} GiB, Adam state {adam / 2**30:.2f} GiB")
 
     t_config = cfg.clone()
     t_config.defrost()
@@ -507,7 +513,13 @@ def check_resources(settings):
                 + (f" ({len(ckpts)} found, the job would RESUME from {ckpts[-1].name})" if ckpts else ""),
                 warn_only=True)
         n = int(s.env["ITERS"]) // int(s.env["CKPT_INTERVAL"])
-        need += n * Path(s.env["GT_TEACHER_CKPT"]).stat().st_size
+        w = CKPT_BYTES.get("weights", Path(s.env["GT_TEACHER_CKPT"]).stat().st_size)
+        o = CKPT_BYTES.get("optim", 0)
+        latest_only = s.env.get("CKPT_OPTIM_LATEST_ONLY") == "True"
+        run_need = n * w + (o if latest_only else n * o)
+        need += run_need
+        R.info(f"{s.exp_name}: {n} checkpoints, ~{run_need / 2**30:.0f} GiB "
+               f"({'Adam state in the newest only' if latest_only else 'Adam state in every checkpoint'})")
     ports = [s.env["MASTER_PORT"] for s in settings]
     R.check(len(set(ports)) == len(ports), f"distinct rendezvous ports {ports}")
     target = Path("data/logs/checkpoints")
@@ -515,7 +527,7 @@ def check_resources(settings):
         target = target.parent
     free = shutil.disk_usage(target.resolve()).free
     R.check(free > need, f"free disk at {target.resolve()}: {free / 2**30:.0f} GiB; estimated checkpoints "
-            f"{need / 2**30:.0f} GiB (teacher ckpt size x ITERS/CKPT_INTERVAL per run)", warn_only=True)
+            f"{need / 2**30:.0f} GiB for all runs", warn_only=True)
 
 
 def main():

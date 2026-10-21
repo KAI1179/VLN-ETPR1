@@ -24,7 +24,7 @@ for s in ${SETTINGS:-en all}; do
     (
         export SETTING="${s}" CUDA_VISIBLE_DEVICES=0,1,2,3 TORCHRUN="$(command -v torchrun)"
         source scripts/distill/rxr_kd_env.sh
-        env | grep -E '^(GT_TEACHER_[A-Z_]+|TEACHER_NS_SRC|PRETRAINED_CKPT|LLM_[A-Z_]+|DATASET_SUFFIX|EXP_CONFIG|RUN_NAME|ITERS|CKPT_INTERVAL|NUM_ENVS|MASTER_PORT)=' \
+        env | grep -E '^(GT_TEACHER_[A-Z_]+|TEACHER_NS_SRC|PRETRAINED_CKPT|LLM_[A-Z_]+|DATASET_SUFFIX|EXP_CONFIG|RUN_NAME|ITERS|CKPT_INTERVAL|CKPT_OPTIM_LATEST_ONLY|NUM_ENVS|MASTER_PORT)=' \
             | sort > "${TMP}/${s}.env"
         EMIT_OPTS="${TMP}/${s}.cmd" bash scripts/distill/run_dagger_distill_legacy.sh kl > "${TMP}/${s}.emit.log" 2>&1 \
             || { cat "${TMP}/${s}.emit.log" >&2; exit 1; }

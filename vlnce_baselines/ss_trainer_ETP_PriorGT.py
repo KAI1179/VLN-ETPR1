@@ -192,6 +192,7 @@ class RLTrainer(BaseVLNCETrainer):
                 self._make_results_dir()
 
     def save_checkpoint(self, iteration: int):
+        path = os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth")
         torch.save(
             obj={
                 "state_dict": self.policy.state_dict(),
@@ -200,8 +201,22 @@ class RLTrainer(BaseVLNCETrainer):
                 "scheduler_state": self.scheduler.state_dict(),
                 "iteration": iteration,
             },
-            f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
+            f=path,
         )
+        # IL.ckpt_optim_latest_only: only the newest checkpoint keeps the
+        # optimizer/scheduler state (all resume needs); the previous one is
+        # rewritten weights-only, atomically.  Evaluation reads state_dict only.
+        if getattr(self.config.IL, "ckpt_optim_latest_only", False):
+            previous = getattr(self, "_last_full_ckpt", None)
+            if previous and previous != path and os.path.isfile(previous):
+                ckpt = torch.load(previous, map_location="cpu")
+                ckpt.pop("optim_state", None)
+                ckpt.pop("scheduler_state", None)
+                tmp = previous + ".tmp"
+                torch.save(ckpt, tmp)
+                os.replace(tmp, previous)
+                del ckpt
+            self._last_full_ckpt = path
 
     def _set_config(self):
         self.split = self.config.TASK_CONFIG.DATASET.SPLIT

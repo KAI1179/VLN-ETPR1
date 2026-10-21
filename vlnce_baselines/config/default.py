@@ -95,6 +95,8 @@ _C.IL.gt_teacher_elevation_axis = "z"
 # the map encoder and the graph-map fusion, which run with autocast disabled,
 # keep fp32 weights.  Saves ~1.1 GiB per process.
 _C.IL.gt_teacher_half = False
+# Keep optimizer/scheduler state only in the newest DAgger checkpoint.
+_C.IL.ckpt_optim_latest_only = False
 # Distillation terms beyond the plain action KL (see
 # vlnce_baselines/models/etp_prior_gt/distill_losses.py).  All default to the
 # historical behaviour (plain KL, no gate, no effect matching).
