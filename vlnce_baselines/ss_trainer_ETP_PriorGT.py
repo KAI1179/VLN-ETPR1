@@ -1943,6 +1943,11 @@ class RLTrainer(BaseVLNCETrainer):
             gtt_teacher_llm_ce = 0.0
             gtt_gate_sum = 0.0
             gtt_js_values = []
+            # Teacher-side state used by every distillation mode, not only
+            # dual: the env-pause bookkeeping below shrinks gtt_aux too.
+            gtt_stop_kl = 0.0
+            gtt_move_kl = 0.0
+            gtt_aux = {}
         dual_on = mode == "train" and bool(self.config.IL.dual_enabled)
         if dual_on:
             if self.config.IL.effect_match_weight > 0:
@@ -1955,9 +1960,6 @@ class RLTrainer(BaseVLNCETrainer):
             dual_ce_zero = 0.0
             dual_gt_kl_map = 0.0
             dual_gt_kl_zero = 0.0
-            gtt_stop_kl = 0.0
-            gtt_move_kl = 0.0
-            gtt_aux = {}
         prev_vp = [None] * self.envs.num_envs
 
         # Build cognitive maps for current episodes.
