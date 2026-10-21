@@ -53,7 +53,11 @@ def main():
             rec = json.loads(st.read_text())
             status = rec.get("status")
             if status != "complete":
-                return lang, f"status={status}", str(rec.get("error", ""))[:160]
+                err = str(rec.get("error", ""))
+                kind = ("invalid_json" if "invalid JSON" in err else
+                        "direction_not_unit" if "unit length" in err else
+                        "short_gt_trajectory" if "selected-level points" in err else "other")
+                return lang, f"{status}:{kind}", err[:160]
             ras = llm_navigation_cognitive_map_raster_path(sc, cid, "rxr", split, cache_dir=cache_dir, model_key=key)
             return lang, ("ok" if ras.is_file() else "complete_but_no_raster"), ""
 
