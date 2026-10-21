@@ -308,15 +308,17 @@ def check_maps(s, max_load):
 
     me = cfg.MODEL.MAP_ENCODER
     cache_dir = me.llm_cache_dir or None
-    if s.name == "all":
-        def link_ok(e):
-            src = navigation.llm_navigation_cognitive_map_raster_path(
-                eps[e]["scene_id"], cache_id(e), "rxr", "train", cache_dir=cache_dir, model_key=me.llm_cache_model_key)
-            want = E["LLM_EN_KEY"] if lang(e).startswith("en-") else E["LLM_TRANSLATED_KEY"]
-            return f"/{want}/" in os.readlink(src) if src.is_symlink() else False
-        wrong = [e for e, ok in zip(final, _pmap(link_ok, final, "merged links")) if not ok]
-        R.check(not wrong, f"merged key links: en-* -> {E['LLM_EN_KEY']}, others -> {E['LLM_TRANSLATED_KEY']}"
-                + (f" (wrong {len(wrong)}, first {wrong[:5]})" if wrong else ""))
+    def link_src(e):
+        src = navigation.llm_navigation_cognitive_map_raster_path(
+            eps[e]["scene_id"], cache_id(e), "rxr", "train", cache_dir=cache_dir, model_key=me.llm_cache_model_key)
+        target = os.readlink(src) if src.is_symlink() else ""
+        primary = E["LLM_EN_KEY"] if lang(e).startswith("en-") else E["LLM_TRANSLATED_KEY"]
+        return "primary" if f"/{primary}/" in target else "repair" if f"/{E['LLM_REPAIR_KEY']}/" in target else "wrong"
+    srcs = _pmap(link_src, final, "merged links")
+    wrong = [e for e, k in zip(final, srcs) if k == "wrong"]
+    R.check(not wrong, f"merged key links: en-* -> {E['LLM_EN_KEY']}, others -> {E['LLM_TRANSLATED_KEY']}, "
+            f"fallback {E['LLM_REPAIR_KEY']}" + (f" (wrong {len(wrong)}, first {wrong[:5]})" if wrong else ""))
+    R.info(f"map source: {dict(Counter(srcs))}")
 
     s_schema = CognitiveMapCandidate.parse(me.architecture, me.source).metadata_schema
     t_schema = CognitiveMapCandidate.parse(me.architecture, "prior_gt").metadata_schema

@@ -3,7 +3,8 @@
 
 English (en-*) episodes link to the English-instruction cache (--en-key), every
 other language to the cache generated from translated instructions
-(--translated-key).  Only the files the student reads are linked (the raster
+(--translated-key); where that has no complete map, to --repair-key
+(repair_rxr_llm_direction_norm.py) if it has one.  Only the files the student reads are linked (the raster
 and the status record); the source caches are not modified.  Re-running is
 safe: correct links are kept, stale ones are replaced.
 
@@ -32,6 +33,8 @@ class Args(Tap):
     en_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
     translated_key: str = "llm-grid-rxr-translated-hi-te-grid2-epoch10-v1"
     merged_key: str = "llm-grid-rxr-all-en-tagfree-hite-translated-v1"
+    repair_key: str = ""      # fallback for episodes the primary key has no complete map for
+    languages: List[str] = ["*"]
     splits: List[str] = ["train", "val_seen", "val_unseen"]
     workers: int = 32
 
@@ -53,37 +56,48 @@ def main():
     for split in args.splits:
         with gzip.open(RxR_DIR / split / f"{split}_guide.json.gz", "rt") as stream:
             episodes = json.load(stream)["episodes"]
+        if "*" not in args.languages:
+            episodes = [e for e in episodes if e["instruction"]["language"] in args.languages]
+
         def one(ep):
             lang = ep["instruction"]["language"]
-            key = args.en_key if lang.startswith("en-") else args.translated_key
             cache_id = f"RxR_{split}_{ep['episode_id']}"
             scene = ep["scene_id"]
-            if not llm_navigation_cache_complete(scene, cache_id, "rxr", split,
-                                                 cache_dir=cache_dir, model_key=key):
-                return lang, False, 0
+            primary = args.en_key if lang.startswith("en-") else args.translated_key
+            for key in (primary, args.repair_key):
+                if key and llm_navigation_cache_complete(scene, cache_id, "rxr", split,
+                                                         cache_dir=cache_dir, model_key=key):
+                    break
+            else:
+                return lang, None, 0
             made = 0
             for path_fn in (llm_navigation_cognitive_map_raster_path, llm_navigation_status_path):
                 src = path_fn(scene, cache_id, "rxr", split, cache_dir=cache_dir, model_key=key)
                 dst = path_fn(scene, cache_id, "rxr", split, cache_dir=cache_dir,
                               model_key=args.merged_key)
                 made += _link(src, dst)
-            return lang, True, made
+            return lang, ("repair" if key == args.repair_key else "primary"), made
 
-        linked, missing, created = Counter(), Counter(), 0
+        linked, repaired, missing, created = Counter(), Counter(), Counter(), 0
         # Network filesystem: the work is latency-bound, threads overlap it.
         with ThreadPoolExecutor(args.workers) as pool:
-            for n, (lang, ok, made) in enumerate(pool.map(one, episodes), 1):
-                (linked if ok else missing)[lang] += 1
+            for n, (lang, src, made) in enumerate(pool.map(one, episodes), 1):
+                (missing if src is None else linked)[lang] += 1
+                if src == "repair":
+                    repaired[lang] += 1
                 created += made
                 if n % 5000 == 0 or n == len(episodes):
                     print(f"  {split}: {n}/{len(episodes)} episodes", flush=True)
-        summary[split] = {"linked": dict(linked), "missing": dict(missing), "new_links": created}
+        summary[split] = {"linked": dict(linked), "of_which_repaired": dict(repaired),
+                          "missing": dict(missing), "new_links": created}
         print(split, json.dumps(summary[split]), flush=True)
     out = cache_dir / args.merged_key / "rxr" / "merge_manifest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
-        "en_key": args.en_key, "translated_key": args.translated_key,
-        "rule": "en-* -> en_key, others -> translated_key", "summary": summary,
+        "en_key": args.en_key, "translated_key": args.translated_key, "repair_key": args.repair_key,
+        "languages": args.languages,
+        "rule": "en-* -> en_key, others -> translated_key; repair_key where those are not complete",
+        "summary": summary,
     }, indent=2))
 
 

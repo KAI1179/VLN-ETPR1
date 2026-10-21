@@ -16,10 +16,15 @@ export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${HOME}/run/ETP-R1/pretrained/r2r_rxr
 export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${HOME}/run/ETP-R1/data/llm_navigation}"
 export LLM_EN_KEY="${LLM_EN_KEY:-llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree}"
 export LLM_TRANSLATED_KEY="${LLM_TRANSLATED_KEY:-llm-grid-rxr-translated-hi-te-grid2-epoch10-v1}"
-export LLM_MERGED_KEY="${LLM_MERGED_KEY:-llm-grid-rxr-all-en-tagfree-hite-translated-v1}"
+# Episodes rejected only for non-unit direction vectors, re-parsed with
+# renormalisation (repair_rxr_llm_direction_norm.py); used as fallback.
+export LLM_REPAIR_KEY="${LLM_REPAIR_KEY:-llm-grid-rxr-dirnorm-repair-v1}"
+# Symlink keys the student reads (prepare_rxr_kd.sh builds both).
+export LLM_EN_MERGED_KEY="${LLM_EN_MERGED_KEY:-llm-grid-rxr-en-tagfree-dirnorm-v1}"
+export LLM_MERGED_KEY="${LLM_MERGED_KEY:-llm-grid-rxr-all-tagfree-hite-dirnorm-v1}"
 
 if [[ "${SETTING}" == "en" ]]; then
-    export LLM_CACHE_KEY="${LLM_EN_KEY}"
+    export LLM_CACHE_KEY="${LLM_EN_MERGED_KEY}"
     export MASTER_PORT="${MASTER_PORT:-29710}"
 else
     export LLM_CACHE_KEY="${LLM_MERGED_KEY}"
