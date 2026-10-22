@@ -1,0 +1,1188 @@
+{
+  "definitions": {
+    "on_gt": "3D Euclidean point-to-reference-polyline distance <=1m; off >1m",
+    "bearing": "signed degrees relative to forward; positive=left; wrapped separation >45deg; numerical boundary within0.001deg excluded conservatively (episode723 is ~45.000018deg)",
+    "lifts": "D10 conditional-spatial lift, inclusive IQR, all finite S frames (candidate excludes STOP)",
+    "corridor_hit": "existing dense_region_hit: fraction of dense GT path samples hitting any positive region channel 27:37; outside raster counts as miss; not hallway-channel-only",
+    "corridor_population": "all 1839 val_unseen episodes, including six missing-cache zero placeholders",
+    "preferred": "Z own decision pose within 1m in 3D, executed off-route target within 1m of Z S chosen target",
+    "probability": "not recorded by D10; recovered only from matching decision-log state and argmax (pose/ghost candidates atol1e-5m, heading1e-6rad); otherwise null; these are matched-state PA probabilities, not directly recorded D10 probabilities",
+    "rank": "preferred first, then minimum summed distance of lift percentiles from median; one frame per episode"
+  },
+  "sources": {
+    "Z": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+    "M": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+    "corridor": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/map_quality/t2_val_unseen_episodes.jsonl"
+  },
+  "lift_IQR": {
+    "route": [
+      2.2371560113424005,
+      4.390462211580449
+    ],
+    "candidate": [
+      1.7581991718268926,
+      4.220846470641756
+    ],
+    "agent": [
+      1.92785913374258,
+      4.686365586505774
+    ]
+  },
+  "corridor_IQR": [
+    0.25,
+    0.7428571428571429
+  ],
+  "filter_counts": {
+    "S_frames": 13992,
+    "own_Z_fail_M_success_frames": 1501,
+    "nonstop_off_on_and_angle_frames": 109,
+    "three_lifts_IQR_frames": 23,
+    "all_required_frames": 10
+  },
+  "all_passing_frames": [
+    {
+      "episode_id": "1645",
+      "scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Turn right and wait in the entryway of the bedroom. ",
+      "S_step": 0,
+      "pose": [
+        3.9934399127960205,
+        0.17162801325321198,
+        -0.24373500049114227
+      ],
+      "heading": 5.759586527390548,
+      "Z_choice": {
+        "id": "g2",
+        "position": [
+          5.292478024273284,
+          0.17162801325321198,
+          0.506264989461914
+        ],
+        "bearing_deg": -89.99999931675467,
+        "distance_to_reference_m": 1.4999999999999998,
+        "probability": 0.6463930010795593,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g4",
+        "position": [
+          3.993440103247761,
+          0.17162801325321198,
+          -1.993735000491132
+        ],
+        "bearing_deg": 29.999994004636886,
+        "distance_to_reference_m": 0.03692581134712426,
+        "probability": 0.7652559280395508,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 119.99999332139156,
+      "M_lifts": {
+        "route": 3.049483640576025,
+        "candidate": 3.3820268651821332,
+        "agent": 3.328019371898668
+      },
+      "M_lift_percentiles": {
+        "route": 49.12449971412236,
+        "candidate": 59.338361892268594,
+        "agent": 51.59734133790737
+      },
+      "corridor_hit_rate": 0.32,
+      "corridor_percentile": 36.48722131593257,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 13.596243858337402,
+          "path_length": 20.000003814697266
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.39388906955718994,
+          "path_length": 5.999999046325684
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            5.292478024273284,
+            0.17162801325321198,
+            0.506264989461914
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1590",
+      "scene": "mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Position yourself so that the red carpet leads to a bed with curtains.  Walk straight towards this bed and stop in the doorway of the room and then stop. ",
+      "S_step": 0,
+      "pose": [
+        16.515899658203125,
+        0.20952606201171875,
+        -13.743000030517578
+      ],
+      "heading": 4.71238898038469,
+      "Z_choice": {
+        "id": "g0",
+        "position": [
+          18.265899658203097,
+          0.20952606201171875,
+          -13.743000336497309
+        ],
+        "bearing_deg": 1.0017912669061661e-05,
+        "distance_to_reference_m": 1.7499999999999984,
+        "probability": 0.8543670773506165,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g3",
+        "position": [
+          14.613786650660987,
+          0.20952606201171875,
+          -14.361034096357807
+        ],
+        "bearing_deg": 161.99999767787153,
+        "distance_to_reference_m": 0.6130205191241503,
+        "probability": 0.6927739977836609,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 161.99998765995886,
+      "M_lifts": {
+        "route": 2.892688436414083,
+        "candidate": 3.159150522622752,
+        "agent": 4.280515721579901
+      },
+      "M_lift_percentiles": {
+        "route": 44.87921669525443,
+        "candidate": 54.263343445109456,
+        "agent": 69.63622069754145
+      },
+      "corridor_hit_rate": 0.5526315789473685,
+      "corridor_percentile": 60.984230560087006,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 18.041067123413086,
+          "path_length": 8.500005722045898
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 1.5721346139907837,
+          "path_length": 8.323907852172852
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            18.265899658203097,
+            0.20952606201171875,
+            -13.743000336497309
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1392",
+      "scene": "mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Following the red carpet, exit the room to the right. Continue straight passed the chest of drawers on the right and a series of 7 photo displays on the left. Still straight on the red carpet passed 2 sets of chairs and through the doorway stopping just through the threshold. ",
+      "S_step": 0,
+      "pose": [
+        29.136699676513672,
+        0.00952601432800293,
+        -5.3664398193359375
+      ],
+      "heading": 4.71238898038469,
+      "Z_choice": {
+        "id": "g4",
+        "position": [
+          29.708457045022023,
+          0.00952601432800293,
+          -8.056345674855123
+        ],
+        "bearing_deg": 77.99999534035858,
+        "distance_to_reference_m": 2.7499999999999996,
+        "probability": 0.7014329433441162,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g1",
+        "position": [
+          29.018943396707428,
+          0.00952601432800293,
+          -3.119523385961925
+        ],
+        "bearing_deg": -93.00000964552103,
+        "distance_to_reference_m": 0.09531216906980396,
+        "probability": 0.9951393604278564,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 171.00000498587963,
+      "M_lifts": {
+        "route": 2.341535496369321,
+        "candidate": 2.978249530144664,
+        "agent": 2.808487660851302
+      },
+      "M_lift_percentiles": {
+        "route": 28.312607204116638,
+        "candidate": 49.81962777732229,
+        "agent": 40.526729559748425
+      },
+      "corridor_hit_rate": 0.390625,
+      "corridor_percentile": 45.92169657422512,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 25.92839813232422,
+          "path_length": 12.06823444366455
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.556016743183136,
+          "path_length": 16.576576232910156
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            29.708457045022023,
+            0.00952601432800293,
+            -8.056345674855123
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "302",
+      "scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Exit the entryway, turn left, walk to the study, turn right, enter the bathroom, wait at the sink. ",
+      "S_step": 3,
+      "pose": [
+        3.184492826461792,
+        0.17162801325321198,
+        -0.4262523949146271
+      ],
+      "heading": 5.235987637201093,
+      "Z_choice": {
+        "id": "g7",
+        "position": [
+          5.116344589308136,
+          0.17162801325321198,
+          0.09138528376368493
+        ],
+        "bearing_deg": -44.99998098904266,
+        "distance_to_reference_m": 1.1718449203934007,
+        "probability": 0.5238293409347534,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 3
+      },
+      "M_choice": {
+        "id": "g9",
+        "position": [
+          3.813495922081886,
+          0.17162801325321198,
+          -0.834731409920709
+        ],
+        "bearing_deg": 2.9999830080096803,
+        "distance_to_reference_m": 0.16743369453795282,
+        "probability": 0.5853472352027893,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 3
+      },
+      "bearing_separation_deg": 47.99996399705233,
+      "M_lifts": {
+        "route": 2.3681448472973887,
+        "candidate": 2.7868854715112534,
+        "agent": 2.345375219771358
+      },
+      "M_lift_percentiles": {
+        "route": 29.177387078330476,
+        "candidate": 45.11355251291301,
+        "agent": 31.071326472269867
+      },
+      "corridor_hit_rate": 0.40540540540540543,
+      "corridor_percentile": 46.98205546492659,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 3.5590462684631348,
+          "path_length": 9.506083488464355
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.7570965886116028,
+          "path_length": 9.75
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 3,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            5.116344589308136,
+            0.17162801325321198,
+            0.09138528376368493
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "83",
+      "scene": "mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Walk past kitchen. Walk past thermostat. Walk into bedroom. Wait on rug. ",
+      "S_step": 0,
+      "pose": [
+        -4.353710174560547,
+        0.15480518341064453,
+        -11.63290023803711
+      ],
+      "heading": 3.141592653589793,
+      "Z_choice": {
+        "id": "g0",
+        "position": [
+          -6.103710174560547,
+          0.15480518341064453,
+          -11.632900217168569
+        ],
+        "bearing_deg": -89.99999931675468,
+        "distance_to_reference_m": 1.7500000000000002,
+        "probability": 0.68460613489151,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g2",
+        "position": [
+          -2.4515970270376366,
+          0.15480518341064453,
+          -12.250933873060712
+        ],
+        "bearing_deg": 107.99998934499541,
+        "distance_to_reference_m": 0.27190303579434155,
+        "probability": 0.833610475063324,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 162.00001133824992,
+      "M_lifts": {
+        "route": 2.570752477684161,
+        "candidate": 4.123870185527429,
+        "agent": 3.879724150020817
+      },
+      "M_lift_percentiles": {
+        "route": 35.295168667810174,
+        "candidate": 73.56317127162417,
+        "agent": 62.6393653516295
+      },
+      "corridor_hit_rate": 0.38461538461538464,
+      "corridor_percentile": 45.133224578575316,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 21.852678298950195,
+          "path_length": 11.759401321411133
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 2.2645344734191895,
+          "path_length": 14.523747444152832
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            -6.103710174560547,
+            0.15480518341064453,
+            -11.632900217168569
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "92",
+      "scene": "mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk down the hallway past the vases, enter the bedroom, walk to the foot of the bed, walk toward the bathroom on the left, wait in the doorway to the bathroom. ",
+      "S_step": 1,
+      "pose": [
+        2.1451499462127686,
+        3.6244001388549805,
+        -5.753729820251465
+      ],
+      "heading": 6.2831852475749415,
+      "Z_choice": {
+        "id": "g2",
+        "position": [
+          2.4580187876901145,
+          3.560312509536743,
+          -3.0283531250278366
+        ],
+        "bearing_deg": -173.45120139086615,
+        "distance_to_reference_m": 1.9999999999999998,
+        "probability": 0.6743340492248535,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 1
+      },
+      "M_choice": {
+        "id": "g6",
+        "position": [
+          1.7588791888657418,
+          3.6244001388549805,
+          -6.942550623408339
+        ],
+        "bearing_deg": 17.999980010328123,
+        "distance_to_reference_m": 0.2169202370458596,
+        "probability": 0.8687337040901184,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 1
+      },
+      "bearing_separation_deg": 168.54881859880572,
+      "M_lifts": {
+        "route": 3.7813749546545803,
+        "candidate": 3.9717929651857804,
+        "agent": 4.237221374351019
+      },
+      "M_lift_percentiles": {
+        "route": 65.56961120640366,
+        "candidate": 70.92317783061408,
+        "agent": 68.9000857632933
+      },
+      "corridor_hit_rate": 0.3333333333333333,
+      "corridor_percentile": 38.091353996737354,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 7.922572135925293,
+          "path_length": 13.963313102722168
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 1.149502158164978,
+          "path_length": 5.065460205078125
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.7527331693446435,
+          "off_reference": false,
+          "same_Z_target_within_1m": false,
+          "chosen_position": [
+            2.0157404699719215,
+            3.560312509536743,
+            -5.98669274293687
+          ]
+        },
+        {
+          "step": 1,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            2.4580187876901145,
+            3.560312509536743,
+            -3.0283531250278366
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "609",
+      "scene": "mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Exit the kitchen, walk down the hall and wait in the exercise room. ",
+      "S_step": 0,
+      "pose": [
+        -4.338840007781982,
+        0.15480518341064453,
+        -14.498000144958496
+      ],
+      "heading": 2.6179938738007547,
+      "Z_choice": {
+        "id": "g1",
+        "position": [
+          -3.1312088430473373,
+          0.15480518341064453,
+          -14.24130997680393
+        ],
+        "bearing_deg": 107.99998934499546,
+        "distance_to_reference_m": 1.2346104132338975,
+        "probability": 0.9755717515945435,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g0",
+        "position": [
+          -5.386399255470285,
+          0.15480518341064453,
+          -14.60324086015473
+        ],
+        "bearing_deg": -65.73684455733817,
+        "distance_to_reference_m": 0.04247675425518339,
+        "probability": 0.975186824798584,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 173.73683390233361,
+      "M_lifts": {
+        "route": 4.106820950842911,
+        "candidate": 4.023973131218497,
+        "agent": 4.023973131218498
+      },
+      "M_lift_percentiles": {
+        "route": 71.25857632933105,
+        "candidate": 71.98901369189144,
+        "agent": 65.34805603201829
+      },
+      "corridor_hit_rate": 0.6410256410256411,
+      "corridor_percentile": 67.72702555736814,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 15.274679183959961,
+          "path_length": 18.743793487548828
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.777030348777771,
+          "path_length": 65.26316833496094
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            -3.1312088430473373,
+            0.15480518341064453,
+            -14.24130997680393
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1453",
+      "scene": "mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb",
+      "instruction": "Walk down the corridor and upstairs. Stop halfway up the stairs. ",
+      "S_step": 5,
+      "pose": [
+        16.642166137695312,
+        0.12711000442504883,
+        1.281991720199585
+      ],
+      "heading": 4.188790426806551,
+      "Z_choice": {
+        "id": "g6",
+        "position": [
+          8.718711040165452,
+          0.12711000442504883,
+          1.4720611038277815
+        ],
+        "bearing_deg": -148.62585394455206,
+        "distance_to_reference_m": 1.7384987373552163,
+        "probability": null,
+        "probability_source": null,
+        "matched_step": null
+      },
+      "M_choice": {
+        "id": "g15",
+        "position": [
+          16.62187360464361,
+          0.12711000442504883,
+          0.645836830873058
+        ],
+        "bearing_deg": 121.82703035820991,
+        "distance_to_reference_m": 0.2887110263046242,
+        "probability": 0.7214465141296387,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_shared_val_unseen/eval_results",
+        "matched_step": 5
+      },
+      "bearing_separation_deg": 89.54711569723804,
+      "M_lifts": {
+        "route": 3.0822289949069517,
+        "candidate": 3.0983846936703783,
+        "agent": 3.0983846936703783
+      },
+      "M_lift_percentiles": {
+        "route": 49.93210405946255,
+        "candidate": 52.787570714110025,
+        "agent": 46.773156089193826
+      },
+      "corridor_hit_rate": 0.4782608695652174,
+      "corridor_percentile": 55.682436106579665,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 20.355388641357422,
+          "path_length": 50.75001525878906
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 2.4481208324432373,
+          "path_length": 23.298566818237305
+        }
+      },
+      "preferred": false,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 8,
+          "distance_m": 0.2500024330974901,
+          "off_reference": true,
+          "same_Z_target_within_1m": false,
+          "chosen_position": [
+            4.028339133743756,
+            0.12711000442504883,
+            1.0191286276170768
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1199",
+      "scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Walk past the kitchen and enter the hallway.  Turn right  at the artwork and wait by the closet. ",
+      "S_step": 1,
+      "pose": [
+        12.857000350952148,
+        0.17162801325321198,
+        -1.8194689750671387
+      ],
+      "heading": 0.0,
+      "Z_choice": {
+        "id": "g5",
+        "position": [
+          10.925148833786682,
+          0.17162801325321198,
+          -2.337107570638886
+        ],
+        "bearing_deg": 74.99998501159222,
+        "distance_to_reference_m": 1.5373691949643902,
+        "probability": null,
+        "probability_source": null,
+        "matched_step": null
+      },
+      "M_choice": {
+        "id": "g6",
+        "position": [
+          12.66145719066669,
+          0.17162801325321198,
+          -3.0540793883010364
+        ],
+        "bearing_deg": 9.000003665542428,
+        "distance_to_reference_m": 0.1591286256869291,
+        "probability": 0.8139076828956604,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 1
+      },
+      "bearing_separation_deg": 65.9999813460498,
+      "M_lifts": {
+        "route": 3.1365426952325186,
+        "candidate": 3.5085274461761022,
+        "agent": 3.5013428655295415
+      },
+      "M_lift_percentiles": {
+        "route": 51.47584333905088,
+        "candidate": 62.02754775764532,
+        "agent": 55.44954259576901
+      },
+      "corridor_hit_rate": 0.72,
+      "corridor_percentile": 73.4094616639478,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 12.7337064743042,
+          "path_length": 8.21576976776123
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 1.4933528900146484,
+          "path_length": 4.749999523162842
+        }
+      },
+      "preferred": false,
+      "nearby_Z_own_decisions": []
+    },
+    {
+      "episode_id": "92",
+      "scene": "mp3d/TbHJrupSAjP/TbHJrupSAjP.glb",
+      "instruction": "Walk down the hallway past the vases, enter the bedroom, walk to the foot of the bed, walk toward the bathroom on the left, wait in the doorway to the bathroom. ",
+      "S_step": 2,
+      "pose": [
+        1.8216263055801392,
+        3.4680895805358887,
+        -6.961136341094971
+      ],
+      "heading": 0.2617993376475898,
+      "Z_choice": {
+        "id": "g2",
+        "position": [
+          2.4580187876901145,
+          3.560312509536743,
+          -3.0283531250278366
+        ],
+        "bearing_deg": 174.1917772157977,
+        "distance_to_reference_m": 1.9999999999999998,
+        "probability": null,
+        "probability_source": null,
+        "matched_step": null
+      },
+      "M_choice": {
+        "id": "g7",
+        "position": [
+          2.0171692473229905,
+          3.4680895805358887,
+          -8.19574678894261
+        ],
+        "bearing_deg": -23.999990649948202,
+        "distance_to_reference_m": 0.12445961316541261,
+        "probability": 0.7961907386779785,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 2
+      },
+      "bearing_separation_deg": 161.80823213425407,
+      "M_lifts": {
+        "route": 3.956502626791646,
+        "candidate": 3.467536351351699,
+        "agent": 4.23050251245824
+      },
+      "M_lift_percentiles": {
+        "route": 68.62850200114352,
+        "candidate": 61.27326391735673,
+        "agent": 68.72855917667239
+      },
+      "corridor_hit_rate": 0.3333333333333333,
+      "corridor_percentile": 38.091353996737354,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 7.922572135925293,
+          "path_length": 13.963313102722168
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 1.149502158164978,
+          "path_length": 5.065460205078125
+        }
+      },
+      "preferred": false,
+      "nearby_Z_own_decisions": []
+    }
+  ],
+  "selected": [
+    {
+      "episode_id": "1645",
+      "scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Turn right and wait in the entryway of the bedroom. ",
+      "S_step": 0,
+      "pose": [
+        3.9934399127960205,
+        0.17162801325321198,
+        -0.24373500049114227
+      ],
+      "heading": 5.759586527390548,
+      "Z_choice": {
+        "id": "g2",
+        "position": [
+          5.292478024273284,
+          0.17162801325321198,
+          0.506264989461914
+        ],
+        "bearing_deg": -89.99999931675467,
+        "distance_to_reference_m": 1.4999999999999998,
+        "probability": 0.6463930010795593,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g4",
+        "position": [
+          3.993440103247761,
+          0.17162801325321198,
+          -1.993735000491132
+        ],
+        "bearing_deg": 29.999994004636886,
+        "distance_to_reference_m": 0.03692581134712426,
+        "probability": 0.7652559280395508,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 119.99999332139156,
+      "M_lifts": {
+        "route": 3.049483640576025,
+        "candidate": 3.3820268651821332,
+        "agent": 3.328019371898668
+      },
+      "M_lift_percentiles": {
+        "route": 49.12449971412236,
+        "candidate": 59.338361892268594,
+        "agent": 51.59734133790737
+      },
+      "corridor_hit_rate": 0.32,
+      "corridor_percentile": 36.48722131593257,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 13.596243858337402,
+          "path_length": 20.000003814697266
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.39388906955718994,
+          "path_length": 5.999999046325684
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            5.292478024273284,
+            0.17162801325321198,
+            0.506264989461914
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1590",
+      "scene": "mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Position yourself so that the red carpet leads to a bed with curtains.  Walk straight towards this bed and stop in the doorway of the room and then stop. ",
+      "S_step": 0,
+      "pose": [
+        16.515899658203125,
+        0.20952606201171875,
+        -13.743000030517578
+      ],
+      "heading": 4.71238898038469,
+      "Z_choice": {
+        "id": "g0",
+        "position": [
+          18.265899658203097,
+          0.20952606201171875,
+          -13.743000336497309
+        ],
+        "bearing_deg": 1.0017912669061661e-05,
+        "distance_to_reference_m": 1.7499999999999984,
+        "probability": 0.8543670773506165,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g3",
+        "position": [
+          14.613786650660987,
+          0.20952606201171875,
+          -14.361034096357807
+        ],
+        "bearing_deg": 161.99999767787153,
+        "distance_to_reference_m": 0.6130205191241503,
+        "probability": 0.6927739977836609,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 161.99998765995886,
+      "M_lifts": {
+        "route": 2.892688436414083,
+        "candidate": 3.159150522622752,
+        "agent": 4.280515721579901
+      },
+      "M_lift_percentiles": {
+        "route": 44.87921669525443,
+        "candidate": 54.263343445109456,
+        "agent": 69.63622069754145
+      },
+      "corridor_hit_rate": 0.5526315789473685,
+      "corridor_percentile": 60.984230560087006,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 18.041067123413086,
+          "path_length": 8.500005722045898
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 1.5721346139907837,
+          "path_length": 8.323907852172852
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            18.265899658203097,
+            0.20952606201171875,
+            -13.743000336497309
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "1392",
+      "scene": "mp3d/Z6MFQCViBuw/Z6MFQCViBuw.glb",
+      "instruction": "Following the red carpet, exit the room to the right. Continue straight passed the chest of drawers on the right and a series of 7 photo displays on the left. Still straight on the red carpet passed 2 sets of chairs and through the doorway stopping just through the threshold. ",
+      "S_step": 0,
+      "pose": [
+        29.136699676513672,
+        0.00952601432800293,
+        -5.3664398193359375
+      ],
+      "heading": 4.71238898038469,
+      "Z_choice": {
+        "id": "g4",
+        "position": [
+          29.708457045022023,
+          0.00952601432800293,
+          -8.056345674855123
+        ],
+        "bearing_deg": 77.99999534035858,
+        "distance_to_reference_m": 2.7499999999999996,
+        "probability": 0.7014329433441162,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g1",
+        "position": [
+          29.018943396707428,
+          0.00952601432800293,
+          -3.119523385961925
+        ],
+        "bearing_deg": -93.00000964552103,
+        "distance_to_reference_m": 0.09531216906980396,
+        "probability": 0.9951393604278564,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 171.00000498587963,
+      "M_lifts": {
+        "route": 2.341535496369321,
+        "candidate": 2.978249530144664,
+        "agent": 2.808487660851302
+      },
+      "M_lift_percentiles": {
+        "route": 28.312607204116638,
+        "candidate": 49.81962777732229,
+        "agent": 40.526729559748425
+      },
+      "corridor_hit_rate": 0.390625,
+      "corridor_percentile": 45.92169657422512,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 25.92839813232422,
+          "path_length": 12.06823444366455
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.556016743183136,
+          "path_length": 16.576576232910156
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            29.708457045022023,
+            0.00952601432800293,
+            -8.056345674855123
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "302",
+      "scene": "mp3d/zsNo4HB9uLZ/zsNo4HB9uLZ.glb",
+      "instruction": "Exit the entryway, turn left, walk to the study, turn right, enter the bathroom, wait at the sink. ",
+      "S_step": 3,
+      "pose": [
+        3.184492826461792,
+        0.17162801325321198,
+        -0.4262523949146271
+      ],
+      "heading": 5.235987637201093,
+      "Z_choice": {
+        "id": "g7",
+        "position": [
+          5.116344589308136,
+          0.17162801325321198,
+          0.09138528376368493
+        ],
+        "bearing_deg": -44.99998098904266,
+        "distance_to_reference_m": 1.1718449203934007,
+        "probability": 0.5238293409347534,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 3
+      },
+      "M_choice": {
+        "id": "g9",
+        "position": [
+          3.813495922081886,
+          0.17162801325321198,
+          -0.834731409920709
+        ],
+        "bearing_deg": 2.9999830080096803,
+        "distance_to_reference_m": 0.16743369453795282,
+        "probability": 0.5853472352027893,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 3
+      },
+      "bearing_separation_deg": 47.99996399705233,
+      "M_lifts": {
+        "route": 2.3681448472973887,
+        "candidate": 2.7868854715112534,
+        "agent": 2.345375219771358
+      },
+      "M_lift_percentiles": {
+        "route": 29.177387078330476,
+        "candidate": 45.11355251291301,
+        "agent": 31.071326472269867
+      },
+      "corridor_hit_rate": 0.40540540540540543,
+      "corridor_percentile": 46.98205546492659,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 3.5590462684631348,
+          "path_length": 9.506083488464355
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 0.7570965886116028,
+          "path_length": 9.75
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 3,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            5.116344589308136,
+            0.17162801325321198,
+            0.09138528376368493
+          ]
+        }
+      ]
+    },
+    {
+      "episode_id": "83",
+      "scene": "mp3d/QUCTc6BB5sX/QUCTc6BB5sX.glb",
+      "instruction": "Walk past kitchen. Walk past thermostat. Walk into bedroom. Wait on rug. ",
+      "S_step": 0,
+      "pose": [
+        -4.353710174560547,
+        0.15480518341064453,
+        -11.63290023803711
+      ],
+      "heading": 3.141592653589793,
+      "Z_choice": {
+        "id": "g0",
+        "position": [
+          -6.103710174560547,
+          0.15480518341064453,
+          -11.632900217168569
+        ],
+        "bearing_deg": -89.99999931675468,
+        "distance_to_reference_m": 1.7500000000000002,
+        "probability": 0.68460613489151,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_zero_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "M_choice": {
+        "id": "g2",
+        "position": [
+          -2.4515970270376366,
+          0.15480518341064453,
+          -12.250933873060712
+        ],
+        "bearing_deg": 107.99998934499541,
+        "distance_to_reference_m": 0.27190303579434155,
+        "probability": 0.833610475063324,
+        "probability_source": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results",
+        "matched_step": 0
+      },
+      "bearing_separation_deg": 162.00001133824992,
+      "M_lifts": {
+        "route": 2.570752477684161,
+        "candidate": 4.123870185527429,
+        "agent": 3.879724150020817
+      },
+      "M_lift_percentiles": {
+        "route": 35.295168667810174,
+        "candidate": 73.56317127162417,
+        "agent": 62.6393653516295
+      },
+      "corridor_hit_rate": 0.38461538461538464,
+      "corridor_percentile": 45.133224578575316,
+      "own_outcomes": {
+        "Z": {
+          "success": 0.0,
+          "distance_to_goal": 21.852678298950195,
+          "path_length": 11.759401321411133
+        },
+        "M": {
+          "success": 1.0,
+          "distance_to_goal": 2.2645344734191895,
+          "path_length": 14.523747444152832
+        }
+      },
+      "preferred": true,
+      "nearby_Z_own_decisions": [
+        {
+          "step": 0,
+          "distance_m": 0.0,
+          "off_reference": true,
+          "same_Z_target_within_1m": true,
+          "chosen_position": [
+            -6.103710174560547,
+            0.15480518341064453,
+            -11.632900217168569
+          ]
+        }
+      ]
+    }
+  ]
+}
