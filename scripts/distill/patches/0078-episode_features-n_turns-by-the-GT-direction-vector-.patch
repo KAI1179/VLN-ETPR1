@@ -1,0 +1,134 @@
+From f2f549d8f0ba68f0f9b6e5289f59f5d826f2069d Mon Sep 17 00:00:00 2001
+From: claude <claude@local>
+Date: Wed, 21 Oct 2026 20:50:06 -0600
+Subject: [PATCH] episode_features: n_turns by the GT direction-vector rule,
+ consecutive triggers merged
+
+n_turns now follows prior.cognitive_map_generation.trajectory_direction_vectors
+on the dense GT path: a segment whose direction has cosine < 0.8
+(TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD, > 36.87 deg) to the last kept
+direction is a direction change; no cap of five; changes on consecutive
+segments are merged into one turn.  n_turn_triggers keeps the unmerged
+count.  Replaces the 1 m resampling with a 45 deg threshold, which split
+corners between samples and missed them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013viJtZsLciemzz8VtLkwa1
+---
+ scripts/analysis/episode_features.py | 65 +++++++++++++++++-----------
+ 1 file changed, 40 insertions(+), 25 deletions(-)
+
+diff --git a/scripts/analysis/episode_features.py b/scripts/analysis/episode_features.py
+index 88cedbb..a5cdba6 100644
+--- a/scripts/analysis/episode_features.py
++++ b/scripts/analysis/episode_features.py
+@@ -10,8 +10,11 @@ For R2R <split> the script writes <out> (JSON: episode id -> features):
+   n_room_changes    region (room) boundary crossings along the GT path, from
+                     the MP3D region boxes of the level the path starts on
+   n_rooms           distinct regions the GT path passes through
+-  n_turns           heading changes > --turn-angle along the GT path sampled
+-                    every --turn-spacing metres (model-free decision points)
++  n_turns           turns along the dense GT path by the rule of the cognitive
++                    map's GT direction vectors (cosine to the last kept
++                    direction < 0.8, i.e. > 36.87 deg), consecutive-segment
++                    triggers merged into one turn, no cap
++  n_turn_triggers   the same before merging
+   n_forks_graph     decision points along the GT path on the MP3D connectivity
+                     graph: visited nodes whose onward unobstructed neighbours
+                     (within --fork-edge-max, the node we came from excluded)
+@@ -68,6 +71,7 @@ if REPO_ROOT not in sys.path:
+ from prior.bbox._geometry import _point_to_obb_distance
+ from prior.bbox._relevance import _first_touched_level_points
+ from prior.bbox._types import SceneSemanticBoxes
++from prior.trajectory import TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD
+ from prior.etp_r1 import ConnectivityEntry
+ from prior.vlnce import VLNCEEpisodeEntry
+ 
+@@ -91,10 +95,6 @@ class Args(Tap):
+     """Metres: onward connectivity edges longer than this do not count as options."""
+     fork_angle: float = 60.0
+     """Degrees: onward edges closer than this in bearing are one option."""
+-    turn_spacing: float = 1.0
+-    """Metres between GT path samples for n_turns."""
+-    turn_angle: float = 45.0
+-    """Degrees of heading change (over turn_spacing) that counts as a turn."""
+     llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
+     meters_per_unit: float = 1.0
+     """MAP_ENCODER.start_position_meters_per_unit of the LLM cache."""
+@@ -133,23 +133,37 @@ def name_match_categories(text: str):
+     return objs, regs
+ 
+ 
+-def turn_count(points, spacing: float, angle_deg: float) -> int:
+-    """Heading changes above angle_deg along the GT path resampled every
+-    spacing metres (x/z plane).  A model-free proxy for decision points:
+-    "turn left at the ..." is one of these."""
+-    p = np.asarray(points, dtype=float)[:, [0, 2]]
+-    if len(p) < 2:
+-        return 0
+-    seg = np.linalg.norm(p[1:] - p[:-1], axis=1)
+-    cum = np.concatenate([[0.0], np.cumsum(seg)])
+-    if cum[-1] < 2 * spacing:
+-        return 0
+-    t = np.arange(0.0, cum[-1], spacing)
+-    rs = np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], axis=1)
+-    d = rs[1:] - rs[:-1]
+-    head = np.arctan2(d[:, 1], d[:, 0])
+-    dh = np.abs((head[1:] - head[:-1] + np.pi) % (2 * np.pi) - np.pi)
+-    return int((dh > math.radians(angle_deg)).sum())
++def gt_direction_turns(points, similarity_threshold: float) -> Tuple[int, int]:
++    """Turns along the dense GT path, with the rule that builds the cognitive
++    map's GT direction vectors (prior.cognitive_map_generation.
++    trajectory_direction_vectors): each non-zero GT segment's direction is
++    compared with the last kept direction, and a cosine below
++    similarity_threshold (TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD = 0.8,
++    i.e. > 36.87 deg) keeps the new direction.  Unlike the map metadata there
++    is no cap of five, and triggers on consecutive segments (a turn spread over
++    several short GT steps) are merged into one turn.
++
++    Returns (turns after merging, raw direction changes)."""
++    from prior.directions import world_delta_to_direction_vector
++
++    kept = None
++    trigger_idx: List[int] = []
++    k = -1  # index among non-zero segments
++    for a, b in zip(points[:-1], points[1:]):
++        dx = float(b[0]) - float(a[0])
++        dz = float(b[2]) - float(a[2])
++        if dx == 0.0 and dz == 0.0:
++            continue
++        k += 1
++        d = world_delta_to_direction_vector(dx, dz)
++        if kept is None:
++            kept = d
++            continue
++        if d[0] * kept[0] + d[1] * kept[1] < similarity_threshold:
++            trigger_idx.append(k)
++            kept = d
++    turns = sum(1 for i, t in enumerate(trigger_idx) if i == 0 or t != trigger_idx[i - 1] + 1)
++    return turns, len(trigger_idx)
+ 
+ 
+ def path_length(points: Sequence[Sequence[float]]) -> float:
+@@ -298,7 +312,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+             "scene": ep.scene_id,
+             "path_len_m": path_length(gt),
+             "n_gt_points": len(gt),
+-            "n_turns": turn_count(gt, args.turn_spacing, args.turn_angle),
++            **dict(zip(("n_turns", "n_turn_triggers"),
++                       gt_direction_turns(gt, TRAJECTORY_KEYPOINT_SIMILARITY_THRESHOLD))),
+             "n_spatial_words": len(SPATIAL_WORDS.findall(ep.instruction)),
+             "n_words": len(ep.instruction.split()),
+         }
+@@ -342,7 +357,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
+         xs = [v[key] for v in vals if v.get(key) is not None and v.get(key) != -1]
+         return f"n={len(xs)} mean={np.mean(xs):.2f} p50={np.median(xs):.2f}" if xs else "n/a"
+     print(f"wrote {args.out}: {len(features)} episodes")
+-    for key in ("path_len_m", "n_turns", "n_room_changes", "n_forks_graph", "n_forks3_graph",
++    for key in ("path_len_m", "n_turns", "n_turn_triggers", "n_room_changes", "n_forks_graph", "n_forks3_graph",
+                 "n_landmarks", "n_decoys", "n_decoy_categories", "n_spatial_words", "llm_region_hit"):
+         print(f"  {key:22s} {q(key)}")
+ 
+-- 
+2.43.0
+
