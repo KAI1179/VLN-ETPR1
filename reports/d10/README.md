@@ -1,16 +1,29 @@
-# D10: model identity audit — stopped at Section 3.1
+# D10: zero-map versus map attention
 
-## Decision
+## Current status: user-authorized continuation; GPU results pending
 
-**STOP: the two arms do not differ only in map input.** Z was initialized
+The user confirms that previous experiments found no final-performance effect
+from initializing at baseline 367500 versus LLM-Grid 460000, and explicitly
+authorizes continuing with this pair. This is user-provided evidence, not an
+independently reproduced control in D10. The user also confirms that **Z's
+training start-position and start-direction inputs were zero**, in addition to
+its grid and predicted directions. The recorded checkpoint/config differences
+below remain facts; the original Section 3.1 stop has been waived.
+
+Launchers, CPU checks, and statistics are prepared. **No D10 GPU inference has
+been launched by the CLI; no real attention comparison is reported yet.**
+
+## Original identity-audit finding
+
+The two arms have different pretraining origins. Z was initialized
 from the baseline navigation pretraining checkpoint at step 367500; M was
 initialized from LLM-Grid pretraining at step 460000. Both have the same
 parameter keys and shapes, but that does not make their training initializations
-identical. Therefore the task book's mandatory identity condition is not met.
+identical. This initially triggered the task book's identity stop rule.
 
-No D10 launcher, sbatch job, GPU inference, attention-token check, or A1–A4/lift
-analysis was executed. No training/model source or existing evaluation artifact
-was modified. This report is not an attention-analysis result.
+No training/model source or existing evaluation artifact was modified. The
+following sections retain the original CPU identity audit; execution instructions
+are in Section 6.
 
 Task book:
 `/home/xukai/code/ETP-R1-snapshot/ETP-R1/upload_files/d10_map_attention_ablation.md`,
@@ -182,14 +195,59 @@ evaluations of iter28000, not evidence of a different selected model. Relevant
 local control metrics reside at:
 `/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/llm_try5_control_val_unseen/eval_results/stats_ckpt_28000_val_unseen.json`.
 
-## 6. Work deliberately not started
+## 6. User-run pipeline
 
-Per the mandatory stop rule, no Z S launcher or sbatch command is supplied,
-and there are no D10 attention tables, confidence intervals, figure data, or
-map-uniformity conclusions. Existing D9 data remain unchanged.
+Local foreground command (tmux; choose any allocated GPU through `GPUS`):
 
-Proceeding with these checkpoints would require explicitly relaxing the
-"map input is the only difference" premise and interpreting the result as a
-descriptive comparison of two differently initialized models. A comparison
-that retains that premise needs a suitably initialization-matched control.
-Neither alternative was automatically implemented.
+```bash
+GPUS=4 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d10/run.sh
+```
+
+The pipeline runs one inference process at a time, preserving the original
+four logical ranks and four environments per rank. Multiple comma-separated
+GPUs rotate between serial jobs, never run simultaneous inferences. It runs:
+
+1. Four-episode attention-hooks-off/on shared replay; exact five-metric check.
+2. Z own-policy evaluation, four serial logical ranks; report SR/SPL alongside
+   archived 63.30/53.20 in `own_metrics.json`, not inferred from expert replay.
+3. Z S attention dump, four serial logical ranks; exact alignment with M's
+   1833 episodes / 13992 frames, including positions/headings/candidates/actions
+   and original raster registration. Different policy argmax choices are allowed.
+4. CPU token/uniformity/metadata checks followed by unchanged D9 A1–A4
+   definitions, conditional-spatial lift, 2000 scene bootstrap draws (seed 0),
+   and five-panel `figure_data.json`. CPU uses one worker and single-thread BLAS.
+
+Runtime zeroing replaces all four encoder tensors, including both start-pose
+inputs. Raw cached metadata is retained **only for D9 region registration**;
+it is not fed to Z. Existing caches, M dumps, model and trainer are unchanged.
+Spatial-token identity and uniformity are measured, not assumed; nonuniform Z
+remains the empirical baseline. Metadata-token mass is reported separately.
+
+Outputs: `data/logs/d10_dump/zero/S/`, `data/logs/d10_dump/token_checks/`,
+per-job evaluation logs under `data/logs/checkpoints/d10_zero_*`, and
+`reports/d10/{hook_equivalence,alignment,own_metrics,checks,stats}.json`,
+`stats.md`, `frames_{Z,M}.npz`, `figure_data.json`, and this README's results block.
+Existing output dumps are not overwritten; do not rerun into a completed dump.
+
+Cloud Slurm entry (one GPU):
+
+```bash
+sbatch /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/submit/d10-map-attention.sh
+```
+
+Submit from the repository root. On a different server export `D10_ROOT`,
+`D10_ZERO_CKPT`, `D10_PRETRAINED`, and `D10_M_CKPT` to uploaded locations;
+`D10_CONDA_ENV` defaults to `etpr1-uv`. Upload the D8 base/S expert replay and
+D9 try5/S dump at their repository-relative paths too. The batch script keeps
+the scheduler's GPU allocation. No submission is performed by the CLI.
+
+Expected local serial GPU time is approximately 30–60 minutes, extrapolated
+from previous four-rank evaluations, not benchmarked for D10. CPU bootstrap and
+map-token reconstruction follow automatically; no real results are fabricated
+before the user's dump completes.
+
+Preparation validation: four CPU unit tests passed (exact-state alignment,
+hook metric comparison, FP32 token sampling, and conditional-spatial
+normalization/lift); all three shell scripts passed `bash -n`; both CPU CLI
+argument parsers and `git diff --check` passed. `ruff` and `ty` were not on
+PATH, so they were not run and no environment packages were installed.
