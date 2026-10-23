@@ -101,15 +101,18 @@ def guarded(title):
     return wrap
 
 
-def _pmap(fn, items, label, workers=int(os.environ.get("CHECK_WORKERS", "3"))):
-    """Thread-pool map in input order with progress (network filesystem: latency-bound)."""
-    out = []
+def _pmap_iter(fn, items, label, workers=int(os.environ.get("CHECK_WORKERS", "3"))):
+    """Thread-pool map in input order with progress, yielded as results arrive
+    (network filesystem: latency-bound; nothing is retained)."""
     with ThreadPoolExecutor(workers) as pool:
         for n, r in enumerate(pool.map(fn, items), 1):
-            out.append(r)
             if n % 5000 == 0 or n == len(items):
                 print(f"       {label}: {n}/{len(items)}", flush=True)
-    return out
+            yield r
+
+
+def _pmap(fn, items, label, workers=int(os.environ.get("CHECK_WORKERS", "3"))):
+    return list(_pmap_iter(fn, items, label, workers))
 
 
 # ----------------------------------------------------------------- code
@@ -330,9 +333,11 @@ def check_maps(s, max_load):
     shapes, bad, stats = {}, [], defaultdict(list)
     samples = {}
     def load(e):
+        """Load one pair and reduce it to a summary; the tensors are freed here
+        (keeping 17k pairs of 37x100x100 grids exceeded the login node's RAM)."""
         sc = eps[e]["scene_id"]
         try:
-            return {
+            pair = {
                 "student": navigation.llm_cached_cognitive_map_to_tensors(
                     sc, cache_id(e), "rxr", "train", metadata_schema=s_schema,
                     cache_dir=cache_dir, model_key=me.llm_cache_model_key),
@@ -340,21 +345,30 @@ def check_maps(s, max_load):
                     sc, cache_id(e), namespace=ns, metadata_schema=t_schema),
             }
         except Exception as exc:
-            return f"{type(exc).__name__}: {exc}"
-
-    R.info(f"loading {len(todo)} student+teacher map pairs ...")
-    for e, pair in zip(todo, _pmap(load, todo, "maps loaded")):
-        if isinstance(pair, str):
-            bad.append((e, pair))
-            continue
+            return e, f"{type(exc).__name__}: {exc}", None
+        summary = {}
         for who, m in pair.items():
             for k in MAP_KEYS:
                 t = m[k]
-                shapes.setdefault((who, k), set()).add(tuple(t.shape))
-                if not torch.isfinite(t.float()).all():
+                summary[(who, k)] = (tuple(t.shape), bool(torch.isfinite(t.float()).all()))
+            summary[(who, "nonzero")] = float((m["grid"] != 0).float().mean())
+        return e, summary, (pair if lang(e) not in samples else None)
+
+    R.info(f"loading {len(todo)} student+teacher map pairs ...")
+    for e, summary, pair in _pmap_iter(load, todo, "maps loaded"):
+        if isinstance(summary, str):
+            bad.append((e, summary))
+            continue
+        for (who, k), v in summary.items():
+            if k == "nonzero":
+                stats[(who, lang(e))].append(v)
+            else:
+                shp, finite = v
+                shapes.setdefault((who, k), set()).add(shp)
+                if not finite:
                     bad.append((e, f"{who}.{k} non-finite"))
-            stats[(who, lang(e))].append(float((m["grid"] != 0).float().mean()))
-        samples.setdefault(lang(e), (e, pair))
+        if pair is not None:
+            samples.setdefault(lang(e), (e, pair))
     R.check(not bad, f"loaded {len(todo)} student+teacher maps through the trainer loaders"
             + (f"; {len(bad)} bad, first {bad[:5]}" if bad else ""))
     for (who, k), shp in sorted(shapes.items()):
