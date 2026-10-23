@@ -12,6 +12,10 @@
 #          stats_ckpt_<ITER>_<SPLIT>.json   (summarize_eval.py layout)
 # Console: data/logs/checkpoints/<RUN>/eval_iter<ITER>_<SPLIT>[_<langtag>].log
 #
+# RxR eval reads its reference paths from IL.RECOLLECT_TRAINER.gt_file, whose
+# default points at a dataset directory this machine does not have
+# (RxR_VLNCE_v0); it is set here to the enc_xlmr files training uses.
+#
 # Episodes without an LLM map are pre-filled as failures by the trainer and
 # counted in SR (llm_cache_missing_count in the json says how many).
 set -euo pipefail
@@ -66,6 +70,7 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
     EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
     "${LANG_ARGS[@]}" \
     IL.back_algo "${BACK_ALGO}" \
+    IL.RECOLLECT_TRAINER.gt_file "data/datasets/RxR_VLNCE_v0_enc_xlmr/{split}/{split}_{role}_gt.json.gz" \
     TRAINER_NAME SS-ETP-LLM \
     MODEL.policy_name LLMGridTry5Policy \
     MODEL.MAP_ENCODER.enabled True \
