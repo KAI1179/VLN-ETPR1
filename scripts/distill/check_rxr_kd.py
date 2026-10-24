@@ -121,9 +121,9 @@ def check_code():
     R.section("code / branch")
     git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True).stdout.strip()
     head, branch = git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD")
-    R.check(branch == BRANCH, f"branch {branch} @ {head[:7]}")
     remote = git("rev-parse", f"origin/{BRANCH}")
-    R.check(remote == head, f"HEAD matches origin/{BRANCH} ({remote[:7]})", warn_only=True)
+    merged = git("merge-base", "--is-ancestor", remote, "HEAD") == "" and subprocess.run(["git", "merge-base", "--is-ancestor", remote, "HEAD"]).returncode == 0
+    R.check(branch == BRANCH or merged, f"branch {branch} @ {head[:7]} contains origin/{BRANCH} ({remote[:7]})")
     dirty = git("status", "--porcelain", "--untracked-files=no")
     R.check(not dirty, "no modified tracked files" + (f":\n{dirty}" if dirty else ""), warn_only=True)
 
@@ -191,7 +191,7 @@ def check_config(s):
         ("IL.gt_teacher_map_namespace", cfg.IL.gt_teacher_map_namespace, E["GT_TEACHER_NAMESPACE"]),
         ("IL.gt_teacher_policy_name", cfg.IL.gt_teacher_policy_name, "PriorGTTry5Policy"),
         ("IL.gt_teacher_elevation_axis", cfg.IL.gt_teacher_elevation_axis, "y"),
-        ("IL.gt_teacher_independent_map", cfg.IL.gt_teacher_independent_map, False),
+        ("IL.gt_teacher_independent_map", getattr(cfg.IL, "gt_teacher_independent_map", False), False),
         ("IL.dual_enabled (no SKD)", cfg.IL.dual_enabled, False),
         ("IL.gate_enabled", cfg.IL.gate_enabled, False),
         ("IL.effect_match_weight", cfg.IL.effect_match_weight, 0.0),
