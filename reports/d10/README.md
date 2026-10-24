@@ -251,3 +251,18 @@ hook metric comparison, FP32 token sampling, and conditional-spatial
 normalization/lift); all three shell scripts passed `bash -n`; both CPU CLI
 argument parsers and `git diff --check` passed. `ruff` and `ty` were not on
 PATH, so they were not run and no environment packages were installed.
+
+<!-- D10 RESULTS START -->
+## D10 results
+
+See [stats.md](stats.md), [stats.json](stats.json), and [figure_data.json](figure_data.json).
+
+User-authorized continuation despite the recorded pretraining-initialization difference. Single run per arm; attention comparisons are descriptive.
+This section does not remove or supersede the identity-audit evidence above.
+
+- M − Z entropy: -0.591473; CI [-0.6424634041999613, -0.5263089650604122]; difference detected within this pair.
+- M − Z top3: 0.193185; CI [0.17368892488023416, 0.20807051980648056]; difference detected within this pair.
+- Route-band lift M − Z: 2.593653; CI [2.2681963466886654, 3.129148167711881].
+- M's route-band attention exceeds the empirical Z reference.
+
+<!-- D10 RESULTS END -->

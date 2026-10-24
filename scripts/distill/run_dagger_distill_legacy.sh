@@ -231,7 +231,6 @@ MODEL_ARGS=(
 )
 TEACHER_COORD_ARGS=()
 [[ "${COORD}" == "True" ]] && TEACHER_COORD_ARGS=(IL.gt_teacher_start_position_meters_per_unit 1.0)
-printf '%s %s\n' "${MODEL_ARGS[@]}" > "${RUN_DIR}/eval_args.txt"
 
 RESUME_ARGS=(IL.load_from_ckpt False IL.is_requeue False)
 LATEST_CKPT="$(ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 || true)"
@@ -298,6 +297,7 @@ if [[ -n "${EMIT_OPTS:-}" ]]; then
     exit 0
 fi
 mkdir -p "${RUN_DIR}"
+printf '%s %s\n' "${MODEL_ARGS[@]}" > "${RUN_DIR}/eval_args.txt"
 
 {
     echo "launch_time=$(date -Is)"
