@@ -10,7 +10,7 @@
 # only when there is no FAIL.
 set -eo pipefail
 eval "$(conda shell.bash hook)"
-conda activate etpr1-uv
+if [[ -d /home/xukai/code/ETP-R1-snapshot ]]; then conda activate etpr1-py38; else conda activate etpr1-uv; fi
 set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
@@ -22,7 +22,7 @@ ARGS=()
 for s in ${SETTINGS:-en all}; do
     # Exact torchrun command the job will run (launcher stops before torchrun).
     (
-        export SETTING="${s}" CUDA_VISIBLE_DEVICES=0,1,2,3 TORCHRUN="$(command -v torchrun)"
+        export SETTING="${s}" CUDA_VISIBLE_DEVICES=0,1,2,3 TORCHRUN="${TORCHRUN:-$(command -v torchrun)}"
         source scripts/distill/rxr_kd_env.sh
         env | grep -E '^(GT_TEACHER_[A-Z_]+|TEACHER_NS_SRC|PRETRAINED_CKPT|LLM_[A-Z_]+|DATASET_SUFFIX|EXP_CONFIG|RUN_NAME|ITERS|CKPT_INTERVAL|CKPT_OPTIM_LATEST_ONLY|NUM_ENVS|MASTER_PORT)=' \
             | sort > "${TMP}/${s}.env"

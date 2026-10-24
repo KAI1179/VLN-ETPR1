@@ -5,15 +5,27 @@
 case "${SETTING:-}" in en|all) ;; *) echo "SETTING must be en or all" >&2; return 2 ;; esac
 : "${REPO_ROOT:?REPO_ROOT not set}"
 
-# The RxR GT teacher was trained in the partner repo's worktree (read-only use).
-TEACHER_WT="${TEACHER_WT:-${HOME}/run/ETP-R1/.worktrees/priorgt-rxr-native-policy-translated-map-dagger}"
-export GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${TEACHER_WT}/data/logs/checkpoints/priorgt_rxr_native_policy_translated_map_dagger/ckpt.iter15000.pth}"
-export GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.rxr-translated-mention-97525891.v1}"
-export TEACHER_NS_SRC="${TEACHER_NS_SRC:-${TEACHER_WT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}}"
+# Host defaults.  ln01: the RxR GT teacher lives in the partner repo's worktree
+# (read-only use).  WZ: the same files, copied from ln01 into
+# /data/xukai/checkpoint/From_ln01 (tar bundles) and unpacked next to the other
+# GT namespaces / into the repo's data/llm_navigation.
+if [[ -d /home/xukai/code/ETP-R1-snapshot ]]; then   # WZ
+    export GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-/data/xukai/checkpoint/From_ln01/ckpt.iter15000.pth}"
+    export GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.rxr-translated-mention-97525891.v1}"
+    export TEACHER_NS_SRC="${TEACHER_NS_SRC:-/data/xukai/etp-r1-snapshot/runtime-data/data/cognitive_maps/${GT_TEACHER_NAMESPACE}}"
+    export PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+    export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${REPO_ROOT}/data/llm_navigation}"
+    export TORCHRUN="${TORCHRUN:-/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun}"
+else                                                   # ln01
+    TEACHER_WT="${TEACHER_WT:-${HOME}/run/ETP-R1/.worktrees/priorgt-rxr-native-policy-translated-map-dagger}"
+    export GT_TEACHER_CKPT="${GT_TEACHER_CKPT:-${TEACHER_WT}/data/logs/checkpoints/priorgt_rxr_native_policy_translated_map_dagger/ckpt.iter15000.pth}"
+    export GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.rxr-translated-mention-97525891.v1}"
+    export TEACHER_NS_SRC="${TEACHER_NS_SRC:-${TEACHER_WT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}}"
+    export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${HOME}/run/ETP-R1/pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt}"
+    export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${HOME}/run/ETP-R1/data/llm_navigation}"
+fi
 export GT_TEACHER_POLICY_NAME="${GT_TEACHER_POLICY_NAME:-PriorGTTry5Policy}"
-export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${HOME}/run/ETP-R1/pretrained/r2r_rxr_ce/llm_grid_try5/store2/model_step_460000.pt}"
 
-export LLM_CACHE_DIR="${LLM_CACHE_DIR:-${HOME}/run/ETP-R1/data/llm_navigation}"
 export LLM_EN_KEY="${LLM_EN_KEY:-llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree}"
 export LLM_TRANSLATED_KEY="${LLM_TRANSLATED_KEY:-llm-grid-rxr-translated-hi-te-grid2-epoch10-v1}"
 # Episodes rejected only for non-unit direction vectors, re-parsed with

@@ -16,6 +16,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT SETTING
 source "${REPO_ROOT}/scripts/distill/rxr_kd_env.sh"
 TORCHRUN="${TORCHRUN:-$(command -v torchrun)}"
+[[ -x "${TORCHRUN}" ]] || { echo "torchrun not found; set TORCHRUN" >&2; exit 1; }
 PYTHON="$(dirname "${TORCHRUN}")/python"
 SPLIT="${SPLIT:-val_unseen}"
 LANG_TAG=""

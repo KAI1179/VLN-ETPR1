@@ -20,10 +20,11 @@ shift
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
-export TORCHRUN="${TORCHRUN:-$(command -v torchrun)}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:?Set the four allocated GPU ids explicitly}"
 IFS=',' read -ra GPUS <<< "${CUDA_VISIBLE_DEVICES}"
 [[ ${#GPUS[@]} -eq 4 ]] || { echo 'This experiment requires four GPUs' >&2; exit 1; }
 
 source "${REPO_ROOT}/scripts/distill/rxr_kd_env.sh"
+export TORCHRUN="${TORCHRUN:-$(command -v torchrun)}"
+[[ -x "${TORCHRUN}" ]] || { echo "torchrun not found; set TORCHRUN" >&2; exit 1; }
 bash "${REPO_ROOT}/scripts/distill/run_dagger_distill_legacy.sh" kl "$@"

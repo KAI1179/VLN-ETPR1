@@ -9,7 +9,7 @@
 # Idempotent; the source caches are never modified.  Run check_rxr_kd.sh after.
 set -eo pipefail
 eval "$(conda shell.bash hook)"
-conda activate etpr1-uv
+if [[ -d /home/xukai/code/ETP-R1-snapshot ]]; then conda activate etpr1-py38; else conda activate etpr1-uv; fi
 set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
