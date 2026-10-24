@@ -28,9 +28,17 @@ fi
 # ln01 kills login-node processes above 4 cores: one compute thread.
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 CUDA_VISIBLE_DEVICES='' PYTHONPATH="${REPO_ROOT}"
 
-# 2. re-parse maps rejected only for non-unit direction vectors (repair key)
-python "${REPO_ROOT}/scripts/distill/repair_rxr_llm_direction_norm.py" --cache-dir "${LLM_CACHE_DIR}" \
-    --en-key "${LLM_EN_KEY}" --translated-key "${LLM_TRANSLATED_KEY}" --repair-key "${LLM_REPAIR_KEY}"
+# 2. re-parse maps rejected only for non-unit direction vectors (repair key).
+#    Skipped when the repair key already holds its three splits (e.g. copied
+#    from ln01); REPAIR=force re-runs it.  Needs the LLM training deps
+#    (accelerate) that the generator module imports.
+REPAIR_DIR="${LLM_CACHE_DIR}/${LLM_REPAIR_KEY}/rxr"
+if [[ "${REPAIR:-auto}" != "force" && -d "${REPAIR_DIR}/train/status" && -d "${REPAIR_DIR}/val_seen/status" && -d "${REPAIR_DIR}/val_unseen/status" ]]; then
+    echo "repair key present: ${REPAIR_DIR} ($(find "${REPAIR_DIR}" -name '*.npz' | wc -l) rasters); skipping re-parse"
+else
+    python "${REPO_ROOT}/scripts/distill/repair_rxr_llm_direction_norm.py" --cache-dir "${LLM_CACHE_DIR}" \
+        --en-key "${LLM_EN_KEY}" --translated-key "${LLM_TRANSLATED_KEY}" --repair-key "${LLM_REPAIR_KEY}"
+fi
 
 # 3. the two symlink keys the student reads (I/O-bound, 8 threads)
 for spec in "${LLM_EN_MERGED_KEY}:en-US,en-IN" "${LLM_MERGED_KEY}:*"; do
