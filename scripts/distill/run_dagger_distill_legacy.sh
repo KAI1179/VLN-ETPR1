@@ -105,8 +105,11 @@ fi
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 LOG_PATH="${RUN_DIR}/train.log"
 PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
-GT_TEACHER_NAMESPACE="gt.legacy.r1p5.direction5.v1"
-GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
+GT_TEACHER_NAMESPACE="${GT_TEACHER_NAMESPACE:-gt.legacy.r1p5.direction5.v1}"
+GT_TEACHER_POLICY_NAME="${GT_TEACHER_POLICY_NAME:-PriorGTTry5Policy}"
+# RxR runs (scripts/distill/run_rxr_kd.sh) override these; defaults = the R2R recipe.
+LLM_CACHE_KEY="${LLM_CACHE_KEY:-llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree}"
+LLM_CACHE_DIR="${LLM_CACHE_DIR:-}"
 LOAD_MAP="${LOAD_MAP:-False}"
 
 EFFECT_WEIGHT="${EFFECT_WEIGHT:-1.0}"
@@ -207,14 +210,17 @@ for key in distill_stop_factorized effect_match_weight gate_enabled gate_normali
         exit 2
     fi
 done
+# EMIT_OPTS=<file>: write the exact torchrun command and exit before touching
+# the run directory (used by scripts/distill/check_rxr_kd.sh).
+if [[ -z "${EMIT_OPTS:-}" ]]; then
 [[ -f "${GT_TEACHER_CKPT}" ]] || { echo "Teacher checkpoint not found: ${GT_TEACHER_CKPT}" >&2; exit 1; }
 [[ -d "${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" ]] \
     || { echo "Teacher namespace not found: ${REPO_ROOT}/data/cognitive_maps/${GT_TEACHER_NAMESPACE}/raster" >&2; exit 1; }
+fi
 
 cd "${REPO_ROOT}"
 export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
 ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
-mkdir -p "${RUN_DIR}"
 
 # Model/map options every evaluation of this run must use (one "KEY VALUE"
 # per line; eval_run.sh appends them after its LLM-Grid defaults).
@@ -249,6 +255,7 @@ COMMAND=(
     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
     NUM_ENVIRONMENTS "${NUM_ENVS}"
     CHECKPOINT_INTERVAL "${CKPT_INTERVAL:-1000}"
+    IL.ckpt_optim_latest_only "${CKPT_OPTIM_LATEST_ONLY:-False}"
     ONLY_LAST_SAVEALL False
     IL.iters "${ITERS:-20000}"
     IL.lr 1e-5
@@ -260,13 +267,14 @@ COMMAND=(
     IL.min_lr_ratio 1.0
     "${RESUME_ARGS[@]}"
     IL.waypoint_aug True
-    TASK_CONFIG.DATASET.SUFFIX _90
+    TASK_CONFIG.DATASET.SUFFIX "${DATASET_SUFFIX-_90}"
     TRAINER_NAME SS-ETP-LLM
     MODEL.policy_name LLMGridTry5Policy
     MODEL.MAP_ENCODER.enabled True
     MODEL.MAP_ENCODER.architecture try5
     MODEL.MAP_ENCODER.source llm_grid
-    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+    MODEL.MAP_ENCODER.llm_cache_model_key "${LLM_CACHE_KEY}"
+    MODEL.MAP_ENCODER.llm_cache_dir "${LLM_CACHE_DIR}"
     MODEL.MAP_ENCODER.refiner_ckpt ""
     MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
     "${MODEL_ARGS[@]}"
@@ -285,6 +293,12 @@ COMMAND=(
     "${DISTILL_ARGS[@]}"
 )
 
+if [[ -n "${EMIT_OPTS:-}" ]]; then
+    printf '%s\n' "${COMMAND[@]}" > "${EMIT_OPTS}"
+    exit 0
+fi
+mkdir -p "${RUN_DIR}"
+
 {
     echo "launch_time=$(date -Is)"
     echo "git_commit=$(git rev-parse HEAD)"
@@ -294,6 +308,8 @@ COMMAND=(
     echo "teacher=${GT_TEACHER_CKPT} (${GT_TEACHER_NAMESPACE}, dy)"
     echo "coordinate_fusion=${COORD}"
     echo "pretrained=${PRETRAINED_CKPT} load_pretrained_map_modules=${LOAD_MAP}"
+    echo "exp_config=${EXP_CONFIG:-${REPO_ROOT}/run_r2r/iter_train.yaml}"
+    echo "llm_cache=${LLM_CACHE_DIR:-<default>}/${LLM_CACHE_KEY}"
     echo "distill_args=${DISTILL_ARGS[*]}"
     echo "iters=${ITERS:-20000}"
     echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"

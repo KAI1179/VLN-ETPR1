@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=rxr-en-dual-gt30k
+#SBATCH --output=slurm-%x-%j.out
+#SBATCH --gpus=4
+#SBATCH -p vip_gpu_scze096
+set -eo pipefail
+eval "$(conda shell.bash hook)"
+conda activate etpr1-uv
+set -u
+# sbatch runs a spooled copy of this file: submit from the repo root.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
+[[ -f "${REPO_ROOT}/run.py" ]] || { echo "submit from the repo root (got ${REPO_ROOT})" >&2; exit 1; }
+export TORCHRUN="$(command -v torchrun)"
+# Slurm normally exports the allocated ids; fall back to what the cgroup shows.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd,)}"
+# These are cloud paths: supply both with sbatch --export=ALL,...
+: "${GT_TEACHER_CKPT:?Provide uploaded joint GT 30000 checkpoint}"
+: "${PRETRAINED_CKPT:?Provide uploaded LLM 460000 checkpoint}"
+bash "${REPO_ROOT}/scripts/distill/run_rxr_en_dual_gt30k.sh"

@@ -225,6 +225,7 @@ def available_llm_navigation_episode_ids(
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
     reference_model_key: str = "",
+    languages: Optional[list[str]] = None,
 ) -> list[str]:
     report = llm_navigation_cache_report(
         dataset,
@@ -233,6 +234,7 @@ def available_llm_navigation_episode_ids(
         require_boxes=require_boxes,
         cache_dir=cache_dir,
         model_key=model_key,
+        languages=languages,
     )
 
     if report.missing_episode_ids:
@@ -251,6 +253,7 @@ def available_llm_navigation_episode_ids(
             require_boxes=require_boxes,
             cache_dir=cache_dir,
             model_key=reference_model_key,
+            languages=languages,
         )
         if not reference.available_episode_ids:
             raise FileNotFoundError(
@@ -287,6 +290,7 @@ def llm_navigation_cache_report(
     require_boxes: bool,
     cache_dir: Optional[str | Path] = None,
     model_key: str = DEFAULT_LLM_NAVIGATION_MODEL_KEY,
+    languages: Optional[list[str]] = None,
 ) -> LLMNavigationCacheReport:
     canonical_dataset = "RxR" if dataset.lower() == "rxr" else dataset.upper()
     if canonical_dataset not in ("R2R", "RxR"):
@@ -295,7 +299,9 @@ def llm_navigation_cache_report(
     requested = set(str(episode_id) for episode_id in episode_ids or [])
     available = []
     missing = []
-    for entry in VLNCEEpisodeEntry.iter_from(vlnce_dataset, splits=(split,)):
+    for entry in VLNCEEpisodeEntry.iter_from(
+        vlnce_dataset, splits=(split,), languages=languages
+    ):
         episode_id = str(entry.episode_id)
         if requested and episode_id not in requested:
             continue

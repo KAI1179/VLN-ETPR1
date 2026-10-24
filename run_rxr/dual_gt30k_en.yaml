@@ -1,0 +1,13 @@
+# Experiment-only overlay. Existing R2R launchers keep their original profile.
+BASE_TASK_CONFIG_PATH: run_rxr/rxr_vlnce.yaml
+TASK_CONFIG:
+  DATASET:
+    LANGUAGES: [en-US, en-IN]
+    ROLES: [guide]
+EVAL:
+  LANGUAGES: [en-US, en-IN]
+IL:
+  max_traj_len: 25
+  max_text_len: 250
+MODEL:
+  task_type: rxr
