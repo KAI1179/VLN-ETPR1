@@ -7,7 +7,9 @@
 # Env: CUDA_VISIBLE_DEVICES (default 0; several ids = one process per GPU),
 #      NUM_ENVS (4), SPLIT (val_unseen), BACK_ALGO (teleport, the RxR default),
 #      EVAL_LANGUAGES (override the setting's languages, e.g. "en-US,en-IN"
-#      to score the all-language model on English only), RUN_NAME, MASTER_PORT.
+#      to score the all-language model on English only), RUN_NAME,
+#      EVAL_PORT (torchrun rendezvous port; default a free one -- the setting's
+#      MASTER_PORT belongs to the training job, which may run on the same host).
 # Results: data/logs/checkpoints/<RUN>_eval_iter<ITER>_<SPLIT>[_<langtag>]/eval_results/
 #          stats_ckpt_<ITER>_<SPLIT>.json   (summarize_eval.py layout)
 # Console: data/logs/checkpoints/<RUN>/eval_iter<ITER>_<SPLIT>[_<langtag>].log
@@ -53,7 +55,7 @@ RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_
 [[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
 
 free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
-RDZV_PORT="${MASTER_PORT:-$(free_port)}"
+RDZV_PORT="${EVAL_PORT:-$(free_port)}"
 
 cd "${REPO_ROOT}"
 env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
