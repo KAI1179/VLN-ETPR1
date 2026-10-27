@@ -8,7 +8,7 @@
 #   all         every checkpoint in the run directory
 #   every:N     every checkpoint whose iteration is a multiple of N
 # Env: CUDA_VISIBLE_DEVICES (all GPUs of the job), SPLIT (val_unseen), NUM_ENVS,
-#      EVAL_LANGUAGES, SKIP_DONE (1: skip iters with a result, default 1).
+#      EVAL_LANGUAGES, EVAL_PORT, SKIP_DONE (1: skip iters with a result, default 1).
 set -euo pipefail
 SETTING="${1:-}"; [[ "${SETTING}" =~ ^(en|all)$ ]] || { echo "Usage: $0 {en|all} [ITER ...|all|every:N]" >&2; exit 2; }
 shift
