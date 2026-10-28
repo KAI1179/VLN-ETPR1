@@ -181,6 +181,36 @@ with a faint full trajectory and a separately labelled high-level prefix.
 The heading rays are numbered directions anchored at the start, not invented
 intermediate positions. GPU rendering has **not** been launched by the CLI.
 
+## Expanded top20 rendering: both splits
+
+Prepared40cases: the first20 entries of `candidates.json` (val_unseen) and the
+first20 entries of `val_seen/candidates.json`. The lists are loaded from the
+existing candidate tables, not resampled. Across both arms this is835decision
+frames:439val_unseen and396val_seen. CPU manifests, map inputs and semantic
+plots are present for all40. Four prior cases are already marked complete;
+the remaining36 await the user's GPU rendering command.
+
+```bash
+GPU=7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/paper_cases/render_top20.sh
+```
+
+The foreground job runs one simulator/case at a time, skips cases marked
+complete, and reuses existing RGB images on partial reruns. Errors still stop
+the job; no failed case is silently counted as complete. It does not load any
+navigation policy or change training/evaluation jobs.
+
+Outputs retain existing split-specific locations:
+
+- `vis/<episode>/` for val_unseen.
+- `vis/val_seen/<episode>/` for val_seen.
+- `vis/top20_manifest.json` lists40cases, source ranks/tables, frame counts,
+  directories and completion status. Status is refreshed after a successful
+  batch; each case's `meta.json` is updated immediately when that case finishes.
+
+The top20 list is numerical screening, not a claim that every instruction has
+the same implied-layout richness; retain the manual instruction review when
+choosing the final paper panels.
+
 ## Preparation checks
 
 - Existing decision dumper inspected; model and trainer untouched.

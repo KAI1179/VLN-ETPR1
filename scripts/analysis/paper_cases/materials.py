@@ -273,6 +273,9 @@ def render(args):
         manifest = json.loads((directory / 'meta.json').read_text())
         if manifest.get('split', 'val_unseen') != args.split:
             raise ValueError(f'Manifest split mismatch: {directory}')
+        if manifest['render_status'] == 'complete':
+            print(f'Already rendered {args.split}/{eid}; preserving existing assets', flush=True)
+            continue
         simulator = make_simulator(manifest['scene_path'], SimpleNamespace(gpu_device_id=args.gpu_device_id, sensor_height=1.25))
         try:
             image, extent = base_crop(simulator, manifest, directory)

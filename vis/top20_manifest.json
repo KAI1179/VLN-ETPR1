@@ -1,0 +1,482 @@
+[
+  {
+    "split": "val_unseen",
+    "rank": 1,
+    "episode_id": "532",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/532",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 2,
+    "episode_id": "456",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/456",
+    "render_status": "complete",
+    "frames": {
+      "ours": 11,
+      "zeromap": 8
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 3,
+    "episode_id": "1455",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1455",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 4,
+    "episode_id": "691",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/691",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 5,
+    "episode_id": "1444",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1444",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 11,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 6,
+    "episode_id": "326",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/326",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 7,
+    "episode_id": "1043",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1043",
+    "render_status": "complete",
+    "frames": {
+      "ours": 11,
+      "zeromap": 13
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 8,
+    "episode_id": "52",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/52",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 9,
+    "episode_id": "666",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/666",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 11,
+      "zeromap": 10
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 10,
+    "episode_id": "1549",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1549",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 7
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 11,
+    "episode_id": "603",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/603",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 8,
+      "zeromap": 6
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 12,
+    "episode_id": "351",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/351",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 13,
+      "zeromap": 13
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 13,
+    "episode_id": "132",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/132",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 14,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 14,
+    "episode_id": "438",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/438",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 15,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 15,
+    "episode_id": "314",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/314",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 8
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 16,
+    "episode_id": "1432",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1432",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 10
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 17,
+    "episode_id": "1609",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1609",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 18,
+    "episode_id": "1085",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/1085",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 8,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 19,
+    "episode_id": "315",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/315",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 13,
+      "zeromap": 7
+    }
+  },
+  {
+    "split": "val_unseen",
+    "rank": 20,
+    "episode_id": "116",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/116",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 14,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 1,
+    "episode_id": "485",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/485",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 7
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 2,
+    "episode_id": "306",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/306",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 12
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 3,
+    "episode_id": "307",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/307",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 15,
+      "zeromap": 11
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 4,
+    "episode_id": "24",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/24",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 15,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 5,
+    "episode_id": "170",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/170",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 5
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 6,
+    "episode_id": "661",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/661",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 7
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 7,
+    "episode_id": "131",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/131",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 11,
+      "zeromap": 10
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 8,
+    "episode_id": "473",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/473",
+    "render_status": "complete",
+    "frames": {
+      "ours": 13,
+      "zeromap": 11
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 9,
+    "episode_id": "101",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/101",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 15,
+      "zeromap": 15
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 10,
+    "episode_id": "249",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249",
+    "render_status": "complete",
+    "frames": {
+      "ours": 9,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 11,
+    "episode_id": "400",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/400",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 10,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 12,
+    "episode_id": "74",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/74",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 13,
+    "episode_id": "75",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/75",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 11,
+      "zeromap": 11
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 14,
+    "episode_id": "371",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/371",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 13,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 15,
+    "episode_id": "121",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/121",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 8,
+      "zeromap": 6
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 16,
+    "episode_id": "539",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/539",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 8,
+      "zeromap": 6
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 17,
+    "episode_id": "450",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/450",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 13,
+      "zeromap": 9
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 18,
+    "episode_id": "59",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/59",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 9,
+      "zeromap": 7
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 19,
+    "episode_id": "746",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/746",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 11,
+      "zeromap": 6
+    }
+  },
+  {
+    "split": "val_seen",
+    "rank": 20,
+    "episode_id": "417",
+    "source_table": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/paper_cases/val_seen/candidates.json",
+    "directory": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/417",
+    "render_status": "pending_user_render",
+    "frames": {
+      "ours": 8,
+      "zeromap": 6
+    }
+  }
+]
