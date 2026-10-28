@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import List
+from typing import List, Optional
 
 from tap import Tap
 
@@ -17,13 +17,14 @@ TURN_CUE = re.compile(
 
 
 class Args(Tap):
-    exclude: List[str]
+    split: str = 'val_unseen'
+    exclude: List[str] = []
     """Two episode IDs to exclude; figure membership must be verified separately."""
-    ours: str = str(ROOT / 'results/ours_val_unseen_episodes.jsonl')
-    zeromap: str = str(ROOT / 'results/zeromap_val_unseen_episodes.jsonl')
-    features: str = str(ROOT / 'data/logs/analysis/features_val_unseen.json')
+    ours: Optional[str] = None
+    zeromap: Optional[str] = None
+    features: Optional[str] = None
     quality_dir: str = str(ROOT / 'reports/map_quality')
-    output: str = str(ROOT / 'reports/paper_cases')
+    output: Optional[str] = None
 
 
 def read_rows(path, condition=None):
@@ -56,9 +57,9 @@ def mentioned_quality(metrics):
     }
 
 
-def screen(ours, zeromap, features, validity, presence, excluded):
-    if ours.keys() != zeromap.keys() or len(ours) != 1839:
-        raise ValueError('Screening requires two complete, matching 1839-episode val_unseen tables')
+def screen(ours, zeromap, features, validity, presence, excluded, expected=1839):
+    if ours.keys() != zeromap.keys() or len(ours) != expected:
+        raise ValueError(f'Screening requires two complete, matching {expected}-episode tables')
     candidates = []
     counts = {'paired_episodes': len(ours), 'ours_success_zero_failure': 0,
               'after_explicit_exclusions': 0, 'valid_json_and_schema': 0,
@@ -141,17 +142,27 @@ def write_report(result, directory):
 
 def main():
     args = Args(underscores_to_dashes=True).parse_args()
+    if args.split not in ('val_unseen', 'val_seen'):
+        raise ValueError('Expected split val_unseen or val_seen')
+    args.ours = args.ours or str(ROOT / f'results/ours_{args.split}_episodes.jsonl')
+    args.zeromap = args.zeromap or str(ROOT / f'results/zeromap_{args.split}_episodes.jsonl')
+    args.features = args.features or str(ROOT / ('data/logs/analysis/features_val_unseen.json'
+        if args.split == 'val_unseen' else 'reports/paper_cases/val_seen/features_val_seen.json'))
+    args.output = args.output or str(ROOT / ('reports/paper_cases' if args.split == 'val_unseen'
+                                           else 'reports/paper_cases/val_seen'))
     ours, zeromap = read_rows(args.ours), read_rows(args.zeromap)
     features = json.loads(Path(args.features).read_text())
     quality_dir = Path(args.quality_dir)
-    validity = read_rows(quality_dir / 't0_val_unseen_episodes.jsonl')
-    presence = read_rows(quality_dir / 't1_val_unseen_episodes.jsonl', 'LLM')
+    validity = read_rows(quality_dir / f't0_{args.split}_episodes.jsonl')
+    presence = read_rows(quality_dir / f't1_{args.split}_episodes.jsonl', 'LLM')
     excluded = set(map(str, args.exclude))
-    if len(excluded) != 2 or not excluded <= ours.keys():
-        raise ValueError('Supply two val_unseen episode IDs to exclude')
-    selected, counts = screen(ours, zeromap, features, validity, presence, excluded)
+    if (args.split == 'val_unseen' and len(excluded) != 2) or not excluded <= ours.keys():
+        raise ValueError('Supply valid split-specific exclusion IDs; val_unseen requires two')
+    selected, counts = screen(ours, zeromap, features, validity, presence, excluded,
+                             1839 if args.split == 'val_unseen' else 778)
     result = {
         'definitions': {
+            'split': args.split,
             'paired_outcome': 'ours success=1, zeromap success=0',
             'excluded_episodes': sorted(excluded, key=int),
             'exclusion_source': 'Explicit CLI-supplied IDs; this script does not verify membership in attn_case.pdf. See README.md for confirmation/provisional status.',
@@ -167,8 +178,8 @@ def main():
         },
         'sources': {'ours': str(Path(args.ours).resolve()), 'zeromap': str(Path(args.zeromap).resolve()),
                     'features': str(Path(args.features).resolve()),
-                    'validity': str((quality_dir / 't0_val_unseen_episodes.jsonl').resolve()),
-                    'presence': str((quality_dir / 't1_val_unseen_episodes.jsonl').resolve()),
+                    'validity': str((quality_dir / f't0_{args.split}_episodes.jsonl').resolve()),
+                    'presence': str((quality_dir / f't1_{args.split}_episodes.jsonl').resolve()),
                     'feature_script': str(ROOT / 'scripts/analysis/episode_features.py'),
                     'quality_script': str(ROOT / 'scripts/analysis/map_quality/t1_presence.py')},
         'counts': counts, 'candidates': selected,
