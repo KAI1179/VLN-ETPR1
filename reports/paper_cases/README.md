@@ -2,10 +2,73 @@
 
 ## Status
 
-CPU preparation completed. **No GPU evaluation has been launched and no new
-episode result table or selected-case figure is claimed.** Awaiting authorized
-evaluation GPUs and the two episode IDs used in `attn_case.pdf`. The PDF was not
-located; previous D10 exports1392/92 alone do not prove they are its episodes.
+The user completed all four single-GPU7 evaluations. CPU integrity checks passed
+for1839+1839+778+778 actual rollouts. The four requested result JSONL tables
+exist. CPU screening has completed; see [candidates.md](candidates.md) and the
+reviewed selections below. No new case rendering is claimed at this stage.
+
+Exclusions1392/92 remain **provisional** from previous D10 exports: `attn_case.pdf`
+was not located and its episode IDs have not been independently confirmed.
+
+## Completed batch results (single rank, four environments)
+
+All SR/SPL/OSR/nDTW values below are percentages; NE is metres.
+
+| Model | Split | Episodes | SR | SPL | NE | OSR | nDTW | Low steps | High steps |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ours | val_unseen |1839|67.4823|56.6115|3.7925|72.3763|65.5891|95.1175|8.7281|
+| zeromap | val_unseen |1839|63.1865|53.3227|4.0551|69.2224|63.8921|97.7107|8.7656|
+| ours | val_seen |778|75.9640|67.9593|2.9041|80.7198|73.3863|82.6748|8.4987|
+| zeromap | val_seen |778|75.8355|68.4463|2.9441|80.7198|73.4375|77.5501|8.1542|
+
+Every exported episode has decisions/trajectory/STOP records, unique IDs, and
+six metrics exactly equal to its corresponding `stats_ep_*` record: zero
+mismatches. No missing-cache zero-score placeholders were found. Source logs:
+`data/logs/checkpoints/paper_case_<model>_<split>/eval_results/`.
+
+Ours SR reproduces67.48 but SPL56.6115 differs from historical56.6311. Zeromap
+is63.1865 rather than archived63.2953. The run uses one rank and executes every
+episode (including absent original-map cases); it is not labelled a per-episode
+exact reproduction of the historical evaluations.
+
+## CPU shortlist and reviewed selections
+
+Counts:222 ours-success/zero-failure →221 after provisional exclusions →220
+valid JSON/schema →111 with≥2GT turns and≥2GT regions →85 with ours8–15high-level
+steps. The first20 are listed in [candidates.md](candidates.md).
+
+Selected for material preparation: **456 and1043**, after reading the full
+instructions rather than treating GT region/turn counts as text labels.
+
+| Episode | Mentioned F1 pooled/object/region | GT turns/regions | Steps ours/zero | Ours SPL/NE | Zero SPL/NE |
+|---|---|---|---|---|---|
+|456|1/1/1|4/3|11/8|0.5590/0.901m|0/18.486m|
+|1043|1/0/1|3/5|11/13|0.9046/2.913m|0/4.338m|
+
+Episode1043's object-only F1 is zero because its mentioned-object target count
+is zero; its pooled score is supported by mentioned regions. Do not present it
+as evidence of object grounding.
+
+###456: cabinet → bedroom → bathroom
+
+> Walk down the hall leading to the cabinet. At the cabinet take a right and
+> enter the bedroom. In the room take a left and enter the bathroom on the far
+> left. Stop on the rug in front of the sink.
+
+Two explicit turns, sequential room transitions, and cabinet/sink landmarks
+support the intended route-layout explanation. Ours11steps versus zero8;
+zero's NE18.49m makes the trajectory contrast substantial. Both models already
+choose different candidates at step0 (ours g3, zero g0; IDs are model-local).
+
+###1043: hallway → den → bathroom → exercise room
+
+> Turn left then walk down the hallway. Then turn right and enter the den.
+> Then walk through the bath room and enter the exercise room.
+
+Two explicit turns and an ordered chain of named rooms support the implied
+layout example without requiring an object-grounding claim. Ours11steps,
+zero13; ours SPL0.9046. Initial choices differ (ours g3, zero g1; compare actual
+coordinates/probabilities, not ID strings alone).
 
 ## Exact checkpoints and reference harness
 
@@ -88,15 +151,35 @@ Quality sources: `reports/map_quality/t0_val_unseen_episodes.jsonl` and
 `t1_val_unseen_episodes.jsonl`; complexity source:
 `data/logs/analysis/features_val_unseen.json`.
 
-## Step3: materials, after selection
+## Step3: CPU materials prepared; GPU rendering pending
 
-Not started before the new evaluations and instruction review. The selected
-episodes will use their actual logged poses/candidates/visited nodes and action
-distributions, with per-step panoramas and top-down graph overlays, the two
-own trajectories/reference path, and original predicted cognitive-map channels
-and headings under the explicitly assumed start registration. Outputs follow
-the requested `vis/<episode>/<ours|zeromap>/step_XX_*` layout and `meta.json`.
+`vis/456/meta.json` and `vis/1043/meta.json` are prepared from the actual new
+own-rollout records. All per-step poses, visited/ghost nodes, chosen nodes,
+action distributions, metrics, full trajectories, original maps and separate
+zeromap all-zero input arrays are preserved. Region/object/heading PNGs are
+also prepared. Episode456 has11ours/8zero frames;1043 has11ours/13zero frames.
+
+To preserve the exact batch trajectories, material collection renders the
+recorded poses rather than rerunning the policy at a different rank layout.
+This is a material-collection implementation choice, not a new episode eval.
 No old D10 candidate is silently reused as a final-model case.
+
+User-run rendering command (only GPU/simulator stage):
+
+```bash
+CUDA_VISIBLE_DEVICES=7 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MPLCONFIGDIR=/tmp/paper-case-mpl /home/xukai/anaconda3/envs/etpr1-py38/bin/python /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/paper_cases/materials.py --episodes 456 1043 --render
+```
+
+This uses the existing d7_case2 renderer, one simulator/case at a time. It writes
+`vis/<episode>/<ours|zeromap>/step_XX_{pano,topdown,fpv}.png`, native0.02m
+top-down crops and `cogmap_{regions,objects,heading}_projected.png`, then marks
+the case's `meta.json` complete. Panoramas contain12overlapping90°views, not
+equirectangular images. Map projections use assumed translation-only start
+registration, not an assertion that predicted room positions are physically
+correct. Top-down node panels label all visited/candidate/selected/goal nodes,
+with a faint full trajectory and a separately labelled high-level prefix.
+The heading rays are numbered directions anchored at the start, not invented
+intermediate positions. GPU rendering has **not** been launched by the CLI.
 
 ## Preparation checks
 

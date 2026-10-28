@@ -1,0 +1,1372 @@
+{
+  "definitions": {
+    "paired_outcome": "ours success=1, zeromap success=0",
+    "excluded_episodes": [
+      "92",
+      "1392"
+    ],
+    "exclusion_source": "Explicit CLI-supplied IDs; this script does not verify membership in attn_case.pdf. See README.md for confirmation/provisional status.",
+    "map_quality": "JSON and schema both valid; rank pooled mentioned-category F1 descending, no arbitrary F1 cutoff",
+    "mentioned_F1": "2*(objectTP+regionTP)/(objectPred+regionPred+objectTarget+regionTarget); empty denominator=0",
+    "mentions": "original GT mention flags and category-presence metrics, not LLM mentioned flags",
+    "route_complexity": "GT n_turns>=2 AND distinct MP3D GT region instances n_rooms>=2; not an instruction-semantic assertion",
+    "turn_feature": "dense GT direction cosine<0.8, consecutive triggers merged; original episode_features.py",
+    "lexical_cues": "\\b(?:turn|bear|veer)\\s+(?:to\\s+the\\s+)?(?:left|right)\\b|\\b(?:take|make)\\s+(?:a\\s+|the\\s+)?(?:left|right)(?:\\s+turn)?\\b",
+    "length": "8<=ours high_level_steps<=15; not low-level steps or trajectory coordinate count",
+    "ranking": "mentioned pooled F1, GT turns, GT rooms, closeness to10 high-level steps, then episode ID",
+    "metric_units": "SR and SPL fractions; NE metres; source low-level and high-level step counts kept separately"
+  },
+  "sources": {
+    "ours": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/results/ours_val_unseen_episodes.jsonl",
+    "zeromap": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/results/zeromap_val_unseen_episodes.jsonl",
+    "features": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/analysis/features_val_unseen.json",
+    "validity": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/map_quality/t0_val_unseen_episodes.jsonl",
+    "presence": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/reports/map_quality/t1_val_unseen_episodes.jsonl",
+    "feature_script": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/episode_features.py",
+    "quality_script": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/map_quality/t1_presence.py"
+  },
+  "counts": {
+    "paired_episodes": 1839,
+    "ours_success_zero_failure": 222,
+    "after_explicit_exclusions": 221,
+    "valid_json_and_schema": 220,
+    "GT_turns_ge2_and_GT_regions_ge2": 111,
+    "ours_high_steps_8_to15": 85
+  },
+  "candidates": [
+    {
+      "episode_id": "532",
+      "scene": "oLBMNvg9in8",
+      "instruction": "Walk away from the couch, through the doorway and up the staircase on the left. Continue past the first landing, up the second set of stairs and stop. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 5.0,
+          "predicted_count": 5.0,
+          "target_count": 5.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 4,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 9.319926138776632
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.929761885987916,
+        "NE": 1.961676001548767,
+        "OSR": 1.0,
+        "nDTW": 0.8641730112729579,
+        "steps": 80.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.50692081451416,
+        "OSR": 0.0,
+        "nDTW": 0.6908629322104051,
+        "steps": 78.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "456",
+      "scene": "QUCTc6BB5sX",
+      "instruction": "Walk down the hall leading to the cabinet. At the cabinet take a right and enter the bedroom. In the room take a left and enter the bathroom on the far left. Stop on the rug in front of the sink. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 5.0,
+          "predicted_count": 5.0,
+          "target_count": 5.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 4,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 10.030935199582396
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "take a right",
+        "take a left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.5589953060575714,
+        "NE": 0.9012534618377686,
+        "OSR": 1.0,
+        "nDTW": 0.7396606762259589,
+        "steps": 122.0,
+        "high_level_steps": 11,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 18.485780715942383,
+        "OSR": 0.0,
+        "nDTW": 0.06977788928231243,
+        "steps": 65.0,
+        "high_level_steps": 8,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1455",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "Walk into the hall and turn right. Walk through the entryway on the left and across the atrium. Walk up to the tenth step and stop. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 2.0,
+          "predicted_count": 2.0,
+          "target_count": 2.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 4,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 11.673957378081552
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "turn right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.8416051200882998,
+        "NE": 2.3955113887786865,
+        "OSR": 1.0,
+        "nDTW": 0.7287671263858067,
+        "steps": 90.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 4.48020076751709,
+        "OSR": 0.0,
+        "nDTW": 0.6593619860820209,
+        "steps": 88.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "691",
+      "scene": "oLBMNvg9in8",
+      "instruction": "Walk up two flights of stairs and continue onto the long rug in the hallway. Stop in the middle of the long rug and turn left. Enter the room and wait on the pink rug next to the lamp that is sitting on a cabinet. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 4,
+        "n_rooms": 2,
+        "n_room_changes": 1,
+        "path_len_m": 9.60895148602234
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "turn left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.9002130257570328,
+        "NE": 0.7879296541213989,
+        "OSR": 1.0,
+        "nDTW": 0.9440772139260918,
+        "steps": 62.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.294564962387085,
+        "OSR": 1.0,
+        "nDTW": 0.7539355493489494,
+        "steps": 65.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1444",
+      "scene": "X7HyMhZNoso",
+      "instruction": "Head inside through the sliding glass doors on the other end of the deck. Stop in the living room and wait near the arm chair. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 4.0,
+          "predicted_count": 4.0,
+          "target_count": 4.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 4,
+        "n_rooms": 2,
+        "n_room_changes": 1,
+        "path_len_m": 7.000002495354151
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.28328855617675963,
+        "NE": 2.437544107437134,
+        "OSR": 1.0,
+        "nDTW": 0.3484665545532768,
+        "steps": 194.0,
+        "high_level_steps": 11,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 4.452117919921875,
+        "OSR": 0.0,
+        "nDTW": 0.4147712803658344,
+        "steps": 287.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "326",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "Walk forward into the dining room and through the door at the far right. Walk between the two couches and past the fireplace on the left. Go through the double glass doors and wait near the couch. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 4.0,
+          "predicted_count": 4.0,
+          "target_count": 4.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 5,
+        "n_room_changes": 4,
+        "path_len_m": 12.012836909387177
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.8732172919648348,
+        "NE": 1.2998007535934448,
+        "OSR": 1.0,
+        "nDTW": 0.5039309074483687,
+        "steps": 73.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 25.742218017578125,
+        "OSR": 0.0,
+        "nDTW": 0.0009489872452587673,
+        "steps": 160.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1043",
+      "scene": "QUCTc6BB5sX",
+      "instruction": "Turn left then walk down the hallway.  Then turn right and enter the den.  Then walk through the bath room and enter the exercise room. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 0.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 1.0,
+          "predicted_count": 1.0,
+          "target_count": 1.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 5,
+        "n_room_changes": 4,
+        "path_len_m": 11.761108198668
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "Turn left",
+        "turn right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.9046456473996909,
+        "NE": 2.912741184234619,
+        "OSR": 1.0,
+        "nDTW": 0.8328770980593172,
+        "steps": 94.0,
+        "high_level_steps": 11,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 4.33829927444458,
+        "OSR": 0.0,
+        "nDTW": 0.04721145873650565,
+        "steps": 269.0,
+        "high_level_steps": 13,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "52",
+      "scene": "zsNo4HB9uLZ",
+      "instruction": "Take a right at the large clock and travel straight through the kitchen, when you see the thermostat on the wall you are right next to the washroom. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 15.532991768309847
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "Take a right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 1.0,
+        "NE": 2.641010046005249,
+        "OSR": 1.0,
+        "nDTW": 0.8676237790479531,
+        "steps": 73.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.3679540157318115,
+        "OSR": 0.0,
+        "nDTW": 0.8329125247844431,
+        "steps": 70.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "666",
+      "scene": "QUCTc6BB5sX",
+      "instruction": "Exit the room and head right. When you get to frame of the teddy bear with balloons that says \"Welcome\" in the wall turn right. Head straight into that room and wait by the bed. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 0.0,
+        "pooled_counts": {
+          "true_positive_count": 2.0,
+          "predicted_count": 2.0,
+          "target_count": 2.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 15.510080925327342
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "turn right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 1.0,
+        "NE": 2.018286943435669,
+        "OSR": 1.0,
+        "nDTW": 0.8781332612666138,
+        "steps": 77.0,
+        "high_level_steps": 11,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.6087963581085205,
+        "OSR": 0.0,
+        "nDTW": 0.8215706754926907,
+        "steps": 67.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1549",
+      "scene": "zsNo4HB9uLZ",
+      "instruction": "Turn around and go passed the couch, then turn left and take an immediate right passed the painting. Turn left and go straight through the first door on the left. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 0.0,
+        "pooled_counts": {
+          "true_positive_count": 4.0,
+          "predicted_count": 4.0,
+          "target_count": 4.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 11.5058081312406
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "turn left",
+        "Turn left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 1.0,
+        "NE": 2.033546209335327,
+        "OSR": 1.0,
+        "nDTW": 0.9139736048161761,
+        "steps": 58.0,
+        "high_level_steps": 9,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 4.353315353393555,
+        "OSR": 0.0,
+        "nDTW": 0.7588806568989509,
+        "steps": 43.0,
+        "high_level_steps": 7,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "603",
+      "scene": "X7HyMhZNoso",
+      "instruction": "Walk straight ahead until you reach the bed. Turn left and walk out the door to the left. Once out, turn right and then enter the door on your right and stop once you enter. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 0.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 10.500000583528598
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "Turn left",
+        "turn right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.9774610678730615,
+        "NE": 0.7983556985855103,
+        "OSR": 1.0,
+        "nDTW": 0.9383660657370875,
+        "steps": 60.0,
+        "high_level_steps": 8,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.0575506687164307,
+        "OSR": 0.0,
+        "nDTW": 0.8362587433483432,
+        "steps": 37.0,
+        "high_level_steps": 6,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "351",
+      "scene": "8194nk5LbLH",
+      "instruction": "Walk down the stairs towards and past the atrium.  Head towards the kitchen and wait in the dining area. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 14.486342274784864
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.7551083751203617,
+        "NE": 2.531003713607788,
+        "OSR": 1.0,
+        "nDTW": 0.26686377151551655,
+        "steps": 119.0,
+        "high_level_steps": 13,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 5.004708766937256,
+        "OSR": 0.0,
+        "nDTW": 0.031149097781177106,
+        "steps": 323.0,
+        "high_level_steps": 13,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "132",
+      "scene": "oLBMNvg9in8",
+      "instruction": "Going down the stairs take a right and go down the next set of stairs and at the bottom of the stairs take a left into the dining room stopping just inside the doorway. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 4,
+        "path_len_m": 6.639457189754605
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "take a right",
+        "take a left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.2943691516011135,
+        "NE": 1.6858526468276978,
+        "OSR": 1.0,
+        "nDTW": 0.372943477521335,
+        "steps": 178.0,
+        "high_level_steps": 14,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 6.307784557342529,
+        "OSR": 0.0,
+        "nDTW": 0.28194244369064386,
+        "steps": 150.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "438",
+      "scene": "oLBMNvg9in8",
+      "instruction": "Walk down the stairs and go straight down the hallway. Turn left into the room and wait near the dining table. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 4,
+        "n_room_changes": 3,
+        "path_len_m": 7.734275692771814
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "Turn left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.2676127921493515,
+        "NE": 0.7125318050384521,
+        "OSR": 1.0,
+        "nDTW": 0.3424679899992941,
+        "steps": 253.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 7.829487323760986,
+        "OSR": 0.0,
+        "nDTW": 0.10967187340477678,
+        "steps": 324.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "314",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "Walk to the oven, turn left, walk past the couch, enter the room past the fireplace, wait at the grey couch. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 0.0,
+        "pooled_counts": {
+          "true_positive_count": 2.0,
+          "predicted_count": 2.0,
+          "target_count": 2.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 10.017016066143619
+      },
+      "lexical_turn_cue_count": 1,
+      "lexical_turn_cues": [
+        "turn left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.5126747693429078,
+        "NE": 1.1620512008666992,
+        "OSR": 1.0,
+        "nDTW": 0.6380724501069677,
+        "steps": 119.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 5.376235008239746,
+        "OSR": 0.0,
+        "nDTW": 0.7131540116502364,
+        "steps": 90.0,
+        "high_level_steps": 8,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1432",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "Walk past the couch and left through the room into the hallway. Walk past the microwave out of the room and stop. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 9.004299365003721
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.9271197232097753,
+        "NE": 0.37975236773490906,
+        "OSR": 1.0,
+        "nDTW": 0.6696575220225669,
+        "steps": 59.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.7538037300109863,
+        "OSR": 1.0,
+        "nDTW": 0.48972828344739694,
+        "steps": 99.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1609",
+      "scene": "oLBMNvg9in8",
+      "instruction": "Walk down both sets of stairs, through the doorway and wait by the rug. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 9.28522589251466
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.8298470654172841,
+        "NE": 0.4378998279571533,
+        "OSR": 1.0,
+        "nDTW": 0.9299245990276124,
+        "steps": 75.0,
+        "high_level_steps": 10,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 5.4184980392456055,
+        "OSR": 0.0,
+        "nDTW": 0.6798095160953186,
+        "steps": 142.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "1085",
+      "scene": "zsNo4HB9uLZ",
+      "instruction": "Exit the bathroom. Turn left and then turn right. Turn left and go into the other bathroom. Wait near the sink. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 3.0,
+          "predicted_count": 3.0,
+          "target_count": 3.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 4.249999710844061
+      },
+      "lexical_turn_cue_count": 3,
+      "lexical_turn_cues": [
+        "Turn left",
+        "turn right",
+        "Turn left"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.570320553249783,
+        "NE": 0.6913206577301025,
+        "OSR": 1.0,
+        "nDTW": 0.7719003405562093,
+        "steps": 58.0,
+        "high_level_steps": 8,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 4.333462238311768,
+        "OSR": 1.0,
+        "nDTW": 0.000617573804904747,
+        "steps": 394.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "315",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "Walk out of the kitchen, past the oven, past the sofas towards the fireplace.  Stop at the doorway facing towards the next sitting room facing the dining room table. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 5.0,
+          "predicted_count": 5.0,
+          "target_count": 5.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 10.017016066143619
+      },
+      "lexical_turn_cue_count": 0,
+      "lexical_turn_cues": [],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.24235537050602116,
+        "NE": 2.26037859916687,
+        "OSR": 1.0,
+        "nDTW": 0.08615459849276884,
+        "steps": 250.0,
+        "high_level_steps": 13,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.3613688945770264,
+        "OSR": 0.0,
+        "nDTW": 0.7444602844354026,
+        "steps": 81.0,
+        "high_level_steps": 7,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    },
+    {
+      "episode_id": "116",
+      "scene": "2azQ1b91cZZ",
+      "instruction": "you are in a closet, walk forward, turn right to walk out of closet into a bed room. turn right and see bath room, walk into bathroom and wait near the tub and sink. ",
+      "quality": {
+        "pooled_mentioned_category_f1": 1.0,
+        "mentioned_object_f1": 1.0,
+        "mentioned_region_f1": 1.0,
+        "pooled_counts": {
+          "true_positive_count": 4.0,
+          "predicted_count": 4.0,
+          "target_count": 4.0
+        },
+        "json_valid": true,
+        "schema_valid": true,
+        "source_zero_filled": false
+      },
+      "GT_route_features": {
+        "n_turns": 3,
+        "n_rooms": 3,
+        "n_room_changes": 2,
+        "path_len_m": 6.000005446845333
+      },
+      "lexical_turn_cue_count": 2,
+      "lexical_turn_cues": [
+        "turn right",
+        "turn right"
+      ],
+      "instruction_layout_review": "pending human review; GT complexity is not a text-semantic label",
+      "ours": {
+        "success": 1.0,
+        "SPL": 0.19740577558071654,
+        "NE": 0.2291073352098465,
+        "OSR": 1.0,
+        "nDTW": 0.22762371098434606,
+        "steps": 241.0,
+        "high_level_steps": 14,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/stats_ep_ckpt_27000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      },
+      "zeromap": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.3004190921783447,
+        "OSR": 1.0,
+        "nDTW": 0.05455278581191323,
+        "steps": 358.0,
+        "high_level_steps": 15,
+        "source_eval": {
+          "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results",
+          "metrics": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/stats_ep_ckpt_28000_val_unseen_r0_w1.json"
+          ],
+          "decisions": [
+            "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_unseen/eval_results/decisions_val_unseen_r0_w1.jsonl"
+          ],
+          "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz"
+        }
+      }
+    }
+  ]
+}

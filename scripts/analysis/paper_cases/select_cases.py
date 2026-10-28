@@ -18,7 +18,7 @@ TURN_CUE = re.compile(
 
 class Args(Tap):
     exclude: List[str]
-    """Episode IDs confirmed by the user to appear in the existing attention figure."""
+    """Two episode IDs to exclude; figure membership must be verified separately."""
     ours: str = str(ROOT / 'results/ours_val_unseen_episodes.jsonl')
     zeromap: str = str(ROOT / 'results/zeromap_val_unseen_episodes.jsonl')
     features: str = str(ROOT / 'data/logs/analysis/features_val_unseen.json')
@@ -148,13 +148,13 @@ def main():
     presence = read_rows(quality_dir / 't1_val_unseen_episodes.jsonl', 'LLM')
     excluded = set(map(str, args.exclude))
     if len(excluded) != 2 or not excluded <= ours.keys():
-        raise ValueError('Supply the two confirmed val_unseen episode IDs used in attn_case.pdf')
+        raise ValueError('Supply two val_unseen episode IDs to exclude')
     selected, counts = screen(ours, zeromap, features, validity, presence, excluded)
     result = {
         'definitions': {
             'paired_outcome': 'ours success=1, zeromap success=0',
             'excluded_episodes': sorted(excluded, key=int),
-            'exclusion_source': 'explicit --exclude input; no automatic guess of attn_case.pdf IDs',
+            'exclusion_source': 'Explicit CLI-supplied IDs; this script does not verify membership in attn_case.pdf. See README.md for confirmation/provisional status.',
             'map_quality': 'JSON and schema both valid; rank pooled mentioned-category F1 descending, no arbitrary F1 cutoff',
             'mentioned_F1': '2*(objectTP+regionTP)/(objectPred+regionPred+objectTarget+regionTarget); empty denominator=0',
             'mentions': 'original GT mention flags and category-presence metrics, not LLM mentioned flags',
