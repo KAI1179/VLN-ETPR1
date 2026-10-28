@@ -1,0 +1,5710 @@
+{
+  "episode_id": "249",
+  "split": "val_seen",
+  "instruction": "Turn right and exit into the bedroom. Turn left and walk to the wall and then turn left. Walk to the end of that area and turn right out the last door. Once out the door walk across the small room and enter the door to the far left. Stop once you enter the bedroom. ",
+  "scene_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/scene_datasets/mp3d/5LpN3gDmAk7/5LpN3gDmAk7.glb",
+  "gt_path": [
+    [
+      5.171209812164307,
+      3.115649938583374,
+      12.095100402832031
+    ],
+    [
+      6.2878098487854,
+      3.115649938583374,
+      12.09939956665039
+    ],
+    [
+      7.166319847106934,
+      3.115649938583374,
+      9.192919731140137
+    ],
+    [
+      6.20911979675293,
+      3.115649938583374,
+      9.096659660339355
+    ],
+    [
+      4.221680164337158,
+      3.115649938583374,
+      7.486420154571533
+    ],
+    [
+      2.7670700550079346,
+      3.115649938583374,
+      4.563129901885986
+    ],
+    [
+      1.5889400243759155,
+      3.115649938583374,
+      2.207360029220581
+    ]
+  ],
+  "goal_position": [
+    1.5889400243759155,
+    3.115649938583374,
+    2.207360029220581
+  ],
+  "start_position": [
+    5.171209812164307,
+    3.115649938583374,
+    12.095100402832031
+  ],
+  "map": {
+    "source": "/data/xukai/etp-r1-snapshot/runtime-data/data/llm_navigation/llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree/r2r/val_seen/cognitive_maps/raster/5LpN3gDmAk7/R2R_val_seen_249.npz",
+    "channel_names": [
+      "void",
+      "chair",
+      "door",
+      "table",
+      "cushion",
+      "sofa",
+      "bed",
+      "plant",
+      "sink",
+      "toilet",
+      "tv_monitor",
+      "shower",
+      "bathtub",
+      "counter",
+      "appliances",
+      "structure",
+      "other",
+      "free-space",
+      "picture",
+      "cabinet",
+      "chest_of_drawers",
+      "stool",
+      "towel",
+      "fireplace",
+      "gym_equipment",
+      "seating",
+      "clothes",
+      "outdoor/semi-outdoor",
+      "living/social space",
+      "recreation/fitness",
+      "utility/service",
+      "work/study",
+      "circulation",
+      "private room",
+      "bathroom/sanitary",
+      "dining/food",
+      "other/miscellaneous"
+    ],
+    "origin_world_xz_m": [
+      -6.991389751434326,
+      -7.507717132568359
+    ],
+    "cell_size_m": 0.5,
+    "shape": [
+      37,
+      100,
+      100
+    ],
+    "direction_vectors": [
+      [
+        0.5000004768371582,
+        0.8660255074501038
+      ],
+      [
+        0.9659256935119629,
+        0.25881969928741455
+      ],
+      [
+        0.5000004768371582,
+        0.8660255074501038
+      ],
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ]
+    ],
+    "start_direction_vector": [
+      1.0,
+      -0.0
+    ],
+    "start_position_input": [
+      12.162599563598633,
+      19.60281753540039
+    ],
+    "world_to_cell": "cell=(world[x,z]-origin_world_xz_m)/0.5; row=x, column=z",
+    "registration": "assumed start-pose translation, scale=1 and meters_per_unit=1; no yaw rotation; not proof of physical map accuracy",
+    "visualization": "categorical argmax only for PNGs; full overlapping channel values preserved in NPZ; object PNG excludes void/structure/free-space"
+  },
+  "camera": {
+    "height_m": 1.25,
+    "hfov_deg": 90,
+    "fpv_size_wh": [
+      640,
+      480
+    ],
+    "panorama": "12 overlapping perspective views, 90deg each, rightward centers0:30:330deg; not equirectangular",
+    "bearing_positive": "right; world forward=(-sin(heading),0,-cos(heading))"
+  },
+  "models": {
+    "ours": {
+      "checkpoint": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/data/logs/checkpoints/kd_dual/ckpt.iter27000.pth",
+      "source_eval": {
+        "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_seen/eval_results",
+        "metrics": [
+          "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_seen/eval_results/stats_ep_ckpt_27000_val_seen_r0_w1.json"
+        ],
+        "decisions": [
+          "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_ours_val_seen/eval_results/decisions_val_seen_r0_w1.jsonl"
+        ],
+        "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen/val_seen.json.gz"
+      },
+      "metrics": {
+        "success": 1.0,
+        "SPL": 0.9922111344309512,
+        "NE": 0.9792060256004333,
+        "OSR": 1.0,
+        "nDTW": 0.9301538652724456,
+        "steps": 72.0,
+        "high_level_steps": 9
+      },
+      "trajectory_world_xyz": [
+        [
+          5.171209812164307,
+          3.115649938583374,
+          12.095100402832031
+        ],
+        [
+          5.412691116333008,
+          3.115649938583374,
+          12.0303955078125
+        ],
+        [
+          5.654172420501709,
+          3.115649938583374,
+          11.965690612792969
+        ],
+        [
+          5.89565372467041,
+          3.115649938583374,
+          11.900985717773438
+        ],
+        [
+          6.137135028839111,
+          3.115649938583374,
+          11.836280822753906
+        ],
+        [
+          6.3786163330078125,
+          3.115649938583374,
+          11.771575927734375
+        ],
+        [
+          6.620097637176514,
+          3.115649938583374,
+          11.706871032714844
+        ],
+        [
+          6.684802532196045,
+          3.115649938583374,
+          11.465389251708984
+        ],
+        [
+          6.749507427215576,
+          3.115649938583374,
+          11.223907470703125
+        ],
+        [
+          6.814212322235107,
+          3.115649938583374,
+          10.982425689697266
+        ],
+        [
+          6.878917217254639,
+          3.115649938583374,
+          10.740943908691406
+        ],
+        [
+          6.94362211227417,
+          3.115649938583374,
+          10.499462127685547
+        ],
+        [
+          7.008327007293701,
+          3.115649938583374,
+          10.257980346679688
+        ],
+        [
+          7.073031902313232,
+          3.115649938583374,
+          10.016498565673828
+        ],
+        [
+          7.137736797332764,
+          3.115649938583374,
+          9.775016784667969
+        ],
+        [
+          6.921230316162109,
+          3.115649938583374,
+          9.650016784667969
+        ],
+        [
+          6.704723834991455,
+          3.115649938583374,
+          9.525016784667969
+        ],
+        [
+          6.488217353820801,
+          3.115649938583374,
+          9.400016784667969
+        ],
+        [
+          6.2717108726501465,
+          3.115649938583374,
+          9.275016784667969
+        ],
+        [
+          6.055204391479492,
+          3.115649938583374,
+          9.150016784667969
+        ],
+        [
+          5.838697910308838,
+          3.115649938583374,
+          9.025016784667969
+        ],
+        [
+          5.597216606140137,
+          3.115649938583374,
+          8.960311889648438
+        ],
+        [
+          5.3557353019714355,
+          3.115649938583374,
+          8.895606994628906
+        ],
+        [
+          5.114253997802734,
+          3.115649938583374,
+          8.830902099609375
+        ],
+        [
+          4.989253997802734,
+          3.115649938583374,
+          8.614396095275879
+        ],
+        [
+          4.864253997802734,
+          3.115649938583374,
+          8.397890090942383
+        ],
+        [
+          4.739253997802734,
+          3.115649938583374,
+          8.181384086608887
+        ],
+        [
+          4.614253997802734,
+          3.115649938583374,
+          7.964877605438232
+        ],
+        [
+          4.489253997802734,
+          3.115649938583374,
+          7.748371124267578
+        ],
+        [
+          4.364253997802734,
+          3.115649938583374,
+          7.531864643096924
+        ],
+        [
+          4.239253997802734,
+          3.115649938583374,
+          7.3153581619262695
+        ],
+        [
+          4.114253997802734,
+          3.115649938583374,
+          7.098851680755615
+        ],
+        [
+          3.9892539978027344,
+          3.115649938583374,
+          6.882345199584961
+        ],
+        [
+          3.8642539978027344,
+          3.115649938583374,
+          6.665838718414307
+        ],
+        [
+          3.7410435676574707,
+          3.115649938583374,
+          6.442173957824707
+        ],
+        [
+          3.6160435676574707,
+          3.115649938583374,
+          6.225667476654053
+        ],
+        [
+          3.4396791458129883,
+          3.115649938583374,
+          6.048478126525879
+        ],
+        [
+          3.2629024982452393,
+          3.115649938583374,
+          5.871701240539551
+        ],
+        [
+          3.0861258506774902,
+          3.115649938583374,
+          5.694924354553223
+        ],
+        [
+          2.909349203109741,
+          3.115649938583374,
+          5.5181474685668945
+        ],
+        [
+          2.732572555541992,
+          3.115649938583374,
+          5.341370582580566
+        ],
+        [
+          2.555795907974243,
+          3.115649938583374,
+          5.164593696594238
+        ],
+        [
+          2.379019260406494,
+          3.115649938583374,
+          4.98781681060791
+        ],
+        [
+          2.202242612838745,
+          3.115649938583374,
+          4.811039924621582
+        ],
+        [
+          2.025465965270996,
+          3.115649938583374,
+          4.634263038635254
+        ],
+        [
+          1.9607611894607544,
+          3.115649938583374,
+          4.392781734466553
+        ],
+        [
+          1.8960564136505127,
+          3.115649938583374,
+          4.151300430297852
+        ],
+        [
+          1.831351637840271,
+          3.115649938583374,
+          3.9098188877105713
+        ],
+        [
+          1.7666468620300293,
+          3.115649938583374,
+          3.668337345123291
+        ],
+        [
+          1.7019420862197876,
+          3.115649938583374,
+          3.4268558025360107
+        ],
+        [
+          1.637237310409546,
+          3.115649938583374,
+          3.1853742599487305
+        ]
+      ],
+      "endpoint_world_xyz": [
+        1.637237310409546,
+        3.115649938583374,
+        3.1853742599487305
+      ],
+      "stop_step": 8,
+      "frames": [
+        {
+          "step_idx": 0,
+          "position": [
+            5.171209812164307,
+            3.115649938583374,
+            12.095100402832031
+          ],
+          "heading": 0.0,
+          "rotation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 0,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 7.581820682389662e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.210461783410003,
+                3.115649938583374,
+                11.34612825197906
+              ],
+              "probability": 0.042708057910203934,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g1",
+              "position": [
+                6.62009856728022,
+                3.115649938583374,
+                11.706871893705435
+              ],
+              "probability": 0.9561101198196411,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.105789453344642,
+                3.115649938583374,
+                13.343387299603725
+              ],
+              "probability": 0.0004913751618005335,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 0.0006828069454059005,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 0,
+            "id": "g1",
+            "position": [
+              6.62009856728022,
+              3.115649938583374,
+              11.706871893705435
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 3,
+            "raw_executed_node": "g1",
+            "raw_executed_probability": 0.9561101198196411,
+            "raw_student_index": 3,
+            "raw_student_node": "g1",
+            "stop_probability": 7.581820682389662e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "g0",
+              "g1",
+              "g2",
+              "g3"
+            ],
+            "probabilities": [
+              7.581820682389662e-06,
+              0.0,
+              0.042708057910203934,
+              0.9561101198196411,
+              0.0004913751618005335,
+              0.0006828069454059005
+            ],
+            "raw_student_index": 3,
+            "raw_executed_index": 3
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_00_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_00_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_00_topdown.png"
+        },
+        {
+          "step_idx": 1,
+          "position": [
+            6.620097637176514,
+            3.115649938583374,
+            11.706871032714844
+          ],
+          "heading": -1.3089968208080294,
+          "rotation_xyzw": [
+            0.0,
+            -0.6087613821264092,
+            0.0,
+            0.7933533762652958
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 1,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 7.350893156399252e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 2.2973546947469003e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 1.0170503628614824e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 7.702766197326127e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 0.0002429816813673824,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g5",
+              "position": [
+                7.137735903353794,
+                3.115649938583374,
+                9.775019427288335
+              ],
+              "probability": 0.9997087121009827,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 1,
+            "id": "g5",
+            "position": [
+              7.137735903353794,
+              3.115649938583374,
+              9.775019427288335
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 7,
+            "raw_executed_node": "g5",
+            "raw_executed_probability": 0.9997087121009827,
+            "raw_student_index": 7,
+            "raw_student_node": "g5",
+            "stop_probability": 7.350893156399252e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g5"
+            ],
+            "probabilities": [
+              7.350893156399252e-06,
+              0.0,
+              0.0,
+              2.2973546947469003e-05,
+              1.0170503628614824e-05,
+              7.702766197326127e-06,
+              0.0002429816813673824,
+              0.9997087121009827
+            ],
+            "raw_student_index": 7,
+            "raw_executed_index": 7
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_01_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_01_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_01_topdown.png"
+        },
+        {
+          "step_idx": 2,
+          "position": [
+            7.137736797332764,
+            3.115649938583374,
+            9.775016784667969
+          ],
+          "heading": -0.26179929254030215,
+          "rotation_xyzw": [
+            0.0,
+            -0.1305261449981041,
+            0.0,
+            0.9914448675906966
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 2,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 9.759458407643251e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.587603946973104e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 1.1596320291573647e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 1.2157001037849113e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.777114812284708e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 3.1612471502739936e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 5.805485852761194e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g8",
+              "position": [
+                5.838698816409787,
+                3.115649938583374,
+                9.025016568588295
+              ],
+              "probability": 0.9998432397842407,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 2,
+            "id": "g8",
+            "position": [
+              5.838698816409787,
+              3.115649938583374,
+              9.025016568588295
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 10,
+            "raw_executed_node": "g8",
+            "raw_executed_probability": 0.9998432397842407,
+            "raw_student_index": 10,
+            "raw_student_node": "g8",
+            "stop_probability": 9.759458407643251e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g8"
+            ],
+            "probabilities": [
+              9.759458407643251e-06,
+              0.0,
+              0.0,
+              0.0,
+              1.587603946973104e-05,
+              1.1596320291573647e-05,
+              1.2157001037849113e-05,
+              1.777114812284708e-05,
+              3.1612471502739936e-05,
+              5.805485852761194e-05,
+              0.9998432397842407
+            ],
+            "raw_student_index": 10,
+            "raw_executed_index": 10
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_02_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_02_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_02_topdown.png"
+        },
+        {
+          "step_idx": 3,
+          "position": [
+            5.838697910308838,
+            3.115649938583374,
+            9.025016784667969
+          ],
+          "heading": 1.0471975667402225,
+          "rotation_xyzw": [
+            0.0,
+            0.5000000067305869,
+            0.0,
+            0.8660253998985324
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 3,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.144594898505602e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.5597934179822914e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 1.1543083019205369e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 1.154436085926136e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.6979633073788136e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 1.6855112335179e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 1.851323941082228e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.02576530911028385,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g10",
+              "position": [
+                4.88808114062609,
+                3.115649938583374,
+                8.743430891189995
+              ],
+              "probability": 0.9741321802139282,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 3,
+            "id": "g10",
+            "position": [
+              4.88808114062609,
+              3.115649938583374,
+              8.743430891189995
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 12,
+            "raw_executed_node": "g10",
+            "raw_executed_probability": 0.9741321802139282,
+            "raw_student_index": 12,
+            "raw_student_node": "g10",
+            "stop_probability": 1.144594898505602e-05
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g10"
+            ],
+            "probabilities": [
+              1.144594898505602e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.5597934179822914e-05,
+              1.1543083019205369e-05,
+              1.154436085926136e-05,
+              1.6979633073788136e-05,
+              1.6855112335179e-05,
+              1.851323941082228e-05,
+              0.02576530911028385,
+              0.9741321802139282
+            ],
+            "raw_student_index": 12,
+            "raw_executed_index": 12
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_03_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_03_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_03_topdown.png"
+        },
+        {
+          "step_idx": 4,
+          "position": [
+            5.114253997802734,
+            3.115649938583374,
+            8.830902099609375
+          ],
+          "heading": 1.308996893378039,
+          "rotation_xyzw": [
+            0.0,
+            0.6087614109132399,
+            0.0,
+            0.7933533541763856
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 4,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.1590454050747212e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 7.948389793455135e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 7.426944193866802e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 6.74417378832004e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 3.469146031420678e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 1.834251634136308e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 9.841871360549703e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.005324275232851505,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g11",
+              "position": [
+                4.504149135080237,
+                3.115649938583374,
+                7.460583867780592
+              ],
+              "probability": 0.9847604632377625,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 0.009663421660661697,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 0.00015513286052737385,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 4,
+            "id": "g11",
+            "position": [
+              4.504149135080237,
+              3.115649938583374,
+              7.460583867780592
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 13,
+            "raw_executed_node": "g11",
+            "raw_executed_probability": 0.9847604632377625,
+            "raw_student_index": 13,
+            "raw_student_node": "g11",
+            "stop_probability": 1.1590454050747212e-05
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g11",
+              "g12",
+              "g13"
+            ],
+            "probabilities": [
+              1.1590454050747212e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              7.948389793455135e-06,
+              7.426944193866802e-06,
+              6.74417378832004e-06,
+              3.469146031420678e-05,
+              1.834251634136308e-05,
+              9.841871360549703e-06,
+              0.005324275232851505,
+              0.9847604632377625,
+              0.009663421660661697,
+              0.00015513286052737385
+            ],
+            "raw_student_index": 13,
+            "raw_executed_index": 13
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_04_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_04_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_04_topdown.png"
+        },
+        {
+          "step_idx": 5,
+          "position": [
+            4.364253997802734,
+            3.115649938583374,
+            7.531864643096924
+          ],
+          "heading": 0.5235987222153718,
+          "rotation_xyzw": [
+            0.0,
+            0.25881901932054674,
+            0.0,
+            0.965925833197327
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 5,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.558695839776192e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 5.0474800445954315e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 5.601782049780013e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 5.275295734463725e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 8.708465429663192e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 6.710890374961309e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 5.618232989945682e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.0004409062385093421,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 3.288443258497864e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 9.32050716073718e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g14",
+              "position": [
+                3.7326394960394147,
+                3.115649938583374,
+                6.049648131942234
+              ],
+              "probability": 0.9946067929267883,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.004838779103010893,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 1.8835773516912013e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 5,
+            "id": "g14",
+            "position": [
+              3.7326394960394147,
+              3.115649938583374,
+              6.049648131942234
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 16,
+            "raw_executed_node": "g14",
+            "raw_executed_probability": 0.9946067929267883,
+            "raw_student_index": 16,
+            "raw_student_node": "g14",
+            "stop_probability": 1.558695839776192e-05
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g14",
+              "g15",
+              "g16"
+            ],
+            "probabilities": [
+              1.558695839776192e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              5.0474800445954315e-06,
+              5.601782049780013e-06,
+              5.275295734463725e-06,
+              8.708465429663192e-06,
+              6.710890374961309e-06,
+              5.618232989945682e-06,
+              0.0004409062385093421,
+              3.288443258497864e-05,
+              9.32050716073718e-06,
+              0.9946067929267883,
+              0.004838779103010893,
+              1.8835773516912013e-05
+            ],
+            "raw_student_index": 16,
+            "raw_executed_index": 16
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_05_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_05_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_05_topdown.png"
+        },
+        {
+          "step_idx": 6,
+          "position": [
+            3.6160435676574707,
+            3.115649938583374,
+            6.225667476654053
+          ],
+          "heading": 0.5235987222153718,
+          "rotation_xyzw": [
+            0.0,
+            0.25881901932054674,
+            0.0,
+            0.965925833197327
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 6,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 2.4038454284891486e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 7.4254617175029125e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 7.751139492029324e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 7.555995580332819e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.0859340363822412e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 8.876959327608347e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 8.227229045587592e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.0001002462231554091,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 1.6285919627989642e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 1.0362075045122765e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.00016315185348503292,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 1.0528456186875701e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g17",
+              "position": [
+                4.13368111999467,
+                3.115649938583374,
+                4.293815679954743
+              ],
+              "probability": 0.1178760677576065,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 0.00018139751045964658,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g19",
+              "position": [
+                2.110500181519187,
+                3.115649938583374,
+                4.553591188784606
+              ],
+              "probability": 0.8815672397613525,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 6,
+            "id": "g19",
+            "position": [
+              2.110500181519187,
+              3.115649938583374,
+              4.553591188784606
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 21,
+            "raw_executed_node": "g19",
+            "raw_executed_probability": 0.8815672397613525,
+            "raw_student_index": 21,
+            "raw_student_node": "g19",
+            "stop_probability": 2.4038454284891486e-05
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g17",
+              "g18",
+              "g19"
+            ],
+            "probabilities": [
+              2.4038454284891486e-05,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              7.4254617175029125e-06,
+              7.751139492029324e-06,
+              7.555995580332819e-06,
+              1.0859340363822412e-05,
+              8.876959327608347e-06,
+              8.227229045587592e-06,
+              0.0001002462231554091,
+              1.6285919627989642e-05,
+              1.0362075045122765e-05,
+              0.00016315185348503292,
+              1.0528456186875701e-05,
+              0.1178760677576065,
+              0.00018139751045964658,
+              0.8815672397613525
+            ],
+            "raw_student_index": 21,
+            "raw_executed_index": 21
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_06_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_06_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_06_topdown.png"
+        },
+        {
+          "step_idx": 7,
+          "position": [
+            2.025465965270996,
+            3.115649938583374,
+            4.634263038635254
+          ],
+          "heading": 0.7853980728768803,
+          "rotation_xyzw": [
+            0.0,
+            0.38268339055003936,
+            0.0,
+            0.9238795498316467
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 7,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 0.034695010632276535,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "7",
+              "position": [
+                2.025465965270996,
+                3.115649938583374,
+                4.634263038635254
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.6404277630499564e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 1.668198819970712e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 1.4531304259435274e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 4.385388456285e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 3.1087183742783964e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 2.38766642723931e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.0002700637560337782,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 0.0001220757985720411,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 6.319030944723636e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.00019242610142100602,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 2.726618549786508e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g17",
+              "position": [
+                4.13368111999467,
+                3.115649938583374,
+                4.293815679954743
+              ],
+              "probability": 0.056234169751405716,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 0.00012910988880321383,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g20",
+              "position": [
+                1.7135984162900393,
+                3.115649938583374,
+                3.1670416402455595
+              ],
+              "probability": 0.4632300138473511,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g21",
+              "position": [
+                3.624170452071051,
+                3.115649938583374,
+                3.9224737693389455
+              ],
+              "probability": 0.44390010833740234,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g22",
+              "position": [
+                2.939011353071859,
+                3.115649938583374,
+                5.040999838578129
+              ],
+              "probability": 0.0008310829871334136,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g23",
+              "position": [
+                2.0254655615501127,
+                3.115649938583374,
+                5.884263038635188
+              ],
+              "probability": 0.00015910598449409008,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 7,
+            "id": "g20",
+            "position": [
+              1.7135984162900393,
+              3.115649938583374,
+              3.1670416402455595
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 22,
+            "raw_executed_node": "g20",
+            "raw_executed_probability": 0.4632300138473511,
+            "raw_student_index": 22,
+            "raw_student_node": "g20",
+            "stop_probability": 0.034695010632276535
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g17",
+              "g18",
+              "g20",
+              "g21",
+              "g22",
+              "g23"
+            ],
+            "probabilities": [
+              0.034695010632276535,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.6404277630499564e-05,
+              1.668198819970712e-05,
+              1.4531304259435274e-05,
+              4.385388456285e-05,
+              3.1087183742783964e-05,
+              2.38766642723931e-05,
+              0.0002700637560337782,
+              0.0001220757985720411,
+              6.319030944723636e-05,
+              0.00019242610142100602,
+              2.726618549786508e-05,
+              0.056234169751405716,
+              0.00012910988880321383,
+              0.4632300138473511,
+              0.44390010833740234,
+              0.0008310829871334136,
+              0.00015910598449409008
+            ],
+            "raw_student_index": 22,
+            "raw_executed_index": 22
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_07_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_07_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_07_topdown.png"
+        },
+        {
+          "step_idx": 8,
+          "position": [
+            1.637237310409546,
+            3.115649938583374,
+            3.1853742599487305
+          ],
+          "heading": 0.26179929254030215,
+          "rotation_xyzw": [
+            0.0,
+            0.1305261449981041,
+            0.0,
+            0.9914448675906966
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 8,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 0.7542956471443176,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "7",
+              "position": [
+                2.025465965270996,
+                3.115649938583374,
+                4.634263038635254
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "8",
+              "position": [
+                1.637237310409546,
+                3.115649938583374,
+                3.1853742599487305
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 2.3547492673969828e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 2.139260686817579e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 2.0206074623274617e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 4.856758823734708e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 3.692365498864092e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 2.9558730602730066e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.00022598147916141897,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 0.00023640049039386213,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 9.558605961501598e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.0003160788619425148,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 6.785841105738655e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g17",
+              "position": [
+                4.13368111999467,
+                3.115649938583374,
+                4.293815679954743
+              ],
+              "probability": 0.01596510410308838,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 0.00011504507710924372,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g21",
+              "position": [
+                3.5966297130434697,
+                3.115649938583374,
+                3.8127430391674446
+              ],
+              "probability": 0.17903649806976318,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g22",
+              "position": [
+                3.040896218474738,
+                3.115649938583374,
+                4.94922501882156
+              ],
+              "probability": 0.0012008952908217907,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g23",
+              "position": [
+                2.0254655615501127,
+                3.115649938583374,
+                5.884263038635188
+              ],
+              "probability": 0.0001582659169798717,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g24",
+              "position": [
+                1.5400025680394416,
+                3.115649938583374,
+                1.9498885387671123
+              ],
+              "probability": 0.048106517642736435,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 8,
+            "id": null,
+            "position": null,
+            "is_STOP": true,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 0,
+            "raw_executed_node": null,
+            "raw_executed_probability": 0.7542956471443176,
+            "raw_student_index": 0,
+            "raw_student_node": null,
+            "stop_probability": 0.7542956471443176
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g17",
+              "g18",
+              "g21",
+              "g22",
+              "g23",
+              "g24"
+            ],
+            "probabilities": [
+              0.7542956471443176,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.3547492673969828e-05,
+              2.139260686817579e-05,
+              2.0206074623274617e-05,
+              4.856758823734708e-05,
+              3.692365498864092e-05,
+              2.9558730602730066e-05,
+              0.00022598147916141897,
+              0.00023640049039386213,
+              9.558605961501598e-05,
+              0.0003160788619425148,
+              6.785841105738655e-05,
+              0.01596510410308838,
+              0.00011504507710924372,
+              0.17903649806976318,
+              0.0012008952908217907,
+              0.0001582659169798717,
+              0.048106517642736435
+            ],
+            "raw_student_index": 0,
+            "raw_executed_index": 0
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_08_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_08_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/ours/step_08_topdown.png"
+        }
+      ],
+      "actual_map_inputs": "original predicted map and metadata"
+    },
+    "zeromap": {
+      "checkpoint": "/data/xukai/etp-r1-snapshot/checkpoints/llm-grid-000-baseline-dagger-28k/ckpt.iter28000.pth",
+      "source_eval": {
+        "directory": "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_seen/eval_results",
+        "metrics": [
+          "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_seen/eval_results/stats_ep_ckpt_28000_val_seen_r0_w1.json"
+        ],
+        "decisions": [
+          "/data/xukai/checkpoint/etp-r1-snapshot-data-logs/logs/checkpoints/paper_case_zeromap_val_seen/eval_results/decisions_val_seen_r0_w1.jsonl"
+        ],
+        "dataset": "/home/xukai/code/ETP-R1-main/data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_seen/val_seen.json.gz"
+      },
+      "metrics": {
+        "success": 0.0,
+        "SPL": 0.0,
+        "NE": 3.799147605895996,
+        "OSR": 0.0,
+        "nDTW": 0.8243392850122697,
+        "steps": 69.0,
+        "high_level_steps": 9
+      },
+      "trajectory_world_xyz": [
+        [
+          5.171209812164307,
+          3.115649938583374,
+          12.095100402832031
+        ],
+        [
+          5.412691116333008,
+          3.115649938583374,
+          12.0303955078125
+        ],
+        [
+          5.654172420501709,
+          3.115649938583374,
+          11.965690612792969
+        ],
+        [
+          5.89565372467041,
+          3.115649938583374,
+          11.900985717773438
+        ],
+        [
+          6.137135028839111,
+          3.115649938583374,
+          11.836280822753906
+        ],
+        [
+          6.3786163330078125,
+          3.115649938583374,
+          11.771575927734375
+        ],
+        [
+          6.620097637176514,
+          3.115649938583374,
+          11.706871032714844
+        ],
+        [
+          6.684802532196045,
+          3.115649938583374,
+          11.465389251708984
+        ],
+        [
+          6.749507427215576,
+          3.115649938583374,
+          11.223907470703125
+        ],
+        [
+          6.814212322235107,
+          3.115649938583374,
+          10.982425689697266
+        ],
+        [
+          6.878917217254639,
+          3.115649938583374,
+          10.740943908691406
+        ],
+        [
+          6.94362211227417,
+          3.115649938583374,
+          10.499462127685547
+        ],
+        [
+          7.008327007293701,
+          3.115649938583374,
+          10.257980346679688
+        ],
+        [
+          7.073031902313232,
+          3.115649938583374,
+          10.016498565673828
+        ],
+        [
+          7.137736797332764,
+          3.115649938583374,
+          9.775016784667969
+        ],
+        [
+          6.921230316162109,
+          3.115649938583374,
+          9.650016784667969
+        ],
+        [
+          6.704723834991455,
+          3.115649938583374,
+          9.525016784667969
+        ],
+        [
+          6.488217353820801,
+          3.115649938583374,
+          9.400016784667969
+        ],
+        [
+          6.2717108726501465,
+          3.115649938583374,
+          9.275016784667969
+        ],
+        [
+          6.055204391479492,
+          3.115649938583374,
+          9.150016784667969
+        ],
+        [
+          5.838697910308838,
+          3.115649938583374,
+          9.025016784667969
+        ],
+        [
+          5.597216606140137,
+          3.115649938583374,
+          8.960311889648438
+        ],
+        [
+          5.3557353019714355,
+          3.115649938583374,
+          8.895606994628906
+        ],
+        [
+          5.114253997802734,
+          3.115649938583374,
+          8.830902099609375
+        ],
+        [
+          4.989253997802734,
+          3.115649938583374,
+          8.614396095275879
+        ],
+        [
+          4.864253997802734,
+          3.115649938583374,
+          8.397890090942383
+        ],
+        [
+          4.739253997802734,
+          3.115649938583374,
+          8.181384086608887
+        ],
+        [
+          4.614253997802734,
+          3.115649938583374,
+          7.964877605438232
+        ],
+        [
+          4.489253997802734,
+          3.115649938583374,
+          7.748371124267578
+        ],
+        [
+          4.364253997802734,
+          3.115649938583374,
+          7.531864643096924
+        ],
+        [
+          4.239253997802734,
+          3.115649938583374,
+          7.3153581619262695
+        ],
+        [
+          4.114253997802734,
+          3.115649938583374,
+          7.098851680755615
+        ],
+        [
+          3.9892539978027344,
+          3.115649938583374,
+          6.882345199584961
+        ],
+        [
+          3.8642539978027344,
+          3.115649938583374,
+          6.665838718414307
+        ],
+        [
+          3.7410435676574707,
+          3.115649938583374,
+          6.442173957824707
+        ],
+        [
+          3.6160435676574707,
+          3.115649938583374,
+          6.225667476654053
+        ],
+        [
+          3.680748462677002,
+          3.115649938583374,
+          5.984186172485352
+        ],
+        [
+          3.745453357696533,
+          3.115649938583374,
+          5.74270486831665
+        ],
+        [
+          3.8101582527160645,
+          3.115649938583374,
+          5.501223564147949
+        ],
+        [
+          3.8748631477355957,
+          3.115649938583374,
+          5.259742259979248
+        ],
+        [
+          3.939568042755127,
+          3.115649938583374,
+          5.018260955810547
+        ],
+        [
+          4.004272937774658,
+          3.115649938583374,
+          4.776779651641846
+        ],
+        [
+          4.0689778327941895,
+          3.115649938583374,
+          4.5352983474731445
+        ],
+        [
+          4.245754718780518,
+          3.115649938583374,
+          4.358521461486816
+        ],
+        [
+          4.422531604766846,
+          3.115649938583374,
+          4.181744575500488
+        ],
+        [
+          4.597485542297363,
+          3.115649938583374,
+          4.00496768951416
+        ]
+      ],
+      "endpoint_world_xyz": [
+        4.597485542297363,
+        3.115649938583374,
+        4.00496768951416
+      ],
+      "stop_step": 8,
+      "frames": [
+        {
+          "step_idx": 0,
+          "position": [
+            5.171209812164307,
+            3.115649938583374,
+            12.095100402832031
+          ],
+          "heading": 0.0,
+          "rotation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 0,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.610261392670509e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.210461783410003,
+                3.115649938583374,
+                11.34612825197906
+              ],
+              "probability": 0.0032958630472421646,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g1",
+              "position": [
+                6.62009856728022,
+                3.115649938583374,
+                11.706871893705435
+              ],
+              "probability": 0.9962678551673889,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.105789453344642,
+                3.115649938583374,
+                13.343387299603725
+              ],
+              "probability": 0.00034037051955237985,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 9.430962381884456e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 0,
+            "id": "g1",
+            "position": [
+              6.62009856728022,
+              3.115649938583374,
+              11.706871893705435
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 3,
+            "raw_executed_node": "g1",
+            "raw_executed_probability": 0.9962678551673889,
+            "raw_student_index": 3,
+            "raw_student_node": "g1",
+            "stop_probability": 1.610261392670509e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "g0",
+              "g1",
+              "g2",
+              "g3"
+            ],
+            "probabilities": [
+              1.610261392670509e-06,
+              0.0,
+              0.0032958630472421646,
+              0.9962678551673889,
+              0.00034037051955237985,
+              9.430962381884456e-05
+            ],
+            "raw_student_index": 3,
+            "raw_executed_index": 3
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_00_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_00_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_00_topdown.png"
+        },
+        {
+          "step_idx": 1,
+          "position": [
+            6.620097637176514,
+            3.115649938583374,
+            11.706871032714844
+          ],
+          "heading": -1.3089968208080294,
+          "rotation_xyzw": [
+            0.0,
+            -0.6087613821264092,
+            0.0,
+            0.7933533762652958
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 1,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.0836843102879357e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 0.0001227727043442428,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 4.6022512833587825e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 2.1470286810654216e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 0.00020377493638079613,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g5",
+              "position": [
+                7.137735903353794,
+                3.115649938583374,
+                9.775019427288335
+              ],
+              "probability": 0.9996050000190735,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 1,
+            "id": "g5",
+            "position": [
+              7.137735903353794,
+              3.115649938583374,
+              9.775019427288335
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 7,
+            "raw_executed_node": "g5",
+            "raw_executed_probability": 0.9996050000190735,
+            "raw_student_index": 7,
+            "raw_student_node": "g5",
+            "stop_probability": 1.0836843102879357e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g5"
+            ],
+            "probabilities": [
+              1.0836843102879357e-06,
+              0.0,
+              0.0,
+              0.0001227727043442428,
+              4.6022512833587825e-05,
+              2.1470286810654216e-05,
+              0.00020377493638079613,
+              0.9996050000190735
+            ],
+            "raw_student_index": 7,
+            "raw_executed_index": 7
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_01_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_01_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_01_topdown.png"
+        },
+        {
+          "step_idx": 2,
+          "position": [
+            7.137736797332764,
+            3.115649938583374,
+            9.775016784667969
+          ],
+          "heading": -0.26179929254030215,
+          "rotation_xyzw": [
+            0.0,
+            -0.1305261449981041,
+            0.0,
+            0.9914448675906966
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 2,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 8.764465064814431e-07,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 2.860587483155541e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 1.244572013092693e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 8.160919605870731e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.2880859685537871e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 3.6462177376961336e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 8.913776400731876e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g8",
+              "position": [
+                5.838698816409787,
+                3.115649938583374,
+                9.025016568588295
+              ],
+              "probability": 0.999811589717865,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 2,
+            "id": "g8",
+            "position": [
+              5.838698816409787,
+              3.115649938583374,
+              9.025016568588295
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 10,
+            "raw_executed_node": "g8",
+            "raw_executed_probability": 0.999811589717865,
+            "raw_student_index": 10,
+            "raw_student_node": "g8",
+            "stop_probability": 8.764465064814431e-07
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g8"
+            ],
+            "probabilities": [
+              8.764465064814431e-07,
+              0.0,
+              0.0,
+              0.0,
+              2.860587483155541e-05,
+              1.244572013092693e-05,
+              8.160919605870731e-06,
+              1.2880859685537871e-05,
+              3.6462177376961336e-05,
+              8.913776400731876e-05,
+              0.999811589717865
+            ],
+            "raw_student_index": 10,
+            "raw_executed_index": 10
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_02_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_02_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_02_topdown.png"
+        },
+        {
+          "step_idx": 3,
+          "position": [
+            5.838697910308838,
+            3.115649938583374,
+            9.025016784667969
+          ],
+          "heading": 1.0471975667402225,
+          "rotation_xyzw": [
+            0.0,
+            0.5000000067305869,
+            0.0,
+            0.8660253998985324
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 3,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.6456327784908353e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.4317597560875583e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 6.17933574176277e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 5.256400982034393e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 5.578307082032552e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 6.678524641756667e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 1.180347771878587e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.016632379963994026,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g10",
+              "position": [
+                4.88808114062609,
+                3.115649938583374,
+                8.743430891189995
+              ],
+              "probability": 0.9833161234855652,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 3,
+            "id": "g10",
+            "position": [
+              4.88808114062609,
+              3.115649938583374,
+              8.743430891189995
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 12,
+            "raw_executed_node": "g10",
+            "raw_executed_probability": 0.9833161234855652,
+            "raw_student_index": 12,
+            "raw_student_node": "g10",
+            "stop_probability": 1.6456327784908353e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g10"
+            ],
+            "probabilities": [
+              1.6456327784908353e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.4317597560875583e-05,
+              6.17933574176277e-06,
+              5.256400982034393e-06,
+              5.578307082032552e-06,
+              6.678524641756667e-06,
+              1.180347771878587e-05,
+              0.016632379963994026,
+              0.9833161234855652
+            ],
+            "raw_student_index": 12,
+            "raw_executed_index": 12
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_03_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_03_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_03_topdown.png"
+        },
+        {
+          "step_idx": 4,
+          "position": [
+            5.114253997802734,
+            3.115649938583374,
+            8.830902099609375
+          ],
+          "heading": 1.308996893378039,
+          "rotation_xyzw": [
+            0.0,
+            0.6087614109132399,
+            0.0,
+            0.7933533541763856
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 4,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.229645363309828e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 6.552060312969843e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 6.361858140735421e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 5.231235718383687e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 6.692754141113255e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 5.729542408516863e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 4.857297426497098e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.00024595242575742304,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g11",
+              "position": [
+                4.504149135080237,
+                3.115649938583374,
+                7.460583867780592
+              ],
+              "probability": 0.9960755705833435,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 0.003608596045523882,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 3.3243595680687577e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 4,
+            "id": "g11",
+            "position": [
+              4.504149135080237,
+              3.115649938583374,
+              7.460583867780592
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 13,
+            "raw_executed_node": "g11",
+            "raw_executed_probability": 0.9960755705833435,
+            "raw_student_index": 13,
+            "raw_student_node": "g11",
+            "stop_probability": 1.229645363309828e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g11",
+              "g12",
+              "g13"
+            ],
+            "probabilities": [
+              1.229645363309828e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              6.552060312969843e-06,
+              6.361858140735421e-06,
+              5.231235718383687e-06,
+              6.692754141113255e-06,
+              5.729542408516863e-06,
+              4.857297426497098e-06,
+              0.00024595242575742304,
+              0.9960755705833435,
+              0.003608596045523882,
+              3.3243595680687577e-05
+            ],
+            "raw_student_index": 13,
+            "raw_executed_index": 13
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_04_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_04_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_04_topdown.png"
+        },
+        {
+          "step_idx": 5,
+          "position": [
+            4.364253997802734,
+            3.115649938583374,
+            7.531864643096924
+          ],
+          "heading": 0.5235987222153718,
+          "rotation_xyzw": [
+            0.0,
+            0.25881901932054674,
+            0.0,
+            0.965925833197327
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 5,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 1.2003890788037097e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.4758408042325755e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 2.030334371738718e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 1.706832563286298e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.995479806282674e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 1.6825209741000435e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 1.5525613434874685e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 2.051345472864341e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 1.0938974810414948e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 5.144876467966242e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g14",
+              "position": [
+                3.7326394960394147,
+                3.115649938583374,
+                6.049648131942234
+              ],
+              "probability": 0.9969844222068787,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.0029625955503433943,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 4.752582754008472e-06,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 5,
+            "id": "g14",
+            "position": [
+              3.7326394960394147,
+              3.115649938583374,
+              6.049648131942234
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 16,
+            "raw_executed_node": "g14",
+            "raw_executed_probability": 0.9969844222068787,
+            "raw_student_index": 16,
+            "raw_student_node": "g14",
+            "stop_probability": 1.2003890788037097e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g14",
+              "g15",
+              "g16"
+            ],
+            "probabilities": [
+              1.2003890788037097e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.4758408042325755e-06,
+              2.030334371738718e-06,
+              1.706832563286298e-06,
+              1.995479806282674e-06,
+              1.6825209741000435e-06,
+              1.5525613434874685e-06,
+              2.051345472864341e-05,
+              1.0938974810414948e-05,
+              5.144876467966242e-06,
+              0.9969844222068787,
+              0.0029625955503433943,
+              4.752582754008472e-06
+            ],
+            "raw_student_index": 16,
+            "raw_executed_index": 16
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_05_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_05_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_05_topdown.png"
+        },
+        {
+          "step_idx": 6,
+          "position": [
+            3.6160435676574707,
+            3.115649938583374,
+            6.225667476654053
+          ],
+          "heading": 0.5235987222153718,
+          "rotation_xyzw": [
+            0.0,
+            0.25881901932054674,
+            0.0,
+            0.965925833197327
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 6,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 4.529178113443777e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 1.7918738421940361e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 2.178252543671988e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 1.859632561718172e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 1.8762566469376907e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 1.6735696135583567e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 1.6923430621318403e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 8.998897101264447e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 9.552792107569985e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 3.4840256830648286e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.00036865496076643467,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 4.202541276754346e-06,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g17",
+              "position": [
+                4.13368111999467,
+                3.115649938583374,
+                4.293815679954743
+              ],
+              "probability": 0.6181966066360474,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 4.813973282580264e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g19",
+              "position": [
+                2.110500181519187,
+                3.115649938583374,
+                4.553591188784606
+              ],
+              "probability": 0.3813447654247284,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 6,
+            "id": "g17",
+            "position": [
+              4.13368111999467,
+              3.115649938583374,
+              4.293815679954743
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 19,
+            "raw_executed_node": "g17",
+            "raw_executed_probability": 0.6181966066360474,
+            "raw_student_index": 19,
+            "raw_student_node": "g17",
+            "stop_probability": 4.529178113443777e-06
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g17",
+              "g18",
+              "g19"
+            ],
+            "probabilities": [
+              4.529178113443777e-06,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.7918738421940361e-06,
+              2.178252543671988e-06,
+              1.859632561718172e-06,
+              1.8762566469376907e-06,
+              1.6735696135583567e-06,
+              1.6923430621318403e-06,
+              8.998897101264447e-06,
+              9.552792107569985e-06,
+              3.4840256830648286e-06,
+              0.00036865496076643467,
+              4.202541276754346e-06,
+              0.6181966066360474,
+              4.813973282580264e-05,
+              0.3813447654247284
+            ],
+            "raw_student_index": 19,
+            "raw_executed_index": 19
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_06_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_06_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_06_topdown.png"
+        },
+        {
+          "step_idx": 7,
+          "position": [
+            4.0689778327941895,
+            3.115649938583374,
+            4.5352983474731445
+          ],
+          "heading": -0.2617994558370243,
+          "rotation_xyzw": [
+            0.0,
+            -0.1305262259479522,
+            0.0,
+            0.9914448569334474
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 7,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 0.012619277462363243,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "7",
+              "position": [
+                4.0689778327941895,
+                3.115649938583374,
+                4.5352983474731445
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 2.1616220692521892e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 2.403506005066447e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 2.0363206203910522e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 3.0281251383712515e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 2.5676457880763337e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 2.356934783165343e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.00010782958997879177,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 8.393557800445706e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 3.3337091736029834e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 8.825925033306703e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 3.7723635614383966e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 7.139958324842155e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g19",
+              "position": [
+                2.110500181519187,
+                3.115649938583374,
+                4.553591188784606
+              ],
+              "probability": 0.008806563913822174,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g20",
+              "position": [
+                4.5993078065476425,
+                3.115649938583374,
+                4.0049681494468
+              ],
+              "probability": 0.6484987735748291,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g21",
+              "position": [
+                4.003557621348888,
+                3.115649938583374,
+                5.783585251968442
+              ],
+              "probability": 9.978466550819576e-05,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g22",
+              "position": [
+                3.800201631762067,
+                3.115649938583374,
+                5.235483575651189
+              ],
+              "probability": 0.00010906653187703341,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g23",
+              "position": [
+                2.587445326925937,
+                3.115649938583374,
+                4.300646618189644
+              ],
+              "probability": 0.014389309100806713,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g24",
+              "position": [
+                2.241887280261423,
+                3.115649938583374,
+                3.721824246566723
+              ],
+              "probability": 0.3149091303348541,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 7,
+            "id": "g20",
+            "position": [
+              4.5993078065476425,
+              3.115649938583374,
+              4.0049681494468
+            ],
+            "is_STOP": false,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 22,
+            "raw_executed_node": "g20",
+            "raw_executed_probability": 0.6484987735748291,
+            "raw_student_index": 22,
+            "raw_student_node": "g20",
+            "stop_probability": 0.012619277462363243
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g18",
+              "g19",
+              "g20",
+              "g21",
+              "g22",
+              "g23",
+              "g24"
+            ],
+            "probabilities": [
+              0.012619277462363243,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.1616220692521892e-05,
+              2.403506005066447e-05,
+              2.0363206203910522e-05,
+              3.0281251383712515e-05,
+              2.5676457880763337e-05,
+              2.356934783165343e-05,
+              0.00010782958997879177,
+              8.393557800445706e-05,
+              3.3337091736029834e-05,
+              8.825925033306703e-05,
+              3.7723635614383966e-05,
+              7.139958324842155e-05,
+              0.008806563913822174,
+              0.6484987735748291,
+              9.978466550819576e-05,
+              0.00010906653187703341,
+              0.014389309100806713,
+              0.3149091303348541
+            ],
+            "raw_student_index": 22,
+            "raw_executed_index": 22
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_07_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_07_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_07_topdown.png"
+        },
+        {
+          "step_idx": 8,
+          "position": [
+            4.597485542297363,
+            3.115649938583374,
+            4.00496768951416
+          ],
+          "heading": -0.7853982286313229,
+          "rotation_xyzw": [
+            0.0,
+            -0.38268346249921037,
+            0.0,
+            0.9238795200293247
+          ],
+          "rotation_source": "yaw-only reconstruction from recorded heading; not separately recorded quaternion",
+          "step": 8,
+          "candidates": [
+            {
+              "id": null,
+              "position": null,
+              "probability": 0.5912882089614868,
+              "visited": false,
+              "front_current": false,
+              "kind": "STOP"
+            },
+            {
+              "id": "0",
+              "position": [
+                5.171209812164307,
+                3.115649938583374,
+                12.095100402832031
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "1",
+              "position": [
+                6.620097637176514,
+                3.115649938583374,
+                11.706871032714844
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "2",
+              "position": [
+                7.137736797332764,
+                3.115649938583374,
+                9.775016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "3",
+              "position": [
+                5.838697910308838,
+                3.115649938583374,
+                9.025016784667969
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "4",
+              "position": [
+                5.114253997802734,
+                3.115649938583374,
+                8.830902099609375
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "5",
+              "position": [
+                4.364253997802734,
+                3.115649938583374,
+                7.531864643096924
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "6",
+              "position": [
+                3.6160435676574707,
+                3.115649938583374,
+                6.225667476654053
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "7",
+              "position": [
+                4.0689778327941895,
+                3.115649938583374,
+                4.5352983474731445
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "8",
+              "position": [
+                4.597485542297363,
+                3.115649938583374,
+                4.00496768951416
+              ],
+              "probability": 0.0,
+              "visited": true,
+              "front_current": false,
+              "kind": "visited"
+            },
+            {
+              "id": "g0",
+              "position": [
+                5.358400613947696,
+                3.115649938583374,
+                11.24275561676518
+              ],
+              "probability": 2.3575577870360576e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g2",
+              "position": [
+                5.277454292543005,
+                3.115649938583374,
+                13.17538091352504
+              ],
+              "probability": 2.8942373319296166e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g3",
+              "position": [
+                4.717219006878022,
+                3.115649938583374,
+                12.986106771336495
+              ],
+              "probability": 2.1763875338365324e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g4",
+              "position": [
+                8.801185591152986,
+                3.115649938583374,
+                11.183237876901703
+              ],
+              "probability": 4.038241968373768e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g6",
+              "position": [
+                8.650978386344205,
+                3.115649938583374,
+                10.328191764275175
+              ],
+              "probability": 3.2231004297500476e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g7",
+              "position": [
+                7.268397393904776,
+                3.115649938583374,
+                11.018169152040306
+              ],
+              "probability": 3.0529379728250206e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g9",
+              "position": [
+                6.302223694495012,
+                3.115649938583374,
+                7.598432105304493
+              ],
+              "probability": 0.00031104739173315465,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g12",
+              "position": [
+                5.00972573573426,
+                3.115649938583374,
+                7.836380183094237
+              ],
+              "probability": 0.000336989585775882,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g13",
+              "position": [
+                6.348864408980624,
+                3.115649938583374,
+                9.026445272875948
+              ],
+              "probability": 4.746763443108648e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g15",
+              "position": [
+                4.442650445531491,
+                3.115649938583374,
+                6.78597323211037
+              ],
+              "probability": 0.0002489603648427874,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g16",
+              "position": [
+                4.669466291168007,
+                3.115649938583374,
+                8.47121216559967
+              ],
+              "probability": 8.31614452181384e-05,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g18",
+              "position": [
+                2.9665243770819085,
+                3.115649938583374,
+                6.600667238086065
+              ],
+              "probability": 0.00013739669520873576,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g19",
+              "position": [
+                2.110500181519187,
+                3.115649938583374,
+                4.553591188784606
+              ],
+              "probability": 0.014631398022174835,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g21",
+              "position": [
+                4.144587710565963,
+                3.115649938583374,
+                5.627887149367748
+              ],
+              "probability": 0.0002837855718098581,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g22",
+              "position": [
+                3.7343779052871784,
+                3.115649938583374,
+                5.038432077396047
+              ],
+              "probability": 0.0007047536200843751,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g23",
+              "position": [
+                2.587445326925937,
+                3.115649938583374,
+                4.300646618189644
+              ],
+              "probability": 0.02377834916114807,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g24",
+              "position": [
+                2.241887280261423,
+                3.115649938583374,
+                3.721824246566723
+              ],
+              "probability": 0.15668819844722748,
+              "visited": false,
+              "front_current": false,
+              "kind": "ghost"
+            },
+            {
+              "id": "g25",
+              "position": [
+                5.89652352652568,
+                3.115649938583374,
+                3.254967479159502
+              ],
+              "probability": 0.13371641933918,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g26",
+              "position": [
+                3.1709005786635664,
+                3.115649938583374,
+                4.468492598805946
+              ],
+              "probability": 0.0020904464181512594,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            },
+            {
+              "id": "g27",
+              "position": [
+                2.8570723021973246,
+                3.115649938583374,
+                3.822042148146959
+              ],
+              "probability": 0.07547593116760254,
+              "visited": false,
+              "front_current": true,
+              "kind": "ghost"
+            }
+          ],
+          "selected": {
+            "step_idx": 8,
+            "id": null,
+            "position": null,
+            "is_STOP": true,
+            "forced": false,
+            "budget_reached": false,
+            "no_candidate": false,
+            "raw_executed_index": 0,
+            "raw_executed_node": null,
+            "raw_executed_probability": 0.5912882089614868,
+            "raw_student_index": 0,
+            "raw_student_node": null,
+            "stop_probability": 0.5912882089614868
+          },
+          "action_distribution": {
+            "node_ids": [
+              null,
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "g0",
+              "g2",
+              "g3",
+              "g4",
+              "g6",
+              "g7",
+              "g9",
+              "g12",
+              "g13",
+              "g15",
+              "g16",
+              "g18",
+              "g19",
+              "g21",
+              "g22",
+              "g23",
+              "g24",
+              "g25",
+              "g26",
+              "g27"
+            ],
+            "probabilities": [
+              0.5912882089614868,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              2.3575577870360576e-05,
+              2.8942373319296166e-05,
+              2.1763875338365324e-05,
+              4.038241968373768e-05,
+              3.2231004297500476e-05,
+              3.0529379728250206e-05,
+              0.00031104739173315465,
+              0.000336989585775882,
+              4.746763443108648e-05,
+              0.0002489603648427874,
+              8.31614452181384e-05,
+              0.00013739669520873576,
+              0.014631398022174835,
+              0.0002837855718098581,
+              0.0007047536200843751,
+              0.02377834916114807,
+              0.15668819844722748,
+              0.13371641933918,
+              0.0020904464181512594,
+              0.07547593116760254
+            ],
+            "raw_student_index": 0,
+            "raw_executed_index": 0
+          },
+          "fpv_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_08_fpv.png",
+          "pano_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_08_pano.png",
+          "topdown_path": "/home/xukai/code/ETP-R1-snapshot/ETP-R1/vis/val_seen/249/zeromap/step_08_topdown.png"
+        }
+      ],
+      "actual_map_inputs": "all four encoder inputs zero including start pose"
+    }
+  },
+  "render_status": "pending_user_render",
+  "notes": [
+    "All candidate/visited/action data come from the completed own-rollout evaluation.",
+    "Render replays recorded poses without loading policy weights; this preserves the exact evaluated trajectories.",
+    "Quaternions reconstructed from saved heading under yaw-only simulator body motion.",
+    "Goal and reference path are visualization-only, never policy inputs."
+  ]
+}

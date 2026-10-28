@@ -82,10 +82,22 @@ However, the zero endpoint's3.024m error makes the binary success contrast
 fragile. It is suitable as an additional route illustration, not the main
 quantitative win.
 
-## Next step
+## Rendering prepared:473 and249
 
-Recommend473 and249 if two examples must both emphasize explicit multi-room
-layout; use485 instead of249 if short instructions and compact panels matter
-more. No val_seen material rendering has been performed. The current material
-script defaults to val_unseen; it must be extended with split-specific inputs
-and output directories before exporting these cases, to avoid mixing splits.
+CPU materials are ready under `vis/val_seen/473/` and `vis/val_seen/249/`:
+original predicted region/object/heading plots and full tensors, zero-arm
+input tensors, all evaluated poses, nodes, probabilities, trajectories and
+metrics in `meta.json`.473 has13ours/11zero steps;249 has9/9.
+
+User-run command (one simulator/case at a time; rendering only):
+
+```bash
+CUDA_VISIBLE_DEVICES=7 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MPLCONFIGDIR=/tmp/paper-case-mpl /home/xukai/anaconda3/envs/etpr1-py38/bin/python /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/paper_cases/materials.py --split val_seen --episodes 473 249 --render
+```
+
+Expected outputs include each model's `step_XX_pano.png`, `step_XX_fpv.png`,
+`step_XX_topdown.png`, shared top-down crop and registered map projections.
+The script renders this batch's saved poses without reloading/rerunning the
+policy. No GPU or simulator was launched by the CLI. Val_unseen's existing
+default output paths/behavior are unchanged; val_seen uses its separate subtree
+and verifies split/scene/instruction consistency before export.

@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 import sys
 from types import SimpleNamespace
-from typing import List
+from typing import List, Optional
 
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -27,8 +27,9 @@ CACHE_KEY = 'llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree__missing-all-zero'
 
 
 class Args(Tap):
+    split: str = 'val_unseen'
     episodes: List[str] = ['456', '1043']
-    output: str = str(ROOT / 'vis')
+    output: Optional[str] = None
     render: bool = False
     gpu_device_id: int = 0
 
@@ -47,8 +48,8 @@ def categories():
     return values['MAPPED_OBJECT_NAMES'] + values['MAPPED_REGION_NAMES']
 
 
-def selected_rows(model, wanted):
-    path = ROOT / f'results/{model}_val_unseen_episodes.jsonl'
+def selected_rows(model, wanted, split):
+    path = ROOT / f'results/{model}_{split}_episodes.jsonl'
     result = {}
     for line in path.open():
         row = json.loads(line)
@@ -94,8 +95,8 @@ def heading_figure(vectors, start_direction, path):
 
 def prepare(args):
     wanted = list(map(str, args.episodes))
-    runs = {model: selected_rows(model, wanted) for model in ('ours', 'zeromap')}
-    with gzip.open(ROOT / 'data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz', 'rt') as stream:
+    runs = {model: selected_rows(model, wanted, args.split) for model in ('ours', 'zeromap')}
+    with gzip.open(ROOT / f'data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/{args.split}/{args.split}.json.gz', 'rt') as stream:
         episodes = {str(ep['episode_id']): ep for ep in json.load(stream)['episodes'] if str(ep['episode_id']) in wanted}
     names = categories()
     for eid in wanted:
@@ -103,7 +104,7 @@ def prepare(args):
         directory.mkdir(parents=True, exist_ok=True)
         ep = episodes[eid]
         scene = Path(ep['scene_id']).stem
-        source = ROOT / f'outputs/kd27000_missing_zero_cache/{CACHE_KEY}/r2r/val_unseen/cognitive_maps/raster/{scene}/R2R_val_unseen_{eid}.npz'
+        source = ROOT / f'outputs/kd27000_missing_zero_cache/{CACHE_KEY}/r2r/{args.split}/cognitive_maps/raster/{scene}/R2R_{args.split}_{eid}.npz'
         with np.load(source, allow_pickle=True) as raw:
             grid = raw['grid'].copy()
             vectors = raw['direction_vectors'].astype(np.float32)
@@ -116,7 +117,7 @@ def prepare(args):
         np.savez_compressed(directory / 'cogmap_inputs.npz', grid=grid, direction_vectors=vectors,
                             start_direction_vector=start_direction, start_position=start_position,
                             channel_names=np.asarray(names))
-        manifest = {'episode_id': eid, 'instruction': ep['instruction']['instruction_text'],
+        manifest = {'episode_id': eid, 'split': args.split, 'instruction': ep['instruction']['instruction_text'],
                     'scene_path': str(ROOT / f'data/scene_datasets/mp3d/{scene}/{scene}.glb'),
                     'gt_path': ep['reference_path'], 'goal_position': ep['goals'][0]['position'],
                     'start_position': ep['start_position'],
@@ -137,6 +138,8 @@ def prepare(args):
                               'Goal and reference path are visualization-only, never policy inputs.']}
         for model in ('ours', 'zeromap'):
             row = runs[model][eid]
+            if row['instruction'] != ep['instruction']['instruction_text'] or row['scene'] != ep['scene_id']:
+                raise ValueError(f'Episode data does not match {args.split}: {model}/{eid}')
             arm = directory / model
             arm.mkdir(exist_ok=True)
             if len(row['decisions']) != len(row['trajectory']):
@@ -268,6 +271,8 @@ def render(args):
     for eid in args.episodes:
         directory = Path(args.output) / str(eid)
         manifest = json.loads((directory / 'meta.json').read_text())
+        if manifest.get('split', 'val_unseen') != args.split:
+            raise ValueError(f'Manifest split mismatch: {directory}')
         simulator = make_simulator(manifest['scene_path'], SimpleNamespace(gpu_device_id=args.gpu_device_id, sensor_height=1.25))
         try:
             image, extent = base_crop(simulator, manifest, directory)
@@ -288,4 +293,8 @@ def render(args):
 
 if __name__ == '__main__':
     args = Args(underscores_to_dashes=True).parse_args()
+    if args.split not in ('val_unseen', 'val_seen'):
+        raise ValueError('Expected val_unseen or val_seen')
+    if args.output is None:
+        args.output = str(ROOT / 'vis' / 'val_seen') if args.split == 'val_seen' else str(ROOT / 'vis')
     render(args) if args.render else prepare(args)
