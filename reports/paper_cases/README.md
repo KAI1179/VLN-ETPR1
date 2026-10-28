@@ -24,8 +24,8 @@ episodes; the new batch retains that convention for both arms. Zeromap gets
 all four encoder input tensors zero, including start pose. Thus the new batch
 does not promise to reproduce the archived63.30 exactly.
 
-The batch reuses `scripts/eval_d7/d7d_eval.sh` unchanged: four ranks × four
-environments, control, seed100, y elevation,150 text tokens,15 high-level steps,
+The batch reuses `scripts/eval_d7/d7d_eval.sh` unchanged: one rank per GPU listed
+in `GPUS`, four environments per rank, control, seed100, y elevation,150 text tokens,15 high-level steps,
 5000 low-level steps. `EVAL.decision_dump=True` activates the already-existing
 eval-only dumper; no model/trainer source edit is needed. Jobs run serially.
 
@@ -34,11 +34,13 @@ eval-only dumper; no model/trainer source edit is needed. Jobs run serially.
 After GPUs are approved, in tmux (replace the GPU list):
 
 ```bash
-GPUS=4,5,6,7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/paper_cases/run_batch.sh
+GPUS=7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/analysis/paper_cases/run_batch.sh
 ```
 
-Ports29910–29913. Estimated four jobs at roughly5–10min each,20–40min total;
-this is an extrapolation, not a new benchmark. Scripts do not start watchers or
+Single-GPU evaluation uses1rank×4environments. This differs from the historical
+4rank layout, so per-episode outcomes and aggregate metrics need not be identical.
+Four-GPU lists remain supported. Ports29910–29913. The previous20–40min estimate
+was for four GPUs; single-GPU runtime has not been benchmarked. Scripts do not start watchers or
 background jobs. Per-job logs:
 `data/logs/checkpoints/paper_case_<ours|zeromap>_<split>/eval.log`.
 
