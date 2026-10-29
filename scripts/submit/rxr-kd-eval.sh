@@ -11,6 +11,9 @@
 #   sbatch --export=ALL,SETTING=all,ITERS=every:1000 -J rxr-kd-eval-all scripts/submit/rxr-kd-eval.sh
 #   ITERS="4000 5000 5200"  explicit list;  SPLIT, EVAL_LANGUAGES, NUM_ENVS,
 #   GPUS_PER_EVAL, EVALS_PER_GPU pass through (--export=ALL,...).
+# Missing-map episodes with an all-zero map (only those episodes, merged into
+# the existing full results; all languages + English subset):
+#   ITERS="28400 28800" sbatch --export=ALL,SETTING=all,ZERO_MISSING=1 -J rxr-kd-zeromap scripts/submit/rxr-kd-eval.sh
 set -eo pipefail
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv

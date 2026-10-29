@@ -310,6 +310,10 @@ _C.MODEL.MAP_ENCODER.reinit_spatial_tokenizer = False
 #   none | metadata_only (zero raster) | raster_only (zero all metadata)
 #   | no_direction (zero the five route direction vectors only)
 _C.MODEL.MAP_ENCODER.map_ablation = "none"
+# Evaluation of episodes without an LLM map (SS-ETP-LLM): "fail" counts them as
+# failures without running them; "zero" runs them with an all-zero map input
+# (raster, direction vectors, start direction and start position all zero).
+_C.MODEL.MAP_ENCODER.llm_missing_map = "fail"
 # Form of the cognitive map given to the policy: "raster" (dense 37-channel
 # grid through EmbeddingGridMapEncoder) or "text" (one sentence per entity
 # through a frozen instruction-encoder copy, text_map_encoder.py; the raster

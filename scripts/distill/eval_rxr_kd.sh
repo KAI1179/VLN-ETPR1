@@ -20,6 +20,11 @@
 #
 # Episodes without an LLM map are pre-filled as failures by the trainer and
 # counted in SR (llm_cache_missing_count in the json says how many).
+#
+# ZERO_MISSING=1: evaluate ONLY those episodes, with an all-zero map input
+# (MODEL.MAP_ENCODER.llm_missing_map zero), on one GPU (EVAL.EPISODE_ID is not
+# sharded over ranks).  Results go to <RUN>_eval_iter<ITER>_<SPLIT>[_lang]_zeromap/;
+# merge_rxr_zero_map_eval.py replaces the pre-filled failures with them.
 set -euo pipefail
 SETTING="${1:-}"; ITER="${2:-}"
 [[ "${SETTING}" =~ ^(en|all)$ && "${ITER}" =~ ^[0-9]+$ ]] || { echo "Usage: $0 {en|all} ITER" >&2; exit 2; }
@@ -40,6 +45,7 @@ SPLIT="${SPLIT:-val_unseen}"
 BACK_ALGO="${BACK_ALGO:-teleport}"
 
 LANG_ARGS=(); LANG_TAG=""
+if [[ "${SETTING}" == "en" ]]; then _langs=(en-US en-IN); else _langs=('*'); fi
 if [[ -n "${EVAL_LANGUAGES:-}" ]]; then
     IFS=',' read -ra _langs <<< "${EVAL_LANGUAGES}"
     LANG_LIST="[$(printf '%s,' "${_langs[@]}" | sed 's/,$//')]"
@@ -49,8 +55,23 @@ fi
 
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
-EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}${LANG_TAG}"
-EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}${LANG_TAG}.log"
+MODE_TAG=""; MODE_ARGS=()
+if [[ "${ZERO_MISSING:-0}" == "1" ]]; then
+    MODE_TAG="_zeromap"
+    [[ "${GPU_NUMBERS}" -eq 1 ]] || { echo "ZERO_MISSING=1 runs on one GPU (got CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})" >&2; exit 1; }
+    IDS_FILE="${RUN_DIR}/missing_map_ids_${SPLIT}${LANG_TAG}.txt"
+    _counts="$(OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES='' PYTHONPATH="${REPO_ROOT}" \
+        "${PYTHON}" "${REPO_ROOT}/scripts/distill/rxr_missing_map_ids.py" --cache-dir "${LLM_CACHE_DIR}" \
+        --model-key "${LLM_CACHE_KEY}" --split "${SPLIT}" --languages "${_langs[@]}" --out "${IDS_FILE}" | tail -n 1)"
+    read -r N_MISSING N_MISSING_SCENES <<< "${_counts}"
+    [[ "${N_MISSING}" -gt 0 ]] || { echo "no missing-map episodes in ${SPLIT}${LANG_TAG}" >&2; exit 1; }
+    (( NUM_ENVS <= N_MISSING_SCENES )) || NUM_ENVS="${N_MISSING_SCENES}"   # habitat: >= 1 scene per env
+    MODE_ARGS=(MODEL.MAP_ENCODER.llm_missing_map zero
+               EVAL.EPISODE_ID "[$(sed "s/.*/'&'/" "${IDS_FILE}" | paste -sd,)]")
+    echo "zero-map evaluation of ${N_MISSING} missing-map episodes (${N_MISSING_SCENES} scenes, NUM_ENVS=${NUM_ENVS})"
+fi
+EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}${LANG_TAG}${MODE_TAG}"
+EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}${LANG_TAG}${MODE_TAG}.log"
 RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
 [[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
 
@@ -72,6 +93,7 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
     EVAL.SPLIT "${SPLIT}" EVAL.EPISODE_COUNT -1 \
     EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
     "${LANG_ARGS[@]}" \
+    "${MODE_ARGS[@]}" \
     IL.back_algo "${BACK_ALGO}" \
     IL.RECOLLECT_TRAINER.gt_file "data/datasets/RxR_VLNCE_v0_enc_xlmr/{split}/{split}_{role}_gt.json.gz" \
     TRAINER_NAME SS-ETP-LLM \
