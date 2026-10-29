@@ -258,7 +258,7 @@ def test_available_llm_navigation_episode_ids_skips_missing(
     monkeypatch.setattr(
         navigation.VLNCEEpisodeEntry,
         "iter_from",
-        staticmethod(lambda dataset, splits: iter(entries)),
+        staticmethod(lambda dataset, splits, languages=None: iter(entries)),
     )
     raster_path = navigation.llm_navigation_cognitive_map_raster_path(
         "scene-a",
@@ -390,7 +390,7 @@ def test_llm_navigation_cache_report_counts_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(
         navigation.VLNCEEpisodeEntry,
         "iter_from",
-        staticmethod(lambda dataset, splits: iter(entries)),
+        staticmethod(lambda dataset, splits, languages=None: iter(entries)),
     )
     raster_path = navigation.llm_navigation_cognitive_map_raster_path(
         "scene-a",
