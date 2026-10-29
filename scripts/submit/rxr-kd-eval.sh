@@ -3,10 +3,14 @@
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --gpus=8
 #SBATCH -p vip_gpu_scze096
-# Serial evaluation of RxR KD checkpoints, one 8-GPU torchrun per checkpoint.
+# Evaluation of RxR KD checkpoints in one 8-GPU job.  Default: one checkpoint
+# at a time over all 8 GPUs.  To fill the GPUs, run several at once:
+#   GPUS_PER_EVAL=1 EVALS_PER_GPU=2 NUM_ENVS=8  -> 16 checkpoints concurrently
+# (see eval_rxr_kd_iters.sh; NUM_ENVS <= 11 on val_unseen).
 #   sbatch --export=ALL,SETTING=en,ITERS=all      -J rxr-kd-eval-en  scripts/submit/rxr-kd-eval.sh
 #   sbatch --export=ALL,SETTING=all,ITERS=every:1000 -J rxr-kd-eval-all scripts/submit/rxr-kd-eval.sh
-#   ITERS="4000 5000 5200"  explicit list;  SPLIT, EVAL_LANGUAGES, NUM_ENVS pass through.
+#   ITERS="4000 5000 5200"  explicit list;  SPLIT, EVAL_LANGUAGES, NUM_ENVS,
+#   GPUS_PER_EVAL, EVALS_PER_GPU pass through (--export=ALL,...).
 set -eo pipefail
 eval "$(conda shell.bash hook)"
 conda activate etpr1-uv
