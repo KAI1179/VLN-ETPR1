@@ -292,6 +292,10 @@ _C.MODEL.MAP_ENCODER.reinit_spatial_tokenizer = False
 #   none | metadata_only (zero raster) | raster_only (zero all metadata)
 #   | no_direction (zero the five route direction vectors only)
 _C.MODEL.MAP_ENCODER.map_ablation = "none"
+# Evaluation of episodes without an LLM map (SS-ETP-LLM): "fail" counts them as
+# failures without running them; "zero" runs them with an all-zero map input
+# (raster, direction vectors, start direction and start position all zero).
+_C.MODEL.MAP_ENCODER.llm_missing_map = "fail"
 # Multiply start_position before the map encoder (online GT maps store grid
 # cells = 2x metres; cached GT/LLM maps store metres).
 _C.MODEL.MAP_ENCODER.start_position_scale = 1.0

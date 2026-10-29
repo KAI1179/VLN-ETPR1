@@ -19,6 +19,11 @@
 #   NUM_ENVS is capped by the scenes of the split (habitat splits scenes over
 #   envs): val_unseen has 11, so NUM_ENVS <= 11.
 #   GPU memory / utilisation and host load are logged every MONITOR_SEC (600).
+#
+#   ZERO_MISSING=1: per checkpoint, evaluate only the episodes without an LLM
+#   map, with an all-zero map, one GPU each (GPUS_PER_EVAL is 1); the full
+#   evaluation of the same checkpoint must exist.  The summary then merges them
+#   (merge_rxr_zero_map_eval.py: all languages and the English subset).
 set -euo pipefail
 SETTING="${1:-}"; [[ "${SETTING}" =~ ^(en|all)$ ]] || { echo "Usage: $0 {en|all} [ITER ...|all|every:N]" >&2; exit 2; }
 shift
@@ -34,14 +39,19 @@ LANG_TAG=""
 [[ -n "${EVAL_LANGUAGES:-}" ]] && LANG_TAG="_$(printf '%s' "${EVAL_LANGUAGES}" | tr -c 'A-Za-z0-9' '-' | sed 's/-*$//')"
 RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
 [[ -d "${RUN_DIR}" ]] || { echo "Run directory not found: ${RUN_DIR}" >&2; exit 1; }
+MODE_TAG=""; [[ "${ZERO_MISSING:-0}" == "1" ]] && MODE_TAG="_zeromap"
+export ZERO_MISSING="${ZERO_MISSING:-0}"
 
-result_json() { echo "${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}${LANG_TAG}/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
+result_json() { echo "${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}${LANG_TAG}$2/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
 all_iters() { ls -1 "${RUN_DIR}"/ckpt.iter*.pth 2>/dev/null | sed -E 's/.*ckpt\.iter([0-9]+)\.pth/\1/' | sort -n; }
 
 if [[ $# -eq 0 ]]; then
     echo "Checkpoints of ${RUN_NAME} (${SPLIT}${LANG_TAG}):"
     for it in $(all_iters); do
-        if [[ -f "$(result_json "${it}")" ]]; then echo "  iter ${it}  evaluated"; else echo "  iter ${it}"; fi
+        line="  iter ${it}"
+        [[ -f "$(result_json "${it}" "")" ]] && line+="  evaluated"
+        [[ -f "$(result_json "${it}" _zeromap)" ]] && line+="  zero-map"
+        echo "${line}"
     done
     exit 0
 fi
@@ -58,7 +68,10 @@ fi
 TODO=()
 for it in "${ITERS[@]}"; do
     [[ -f "${RUN_DIR}/ckpt.iter${it}.pth" ]] || { echo "Checkpoint not found: ${RUN_DIR}/ckpt.iter${it}.pth" >&2; exit 1; }
-    if [[ "${SKIP_DONE:-1}" == "1" && -f "$(result_json "${it}")" ]]; then
+    if [[ -n "${MODE_TAG}" && ! -f "$(result_json "${it}" "")" ]]; then
+        echo "iter ${it}: no full evaluation to merge into ($(result_json "${it}" "")); run it without ZERO_MISSING first" >&2; exit 1
+    fi
+    if [[ "${SKIP_DONE:-1}" == "1" && -f "$(result_json "${it}" "${MODE_TAG}")" ]]; then
         echo "iter ${it}: result exists, skipping"
     else
         TODO+=("${it}")
@@ -67,6 +80,10 @@ done
 
 # Slot layout
 IFS=',' read -ra GPUS <<< "${CUDA_VISIBLE_DEVICES:?set CUDA_VISIBLE_DEVICES}"
+if [[ -n "${MODE_TAG}" ]]; then
+    [[ "${GPUS_PER_EVAL:-1}" == "1" ]] || { echo "ZERO_MISSING=1 needs GPUS_PER_EVAL=1" >&2; exit 1; }
+    GPUS_PER_EVAL=1
+fi
 GPUS_PER_EVAL="${GPUS_PER_EVAL:-${#GPUS[@]}}"
 EVALS_PER_GPU="${EVALS_PER_GPU:-1}"
 (( ${#GPUS[@]} % GPUS_PER_EVAL == 0 )) || { echo "#GPUs (${#GPUS[@]}) not divisible by GPUS_PER_EVAL=${GPUS_PER_EVAL}" >&2; exit 1; }
@@ -86,7 +103,7 @@ PY
 )"
 (( NUM_ENVS <= N_SCENES )) || { echo "NUM_ENVS=${NUM_ENVS} > ${N_SCENES} scenes in ${SPLIT}; habitat would refuse" >&2; exit 1; }
 
-DRIVER_LOG="${RUN_DIR}/eval_iters_${SPLIT}${LANG_TAG}_$(date +%Y%m%d-%H%M%S).log"
+DRIVER_LOG="${RUN_DIR}/eval_iters_${SPLIT}${LANG_TAG}${MODE_TAG}_$(date +%Y%m%d-%H%M%S).log"
 run_slot() {   # slot_id gpus iter...
     local sid="$1" gpus="$2"; shift 2
     sleep $(( sid * 20 ))   # stagger start-up (dataset / scene loading)
@@ -96,7 +113,7 @@ run_slot() {   # slot_id gpus iter...
         if out="$(CUDA_VISIBLE_DEVICES="${gpus}" bash "${REPO_ROOT}/scripts/distill/eval_rxr_kd.sh" "${SETTING}" "${it}" 2>&1 | tail -n 3)"; then
             echo "[slot ${sid} gpu ${gpus}] iter ${it}: done  $(date +%F' '%T)  $(grep -o '| SR .*' <<< "${out}")"
         else
-            echo "[slot ${sid} gpu ${gpus}] iter ${it}: FAILED, see ${RUN_DIR}/eval_iter${it}_${SPLIT}${LANG_TAG}.log"
+            echo "[slot ${sid} gpu ${gpus}] iter ${it}: FAILED, see ${RUN_DIR}/eval_iter${it}_${SPLIT}${LANG_TAG}${MODE_TAG}.log"
         fi
     done
 }
@@ -110,7 +127,7 @@ monitor() {   # sleeps in 10 s steps so it stops promptly when killed
 }
 
 {
-    echo "run=${RUN_NAME} split=${SPLIT} languages=${EVAL_LANGUAGES:-<setting>} num_envs=${NUM_ENVS} scenes=${N_SCENES}"
+    echo "run=${RUN_NAME} split=${SPLIT} languages=${EVAL_LANGUAGES:-<setting>} num_envs=${NUM_ENVS} scenes=${N_SCENES} zero_missing=${ZERO_MISSING}"
     echo "gpus=${CUDA_VISIBLE_DEVICES} gpus_per_eval=${GPUS_PER_EVAL} evals_per_gpu=${EVALS_PER_GPU} slots=${#SLOTS[@]} cpus=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')GiB"
     echo "to evaluate: ${TODO[*]:-<none>}"
     if (( ${#TODO[@]} > 0 )); then
@@ -126,7 +143,14 @@ monitor() {   # sleeps in 10 s steps so it stops promptly when killed
         kill "${MON}" 2>/dev/null || true
     fi
     cd "${REPO_ROOT}"
-    "${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" \
-        --glob "data/logs/checkpoints/${RUN_NAME}_eval_iter*_${SPLIT}${LANG_TAG}/eval_results/stats_ckpt_*_${SPLIT}.json"
+    if [[ -n "${MODE_TAG}" ]]; then
+        done_iters=()
+        for it in "${ITERS[@]}"; do [[ -f "$(result_json "${it}" _zeromap)" ]] && done_iters+=("${it}"); done
+        (( ${#done_iters[@]} == 0 )) || PYTHONPATH="${REPO_ROOT}" "${PYTHON}" scripts/distill/merge_rxr_zero_map_eval.py \
+            --run-name "${RUN_NAME}" --split "${SPLIT}" --lang-tag "${LANG_TAG}" --iters "${done_iters[@]}"
+    else
+        "${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" \
+            --glob "data/logs/checkpoints/${RUN_NAME}_eval_iter*_${SPLIT}${LANG_TAG}/eval_results/stats_ckpt_*_${SPLIT}.json"
+    fi
 } 2>&1 | tee "${DRIVER_LOG}"
 echo "Driver log: ${DRIVER_LOG}"

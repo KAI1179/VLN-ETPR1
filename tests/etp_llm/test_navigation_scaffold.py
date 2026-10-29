@@ -444,7 +444,9 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
                 llm_cache_model_key="test-model",
             ),
         ),
-        TASK_CONFIG=SimpleNamespace(DATASET=SimpleNamespace(SPLIT="val_unseen")),
+        TASK_CONFIG=SimpleNamespace(
+            DATASET=SimpleNamespace(SPLIT="val_unseen", LANGUAGES=["en-US"])
+        ),
     )
 
     monkeypatch.setattr(
@@ -473,6 +475,107 @@ def test_llm_trainer_marks_missing_eval_cache_as_generation_failure(monkeypatch)
     assert failure_stats["1"]["llm_generation_failure"] == 1.0
     assert aggregated["llm_cache_missing_count"] == 1
     assert aggregated["llm_cache_missing_rate"] == 0.5
+
+
+def test_llm_trainer_zero_map_runs_missing_eval_episodes(monkeypatch):
+    _stub_clip_load(monkeypatch)
+
+    from vlnce_baselines import ss_trainer_ETP_LLM
+
+    trainer = ss_trainer_ETP_LLM.RLTrainer.__new__(ss_trainer_ETP_LLM.RLTrainer)
+    trainer.config = SimpleNamespace(
+        MODEL=SimpleNamespace(
+            task_type="R2R",
+            MAP_ENCODER=SimpleNamespace(
+                architecture="try5",
+                source="llm_grid",
+                llm_cache_dir="/tmp/cache",
+                llm_cache_model_key="test-model",
+                llm_missing_map="zero",
+            ),
+        ),
+        TASK_CONFIG=SimpleNamespace(
+            DATASET=SimpleNamespace(SPLIT="val_unseen", LANGUAGES=["en-US"])
+        ),
+    )
+    monkeypatch.setattr(
+        ss_trainer_ETP_LLM,
+        "llm_navigation_cache_report",
+        lambda *args, **kwargs: SimpleNamespace(
+            available_episode_ids=["2"],
+            missing_episode_ids=["1"],
+            available_count=1,
+            missing_count=1,
+            missing_rate=0.5,
+        ),
+    )
+    real = {
+        "grid": torch.ones(37, 4, 4),
+        "map_trajectory_metadata": torch.ones(5, 2),
+        "start_direction_vector": torch.ones(2),
+        "start_position": torch.ones(2),
+    }
+    loaded = []
+
+    def fake_load(scene_id, cache_id, *args, **kwargs):
+        loaded.append(cache_id)
+        return {key: value.clone() for key, value in real.items()}
+
+    monkeypatch.setattr(ss_trainer_ETP_LLM, "llm_cached_cognitive_map_to_tensors", fake_load)
+
+    allowed = trainer._prepare_eval_episodes_allowed(["1", "2"])
+    assert sorted(allowed) == ["1", "2"]
+    assert trainer._eval_prefilled_episode_stats() == {}
+
+    episodes = [
+        SimpleNamespace(scene_id="scene-a", episode_id="1"),
+        SimpleNamespace(scene_id="scene-a", episode_id="2"),
+    ]
+    trainer.envs = SimpleNamespace(current_episodes=lambda: episodes)
+    maps = trainer._build_cognitive_maps()
+
+    assert loaded == ["R2R_val_unseen_2"]
+    for key, value in real.items():
+        assert maps[0][key].shape == value.shape
+        assert maps[0][key].dtype == value.dtype
+        assert not maps[0][key].any()
+        assert torch.equal(maps[1][key], value)
+
+
+def test_llm_trainer_rejects_unknown_missing_map_mode(monkeypatch):
+    _stub_clip_load(monkeypatch)
+
+    from vlnce_baselines import ss_trainer_ETP_LLM
+
+    trainer = ss_trainer_ETP_LLM.RLTrainer.__new__(ss_trainer_ETP_LLM.RLTrainer)
+    trainer.config = SimpleNamespace(
+        MODEL=SimpleNamespace(
+            task_type="R2R",
+            MAP_ENCODER=SimpleNamespace(
+                architecture="try5",
+                source="llm_grid",
+                llm_cache_dir="/tmp/cache",
+                llm_cache_model_key="test-model",
+                llm_missing_map="skip",
+            ),
+        ),
+        TASK_CONFIG=SimpleNamespace(
+            DATASET=SimpleNamespace(SPLIT="val_unseen", LANGUAGES=["en-US"])
+        ),
+    )
+    monkeypatch.setattr(
+        ss_trainer_ETP_LLM,
+        "llm_navigation_cache_report",
+        lambda *args, **kwargs: SimpleNamespace(
+            available_episode_ids=["2"],
+            missing_episode_ids=["1"],
+            available_count=1,
+            missing_count=1,
+            missing_rate=0.5,
+        ),
+    )
+    with pytest.raises(ValueError, match="llm_missing_map"):
+        trainer._prepare_eval_episodes_allowed(["1", "2"])
 
 
 def test_eval_aggregation_supports_rank_local_failure_metrics(monkeypatch):

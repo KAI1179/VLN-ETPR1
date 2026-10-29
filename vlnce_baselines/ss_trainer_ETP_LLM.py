@@ -1,12 +1,14 @@
 """DAgger scaffold for LLM-Navigation."""
 
+import torch
 from habitat_baselines.common.baseline_registry import baseline_registry
 
+from prior.vlnce import VLNCEEpisodeEntry
 from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
 from vlnce_baselines.models.etp_llm.navigation import (
     available_llm_navigation_episode_ids,
-    llm_navigation_cache_report,
     llm_cached_cognitive_map_to_tensors,
+    llm_navigation_cache_report,
 )
 from vlnce_baselines.ss_trainer_ETP_PriorGT import RLTrainer as PriorGTRLTrainer
 
@@ -79,8 +81,10 @@ class RLTrainer(PriorGTRLTrainer):
         model_key = map_cfg.llm_cache_model_key
         if not model_key:
             raise ValueError("MODEL.MAP_ENCODER.llm_cache_model_key is required")
-        return [
-            llm_cached_cognitive_map_to_tensors(
+        zero_ids = getattr(self, "_llm_zero_map_episode_ids", frozenset())
+
+        def load(ep):
+            return llm_cached_cognitive_map_to_tensors(
                 ep.scene_id,
                 self._cognitive_map_cache_id(ep),
                 dataset,
@@ -90,8 +94,46 @@ class RLTrainer(PriorGTRLTrainer):
                 model_key=model_key,
                 random_rotation_augmentation=random_rotation_augmentation,
             )
-            for ep in self.envs.current_episodes()
-        ]
+
+        episodes = self.envs.current_episodes()
+        maps = [None if str(ep.episode_id) in zero_ids else load(ep) for ep in episodes]
+        if any(m is None for m in maps):
+            template = next((m for m in maps if m is not None), None)
+            if template is None:
+                template = self._llm_zero_map_template(
+                    dataset, split, candidate, cache_dir, model_key
+                )
+            zero = {key: torch.zeros_like(value) for key, value in template.items()}
+            maps = [
+                {key: value.clone() for key, value in zero.items()} if m is None else m
+                for m in maps
+            ]
+        return maps
+
+    def _llm_zero_map_template(self, dataset, split, candidate, cache_dir, model_key):
+        """Any complete map of the split; only its tensor shapes/dtypes are used."""
+        template = getattr(self, "_llm_zero_template", None)
+        if template is None:
+            ep_id = getattr(self, "_llm_zero_template_episode", None)
+            if ep_id is None:
+                raise RuntimeError("no available LLM map to take the zero-map shape from")
+            dataset_name = "RxR" if dataset.lower() == "rxr" else dataset.upper()
+            entry = next(
+                e
+                for e in VLNCEEpisodeEntry.iter_from(dataset_name, splits=(split,), languages=["*"])
+                if str(e.episode_id) == ep_id
+            )
+            template = llm_cached_cognitive_map_to_tensors(
+                entry.scene_id,
+                entry.unique_id,
+                dataset,
+                split,
+                metadata_schema=candidate.metadata_schema,
+                cache_dir=cache_dir,
+                model_key=model_key,
+            )
+            self._llm_zero_template = template
+        return template
 
     def _prepare_eval_episodes_allowed(self, episodes_allowed):
         map_cfg = getattr(self.config.MODEL, "MAP_ENCODER", None)
@@ -113,14 +155,40 @@ class RLTrainer(PriorGTRLTrainer):
             model_key=model_key,
             languages=list(self.config.TASK_CONFIG.DATASET.LANGUAGES),
         )
-        self._llm_eval_missing_cache_episode_ids = report.missing_episode_ids
+        mode = getattr(map_cfg, "llm_missing_map", "fail")
+        if mode not in ("fail", "zero"):
+            raise ValueError(
+                f"MODEL.MAP_ENCODER.llm_missing_map must be fail or zero; got {mode!r}"
+            )
         if report.missing_episode_ids:
             print(
                 "eval_llm_navigation_maps: "
                 f"available={report.available_count} "
                 f"cache_missing={report.missing_count} "
-                f"cache_missing_rate={report.missing_rate:.6f}"
+                f"cache_missing_rate={report.missing_rate:.6f} "
+                f"missing_map={mode}"
             )
+        if mode == "zero":
+            # Missing-map episodes are run with an all-zero map input.
+            self._llm_eval_missing_cache_episode_ids = []
+            self._llm_zero_map_episode_ids = frozenset(report.missing_episode_ids)
+            self._llm_zero_template_episode = (
+                report.available_episode_ids[0] if report.available_episode_ids else None
+            )
+            if report.missing_episode_ids and self._llm_zero_template_episode is None:
+                # Only missing episodes requested: take the shape from the split.
+                full = llm_navigation_cache_report(
+                    self.config.MODEL.task_type,
+                    self.config.TASK_CONFIG.DATASET.SPLIT,
+                    None,
+                    require_boxes=candidate.requires_box_targets,
+                    cache_dir=getattr(map_cfg, "llm_cache_dir", None),
+                    model_key=model_key,
+                    languages=["*"],
+                )
+                self._llm_zero_template_episode = next(iter(full.available_episode_ids), None)
+            return report.available_episode_ids + report.missing_episode_ids
+        self._llm_eval_missing_cache_episode_ids = report.missing_episode_ids
         return report.available_episode_ids
 
     def _eval_prefilled_episode_stats(self):
