@@ -36,3 +36,13 @@ slurm-*.out
 *.npz
 reports/fwd_eq_*/
 reports/online_maps_*/
+
+# Generated V1 workspace artifacts; keep source scripts and Markdown reports.
+/vis/
+/results/
+/.claude/settings.local.json
+/scripts/eval_e2/oob_val_unseen.txt
+/reports/**
+!/reports/**/
+!/reports/**/*.md
+!/reports/**/*.py

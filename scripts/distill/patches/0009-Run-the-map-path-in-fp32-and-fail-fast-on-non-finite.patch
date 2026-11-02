@@ -1,0 +1,471 @@
+From d82d825e461e89a5c9e6dd25b1012491c3c35b9b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 03:50:50 +0000
+Subject: [PATCH] Run the map path in fp32 and fail fast on non-finite weights
+ or activations
+
+R7 (student initialised from the LLM-grid pretraining step 460000 with
+load_pretrained_map_modules=True) died in its first DAgger iteration with NaN
+action probabilities on every environment. The pretrained map encoder and
+fusion had never run inside the trainer before: pretraining runs them in fp32,
+the DAgger rollout runs under fp16 autocast, and the earlier runs only ever
+saw these modules at their (small) initial weights.
+
+- EmbeddingGridMapEncoder and both map-fusion modules now disable autocast and
+  compute in fp32, matching the precision they were pretrained in.
+- nan_guard.assert_finite_parameters runs once after weights are loaded and
+  names any non-finite tensor (student and teacher).
+- nan_guard.NonFiniteOutputGuard hooks every submodule of the student policy
+  and, after each root forward, raises naming the first module whose output
+  held NaN/+inf (-inf is allowed: masks use it). Enabled by ETP_NAN_DEBUG_STEPS,
+  which the distillation launchers default to 1000 forwards; the hooks remove
+  themselves afterwards. launch_info.txt records the setting.
+- Tests cover the guard semantics and the fp32 fusion output under autocast.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/run_dagger_distill_llmpt.sh   |  6 ++
+ scripts/distill/run_dagger_distill_v2.sh      |  5 +
+ tests/etp_prior_gt/test_map_fusion_shared.py  | 13 +++
+ tests/etp_prior_gt/test_nan_guard.py          | 74 ++++++++++++++
+ .../models/etp_prior_gt/map_encoder.py        | 19 ++++
+ .../models/etp_prior_gt/map_fusion.py         | 78 +++++++++------
+ .../models/etp_prior_gt/nan_guard.py          | 99 +++++++++++++++++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 25 +++++
+ 8 files changed, 289 insertions(+), 30 deletions(-)
+ create mode 100644 tests/etp_prior_gt/test_nan_guard.py
+ create mode 100644 vlnce_baselines/models/etp_prior_gt/nan_guard.py
+
+diff --git a/scripts/distill/run_dagger_distill_llmpt.sh b/scripts/distill/run_dagger_distill_llmpt.sh
+index e361e63..e5f7aff 100755
+--- a/scripts/distill/run_dagger_distill_llmpt.sh
++++ b/scripts/distill/run_dagger_distill_llmpt.sh
+@@ -49,6 +49,10 @@ elif [[ $# -ne 0 ]]; then
+ fi
+ 
+ cd "${REPO_ROOT}"
++
++# Name the first module that emits NaN/+inf during the first N policy forwards
++# (the hooks remove themselves afterwards; 0 disables them).
++ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
+ mkdir -p "${RUN_DIR}"
+ 
+ # Resume decision.
+@@ -124,10 +128,12 @@ COMMAND=(
+     echo "elevation_axis=${ELEVATION_AXIS:-y}"
+     echo "iters=${ITERS:-20000}"
+     echo "gpus=${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} procs x ${NUM_ENVS} envs)"
++    echo "nan_debug_steps=${ETP_NAN_DEBUG_STEPS}"
+ } >> "${RUN_DIR}/launch_info.txt"
+ 
+ echo "Log: ${LOG_PATH}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS}" \
+     PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee -a "${LOG_PATH}"
+ 
+ if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
+diff --git a/scripts/distill/run_dagger_distill_v2.sh b/scripts/distill/run_dagger_distill_v2.sh
+index 3fd0c92..c5c08c9 100755
+--- a/scripts/distill/run_dagger_distill_v2.sh
++++ b/scripts/distill/run_dagger_distill_v2.sh
+@@ -94,8 +94,13 @@ COMMAND=(
+ 
+ mkdir -p "${RUN_DIR}"
+ cd "${REPO_ROOT}"
++
++# Name the first module that emits NaN/+inf during the first N policy forwards
++# (the hooks remove themselves afterwards; 0 disables them).
++ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS:-1000}"
+ echo "Variant: ${VARIANT} (elevation_axis=${ELEVATION_AXIS}, load_pretrained_map_modules=${LOAD_MAP}, iters=${ITERS:-12000})"
+ echo "Log: ${LOG_PATH}"
+ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    ETP_NAN_DEBUG_STEPS="${ETP_NAN_DEBUG_STEPS}" \
+     PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
+ if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then echo "Dry run complete"; fi
+diff --git a/tests/etp_prior_gt/test_map_fusion_shared.py b/tests/etp_prior_gt/test_map_fusion_shared.py
+index 4d456a0..f4b9d5b 100644
+--- a/tests/etp_prior_gt/test_map_fusion_shared.py
++++ b/tests/etp_prior_gt/test_map_fusion_shared.py
+@@ -60,3 +60,16 @@ def test_try5_fusion_does_not_update_map_tokens():
+     )
+ 
+     assert updated_map_tokens is None
++
++
++def test_try5_fusion_runs_in_fp32_under_autocast():
++    fusion = GraphMapCrossAttention(hidden_size=16, num_heads=4, dropout=0.0)
++    gmap_embeds = torch.randn(1, 3, 16, dtype=torch.bfloat16)
++    map_tokens = torch.randn(1, 5, 16, dtype=torch.bfloat16)
++    map_token_masks = torch.ones(1, 5, dtype=torch.bool)
++
++    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
++        fused, _ = fusion(gmap_embeds, None, map_tokens, map_token_masks)
++
++    assert fused.dtype == torch.float32
++    assert torch.isfinite(fused).all()
+diff --git a/tests/etp_prior_gt/test_nan_guard.py b/tests/etp_prior_gt/test_nan_guard.py
+new file mode 100644
+index 0000000..c752d63
+--- /dev/null
++++ b/tests/etp_prior_gt/test_nan_guard.py
+@@ -0,0 +1,74 @@
++import pytest
++import torch
++import torch.nn as nn
++
++from vlnce_baselines.models.etp_prior_gt.nan_guard import (
++    NonFiniteOutputGuard,
++    assert_finite_parameters,
++)
++
++
++class Poison(nn.Module):
++    def __init__(self, value: float):
++        super().__init__()
++        self.value = value
++
++    def forward(self, x):
++        return x.masked_fill(torch.ones_like(x, dtype=torch.bool), self.value)
++
++
++def _model(poison_value: float) -> nn.Sequential:
++    return nn.Sequential(nn.Linear(4, 4), Poison(poison_value), nn.Linear(4, 4))
++
++
++def test_assert_finite_parameters_names_the_bad_tensor():
++    model = _model(0.0)
++    with torch.no_grad():
++        model[2].bias[1] = float("nan")
++
++    with pytest.raises(RuntimeError, match=r"2\.bias"):
++        assert_finite_parameters(model, "toy")
++
++
++def test_guard_names_first_module_emitting_nan():
++    model = _model(float("nan"))
++    NonFiniteOutputGuard(model, "toy", max_calls=3)
++
++    with pytest.raises(RuntimeError, match=r"came from 1 \(Poison\)"):
++        model(torch.randn(2, 4))
++
++
++def test_guard_treats_positive_infinity_as_non_finite():
++    model = _model(float("inf"))
++    NonFiniteOutputGuard(model, "toy", max_calls=3)
++
++    with pytest.raises(RuntimeError, match=r"came from 1 \(Poison\)"):
++        model(torch.randn(2, 4))
++
++
++def test_guard_allows_negative_infinity_masks():
++    # -inf must be the last output: a Linear fed -inf would legitimately NaN.
++    model = nn.Sequential(nn.Linear(4, 4), Poison(float("-inf")))
++    guard = NonFiniteOutputGuard(model, "toy", max_calls=3)
++
++    model(torch.randn(2, 4))
++
++    assert guard.active
++
++
++def test_guard_removes_hooks_after_max_calls():
++    model = _model(0.0)
++    guard = NonFiniteOutputGuard(model, "toy", max_calls=2)
++
++    model(torch.randn(2, 4))
++    assert guard.active
++    model(torch.randn(2, 4))
++    assert not guard.active
++
++    model[1].value = float("nan")
++    model(torch.randn(2, 4))  # hooks are gone: no raise
++
++
++def test_guard_rejects_non_positive_budget():
++    with pytest.raises(ValueError):
++        NonFiniteOutputGuard(_model(0.0), "toy", max_calls=0)
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_encoder.py b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+index 765f1cb..cef6739 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_encoder.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+@@ -232,7 +232,26 @@ class EmbeddingGridMapEncoder(nn.Module):
+             start_direction_vectors,
+             start_positions,
+         )
++        # Pretraining ran the map encoder in fp32; DAgger rollouts run under
++        # fp16 autocast.  The spatial tokenizer sums 512x10x10 products per
++        # token, so the trained encoder stays in fp32 to avoid fp16 overflow.
++        with torch.autocast(device_type=cognitive_crop.device.type, enabled=False):
++            return self._encode(
++                cognitive_crop.float(),
++                trajectory_keypoints.float(),
++                start_direction_vectors.float(),
++                start_positions.float(),
++                batch_size,
++            )
+ 
++    def _encode(
++        self,
++        cognitive_crop: torch.Tensor,
++        trajectory_keypoints: torch.Tensor,
++        start_direction_vectors: torch.Tensor,
++        start_positions: torch.Tensor,
++        batch_size: int,
++    ) -> Tuple[torch.Tensor, torch.Tensor]:
+         # cognitive_crop: (B, 37, 100, 100) -> embedding_map: (B, 512, 100, 100).
+         embedding_map = self.category_projection(cognitive_crop)
+         spatial_tokens = self.spatial_tokenizer(
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_fusion.py b/vlnce_baselines/models/etp_prior_gt/map_fusion.py
+index 01a72f1..fa0ce43 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_fusion.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_fusion.py
+@@ -4,6 +4,16 @@ import torch
+ import torch.nn as nn
+ 
+ 
++def _fp32(tensor: torch.Tensor):
++    """Disable autocast on the tensor's device.
++
++    Pretraining ran the map fusion in fp32; DAgger rollouts run under fp16
++    autocast.  Keeping the trained fusion in fp32 stops its activations from
++    overflowing the fp16 range (the first symptom is NaN action probabilities).
++    """
++    return torch.autocast(device_type=tensor.device.type, enabled=False)
++
++
+ class GraphMapCrossAttention(nn.Module):
+     """Try5 one-way map-token fusion: graph nodes attend to fixed map tokens."""
+ 
+@@ -31,14 +41,17 @@ class GraphMapCrossAttention(nn.Module):
+         if map_tokens is None:
+             return gmap_embeds, None
+ 
+-        map_context, _ = self.attention(
+-            gmap_embeds,
+-            map_tokens,
+-            map_tokens,
+-            key_padding_mask=self._map_key_padding_mask(map_token_masks),
+-            need_weights=False,
+-        )
+-        return gmap_embeds + self.residual_projection(map_context), None
++        with _fp32(gmap_embeds):
++            gmap_embeds = gmap_embeds.float()
++            map_tokens = map_tokens.float()
++            map_context, _ = self.attention(
++                gmap_embeds,
++                map_tokens,
++                map_tokens,
++                key_padding_mask=self._map_key_padding_mask(map_token_masks),
++                need_weights=False,
++            )
++            return gmap_embeds + self.residual_projection(map_context), None
+ 
+ 
+ class BidirectionalMapTokenFusion(nn.Module):
+@@ -90,28 +103,33 @@ class BidirectionalMapTokenFusion(nn.Module):
+         if map_tokens is None:
+             return gmap_embeds, None
+ 
+-        graph_key_padding_mask = self._graph_key_padding_mask(gmap_embeds, gmap_masks)
+-        map_context, _ = self.map_from_graph_attention(
+-            map_tokens,
+-            gmap_embeds,
+-            gmap_embeds,
+-            key_padding_mask=graph_key_padding_mask,
+-            need_weights=False,
+-        )
+-        updated_map_tokens = map_tokens + self.map_residual_projection(map_context)
+-
+-        map_key_padding_mask = self._map_key_padding_mask(map_token_masks)
+-        graph_context, _ = self.graph_from_map_attention(
+-            gmap_embeds,
+-            updated_map_tokens,
+-            updated_map_tokens,
+-            key_padding_mask=map_key_padding_mask,
+-            need_weights=False,
+-        )
+-        updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(
+-            graph_context
+-        )
+-        return updated_gmap_embeds, updated_map_tokens
++        with _fp32(gmap_embeds):
++            gmap_embeds = gmap_embeds.float()
++            map_tokens = map_tokens.float()
++            graph_key_padding_mask = self._graph_key_padding_mask(
++                gmap_embeds, gmap_masks
++            )
++            map_context, _ = self.map_from_graph_attention(
++                map_tokens,
++                gmap_embeds,
++                gmap_embeds,
++                key_padding_mask=graph_key_padding_mask,
++                need_weights=False,
++            )
++            updated_map_tokens = map_tokens + self.map_residual_projection(map_context)
++
++            map_key_padding_mask = self._map_key_padding_mask(map_token_masks)
++            graph_context, _ = self.graph_from_map_attention(
++                gmap_embeds,
++                updated_map_tokens,
++                updated_map_tokens,
++                key_padding_mask=map_key_padding_mask,
++                need_weights=False,
++            )
++            updated_gmap_embeds = gmap_embeds + self.graph_residual_projection(
++                graph_context
++            )
++            return updated_gmap_embeds, updated_map_tokens
+ 
+ 
+ def build_map_token_fusion(
+diff --git a/vlnce_baselines/models/etp_prior_gt/nan_guard.py b/vlnce_baselines/models/etp_prior_gt/nan_guard.py
+new file mode 100644
+index 0000000..8b31d13
+--- /dev/null
++++ b/vlnce_baselines/models/etp_prior_gt/nan_guard.py
+@@ -0,0 +1,99 @@
++"""Fail fast on non-finite weights and activations.
++
++``assert_finite_parameters`` runs once after weights are loaded and names the
++offending tensors.  ``NonFiniteOutputGuard`` hooks every submodule of a root
++module and, after each root forward, raises naming the first submodule (in
++execution order) whose output contained NaN or +inf, so a NaN that surfaces as
++"probs do not satisfy Simplex" is traced to the layer that produced it.  -inf
++is allowed because attention and action masks legitimately use it.  The hooks
++remove themselves after ``max_calls`` root forwards, so a run that proves
++finite pays nothing afterwards.
++"""
++
++from typing import Any, Callable, List, Optional, Tuple
++
++import torch
++import torch.nn as nn
++
++
++def assert_finite_parameters(module: nn.Module, name: str) -> None:
++    named = list(module.named_parameters())
++    if not named:
++        return
++    flags = torch.stack([torch.isfinite(param).all() for _, param in named])
++    bad = [pname for (pname, _), ok in zip(named, flags.tolist()) if not ok]
++    if bad:
++        raise RuntimeError(
++            f"[nan-guard] {name}: {len(bad)} non-finite parameter tensors, "
++            f"first: {bad[:5]}"
++        )
++
++
++def _nan_or_posinf(value: Any) -> Optional[torch.Tensor]:
++    """0-dim bool tensor: any float tensor inside ``value`` holds NaN or +inf."""
++    if isinstance(value, torch.Tensor):
++        if not value.is_floating_point() or value.numel() == 0:
++            return None
++        return torch.isnan(value).any() | torch.isposinf(value).any()
++    if isinstance(value, (tuple, list)):
++        children = value
++    elif isinstance(value, dict):
++        children = list(value.values())
++    else:
++        return None
++    parts = [flag for flag in map(_nan_or_posinf, children) if flag is not None]
++    if not parts:
++        return None
++    return torch.stack(parts).any()
++
++
++class NonFiniteOutputGuard:
++    """Name the first submodule whose forward output is NaN or +inf."""
++
++    def __init__(self, root: nn.Module, name: str, max_calls: int) -> None:
++        if max_calls <= 0:
++            raise ValueError(f"max_calls must be positive, got {max_calls}")
++        self._name = name
++        self._remaining = max_calls
++        self._pending: List[Tuple[str, str, torch.Tensor]] = []
++        self._handles: List[Any] = []
++        for module_name, module in root.named_modules():
++            label = module_name or "<root>"
++            self._handles.append(module.register_forward_hook(self._recorder(label)))
++        # Registered after the root's own recorder, so it runs last.
++        self._handles.append(root.register_forward_hook(self._check_root))
++
++    @property
++    def active(self) -> bool:
++        return bool(self._handles)
++
++    def _recorder(self, label: str) -> Callable[[nn.Module, Any, Any], None]:
++        def hook(module: nn.Module, inputs: Any, output: Any) -> None:
++            flag = _nan_or_posinf(output)
++            if flag is not None:
++                self._pending.append((label, type(module).__name__, flag))
++
++        return hook
++
++    def _check_root(self, module: nn.Module, inputs: Any, output: Any) -> None:
++        pending, self._pending = self._pending, []
++        if pending:
++            # One device sync per root forward instead of one per submodule.
++            flags = torch.stack([flag for _, _, flag in pending]).tolist()
++            for (label, class_name, _), bad in zip(pending, flags):
++                if bad:
++                    self.remove()
++                    raise RuntimeError(
++                        f"[nan-guard] {self._name}: first non-finite (NaN/+inf) "
++                        f"output came from {label} ({class_name}); every module "
++                        "that finished earlier in this forward was finite"
++                    )
++        self._remaining -= 1
++        if self._remaining <= 0:
++            self.remove()
++
++    def remove(self) -> None:
++        for handle in self._handles:
++            handle.remove()
++        self._handles = []
++        self._pending = []
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index a339abe..168b237 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -49,6 +49,10 @@ from vlnce_baselines.models.etp_prior_gt.map_utils import (
+     cached_cognitive_map_to_tensors,
+ )
+ from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
++from vlnce_baselines.models.etp_prior_gt.nan_guard import (
++    NonFiniteOutputGuard,
++    assert_finite_parameters,
++)
+ from prior.online_evidence import OnlineEvidence
+ from vlnce_baselines.models.refiner import CognitiveMapRefiner
+ 
+@@ -531,6 +535,27 @@ class RLTrainer(BaseVLNCETrainer):
+         )
+         logger.info("Finished setting up policy.")
+ 
++        # Fail fast on non-finite weights; optionally name the first module that
++        # emits NaN/+inf during the first ETP_NAN_DEBUG_STEPS policy forwards.
++        assert_finite_parameters(self.policy, "student policy")
++        if self.gt_teacher is not None:
++            assert_finite_parameters(self.gt_teacher, "gt teacher")
++        nan_debug_steps = int(os.environ.get("ETP_NAN_DEBUG_STEPS", "0"))
++        if nan_debug_steps > 0:
++            student_net = (
++                self.policy.net.module
++                if isinstance(self.policy.net, DDP)
++                else self.policy.net
++            )
++            self._nan_guard = NonFiniteOutputGuard(
++                student_net, "student policy", nan_debug_steps
++            )
++            if self.local_rank < 1:
++                logger.info(
++                    "[nan-guard] watching student policy outputs for the first "
++                    f"{nan_debug_steps} forwards"
++                )
++
+         return start_iter
+ 
+     def _teacher_action(self, batch_angles, batch_distances, candidate_lengths):
+-- 
+2.43.0
+

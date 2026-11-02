@@ -1,0 +1,75 @@
+From c5036e78044e866c979fe037ede839795cd372a3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 02:27:35 +0000
+Subject: [PATCH] Initialisation guards: flag all-zero weights only, not zero
+ biases
+
+LayerNorm and MultiheadAttention biases are zero by design, so the guards
+from the previous commit rejected a correctly initialised map encoder. Only
+tensors with dim >= 2 are now checked for all-zero; non-finite is still
+rejected for every parameter. The regression test's docstring records that
+no_init_weights() patches torch.nn.init only in transformers >= 4.31; the
+installed 4.28.1 does not, so the test passes trivially there.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ pretrain_src/pretrain_src/train_r2r.py               | 2 +-
+ tests/etp_prior_gt/test_map_encoder_init_under_hf.py | 9 +++++----
+ vlnce_baselines/models/etp_prior_gt/map_encoder.py   | 4 +++-
+ 3 files changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/pretrain_src/pretrain_src/train_r2r.py b/pretrain_src/pretrain_src/train_r2r.py
+index 0152eff..32c2c67 100644
+--- a/pretrain_src/pretrain_src/train_r2r.py
++++ b/pretrain_src/pretrain_src/train_r2r.py
+@@ -80,7 +80,7 @@ def assert_conv_modules_initialised(model):
+         for pname, param in module.named_parameters(recurse=False):
+             if not torch.isfinite(param).all():
+                 bad.append(f"{name}.{pname}: non-finite")
+-            elif param.numel() > 1 and not param.detach().any():
++            elif param.dim() >= 2 and not param.detach().any():
+                 bad.append(f"{name}.{pname}: all zeros")
+     if bad:
+         raise RuntimeError(
+diff --git a/tests/etp_prior_gt/test_map_encoder_init_under_hf.py b/tests/etp_prior_gt/test_map_encoder_init_under_hf.py
+index d715f6a..36921e6 100644
+--- a/tests/etp_prior_gt/test_map_encoder_init_under_hf.py
++++ b/tests/etp_prior_gt/test_map_encoder_init_under_hf.py
+@@ -1,9 +1,10 @@
+ """The spatial tokenizer must be initialised even when torch.nn.init is disabled.
+ 
+-transformers' from_pretrained() wraps model construction in no_init_weights(),
+-which turns every torch.nn.init function into a no-op, and BERT's _init_weights
+-never touches nn.Conv2d.  Both pretraining checkpoints (387500, 460000) shipped
+-a spatial_tokenizer.weight of exact zeros and an arbitrary bias for this reason.
++transformers >= 4.31 wraps from_pretrained() model construction in
++no_init_weights(), which turns every torch.nn.init function into a no-op, and
++BERT's _init_weights never touches nn.Conv2d.  On older transformers (4.28.1 is
++installed in etpr1-py38) no_init_weights() only skips init_weights(), so this
++test passes trivially there; it guards the newer behaviour.
+ """
+ 
+ import importlib.util
+diff --git a/vlnce_baselines/models/etp_prior_gt/map_encoder.py b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+index 73343dd..c0d9789 100644
+--- a/vlnce_baselines/models/etp_prior_gt/map_encoder.py
++++ b/vlnce_baselines/models/etp_prior_gt/map_encoder.py
+@@ -182,11 +182,13 @@ class EmbeddingGridMapEncoder(nn.Module):
+         transformers' from_pretrained(), which can leave modules it does not
+         know how to initialise as uninitialised memory.
+         """
++        # Zero biases are legitimate (LayerNorm, MultiheadAttention); an
++        # all-zero weight matrix or kernel is not.
+         bad = []
+         for name, param in self.named_parameters():
+             if not torch.isfinite(param).all():
+                 bad.append(f"{name}: non-finite")
+-            elif param.numel() > 1 and not param.detach().any():
++            elif param.dim() >= 2 and not param.detach().any():
+                 bad.append(f"{name}: all zeros")
+         if bad:
+             raise RuntimeError(f"{where} is not initialised: {bad}")
+-- 
+2.43.0
+

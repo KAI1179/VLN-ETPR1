@@ -1,0 +1,223 @@
+From 632d0d9796ee8b906903b6df586178b8de34d135 Mon Sep 17 00:00:00 2001
+From: PRO-2684 <54608551+PRO-2684@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:53:15 -0400
+Subject: [PATCH] exp: run D9 on GPUs 4 and 5 with one environment per rank
+
+---
+ docs/daily/2026-10-15.md   |  2 ++
+ reports/d9_setup.md        | 15 ++++++++++++---
+ scripts/eval_d9/dump.sh    |  9 ++++++---
+ scripts/eval_d9/run_all.sh | 35 +++++++++++++++++++----------------
+ scripts/eval_d9/verify.py  |  8 +++++++-
+ scripts/submit/d9-dump.sh  |  4 ++--
+ 6 files changed, 48 insertions(+), 25 deletions(-)
+
+diff --git a/docs/daily/2026-10-15.md b/docs/daily/2026-10-15.md
+index f8af7c7..cf96aca 100644
+--- a/docs/daily/2026-10-15.md
++++ b/docs/daily/2026-10-15.md
+@@ -8,3 +8,5 @@
+ - 开始全量采集前执行规定的 4 条 episode 等价性及共享状态对齐校验。校验失败即停止并保留错误，不跳过。
+ - A1–A3 为配对统计；A4 为高/低 STOP 倾向两组的场景 bootstrap。STOP 时候选区域不可定义，不填零或当前位置。
+ - 当前阶段为实现与启动准备；尚无 D9 结果，不能据此声称地图改善了语言关注或空间推理。
++- 用户后续允许使用 GPU 4、5，并要求控制显存：本地启动改为两卡、每 rank 单环境，不使用其余卡。on/off 校验使用同一两卡设置；不再将不同 rank 划分的 O 指标要求为逐位相同，S 的共享状态对齐仍须严格通过。
++- 首次 nohup 进程未存活，未开始 GPU 推理；改用持久执行会话启动，状态与日志仍写入 reports/d9/。
+diff --git a/reports/d9_setup.md b/reports/d9_setup.md
+index 82f31e4..6d04834 100644
+--- a/reports/d9_setup.md
++++ b/reports/d9_setup.md
+@@ -64,6 +64,14 @@ four-rank episode partition, collection waits for GPUs 4–7 together rather
+ than changing to one rank. It starts only after the launcher's documented
+ free-memory/utilisation checks pass. No running GPU process is killed.
+ 
++The user subsequently authorised sharing GPUs **4 and 5** with existing jobs,
++provided memory stays modest. This supersedes the initial four-idle-GPU plan:
++the local collection now uses two ranks with one environment per rank and
++checks free memory before each inference. GPU 0–3 and 6–7 are not used.
++Hook-on/off equivalence is checked under this same two-rank configuration.
++The D8 four-rank own-rollout numbers are not claimed to be exactly reproduced
++under the changed partition; shared-state replay alignment remains strict.
++
+ The unattended driver log and final status are recorded under `reports/d9/`.
+ This file documents setup, not completed experimental results.
+ 
+@@ -97,11 +105,12 @@ Local unattended driver: `scripts/eval_d9/run_all.sh`.
+ Slurm entrypoint: `scripts/submit/d9-dump.sh` (not submitted by this run).
+ 
+ ```bash
+-GPUS=4,5,6,7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d9/run_all.sh
++GPUS=4,5 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d9/run_all.sh
+ ```
+ 
+-The local driver is launched with `nohup`; do not launch another copy while
+-the existing lock is held. It performs the prescribed finite smoke checks,
++The local driver runs in a persistent execution session; do not launch another
++copy while the existing lock is held. An initial `nohup` launch did not survive
++the command session and did not start inference. The driver performs the finite smoke checks,
+ then six full collection passes and CPU statistics. It never retries a
+ failed check or silently overwrites a partial episode dump.
+ 
+diff --git a/scripts/eval_d9/dump.sh b/scripts/eval_d9/dump.sh
+index f2c27f1..2147834 100755
+--- a/scripts/eval_d9/dump.sh
++++ b/scripts/eval_d9/dump.sh
+@@ -18,9 +18,12 @@ if [[ -n "${D9_EPISODES_JSON:-}" ]]; then
+     IDS="$("$PYTHON" -c 'import json,sys; print(repr(json.load(open(sys.argv[1]))))' "$D9_EPISODES_JSON")"
+ fi
+ case "$MODEL" in base) PORT=29830 ;; try5) PORT=29831 ;; kd) PORT=29832 ;; *) exit 2 ;; esac
+-export EXP_NAME="${EXP_NAME:-d9_${MODEL}_${SOURCE}_control_val_unseen}"
+-MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-4,5,6,7}" \
++GPUS="${GPUS:-4,5}"
++IFS=',' read -ra GPU_LIST <<< "$GPUS"
++WORLD=${#GPU_LIST[@]}
++export EXP_NAME="${EXP_NAME:-d9_${MODEL}_${SOURCE}_control_val_unseen_w${WORLD}}"
++MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="$GPUS" \
+     bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
+     EVAL.dump_attention "$D9_DUMP_ROOT/$MODEL/$SOURCE" \
+     EVAL.d8_shared_states "$SHARED" EVAL.d8_replay_dir "$REPLAY" \
+-    EVAL.EPISODE_ID "$IDS" "$@"
++    EVAL.EPISODE_ID "$IDS" NUM_ENVIRONMENTS 1 "$@"
+diff --git a/scripts/eval_d9/run_all.sh b/scripts/eval_d9/run_all.sh
+index bef09d5..9a6f41f 100755
+--- a/scripts/eval_d9/run_all.sh
++++ b/scripts/eval_d9/run_all.sh
+@@ -3,7 +3,10 @@
+ set -euo pipefail
+ ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
+ PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
+-export GPUS="${GPUS:-4,5,6,7}"
++export GPUS="${GPUS:-4,5}"
++IFS=',' read -ra GPU_LIST <<< "$GPUS"
++WORLD=${#GPU_LIST[@]}
++SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w${WORLD}"
+ export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
+ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+ mkdir -p "$ROOT/reports/d9"
+@@ -12,7 +15,7 @@ flock -n 9 || { echo 'Another D9 pipeline owns run.lock' >&2; exit 1; }
+ STAGE=initializing
+ write_status() {
+     "$PYTHON" -c 'import datetime,json,os,pathlib,sys
+-pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3],gpus=sys.argv[4],pid=os.getppid(),updated_at=datetime.datetime.now().astimezone().isoformat(),exit_code=int(sys.argv[5])),indent=2)+"\n")' \
++pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3],gpus=sys.argv[4],world_size=len(sys.argv[4].split(",")),num_environments_per_rank=1,pid=os.getppid(),updated_at=datetime.datetime.now().astimezone().isoformat(),exit_code=int(sys.argv[5])),indent=2)+"\n")' \
+         "$ROOT/reports/d9/status.json" "$1" "$STAGE" "$GPUS" "${2:-0}"
+ }
+ trap 'code=$?; if [[ $code == 0 ]]; then write_status completed "$code"; else write_status failed "$code"; fi; echo "$(date -Is) D9 pipeline exited with status $code"; exit "$code"' EXIT
+@@ -25,8 +28,8 @@ requested={int(x) for x in sys.argv[1].split(",")}
+ rows={int(v[0]): (int(v[1]),int(v[2])) for v in (line.strip().split(",") for line in sys.stdin) if v[0].strip()}
+ if requested-rows.keys():
+     raise ValueError("Requested GPU does not exist")
+-sys.exit(0 if all(rows[g][0]>=16000 and rows[g][1]<10 for g in requested) else 1)' "$GPUS"; do
+-        echo "$(date -Is) Waiting for GPUs $GPUS: each needs >=16000 MiB free and <10% utilization"
++sys.exit(0 if all(rows[g][0]>=10000 for g in requested) else 1)' "$GPUS"; do
++        echo "$(date -Is) Waiting for GPUs $GPUS: each needs >=10000 MiB free (existing GPU jobs are allowed)"
+         write_status waiting_for_gpus
+         sleep 60
+     done
+@@ -36,33 +39,33 @@ sys.exit(0 if all(rows[g][0]>=16000 and rows[g][1]<10 for g in requested) else 1
+ SMOKE_IDS="$ROOT/scripts/eval_d8/smoke_episodes.json"
+ for MODEL in base try5 kd; do
+     STAGE="smoke_${MODEL}_O"
+-    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence.json"
++    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w${WORLD}.json"
+     if [[ ! -f "$REPORT" ]]; then
+         for HOOK in off on; do
+             wait_for_gpus
+             EXTRA=()
+             [[ "$HOOK" == on ]] || EXTRA=(EVAL.dump_attention '')
+             D9_EPISODES_JSON="$SMOKE_IDS" \
+-            D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/$HOOK" \
+-            EXP_NAME="d9_smoke_${MODEL}_${HOOK}" \
++            D9_DUMP_ROOT="$SMOKE_ROOT/$HOOK" \
++            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w${WORLD}" \
+                 bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" O "${EXTRA[@]}"
+         done
+     fi
+     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 4 \
+-        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off/eval_results" \
+-        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on/eval_results" \
++        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w${WORLD}/eval_results" \
++        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w${WORLD}/eval_results" \
+         --output "$REPORT"
+     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source O \
+-        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
++        --directory "$SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
+     STAGE="smoke_${MODEL}_S"
+-    if [[ ! -f "$ROOT/data/logs/d9_smoke/on/$MODEL/S/.complete.json" ]]; then
++    if [[ ! -f "$SMOKE_ROOT/on/$MODEL/S/.complete.json" ]]; then
+         wait_for_gpus
+         D9_EPISODES_JSON="$SMOKE_IDS" \
+-        D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/on" EXP_NAME="d9_smoke_${MODEL}_S" \
++        D9_DUMP_ROOT="$SMOKE_ROOT/on" EXP_NAME="d9_smoke_${MODEL}_S_w${WORLD}" \
+             bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" S
+     fi
+     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source S \
+-        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/S" --episodes-json "$SMOKE_IDS" \
++        --directory "$SMOKE_ROOT/on/$MODEL/S" --episodes-json "$SMOKE_IDS" \
+         --reference-dump "$ROOT/data/logs/d8_dump/$MODEL/S"
+ done
+ 
+@@ -80,10 +83,10 @@ for SOURCE in S O; do
+         "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source "$SOURCE" \
+             --directory "$DIRECTORY" "${REFERENCE[@]}"
+         if [[ "$SOURCE" == O ]]; then
+-            "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 1839 \
++            "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode comparison --expected 1839 \
+                 --reference-metrics "$ROOT/data/logs/checkpoints/d8_${MODEL}_O_control_val_unseen/eval_results" \
+-                --candidate-metrics "$ROOT/data/logs/checkpoints/d9_${MODEL}_O_control_val_unseen/eval_results" \
+-                --output "$ROOT/reports/d9/${MODEL}_own_equivalence.json"
++                --candidate-metrics "$ROOT/data/logs/checkpoints/d9_${MODEL}_O_control_val_unseen_w${WORLD}/eval_results" \
++                --output "$ROOT/reports/d9/${MODEL}_own_d8_comparison_w${WORLD}.json"
+         fi
+     done
+ done
+diff --git a/scripts/eval_d9/verify.py b/scripts/eval_d9/verify.py
+index 89019e3..51a4431 100644
+--- a/scripts/eval_d9/verify.py
++++ b/scripts/eval_d9/verify.py
+@@ -48,7 +48,13 @@ def check_metrics(args):
+                if reference[eid][key] != candidate[eid][key]]
+     result = dict(episodes=len(reference), fields=METRICS, changes=changes,
+                   reference=args.reference_metrics, candidate=args.candidate_metrics)
++    result['comparison_only'] = args.mode == 'comparison'
++    if args.mode == 'comparison':
++        result['note'] = 'Different rank/environment partition from D8; descriptive comparison, not an equivalence check.'
+     Path(args.output).write_text(json.dumps(result, indent=2) + '\n')
++    if args.mode == 'comparison':
++        print(f'Comparison only: {len(reference)} episodes, {len(changes)} changed metric values; {args.output}', flush=True)
++        return
+     if changes:
+         raise ValueError(f'{len(changes)} metric mismatches: {args.output}')
+     print(f'PASS exact equivalence: {len(reference)} episodes, five metrics', flush=True)
+@@ -112,7 +118,7 @@ def check_dump(args):
+ 
+ def main():
+     args = Args(underscores_to_dashes=True).parse_args()
+-    if args.mode == 'metrics':
++    if args.mode in ('metrics', 'comparison'):
+         check_metrics(args)
+     elif args.mode == 'dump':
+         check_dump(args)
+diff --git a/scripts/submit/d9-dump.sh b/scripts/submit/d9-dump.sh
+index 3867977..4031c81 100755
+--- a/scripts/submit/d9-dump.sh
++++ b/scripts/submit/d9-dump.sh
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env bash
+ #SBATCH --job-name=d9-dump
+ #SBATCH --output=slurm-%x-%j.out
+-#SBATCH --gpus=4
++#SBATCH --gpus=2
+ #SBATCH --cpus-per-task=16
+ #SBATCH -p vip_gpu_scze096
+ set -euo pipefail
+@@ -9,6 +9,6 @@ ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
+ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+     export GPUS="${GPUS:-${CUDA_VISIBLE_DEVICES:?Slurm must expose allocated GPUs}}"
+ else
+-    export GPUS="${GPUS:-4,5,6,7}"
++    export GPUS="${GPUS:-4,5}"
+ fi
+ bash "$ROOT/scripts/eval_d9/run_all.sh"
+-- 
+2.25.1
+

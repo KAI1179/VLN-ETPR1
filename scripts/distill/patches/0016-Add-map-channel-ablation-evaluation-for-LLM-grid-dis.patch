@@ -1,0 +1,102 @@
+From 3a4531b59f726411fe1a99aef02868bedf79ec11 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 27 Sep 2026 15:44:12 +0000
+Subject: [PATCH] Add map-channel ablation evaluation for LLM-grid distilled
+ students
+
+eval_teacher_ablation.sh only evaluates the GT teacher. This launcher runs
+the same ablation modes (metadata_only, raster_only, no_direction, none) on
+a distilled student checkpoint through the exact eval_s4.sh option set, so
+SR(none) - SR(metadata_only) measures what the LLM raster contributes and
+SR(none) - SR(raster_only) what the metadata token contributes, comparable
+with the existing p0 evaluations. No new training is involved.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/eval_student_ablation.sh | 73 ++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+ create mode 100755 scripts/distill/eval_student_ablation.sh
+
+diff --git a/scripts/distill/eval_student_ablation.sh b/scripts/distill/eval_student_ablation.sh
+new file mode 100755
+index 0000000..5485a36
+--- /dev/null
++++ b/scripts/distill/eval_student_ablation.sh
+@@ -0,0 +1,73 @@
++#!/usr/bin/env bash
++# Map-channel ablation for an LLM-grid distilled student on R2R val_unseen.
++# Same evaluation path and options as scripts/refiner/eval_s4.sh (so results are
++# comparable with the p0 evaluations), plus MODEL.MAP_ENCODER.map_ablation.
++#
++# Usage: bash scripts/distill/eval_student_ablation.sh RUN_NAME ITER MODE
++#   MODE: none           (control; should reproduce the p0 evaluation)
++#         metadata_only  (raster zeroed -> SR drop = what the raster contributes)
++#         raster_only    (all metadata zeroed -> SR drop = what the metadata token contributes)
++#         no_direction   (only the five route direction vectors zeroed)
++# GPU: CUDA_VISIBLE_DEVICES (required: pass the free card), NUM_ENVS (default 4).
++# Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_abl_<MODE>/eval_results/
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
++RDZV_PORT="${MASTER_PORT:-$(free_port)}"
++export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
++# Only seeds tensor shapes; the DAgger checkpoint overrides every weight.
++PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}"
++
++if [[ $# -ne 3 ]]; then
++    echo "Usage: bash scripts/distill/eval_student_ablation.sh RUN_NAME ITER MODE" >&2
++    exit 2
++fi
++if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
++    echo "Set CUDA_VISIBLE_DEVICES to one free card (training may occupy the others)." >&2
++    exit 2
++fi
++RUN_NAME="$1"; ITER="$2"; MODE="$3"
++case "${MODE}" in none|metadata_only|raster_only|no_direction) ;; *)
++    echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
++
++CKPT_PATH="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/ckpt.iter${ITER}.pth"
++[[ -f "${CKPT_PATH}" ]] || { echo "Missing checkpoint ${CKPT_PATH}" >&2; exit 1; }
++EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_abl_${MODE}"
++EVAL_LOG="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/eval_iter${ITER}_abl_${MODE}.log"
++RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_val_unseen.json"
++
++cd "${REPO_ROOT}"
++env GLOG_minloglevel=2 MAGNUM_LOG=quiet PYTHONPATH="${REPO_ROOT}" \
++    "${TORCHRUN}" --rdzv_backend=c10d --rdzv_endpoint="localhost:${RDZV_PORT}" --nproc_per_node=1 "${REPO_ROOT}/run.py" \
++    --exp_name "${EVAL_NAME}" \
++    --run-type eval \
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
++    SIMULATOR_GPU_IDS '[0]' TORCH_GPU_IDS '[0]' GPU_NUMBERS 1 \
++    TASK_CONFIG.SEED 100 \
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \
++    NUM_ENVIRONMENTS "${NUM_ENVS:-4}" \
++    EVAL.SPLIT val_unseen EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${CKPT_PATH}" \
++    IL.back_algo control \
++    TRAINER_NAME SS-ETP-LLM MODEL.policy_name LLMGridTry5Policy \
++    MODEL.MAP_ENCODER.enabled True MODEL.MAP_ENCODER.architecture try5 \
++    MODEL.MAP_ENCODER.source llm_grid \
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree \
++    MODEL.MAP_ENCODER.eval_map_source p0 \
++    MODEL.MAP_ENCODER.refiner_ckpt "" \
++    MODEL.MAP_ENCODER.load_pretrained_map_modules False \
++    MODEL.MAP_ENCODER.map_ablation "${MODE}" \
++    MODEL.pretrained_path "${PRETRAINED_CKPT}" \
++    MODEL.elevation_axis "${ELEVATION_AXIS:-y}" >"${EVAL_LOG}" 2>&1
++
++"${PYTHON}" - "${RESULT_JSON}" "${RUN_NAME}" "${ITER}" "${MODE}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"{sys.argv[2]} iter {sys.argv[3]} ablation={sys.argv[4]} | SR {m['success']*100:.2f} | SPL {m['spl']*100:.2f} | "
++      f"OSR {m['oracle_success']*100:.2f} | NE {m['distance_to_goal']:.3f} | stop_err {(m['oracle_success']-m['success'])*100:.2f}")
++PY
++echo "Log: ${EVAL_LOG}"
++echo "Metrics: ${RESULT_JSON}"
+-- 
+2.43.0
+

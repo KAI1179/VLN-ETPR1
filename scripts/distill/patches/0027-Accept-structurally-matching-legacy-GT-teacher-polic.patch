@@ -1,0 +1,152 @@
+From 2dc26bc955f99e3796e24c7ebb49013694819537 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 9 Oct 2026 21:52:47 -0400
+Subject: [PATCH] Accept structurally matching legacy GT teacher policy names
+
+---
+ .../etp_prior_gt/test_gt_teacher_identity.py  | 43 ++++++++++++++++++-
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 39 +++++++++++------
+ 2 files changed, 69 insertions(+), 13 deletions(-)
+
+diff --git a/tests/etp_prior_gt/test_gt_teacher_identity.py b/tests/etp_prior_gt/test_gt_teacher_identity.py
+index 7d07137..14d7c08 100644
+--- a/tests/etp_prior_gt/test_gt_teacher_identity.py
++++ b/tests/etp_prior_gt/test_gt_teacher_identity.py
+@@ -8,6 +8,7 @@ with ast instead of being imported.
+ """
+ 
+ import ast
++import logging
+ import types
+ from pathlib import Path
+ 
+@@ -19,10 +20,22 @@ _FN = next(
+     n for n in ast.parse(SRC).body
+     if isinstance(n, ast.FunctionDef) and n.name == "_check_teacher_identity"
+ )
+-_NS = {}
++_NS = {"logger": logging.getLogger(__name__)}
+ exec(compile(ast.Module([_FN], type_ignores=[]), "ss_trainer_ETP_PriorGT.py", "exec"), _NS)  # noqa: S102
+ check = _NS["_check_teacher_identity"]
+ 
++
++class Teacher:
++    def state_dict(self):
++        return {"net.weight": types.SimpleNamespace(shape=(2, 3))}
++
++
++_check = check
++
++
++def check(config, checkpoint, path):
++    _check(config, checkpoint, path, Teacher())
++
+ GT = ("PriorGTTry5Policy", "gt.legacy.r1p5.direction5.v1")
+ 
+ 
+@@ -59,3 +72,31 @@ def test_other_gt_namespace_is_rejected():
+ 
+ def test_checkpoint_without_config_passes():
+     check(_cfg(*GT), {"state_dict": {}}, "t.pth")
++
++
++def test_legacy_name_exact_structure_passes_with_warning(caplog):
++    checkpoint = _ckpt("PriorGTPolicy", GT[1])
++    checkpoint["state_dict"] = {"net.module.weight": types.SimpleNamespace(shape=(2, 3))}
++    check(_cfg(*GT), checkpoint, "legacy.pth")
++    assert "PriorGTPolicy" in caplog.text
++    assert "PriorGTTry5Policy" in caplog.text
++
++
++@pytest.mark.parametrize("state", [
++    {},
++    {"net.weight": types.SimpleNamespace(shape=(3, 2))},
++    {"net.weight": types.SimpleNamespace(shape=(2, 3)),
++     "net.extra": types.SimpleNamespace(shape=(1,))},
++])
++def test_legacy_name_structure_mismatch_is_rejected(state):
++    checkpoint = _ckpt("PriorGTPolicy", GT[1])
++    checkpoint["state_dict"] = state
++    with pytest.raises(ValueError, match="structure differs"):
++        check(_cfg(*GT), checkpoint, "legacy.pth")
++
++
++def test_legacy_matching_structure_does_not_bypass_namespace():
++    checkpoint = _ckpt("PriorGTPolicy", "wrong-cache")
++    checkpoint["state_dict"] = Teacher().state_dict()
++    with pytest.raises(ValueError, match="cache_namespace"):
++        check(_cfg(*GT), checkpoint, "legacy.pth")
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index a27ceb8..cc7088f 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -85,16 +85,8 @@ def _coordinate_fusion_flag(config) -> bool:
+     return bool(getattr(map_cfg, "coordinate_fusion", False)) if map_cfg else False
+ 
+ 
+-def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
+-    """Refuse a teacher checkpoint that was trained as something else.
+-
+-    Teacher and student share the architecture, so a student checkpoint
+-    (e.g. an LLM-Grid DAgger run) loads into the teacher without a missing
+-    key and the run silently distils the student into itself.  The saved
+-    config names the policy and the map cache the checkpoint was trained
+-    with; both must match what IL.gt_teacher_* asks for.  Checkpoints
+-    without a saved config pass (nothing to compare against).
+-    """
++def _check_teacher_identity(config, ckpt_dict, ckpt_path, teacher) -> None:
++    """Check the cache identity; accept legacy policy names only on exact structure."""
+     saved = ckpt_dict.get("config")
+     if saved is None:
+         return
+@@ -106,7 +98,23 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
+     have_ns = getattr(map_cfg, "cache_namespace", None)
+     problems = []
+     if have_policy is not None and have_policy != want_policy:
+-        problems.append(f"policy_name {have_policy!r} != IL.gt_teacher_policy_name {want_policy!r}")
++        expected = teacher.state_dict()
++        state = {
++            k.replace("net.module.", "net.", 1): v
++            for k, v in ckpt_dict["state_dict"].items()
++        }
++        missing = sorted(expected.keys() - state.keys())
++        unexpected = sorted(state.keys() - expected.keys())
++        shapes = [
++            (k, tuple(state[k].shape), tuple(expected[k].shape))
++            for k in sorted(expected.keys() & state.keys())
++            if state[k].shape != expected[k].shape
++        ]
++        if missing or unexpected or shapes:
++            problems.append(
++                f"policy_name {have_policy!r} != {want_policy!r} and structure differs: "
++                f"missing={missing}, unexpected={unexpected}, shape_mismatches={shapes}"
++            )
+     if have_ns is not None and have_ns != want_ns:
+         problems.append(
+             f"MAP_ENCODER.cache_namespace {have_ns!r} != IL.gt_teacher_map_namespace {want_ns!r}"
+@@ -115,6 +123,11 @@ def _check_teacher_identity(config, ckpt_dict, ckpt_path) -> None:
+         raise ValueError(
+             f"{ckpt_path} is not the requested GT teacher: " + "; ".join(problems)
+         )
++    if have_policy is not None and have_policy != want_policy:
++        logger.warning(
++            f"{ckpt_path}: embedded policy_name={have_policy!r}, requested={want_policy!r}; "
++            "accepting exact state_dict key/shape match against the requested teacher"
++        )
+ 
+ 
+ def _check_coordinate_fusion_matches(config, ckpt_dict, ckpt_path) -> None:
+@@ -573,7 +586,9 @@ class RLTrainer(BaseVLNCETrainer):
+                 action_space=action_space,
+             )
+             t_ckpt = torch.load(self.config.IL.gt_teacher_ckpt, map_location="cpu")
+-            _check_teacher_identity(self.config, t_ckpt, self.config.IL.gt_teacher_ckpt)
++            _check_teacher_identity(
++                self.config, t_ckpt, self.config.IL.gt_teacher_ckpt, self.gt_teacher
++            )
+             sd = t_ckpt["state_dict"]
+             del t_ckpt
+             sd = {k.replace("net.module.", "net.", 1): v for k, v in sd.items()}
+-- 
+2.25.1
+

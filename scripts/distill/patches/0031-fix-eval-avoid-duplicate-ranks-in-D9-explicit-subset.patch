@@ -1,0 +1,95 @@
+From da88ac28f2fe4c935461865158bcb22dcfa60a81 Mon Sep 17 00:00:00 2001
+From: PRO-2684 <54608551+PRO-2684@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:56:46 -0400
+Subject: [PATCH] fix(eval): avoid duplicate ranks in D9 explicit-subset smoke
+
+---
+ docs/daily/2026-10-15.md   |  1 +
+ reports/d9_setup.md        | 11 +++++++++--
+ scripts/eval_d9/run_all.sh | 13 +++++++------
+ 3 files changed, 17 insertions(+), 8 deletions(-)
+
+diff --git a/docs/daily/2026-10-15.md b/docs/daily/2026-10-15.md
+index cf96aca..5ae62ca 100644
+--- a/docs/daily/2026-10-15.md
++++ b/docs/daily/2026-10-15.md
+@@ -10,3 +10,4 @@
+ - 当前阶段为实现与启动准备；尚无 D9 结果，不能据此声称地图改善了语言关注或空间推理。
+ - 用户后续允许使用 GPU 4、5，并要求控制显存：本地启动改为两卡、每 rank 单环境，不使用其余卡。on/off 校验使用同一两卡设置；不再将不同 rank 划分的 O 指标要求为逐位相同，S 的共享状态对齐仍须严格通过。
+ - 首次 nohup 进程未存活，未开始 GPU 推理；改用持久执行会话启动，状态与日志仍写入 reports/d9/。
++- 两卡运行已实际启动，初始每卡新增约 5 GiB 显存。O 的四 episode 校验暴露原评测显式 ID 列表未按 rank 分片，导致两 rank 重复写文件而停止。仅把 O 的 on/off 短校验改成单卡；S 短校验和全量仍两卡，保留失败日志与数据，不改前向或动作分支。
+diff --git a/reports/d9_setup.md b/reports/d9_setup.md
+index 6d04834..609ff03 100644
+--- a/reports/d9_setup.md
++++ b/reports/d9_setup.md
+@@ -68,7 +68,12 @@ The user subsequently authorised sharing GPUs **4 and 5** with existing jobs,
+ provided memory stays modest. This supersedes the initial four-idle-GPU plan:
+ the local collection now uses two ranks with one environment per rank and
+ checks free memory before each inference. GPU 0–3 and 6–7 are not used.
+-Hook-on/off equivalence is checked under this same two-rank configuration.
++Hook-on/off equivalence uses one GPU for the four-episode subset. The existing
++own-rollout evaluator does not shard an explicit `EVAL.EPISODE_ID` list across
++ranks, so the first two-rank subset smoke failed on a duplicate output file.
++Its files/logs are retained. Only the smoke launcher was changed; no model or
++episode-selection source code was changed. Full collection and the shared
++replay smoke still use two ranks and ordinary rank-sharded episode sets.
+ The D8 four-rank own-rollout numbers are not claimed to be exactly reproduced
+ under the changed partition; shared-state replay alignment remains strict.
+ 
+@@ -96,7 +101,9 @@ CPU checks completed before launch:
+ - `ruff` and `ty` are unavailable in PATH and the existing conda environment;
+   no packages were installed to obtain them.
+ 
+-The GPU equivalence and replay checks are **pending**, not represented as
++The first two-rank smoke reached inference at about 5 GiB additional GPU
++memory per rank, then failed because of duplicate episode writes as described
++above. The corrected GPU equivalence and replay checks are **pending**, not represented as
+ passed by these CPU checks.
+ 
+ ## Driver and outputs
+diff --git a/scripts/eval_d9/run_all.sh b/scripts/eval_d9/run_all.sh
+index 9a6f41f..b119380 100755
+--- a/scripts/eval_d9/run_all.sh
++++ b/scripts/eval_d9/run_all.sh
+@@ -7,6 +7,7 @@ export GPUS="${GPUS:-4,5}"
+ IFS=',' read -ra GPU_LIST <<< "$GPUS"
+ WORLD=${#GPU_LIST[@]}
+ SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w${WORLD}"
++OWN_SMOKE_ROOT="$ROOT/data/logs/d9_smoke_w1"
+ export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
+ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+ mkdir -p "$ROOT/reports/d9"
+@@ -39,24 +40,24 @@ sys.exit(0 if all(rows[g][0]>=10000 for g in requested) else 1)' "$GPUS"; do
+ SMOKE_IDS="$ROOT/scripts/eval_d8/smoke_episodes.json"
+ for MODEL in base try5 kd; do
+     STAGE="smoke_${MODEL}_O"
+-    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w${WORLD}.json"
++    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence_w1.json"
+     if [[ ! -f "$REPORT" ]]; then
+         for HOOK in off on; do
+             wait_for_gpus
+             EXTRA=()
+             [[ "$HOOK" == on ]] || EXTRA=(EVAL.dump_attention '')
+             D9_EPISODES_JSON="$SMOKE_IDS" \
+-            D9_DUMP_ROOT="$SMOKE_ROOT/$HOOK" \
+-            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w${WORLD}" \
++            GPUS="${GPU_LIST[0]}" D9_DUMP_ROOT="$OWN_SMOKE_ROOT/$HOOK" \
++            EXP_NAME="d9_smoke_${MODEL}_${HOOK}_w1" \
+                 bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" O "${EXTRA[@]}"
+         done
+     fi
+     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 4 \
+-        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w${WORLD}/eval_results" \
+-        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w${WORLD}/eval_results" \
++        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off_w1/eval_results" \
++        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on_w1/eval_results" \
+         --output "$REPORT"
+     "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source O \
+-        --directory "$SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
++        --directory "$OWN_SMOKE_ROOT/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
+     STAGE="smoke_${MODEL}_S"
+     if [[ ! -f "$SMOKE_ROOT/on/$MODEL/S/.complete.json" ]]; then
+         wait_for_gpus
+-- 
+2.25.1
+

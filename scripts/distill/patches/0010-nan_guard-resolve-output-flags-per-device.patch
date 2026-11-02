@@ -1,0 +1,186 @@
+From f36c98a9ba9113461edbff2b50e3e62419a08e09 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 04:00:26 +0000
+Subject: [PATCH] nan_guard: resolve output flags per device
+
+The waypoint predictor returns a dict mixing GPU and CPU tensors, so stacking
+all flags of one module output failed with "Expected all tensors to be on the
+same device" on the first policy forward. Flags are now kept one per float
+tensor and read back grouped by device (one sync per device per root forward);
+assert_finite_parameters uses the same resolver. Adds a nested/mixed-output
+test; the guard and fusion tests pass under CPU torch.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ tests/etp_prior_gt/test_nan_guard.py          | 29 +++++++
+ .../models/etp_prior_gt/nan_guard.py          | 77 ++++++++++++-------
+ 2 files changed, 78 insertions(+), 28 deletions(-)
+
+diff --git a/tests/etp_prior_gt/test_nan_guard.py b/tests/etp_prior_gt/test_nan_guard.py
+index c752d63..ae76fc9 100644
+--- a/tests/etp_prior_gt/test_nan_guard.py
++++ b/tests/etp_prior_gt/test_nan_guard.py
+@@ -72,3 +72,32 @@ def test_guard_removes_hooks_after_max_calls():
+ def test_guard_rejects_non_positive_budget():
+     with pytest.raises(ValueError):
+         NonFiniteOutputGuard(_model(0.0), "toy", max_calls=0)
++
++
++class MixedOutput(nn.Module):
++    """Mimics waypoint mode: a dict mixing float, int and nested tensors."""
++
++    def __init__(self, poison_value: float):
++        super().__init__()
++        self.value = poison_value
++
++    def forward(self, x):
++        return {
++            "logits": x,
++            "ids": torch.zeros(2, dtype=torch.long),
++            "nested": (
++                x * 2.0,
++                [x.masked_fill(torch.ones_like(x, dtype=torch.bool), self.value)],
++            ),
++        }
++
++
++def test_guard_walks_nested_dict_outputs_with_non_float_entries():
++    model = nn.Sequential(nn.Linear(4, 4), MixedOutput(0.0))
++    guard = NonFiniteOutputGuard(model, "toy", max_calls=2)
++    model(torch.randn(2, 4))
++    assert guard.active
++
++    model[1].value = float("nan")
++    with pytest.raises(RuntimeError, match=r"came from 1 \(MixedOutput\)"):
++        model(torch.randn(2, 4))
+diff --git a/vlnce_baselines/models/etp_prior_gt/nan_guard.py b/vlnce_baselines/models/etp_prior_gt/nan_guard.py
+index 8b31d13..2a6f439 100644
+--- a/vlnce_baselines/models/etp_prior_gt/nan_guard.py
++++ b/vlnce_baselines/models/etp_prior_gt/nan_guard.py
+@@ -8,20 +8,50 @@ execution order) whose output contained NaN or +inf, so a NaN that surfaces as
+ is allowed because attention and action masks legitimately use it.  The hooks
+ remove themselves after ``max_calls`` root forwards, so a run that proves
+ finite pays nothing afterwards.
++
++Outputs may mix devices (the waypoint predictor returns CPU and GPU tensors),
++so flags are only ever stacked per device: one sync per device per forward.
+ """
+ 
+-from typing import Any, Callable, List, Optional, Tuple
++from typing import Any, Callable, Dict, List, Tuple
+ 
+ import torch
+ import torch.nn as nn
+ 
+ 
++def _float_tensors(value: Any) -> List[torch.Tensor]:
++    if isinstance(value, torch.Tensor):
++        if value.is_floating_point() and value.numel() > 0:
++            return [value]
++        return []
++    if isinstance(value, (tuple, list)):
++        children = list(value)
++    elif isinstance(value, dict):
++        children = list(value.values())
++    else:
++        return []
++    return [tensor for child in children for tensor in _float_tensors(child)]
++
++
++def _resolve(flags: List[torch.Tensor]) -> List[bool]:
++    """Read 0-dim bool flags with one device sync per device."""
++    by_device: Dict[torch.device, List[int]] = {}
++    for index, flag in enumerate(flags):
++        by_device.setdefault(flag.device, []).append(index)
++    values = [False] * len(flags)
++    for indices in by_device.values():
++        stacked = torch.stack([flags[index] for index in indices]).tolist()
++        for index, value in zip(indices, stacked):
++            values[index] = bool(value)
++    return values
++
++
+ def assert_finite_parameters(module: nn.Module, name: str) -> None:
+     named = list(module.named_parameters())
+     if not named:
+         return
+-    flags = torch.stack([torch.isfinite(param).all() for _, param in named])
+-    bad = [pname for (pname, _), ok in zip(named, flags.tolist()) if not ok]
++    finite = _resolve([torch.isfinite(param).all() for _, param in named])
++    bad = [pname for (pname, _), ok in zip(named, finite) if not ok]
+     if bad:
+         raise RuntimeError(
+             f"[nan-guard] {name}: {len(bad)} non-finite parameter tensors, "
+@@ -29,24 +59,6 @@ def assert_finite_parameters(module: nn.Module, name: str) -> None:
+         )
+ 
+ 
+-def _nan_or_posinf(value: Any) -> Optional[torch.Tensor]:
+-    """0-dim bool tensor: any float tensor inside ``value`` holds NaN or +inf."""
+-    if isinstance(value, torch.Tensor):
+-        if not value.is_floating_point() or value.numel() == 0:
+-            return None
+-        return torch.isnan(value).any() | torch.isposinf(value).any()
+-    if isinstance(value, (tuple, list)):
+-        children = value
+-    elif isinstance(value, dict):
+-        children = list(value.values())
+-    else:
+-        return None
+-    parts = [flag for flag in map(_nan_or_posinf, children) if flag is not None]
+-    if not parts:
+-        return None
+-    return torch.stack(parts).any()
+-
+-
+ class NonFiniteOutputGuard:
+     """Name the first submodule whose forward output is NaN or +inf."""
+ 
+@@ -55,7 +67,8 @@ class NonFiniteOutputGuard:
+             raise ValueError(f"max_calls must be positive, got {max_calls}")
+         self._name = name
+         self._remaining = max_calls
+-        self._pending: List[Tuple[str, str, torch.Tensor]] = []
++        # (module label, class name, one flag per float tensor in the output)
++        self._pending: List[Tuple[str, str, List[torch.Tensor]]] = []
+         self._handles: List[Any] = []
+         for module_name, module in root.named_modules():
+             label = module_name or "<root>"
+@@ -69,19 +82,27 @@ class NonFiniteOutputGuard:
+ 
+     def _recorder(self, label: str) -> Callable[[nn.Module, Any, Any], None]:
+         def hook(module: nn.Module, inputs: Any, output: Any) -> None:
+-            flag = _nan_or_posinf(output)
+-            if flag is not None:
+-                self._pending.append((label, type(module).__name__, flag))
++            flags = [
++                torch.isnan(tensor).any() | torch.isposinf(tensor).any()
++                for tensor in _float_tensors(output)
++            ]
++            if flags:
++                self._pending.append((label, type(module).__name__, flags))
+ 
+         return hook
+ 
+     def _check_root(self, module: nn.Module, inputs: Any, output: Any) -> None:
+         pending, self._pending = self._pending, []
+         if pending:
+-            # One device sync per root forward instead of one per submodule.
+-            flags = torch.stack([flag for _, _, flag in pending]).tolist()
+-            for (label, class_name, _), bad in zip(pending, flags):
++            owners = [
++                entry_index
++                for entry_index, (_, _, flags) in enumerate(pending)
++                for _ in flags
++            ]
++            values = _resolve([flag for _, _, flags in pending for flag in flags])
++            for entry_index, bad in zip(owners, values):
+                 if bad:
++                    label, class_name, _ = pending[entry_index]
+                     self.remove()
+                     raise RuntimeError(
+                         f"[nan-guard] {self._name}: first non-finite (NaN/+inf) "
+-- 
+2.43.0
+

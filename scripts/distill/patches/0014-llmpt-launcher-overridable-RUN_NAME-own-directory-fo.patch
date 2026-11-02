@@ -1,0 +1,48 @@
+From 0ceb05372a906c1552b92e6c5f53e64be2014f3f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 27 Sep 2026 08:47:03 +0000
+Subject: [PATCH] llmpt launcher: overridable RUN_NAME, own directory for
+ LOAD_MAP=False
+
+The follow-up to R7 is the same recipe with LOAD_MAP=False (460000 backbone,
+map encoder and fusion from init, as every earlier DAgger run effectively
+had). With a fixed RUN_NAME the launcher would find R7's checkpoints and
+auto-resume instead of starting fresh, so LOAD_MAP=False now defaults to
+dagger_distill_gt_teacher_llmpt_nomapload, RUN_NAME can be overridden, and
+launch_info.txt records the run name.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/run_dagger_distill_llmpt.sh | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/distill/run_dagger_distill_llmpt.sh b/scripts/distill/run_dagger_distill_llmpt.sh
+index e5f7aff..8cc5647 100755
+--- a/scripts/distill/run_dagger_distill_llmpt.sh
++++ b/scripts/distill/run_dagger_distill_llmpt.sh
+@@ -32,7 +32,12 @@ IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
+ GPU_NUMBERS="${#_gpu_list[@]}"
+ GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
+ NUM_ENVS="${NUM_ENVS:-4}"
+-RUN_NAME="dagger_distill_gt_teacher_llmpt"
++# RUN_NAME is overridable. Without an override, LOAD_MAP=False gets its own
++# directory so it never auto-resumes from the LOAD_MAP=True run's checkpoints.
++if [[ -z "${RUN_NAME:-}" ]]; then
++    RUN_NAME="dagger_distill_gt_teacher_llmpt"
++    [[ "${LOAD_MAP:-auto}" == "False" ]] && RUN_NAME="${RUN_NAME}_nomapload"
++fi
+ RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+ LOG_PATH="${RUN_DIR}/train.log"
+ PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
+@@ -124,6 +129,7 @@ COMMAND=(
+     echo "launch_time=$(date -Is)"
+     echo "git_commit=$(git rev-parse HEAD)"
+     echo "resume_from=${LATEST_CKPT:-none}"
++    echo "run_name=${RUN_NAME}"
+     echo "load_pretrained_map_modules=${LOAD_MAP_VALUE}"
+     echo "elevation_axis=${ELEVATION_AXIS:-y}"
+     echo "iters=${ITERS:-20000}"
+-- 
+2.43.0
+

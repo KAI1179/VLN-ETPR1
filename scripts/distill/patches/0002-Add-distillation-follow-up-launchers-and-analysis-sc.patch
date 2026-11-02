@@ -1,0 +1,992 @@
+From eb1d1a571ed99cc858f9c120e16aa41750fcf1f6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 24 Sep 2026 15:27:57 +0000
+Subject: [PATCH 2/3] Add distillation follow-up launchers and analysis scripts
+
+- eval_teacher_ablation.sh: dz teacher with none/metadata_only/raster_only/
+  no_direction map ablations on val_unseen.
+- eval_teacher_on_llm_maps.sh: the GT teacher read LLM maps (start_position
+  scaled x2) or no map.
+- eval_student_gt_full.sh: S5-style map swap (p0/gt_full/gt_seen) for a
+  distilled checkpoint.
+- run_dagger_distill_v2.sh: z / z_loader / loader variants of the distill run.
+- check_pretrained_map_loading.py: CPU forensics for the map-path loading fix
+  and fusion residual-gate norms.
+- paired_analysis.py: per-episode paired comparison with scene-cluster
+  bootstrap, exact McNemar, S/O/N transitions and stop-error decomposition.
+- eval_dagger_distill.sh, summarize_eval.py: carried over from the review
+  branch (dashed CLI names).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ .../distill/check_pretrained_map_loading.py   | 161 ++++++++++++++
+ scripts/distill/eval_dagger_distill.sh        | 127 +++++++++++
+ ...val_gt_teacher_val_unseen_online121c_dz.sh |   0
+ .../eval_llm_try5_control_val_unseen.sh       |   0
+ scripts/distill/eval_student_gt_full.sh       |  23 ++
+ scripts/distill/eval_teacher_ablation.sh      |  58 +++++
+ scripts/distill/eval_teacher_on_llm_maps.sh   |  68 ++++++
+ scripts/distill/paired_analysis.py            | 199 ++++++++++++++++++
+ scripts/distill/run_dagger_distill_v2.sh      |  87 ++++++++
+ scripts/distill/summarize_eval.py             | 168 +++++++++++++++
+ 10 files changed, 891 insertions(+)
+ create mode 100644 scripts/distill/check_pretrained_map_loading.py
+ create mode 100755 scripts/distill/eval_dagger_distill.sh
+ mode change 100644 => 100755 scripts/distill/eval_gt_teacher_val_unseen_online121c_dz.sh
+ mode change 100644 => 100755 scripts/distill/eval_llm_try5_control_val_unseen.sh
+ create mode 100755 scripts/distill/eval_student_gt_full.sh
+ create mode 100755 scripts/distill/eval_teacher_ablation.sh
+ create mode 100755 scripts/distill/eval_teacher_on_llm_maps.sh
+ create mode 100644 scripts/distill/paired_analysis.py
+ create mode 100755 scripts/distill/run_dagger_distill_v2.sh
+ create mode 100755 scripts/distill/summarize_eval.py
+
+diff --git a/scripts/distill/check_pretrained_map_loading.py b/scripts/distill/check_pretrained_map_loading.py
+new file mode 100644
+index 0000000..96019a6
+--- /dev/null
++++ b/scripts/distill/check_pretrained_map_loading.py
+@@ -0,0 +1,161 @@
++#!/usr/bin/env python3
++"""CPU forensics for the pretrained map path (no Habitat, no GPU).
++
++1. Lists which map-related tensors a pretraining checkpoint contains.
++2. Builds the navigation VLN-BERT with and without
++   MODEL.MAP_ENCODER.load_pretrained_map_modules and checks whether the
++   pretrained graph_map_attention tensors land (they never did before the fix).
++3. Strictly loads map_encoder.* from the pretraining checkpoint into a fresh
++   EmbeddingGridMapEncoder (this is what the z_loader run needs to succeed).
++4. Prints the Frobenius norm of the fusion residual projection for a list of
++   checkpoints: a near-zero norm means the map gate never opened.
++
++Example:
++    python scripts/distill/check_pretrained_map_loading.py \
++      --pretrained /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt \
++      --dagger-ckpts data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth \
++                     /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++from typing import Dict, List
++
++import torch
++from tap import Tap
++
++PRETRAIN_FUSION_PREFIX = "bert.global_encoder.graph_map_attention."
++NAV_FUSION_PREFIX = "graph_map_attention."
++MAP_ENCODER_PREFIX = "map_encoder."
++
++
++class Args(Tap):
++    pretrained: str = (
++        "/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
++    )
++    dagger_ckpts: List[str] = []
++    """DAgger/eval checkpoints whose fusion residual norms to report."""
++    architecture: str = "try5"
++    exp_config: str = "run_r2r/iter_train.yaml"
++    skip_model_build: bool = False
++    """Only inspect checkpoints (no transformers/CLIP needed)."""
++
++
++def _strip_module(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
++    return {k[len("module.") :] if k.startswith("module.") else k: v for k, v in state.items()}
++
++
++def _load_state(path: str) -> Dict[str, torch.Tensor]:
++    ckpt = torch.load(path, map_location="cpu")
++    if isinstance(ckpt, dict) and "state_dict" in ckpt:
++        ckpt = ckpt["state_dict"]
++    return _strip_module(ckpt)
++
++
++def inspect_pretrained(path: str) -> Dict[str, torch.Tensor]:
++    state = _load_state(path)
++    fusion = {k: v for k, v in state.items() if k.startswith(PRETRAIN_FUSION_PREFIX)}
++    encoder = {k: v for k, v in state.items() if k.startswith(MAP_ENCODER_PREFIX)}
++    print(f"[pretrained] {path}")
++    print(f"  total tensors: {len(state)}")
++    print(f"  {PRETRAIN_FUSION_PREFIX}*: {len(fusion)} tensors")
++    print(f"  {MAP_ENCODER_PREFIX}*: {len(encoder)} tensors")
++    if fusion:
++        w = fusion.get(PRETRAIN_FUSION_PREFIX + "residual_projection.weight")
++        if w is not None:
++            print(f"  pretrained fusion residual_projection.weight norm: {w.norm():.4f}")
++    return state
++
++
++def check_nav_model_transfer(args: Args, state: Dict[str, torch.Tensor]) -> None:
++    from vlnce_baselines.config.default import get_config
++    from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
++
++    for load_flag in (False, True):
++        config = get_config(
++            args.exp_config,
++            [
++                "MODEL.pretrained_path", args.pretrained,
++                "MODEL.MAP_ENCODER.enabled", "True",
++                "MODEL.MAP_ENCODER.architecture", args.architecture,
++                "MODEL.MAP_ENCODER.load_pretrained_map_modules", str(load_flag),
++            ],
++        )
++        model = get_vlnbert_models(config=config.MODEL)
++        nav = model.graph_map_attention.state_dict()
++        landed = 0
++        for k, v in state.items():
++            if not k.startswith(PRETRAIN_FUSION_PREFIX):
++                continue
++            nav_key = k[len(PRETRAIN_FUSION_PREFIX) :]
++            if nav_key in nav and torch.equal(nav[nav_key].cpu(), v):
++                landed += 1
++        total = sum(1 for k in state if k.startswith(PRETRAIN_FUSION_PREFIX))
++        res = model.graph_map_attention.residual_projection.weight.norm().item()
++        print(
++            f"[nav model] load_pretrained_map_modules={load_flag}: "
++            f"{landed}/{total} pretrained fusion tensors landed; "
++            f"residual_projection norm in nav model = {res:.4f}"
++        )
++
++
++def check_map_encoder_load(state: Dict[str, torch.Tensor]) -> None:
++    from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
++
++    module_state = {
++        k[len(MAP_ENCODER_PREFIX) :]: v for k, v in state.items() if k.startswith(MAP_ENCODER_PREFIX)
++    }
++    if not module_state:
++        print("[map_encoder] pretrained checkpoint has no map_encoder.* tensors")
++        return
++    encoder = EmbeddingGridMapEncoder(hidden_size=768)
++    expected = set(encoder.state_dict())
++    missing = sorted(expected - set(module_state))
++    unexpected = sorted(set(module_state) - expected)
++    shape_mismatch = [
++        (k, tuple(module_state[k].shape), tuple(encoder.state_dict()[k].shape))
++        for k in expected & set(module_state)
++        if module_state[k].shape != encoder.state_dict()[k].shape
++    ]
++    print(
++        f"[map_encoder] strict-load check: missing={len(missing)} unexpected={len(unexpected)} "
++        f"shape_mismatch={len(shape_mismatch)}"
++    )
++    for item in (missing[:5], unexpected[:5], shape_mismatch[:5]):
++        if item:
++            print("   ", item)
++    if not (missing or unexpected or shape_mismatch):
++        encoder.load_state_dict(module_state, strict=True)
++        print("[map_encoder] strict load OK: z_loader / loader runs can use this checkpoint")
++
++
++def report_residual_norms(paths: List[str]) -> None:
++    if not paths:
++        return
++    print("\n[fusion gate] residual_projection.weight Frobenius norm per checkpoint")
++    print(f"{'checkpoint':70s} {'residual':>10s} {'out_proj':>10s} {'ratio':>7s}")
++    for path in paths:
++        state = _load_state(path)
++        keys = [k for k in state if k.endswith("graph_map_attention.residual_projection.weight")]
++        if not keys:
++            print(f"{Path(path).name:70s} (no graph_map_attention tensors)")
++            continue
++        base = keys[0][: -len("residual_projection.weight")]
++        res = state[keys[0]].float().norm().item()
++        out = state.get(base + "attention.out_proj.weight")
++        out_n = out.float().norm().item() if out is not None else float("nan")
++        print(f"{str(path)[-70:]:70s} {res:10.4f} {out_n:10.4f} {res / out_n if out_n else float('nan'):7.3f}")
++
++
++def main() -> None:
++    args = Args(underscores_to_dashes=True).parse_args()
++    state = inspect_pretrained(args.pretrained)
++    if not args.skip_model_build:
++        check_nav_model_transfer(args, state)
++        check_map_encoder_load(state)
++    report_residual_norms([args.pretrained] + args.dagger_ckpts)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/distill/eval_dagger_distill.sh b/scripts/distill/eval_dagger_distill.sh
+new file mode 100755
+index 0000000..f0adad2
+--- /dev/null
++++ b/scripts/distill/eval_dagger_distill.sh
+@@ -0,0 +1,127 @@
++#!/usr/bin/env bash
++# Evaluate one DAgger distillation checkpoint on R2R val_unseen.
++#
++# Usage:
++#   bash scripts/distill/eval_dagger_distill.sh [--dry-run] [ITER]
++#
++# Defaults: ITER=6000, GPUs 1 and 6 (override with CUDA_VISIBLE_DEVICES),
++# one environment per process (smallest batch), IL.back_algo=control.
++# Student-side settings mirror scripts/distill/run_dagger_distill.sh; the
++# frozen GT teacher is never built in eval, so no IL.gt_teacher_* keys are set.
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++
++DRY_RUN_ARGS=()
++if [[ "${1:-}" == "--dry-run" ]]; then
++    DRY_RUN_ARGS=(--dry-run)
++    shift
++fi
++if [[ $# -gt 1 ]]; then
++    echo "Usage: bash scripts/distill/eval_dagger_distill.sh [--dry-run] [ITER]" >&2
++    exit 2
++fi
++ITER="${1:-6000}"
++
++# GPU selection: physical ids in CUDA_VISIBLE_DEVICES map to logical 0..N-1.
++CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1,6}"
++IFS=',' read -ra _gpu_list <<< "${CUDA_VISIBLE_DEVICES}"
++GPU_NUMBERS="${#_gpu_list[@]}"
++GPU_IDS="[$(seq -s, 0 $((GPU_NUMBERS - 1)))]"
++NUM_ENVS="${NUM_ENVS:-1}"          # per-process environments; 1 = smallest batch
++BACK_ALGO="${BACK_ALGO:-control}"  # matches run_r2r/main_server.bash eval modes
++SPLIT="${SPLIT:-val_unseen}"
++
++TRAIN_RUN_NAME="dagger_distill_gt_teacher"
++TRAIN_RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${TRAIN_RUN_NAME}"
++CKPT_PATH="${TRAIN_RUN_DIR}/ckpt.iter${ITER}.pth"
++EVAL_NAME="${TRAIN_RUN_NAME}_eval_iter${ITER}_${SPLIT}"
++EVAL_LOG="${TRAIN_RUN_DIR}/eval_iter${ITER}_${SPLIT}.log"
++RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
++
++# Same pretrained backbone as run_dagger_distill.sh; the DAgger checkpoint
++# above is loaded on top of it through EVAL.CKPT_PATH_DIR.
++PRETRAINED_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
++LLM_CACHE_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++
++if [[ ${#DRY_RUN_ARGS[@]} -eq 0 && ! -f "${CKPT_PATH}" ]]; then
++    echo "Checkpoint not found: ${CKPT_PATH}" >&2
++    echo "Available checkpoints:" >&2
++    ls -1 "${TRAIN_RUN_DIR}"/ckpt.iter*.pth 2>/dev/null >&2 || true
++    exit 1
++fi
++
++COMMAND=(
++    "${TORCHRUN}" --standalone --nproc_per_node="${GPU_NUMBERS}" "${REPO_ROOT}/run.py"
++    --exp_name "${EVAL_NAME}"
++    --run-type eval
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS "${GPU_IDS}"
++    TORCH_GPU_IDS "${GPU_IDS}"
++    GPU_NUMBERS "${GPU_NUMBERS}"
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS "${NUM_ENVS}"
++    EVAL.SPLIT "${SPLIT}"
++    EVAL.EPISODE_COUNT -1
++    EVAL.CKPT_PATH_DIR "${CKPT_PATH}"
++    IL.back_algo "${BACK_ALGO}"
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key "${LLM_CACHE_MODEL_KEY}"
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++)
++
++mkdir -p "${TRAIN_RUN_DIR}"
++cd "${REPO_ROOT}"
++
++echo "GPUs: ${CUDA_VISIBLE_DEVICES} (${GPU_NUMBERS} processes x ${NUM_ENVS} env)"
++echo "Checkpoint: ${CKPT_PATH}"
++echo "Log: ${EVAL_LOG}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
++    GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
++    PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}" \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${EVAL_LOG}"
++
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then
++    echo "Dry run complete"
++    echo "Config: ${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/config.yaml"
++    exit 0
++fi
++
++if [[ ! -f "${RESULT_JSON}" ]]; then
++    echo "Result file not found: ${RESULT_JSON}" >&2
++    exit 1
++fi
++
++"${PYTHON}" - "${RESULT_JSON}" "${ITER}" <<'PY'
++import json
++import sys
++
++metrics = json.load(open(sys.argv[1]))
++iteration = sys.argv[2]
++
++def pct(key):
++    return f"{metrics[key] * 100:.2f}" if key in metrics else "n/a"
++
++def raw(key, fmt="{:.3f}"):
++    return fmt.format(metrics[key]) if key in metrics else "n/a"
++
++print()
++print(f"iter {iteration} | SR {pct('success')} | SPL {pct('spl')} | "
++      f"OSR {pct('oracle_success')} | NE {raw('distance_to_goal')} | "
++      f"nDTW {pct('ndtw')} | SDTW {pct('sdtw')}")
++if "llm_cache_missing_count" in metrics:
++    print(f"llm_cache_missing: {metrics['llm_cache_missing_count']} "
++          f"({metrics.get('llm_cache_missing_rate', 0.0) * 100:.2f}%)")
++PY
++
++echo "Metrics: ${RESULT_JSON}"
+diff --git a/scripts/distill/eval_gt_teacher_val_unseen_online121c_dz.sh b/scripts/distill/eval_gt_teacher_val_unseen_online121c_dz.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/distill/eval_llm_try5_control_val_unseen.sh b/scripts/distill/eval_llm_try5_control_val_unseen.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/distill/eval_student_gt_full.sh b/scripts/distill/eval_student_gt_full.sh
+new file mode 100755
+index 0000000..f8e5ecc
+--- /dev/null
++++ b/scripts/distill/eval_student_gt_full.sh
+@@ -0,0 +1,23 @@
++#!/usr/bin/env bash
++# Does the distilled student still read a map? Evaluate one distilled
++# checkpoint with its map input swapped at eval time (S5-D1 protocol):
++#   p0      : the LLM map it was trained on (control; plain code path)
++#   gt_full : the whole GT map (gt.legacy.r1p5.direction5.v1)
++#   gt_seen : GT only in observed cells, LLM elsewhere (needs semantic sensors)
++#
++# Usage: bash scripts/distill/eval_student_gt_full.sh [MODE] [ITER] [RUN_NAME]
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++MODE="${1:-gt_full}"
++ITER="${2:-10000}"
++RUN_NAME="${3:-dagger_distill_gt_teacher}"
++case "${MODE}" in p0|gt_full|gt_seen) ;; *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
++
++cd "${REPO_ROOT}"
++# The distill runs were initialised from the GT-line pretraining checkpoint;
++# keep pretrained_path consistent (it only seeds shapes before ckpt load).
++env PRETRAINED_CKPT="${PRETRAINED_CKPT:-/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt}" \
++    LOAD_PRETRAINED_MAP_MODULES=False \
++    CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" \
++    bash scripts/refiner/eval_s4.sh "${RUN_NAME}" "${ITER}" "${MODE}"
+diff --git a/scripts/distill/eval_teacher_ablation.sh b/scripts/distill/eval_teacher_ablation.sh
+new file mode 100755
+index 0000000..a349324
+--- /dev/null
++++ b/scripts/distill/eval_teacher_ablation.sh
+@@ -0,0 +1,58 @@
++#!/usr/bin/env bash
++# Teacher channel ablation on R2R val_unseen (closes R5 §6 and tests which map
++# channel carries the teacher's edge).
++#
++# Usage: bash scripts/distill/eval_teacher_ablation.sh [MODE]
++#   MODE: none (default, = dz teacher, expected ~74 SR)
++#         metadata_only  (raster zeroed; only the 14-dim metadata token carries map info)
++#         raster_only    (all metadata zeroed; only the raster carries map info)
++#         no_direction   (only the five route direction vectors zeroed)
++# GPU: CUDA_VISIBLE_DEVICES (default 0), NUM_ENVS (default 4).
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++TEACHER_PRETRAINED="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
++TEACHER_DAGGER="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
++TEACHER_NAMESPACE="gt.online121c369.r1p5.direction5.v1"
++
++MODE="${1:-none}"
++case "${MODE}" in none|metadata_only|raster_only|no_direction) ;; *)
++    echo "Unknown MODE ${MODE}" >&2; exit 2 ;; esac
++RUN_NAME="gt_teacher_try5_val_unseen_z_${MODE}"
++RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/eval_results/stats_ckpt_16000_val_unseen.json"
++LOG_PATH="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/eval.log"
++mkdir -p "$(dirname "${LOG_PATH}")"
++
++cd "${REPO_ROOT}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node=1 \
++    "${REPO_ROOT}/run.py" \
++    --exp_name "${RUN_NAME}" \
++    --run-type eval \
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
++    SIMULATOR_GPU_IDS '[0]' TORCH_GPU_IDS '[0]' GPU_NUMBERS 1 \
++    NUM_ENVIRONMENTS "${NUM_ENVS:-4}" \
++    TASK_CONFIG.SEED 100 \
++    TRAINER_NAME SS-ETP-PriorGT MODEL.policy_name PriorGTTry5Policy \
++    MODEL.MAP_ENCODER.enabled True MODEL.MAP_ENCODER.architecture try5 \
++    MODEL.MAP_ENCODER.source prior_gt \
++    MODEL.MAP_ENCODER.cache_namespace "${TEACHER_NAMESPACE}" \
++    MODEL.MAP_ENCODER.refiner_ckpt "" \
++    MODEL.MAP_ENCODER.load_pretrained_map_modules False \
++    MODEL.MAP_ENCODER.map_ablation "${MODE}" \
++    MODEL.pretrained_path "${TEACHER_PRETRAINED}" \
++    MODEL.elevation_axis z \
++    EVAL.SPLIT val_unseen EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${TEACHER_DAGGER}" \
++    IL.back_algo control 2>&1 | tee "${LOG_PATH}"
++
++"${PYTHON}" - "${RESULT_JSON}" "${MODE}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"\nteacher ablation={sys.argv[2]} | SR {m['success']*100:.2f} | SPL {m['spl']*100:.2f} | "
++      f"OSR {m['oracle_success']*100:.2f} | NE {m['distance_to_goal']:.3f} | stop_err {(m['oracle_success']-m['success'])*100:.2f}")
++PY
++echo "Metrics: ${RESULT_JSON}"
+diff --git a/scripts/distill/eval_teacher_on_llm_maps.sh b/scripts/distill/eval_teacher_on_llm_maps.sh
+new file mode 100755
+index 0000000..d7a7571
+--- /dev/null
++++ b/scripts/distill/eval_teacher_on_llm_maps.sh
+@@ -0,0 +1,68 @@
++#!/usr/bin/env bash
++# Evaluate the GT-trained teacher checkpoint on inputs it never saw:
++#   llm   : LLM-Grid maps (cache llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree),
++#           start_position scaled x2 because the teacher was trained on
++#           online maps that store grid cells (= 2 x metres, see R4).
++#   nomap : map encoder disabled.
++# Both use MODEL.elevation_axis z (the teacher's dz position features).
++#
++# Usage: bash scripts/distill/eval_teacher_on_llm_maps.sh [llm|nomap]
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++TEACHER_PRETRAINED="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
++TEACHER_DAGGER="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
++LLM_CACHE_MODEL_KEY="llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++
++MODE="${1:-llm}"
++case "${MODE}" in
++    llm)
++        RUN_NAME="gt_teacher_try5_val_unseen_z_on_llm_maps"
++        MODE_ARGS=(TRAINER_NAME SS-ETP-LLM MODEL.policy_name LLMGridTry5Policy
++                   MODEL.MAP_ENCODER.enabled True MODEL.MAP_ENCODER.architecture try5
++                   MODEL.MAP_ENCODER.source llm_grid
++                   MODEL.MAP_ENCODER.llm_cache_model_key "${LLM_CACHE_MODEL_KEY}"
++                   MODEL.MAP_ENCODER.start_position_scale "${START_POSITION_SCALE:-2.0}")
++        ;;
++    nomap)
++        RUN_NAME="gt_teacher_try5_val_unseen_z_nomap"
++        MODE_ARGS=(TRAINER_NAME SS-ETP-PriorGT MODEL.policy_name PriorGTTry5Policy
++                   MODEL.MAP_ENCODER.enabled False MODEL.MAP_ENCODER.architecture try5
++                   MODEL.MAP_ENCODER.source prior_gt)
++        ;;
++    *) echo "Unknown MODE ${MODE}" >&2; exit 2 ;;
++esac
++RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/eval_results/stats_ckpt_16000_val_unseen.json"
++LOG_PATH="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}/eval.log"
++mkdir -p "$(dirname "${LOG_PATH}")"
++
++cd "${REPO_ROOT}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    __EGL_VENDOR_LIBRARY_DIRS=/usr/share/glvnd/egl_vendor.d \
++    PYTHONPATH="${REPO_ROOT}" "${TORCHRUN}" --standalone --nproc_per_node=1 \
++    "${REPO_ROOT}/run.py" \
++    --exp_name "${RUN_NAME}" \
++    --run-type eval \
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
++    SIMULATOR_GPU_IDS '[0]' TORCH_GPU_IDS '[0]' GPU_NUMBERS 1 \
++    NUM_ENVIRONMENTS "${NUM_ENVS:-4}" \
++    TASK_CONFIG.SEED 100 \
++    "${MODE_ARGS[@]}" \
++    MODEL.MAP_ENCODER.refiner_ckpt "" \
++    MODEL.MAP_ENCODER.load_pretrained_map_modules False \
++    MODEL.pretrained_path "${TEACHER_PRETRAINED}" \
++    MODEL.elevation_axis z \
++    EVAL.SPLIT val_unseen EVAL.EPISODE_COUNT -1 \
++    EVAL.CKPT_PATH_DIR "${TEACHER_DAGGER}" \
++    IL.back_algo control 2>&1 | tee "${LOG_PATH}"
++
++"${PYTHON}" - "${RESULT_JSON}" "${MODE}" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"\nteacher on {sys.argv[2]} | SR {m['success']*100:.2f} | SPL {m['spl']*100:.2f} | "
++      f"OSR {m['oracle_success']*100:.2f} | NE {m['distance_to_goal']:.3f} | stop_err {(m['oracle_success']-m['success'])*100:.2f}"
++      + (f" | cache_missing {int(m.get('llm_cache_missing_count', 0))}" if 'llm_cache_missing_count' in m else ""))
++PY
++echo "Metrics: ${RESULT_JSON}"
+diff --git a/scripts/distill/paired_analysis.py b/scripts/distill/paired_analysis.py
+new file mode 100644
+index 0000000..c788040
+--- /dev/null
++++ b/scripts/distill/paired_analysis.py
+@@ -0,0 +1,199 @@
++#!/usr/bin/env python3
++"""Paired per-episode comparison of two navigation evals on the same split.
++
++Reads the per-rank files stats_ep_ckpt_<iter>_<split>_r<rank>_w<world>.json
++written by _eval_checkpoint, pairs episodes by id, and reports:
++  * aggregate deltas with an 11-scene paired cluster bootstrap 95% CI,
++  * exact McNemar p-value on success,
++  * the S/O/N transition table (S=success, O=oracle success only, N=neither),
++  * stop error (OSR - SR) per run and path-length / step deltas by transition.
++
++Example (distilled student 10k vs 14k):
++    python scripts/distill/paired_analysis.py \
++      --run-a dagger_distill_gt_teacher --iter-a 10000 \
++      --run-b dagger_distill_gt_teacher --iter-b 14000
++Explicit eval_results directories also work: --dir-a ... --dir-b ...
++"""
++
++from __future__ import annotations
++
++import glob
++import gzip
++import json
++import math
++from collections import Counter, defaultdict
++from pathlib import Path
++from typing import Dict, List, Optional, Tuple
++
++import numpy as np
++from tap import Tap
++
++METRICS = [
++    ("success", "SR", 100.0),
++    ("spl", "SPL", 100.0),
++    ("oracle_success", "OSR", 100.0),
++    ("ndtw", "nDTW", 100.0),
++    ("distance_to_goal", "NE", 1.0),
++    ("path_length", "PL", 1.0),
++    ("steps_taken", "Steps", 1.0),
++]
++
++
++class Args(Tap):
++    run_a: Optional[str] = None
++    iter_a: Optional[int] = None
++    run_b: Optional[str] = None
++    iter_b: Optional[int] = None
++    dir_a: Optional[str] = None
++    """Explicit eval_results directory for A (overrides run/iter)."""
++    dir_b: Optional[str] = None
++    split: str = "val_unseen"
++    root: str = "data/logs/checkpoints"
++    dataset_gz: Optional[str] = None
++    """VLN-CE episodes file used for scene ids; defaults to the R2R xlmr split."""
++    reps: int = 10000
++    seed: int = 42
++    markdown_out: Optional[str] = None
++
++
++def _eval_dir(args: Args, run: Optional[str], it: Optional[int], explicit: Optional[str]) -> Path:
++    if explicit:
++        return Path(explicit)
++    if run is None or it is None:
++        raise SystemExit("give --run-x/--iter-x or --dir-x for both A and B")
++    return Path(args.root) / f"{run}_eval_iter{it}_{args.split}" / "eval_results"
++
++
++def load_episode_stats(eval_dir: Path, it: Optional[int], split: str) -> Dict[str, dict]:
++    pattern = f"stats_ep_ckpt_{it if it is not None else '*'}_{split}_r*_w*.json"
++    files = sorted(glob.glob(str(eval_dir / pattern)))
++    if not files:
++        raise SystemExit(f"no per-episode files matching {eval_dir / pattern}")
++    merged: Dict[str, dict] = {}
++    for f in files:
++        with open(f) as fh:
++            merged.update({str(k): v for k, v in json.load(fh).items()})
++    print(f"{eval_dir}: {len(files)} rank files, {len(merged)} episodes")
++    return merged
++
++
++def load_scene_ids(path: Path) -> Dict[str, str]:
++    with gzip.open(path, "rt", encoding="utf-8") as fh:
++        data = json.load(fh)
++    return {str(ep["episode_id"]): Path(ep["scene_id"]).stem for ep in data["episodes"]}
++
++
++def state(m: dict) -> str:
++    if m.get("success", 0) >= 0.5:
++        return "S"
++    if m.get("oracle_success", 0) >= 0.5:
++        return "O"
++    return "N"
++
++
++def mcnemar_exact(b: int, c: int) -> float:
++    n = b + c
++    if n == 0:
++        return 1.0
++    k = min(b, c)
++    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2**n
++    return min(1.0, 2 * tail)
++
++
++def cluster_bootstrap(
++    delta: np.ndarray, scene_idx: np.ndarray, n_scenes: int, reps: int, seed: int
++) -> Tuple[float, float]:
++    rng = np.random.default_rng(seed)
++    sums = np.bincount(scene_idx, weights=delta, minlength=n_scenes)
++    counts = np.bincount(scene_idx, minlength=n_scenes).astype(float)
++    draws = rng.integers(0, n_scenes, size=(reps, n_scenes))
++    boot = sums[draws].sum(1) / counts[draws].sum(1)
++    return float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))
++
++
++def main() -> None:
++    args = Args(underscores_to_dashes=True).parse_args()
++    dir_a = _eval_dir(args, args.run_a, args.iter_a, args.dir_a)
++    dir_b = _eval_dir(args, args.run_b, args.iter_b, args.dir_b)
++    a = load_episode_stats(dir_a, args.iter_a if not args.dir_a else None, args.split)
++    b = load_episode_stats(dir_b, args.iter_b if not args.dir_b else None, args.split)
++    ids = sorted(set(a) & set(b))
++    if len(ids) != len(a) or len(ids) != len(b):
++        print(f"WARNING: pairing {len(ids)} episodes (A has {len(a)}, B has {len(b)})")
++    dataset_gz = Path(
++        args.dataset_gz
++        or f"data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/{args.split}/{args.split}.json.gz"
++    )
++    scenes = load_scene_ids(dataset_gz)
++    scene_names = sorted({scenes.get(i, "unknown") for i in ids})
++    scene_idx = np.array([scene_names.index(scenes.get(i, "unknown")) for i in ids])
++
++    name_a = f"A ({dir_a.parent.name})"
++    name_b = f"B ({dir_b.parent.name})"
++    lines: List[str] = [f"# Paired comparison on {args.split}: {name_a} vs {name_b}", ""]
++    lines.append(f"episodes paired: {len(ids)}; scenes: {len(scene_names)}; bootstrap reps: {args.reps}")
++    lines.append("")
++    lines.append("| metric | A | B | B - A | 95% CI (scene bootstrap) |")
++    lines.append("|---|---:|---:|---:|---:|")
++    for key, name, scale in METRICS:
++        va = np.array([a[i].get(key, np.nan) for i in ids], dtype=float) * scale
++        vb = np.array([b[i].get(key, np.nan) for i in ids], dtype=float) * scale
++        d = vb - va
++        lo, hi = cluster_bootstrap(d, scene_idx, len(scene_names), args.reps, args.seed)
++        lines.append(f"| {name} | {va.mean():.2f} | {vb.mean():.2f} | {d.mean():+.2f} | [{lo:+.2f}, {hi:+.2f}] |")
++
++    sa = np.array([a[i].get("success", 0) >= 0.5 for i in ids])
++    sb = np.array([b[i].get("success", 0) >= 0.5 for i in ids])
++    only_a = int((sa & ~sb).sum())
++    only_b = int((~sa & sb).sum())
++    lines += [
++        "",
++        f"success discordant pairs: A-only {only_a}, B-only {only_b}, "
++        f"exact McNemar p = {mcnemar_exact(only_a, only_b):.4f}",
++    ]
++
++    osr_a = np.mean([a[i].get("oracle_success", 0) for i in ids]) * 100
++    osr_b = np.mean([b[i].get("oracle_success", 0) for i in ids]) * 100
++    lines += [
++        "",
++        f"stop error (OSR - SR): A {osr_a - sa.mean() * 100:.2f} pp, B {osr_b - sb.mean() * 100:.2f} pp",
++        "",
++        "## S/O/N transitions (rows = A state, cols = B state)",
++        "",
++        "| A \\ B | S | O | N |",
++        "|---|---:|---:|---:|",
++    ]
++    trans = Counter((state(a[i]), state(b[i])) for i in ids)
++    for r in "SON":
++        lines.append(f"| {r} | " + " | ".join(str(trans[(r, c)]) for c in "SON") + " |")
++    net_os = trans[("O", "S")] - trans[("S", "O")]
++    net_ns = trans[("N", "S")] + trans[("N", "O")] - trans[("S", "N")] - trans[("O", "N")]
++    lines += [
++        "",
++        f"net O->S (stop quality) = {net_os:+d} episodes ({net_os / len(ids) * 100:+.2f} pp); "
++        f"net N->reach (reachability) = {net_ns:+d} episodes ({net_ns / len(ids) * 100:+.2f} pp)",
++        "",
++        "## Path-length / step deltas by transition",
++        "",
++        "| transition | n | mean dPL (m) | mean dSteps | mean dnDTW |",
++        "|---|---:|---:|---:|---:|",
++    ]
++    groups: Dict[Tuple[str, str], List[str]] = defaultdict(list)
++    for i in ids:
++        groups[(state(a[i]), state(b[i]))].append(i)
++    for key in sorted(groups, key=lambda k: -len(groups[k])):
++        g = groups[key]
++        dpl = np.mean([b[i].get("path_length", 0) - a[i].get("path_length", 0) for i in g])
++        dst = np.mean([b[i].get("steps_taken", 0) - a[i].get("steps_taken", 0) for i in g])
++        dnd = np.mean([b[i].get("ndtw", 0) - a[i].get("ndtw", 0) for i in g]) * 100
++        lines.append(f"| {key[0]}->{key[1]} | {len(g)} | {dpl:+.2f} | {dst:+.1f} | {dnd:+.2f} |")
++
++    report = "\n".join(lines) + "\n"
++    print(report)
++    if args.markdown_out:
++        Path(args.markdown_out).write_text(report, encoding="utf-8")
++        print(f"written: {args.markdown_out}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/distill/run_dagger_distill_v2.sh b/scripts/distill/run_dagger_distill_v2.sh
+new file mode 100755
+index 0000000..3aa88aa
+--- /dev/null
++++ b/scripts/distill/run_dagger_distill_v2.sh
+@@ -0,0 +1,87 @@
++#!/usr/bin/env bash
++# Distillation follow-up runs. Identical to run_dagger_distill.sh except:
++#   z        : MODEL.elevation_axis z for the student (world-frame dz compass);
++#              pretrained map modules NOT loaded (historical behaviour)
++#   z_loader : same plus MODEL.MAP_ENCODER.load_pretrained_map_modules True
++#              (pretrained map_encoder + graph_map_attention actually land)
++#   loader   : elevation y (current) plus the loader fix only
++# ITERS defaults to 12000 (the previous run peaked at 10k); checkpoints every
++# 1000 iters. Run scripts/distill/check_pretrained_map_loading.py first.
++#
++# Usage: bash scripts/distill/run_dagger_distill_v2.sh <z|z_loader|loader> [--dry-run]
++set -euo pipefail
++
++REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
++TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
++CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
++PRETRAINED_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt"
++GT_TEACHER_CKPT="/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth"
++GT_TEACHER_NAMESPACE="gt.online121c369.r1p5.direction5.v1"
++GT_TEACHER_POLICY_NAME="PriorGTTry5Policy"
++
++VARIANT="${1:-}"
++case "${VARIANT}" in
++    z)        ELEVATION_AXIS=z; LOAD_MAP=False ;;
++    z_loader) ELEVATION_AXIS=z; LOAD_MAP=True ;;
++    loader)   ELEVATION_AXIS=y; LOAD_MAP=True ;;
++    *) echo "Usage: bash scripts/distill/run_dagger_distill_v2.sh <z|z_loader|loader> [--dry-run]" >&2; exit 2 ;;
++esac
++DRY_RUN_ARGS=()
++if [[ "${2:-}" == "--dry-run" ]]; then DRY_RUN_ARGS=(--dry-run); fi
++
++RUN_NAME="dagger_distill_gt_teacher_${VARIANT}"
++RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
++LOG_PATH="${RUN_DIR}/train.log"
++
++COMMAND=(
++    "${TORCHRUN}" --nproc_per_node=8 --rdzv_backend=c10d --rdzv_endpoint=localhost:${MASTER_PORT:-29500} "${REPO_ROOT}/run.py"
++    --exp_name "${RUN_NAME}"
++    --run-type dagger
++    --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml"
++    "${DRY_RUN_ARGS[@]}"
++    SIMULATOR_GPU_IDS '[0,1,2,3,4,5,6,7]'
++    TORCH_GPU_IDS '[0,1,2,3,4,5,6,7]'
++    GPU_NUMBERS 8
++    TASK_CONFIG.SEED 100
++    TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
++    NUM_ENVIRONMENTS 4
++    CHECKPOINT_INTERVAL 1000
++    ONLY_LAST_SAVEALL False
++    IL.iters "${ITERS:-12000}"
++    IL.lr 1e-5
++    IL.log_every 200
++    IL.ml_weight 1.0
++    IL.sample_ratio 0.75
++    IL.decay_interval 1400
++    IL.warmup_iters 300
++    IL.min_lr_ratio 1.0
++    IL.load_from_ckpt False
++    IL.is_requeue False
++    IL.waypoint_aug True
++    TASK_CONFIG.DATASET.SUFFIX _90
++    TRAINER_NAME SS-ETP-LLM
++    MODEL.policy_name LLMGridTry5Policy
++    MODEL.MAP_ENCODER.enabled True
++    MODEL.MAP_ENCODER.architecture try5
++    MODEL.MAP_ENCODER.source llm_grid
++    MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
++    MODEL.MAP_ENCODER.refiner_ckpt ""
++    MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_MAP}"
++    MODEL.elevation_axis "${ELEVATION_AXIS}"
++    MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    IL.gt_teacher_enabled True
++    IL.distill_weight 1.0
++    IL.distill_temperature 1.0
++    IL.gt_teacher_ckpt "${GT_TEACHER_CKPT}"
++    IL.gt_teacher_map_namespace "${GT_TEACHER_NAMESPACE}"
++    IL.gt_teacher_policy_name "${GT_TEACHER_POLICY_NAME}"
++    IL.gt_teacher_elevation_axis z
++)
++
++mkdir -p "${RUN_DIR}"
++cd "${REPO_ROOT}"
++echo "Variant: ${VARIANT} (elevation_axis=${ELEVATION_AXIS}, load_pretrained_map_modules=${LOAD_MAP}, iters=${ITERS:-12000})"
++echo "Log: ${LOG_PATH}"
++env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG=quiet \
++    PYTHONPATH="${REPO_ROOT}" "${COMMAND[@]}" 2>&1 | tee "${LOG_PATH}"
++if [[ ${#DRY_RUN_ARGS[@]} -ne 0 ]]; then echo "Dry run complete"; fi
+diff --git a/scripts/distill/summarize_eval.py b/scripts/distill/summarize_eval.py
+new file mode 100755
+index 0000000..a5bd87a
+--- /dev/null
++++ b/scripts/distill/summarize_eval.py
+@@ -0,0 +1,168 @@
++#!/usr/bin/env python3
++"""Summarize val_unseen eval results of DAgger distillation checkpoints.
++
++Reads stats_ckpt_<iter>_<split>.json files produced by run.py --run-type eval
++and prints a Markdown table plus best-checkpoint summary.
++
++Example:
++    python scripts/distill/summarize_eval.py
++    python scripts/distill/summarize_eval.py --run-name dagger_try5_norefiner
++    python scripts/distill/summarize_eval.py --glob "data/logs/checkpoints/*eval_iter*/eval_results/stats_ckpt_*_val_unseen.json"
++"""
++
++from __future__ import annotations
++
++import glob
++import json
++import re
++from pathlib import Path
++from typing import Dict, List, Optional
++
++from tap import Tap
++
++METRICS = [
++    ("success", "SR", 100.0),
++    ("spl", "SPL", 100.0),
++    ("oracle_success", "OSR", 100.0),
++    ("distance_to_goal", "NE", 1.0),
++    ("ndtw", "nDTW", 100.0),
++    ("sdtw", "SDTW", 100.0),
++    ("path_length", "PL", 1.0),
++    ("steps_taken", "Steps", 1.0),
++]
++HIGHER_BETTER = {"SR", "SPL", "OSR", "nDTW", "SDTW"}
++
++# Reference rows from docs/NOTE.md and reports on exp/refiner (R2R val_unseen).
++REFERENCES = {
++    "Baseline DAgger (author)": {"SR": 63.13, "OSR": 68.52, "SPL": 54.23},
++    "LLM-Grid 2 DAgger iter28000 (460000 init)": {"SR": 65.42, "OSR": 70.58, "SPL": 55.25},
++    "LLM-Grid 2 GRPO matched nav4": {"SR": 66.50, "OSR": 73.30, "SPL": 55.31},
++    "GT teacher try5 iter16000 @121c369": {"SR": 74.23, "OSR": 77.98, "SPL": 63.38},
++}
++
++
++class Args(Tap):
++    run_name: str = "dagger_distill_gt_teacher"
++    """Training run name; eval dirs are <run_name>_eval_iter<N>_<split>."""
++    split: str = "val_unseen"
++    root: str = "data/logs/checkpoints"
++    glob: Optional[str] = None
++    """Override the search glob for stats JSON files."""
++    baseline_run: Optional[str] = None
++    """Optional second run (e.g. dagger_try5_norefiner) to diff against per iter."""
++    markdown_out: Optional[str] = None
++    """Write the report to this file as well as stdout."""
++
++
++def _iter_from_path(path: Path) -> Optional[int]:
++    m = re.search(r"stats_ckpt_(\d+)_", path.name)
++    return int(m.group(1)) if m else None
++
++
++def load_results(pattern: str) -> Dict[int, dict]:
++    results: Dict[int, dict] = {}
++    for f in sorted(glob.glob(pattern)):
++        p = Path(f)
++        it = _iter_from_path(p)
++        if it is None:
++            continue
++        with open(p) as fh:
++            results[it] = json.load(fh)
++    return results
++
++
++def default_pattern(args: Args, run_name: str) -> str:
++    return f"{args.root}/{run_name}_eval_iter*_{args.split}/eval_results/stats_ckpt_*_{args.split}.json"
++
++
++def fmt_row(it: int, m: dict) -> List[str]:
++    cells = [str(it)]
++    for key, _, scale in METRICS:
++        cells.append(f"{m[key] * scale:.2f}" if key in m else "n/a")
++    miss = m.get("llm_cache_missing_count")
++    cells.append("" if miss is None else str(int(miss)))
++    return cells
++
++
++def table(results: Dict[int, dict]) -> str:
++    header = ["iter"] + [name for _, name, _ in METRICS] + ["cache_miss"]
++    lines = ["| " + " | ".join(header) + " |", "|" + "---:|" * len(header)]
++    for it in sorted(results):
++        lines.append("| " + " | ".join(fmt_row(it, results[it])) + " |")
++    return "\n".join(lines)
++
++
++def best_summary(results: Dict[int, dict]) -> str:
++    out = []
++    for key, name, scale in METRICS:
++        vals = {it: m[key] * scale for it, m in results.items() if key in m}
++        if not vals:
++            continue
++        pick = max if name in HIGHER_BETTER else min
++        it = pick(vals, key=vals.get)
++        out.append(f"- best {name}: iter {it} ({vals[it]:.2f})")
++    return "\n".join(out)
++
++
++def reference_table(results: Dict[int, dict]) -> str:
++    best_it = max(results, key=lambda i: results[i].get("success", 0))
++    b = results[best_it]
++    lines = ["| row | SR | OSR | SPL | ΔSR vs best distill |", "|---|---:|---:|---:|---:|"]
++    lines.append(
++        f"| distill best (iter {best_it}) | {b['success']*100:.2f} | "
++        f"{b['oracle_success']*100:.2f} | {b['spl']*100:.2f} | — |"
++    )
++    for name, r in REFERENCES.items():
++        lines.append(
++            f"| {name} | {r['SR']:.2f} | {r['OSR']:.2f} | {r['SPL']:.2f} | "
++            f"{b['success']*100 - r['SR']:+.2f} |"
++        )
++    return "\n".join(lines)
++
++
++def paired_table(a: Dict[int, dict], b: Dict[int, dict], a_name: str, b_name: str) -> str:
++    common = sorted(set(a) & set(b))
++    if not common:
++        return f"(no common iters between {a_name} and {b_name})"
++    lines = [f"| iter | SR {a_name} | SR {b_name} | ΔSR | ΔSPL | ΔOSR |", "|---:|---:|---:|---:|---:|---:|"]
++    for it in common:
++        d = lambda k: (a[it][k] - b[it][k]) * 100  # noqa: E731
++        lines.append(
++            f"| {it} | {a[it]['success']*100:.2f} | {b[it]['success']*100:.2f} | "
++            f"{d('success'):+.2f} | {d('spl'):+.2f} | {d('oracle_success'):+.2f} |"
++        )
++    return "\n".join(lines)
++
++
++def main() -> None:
++    args = Args(underscores_to_dashes=True).parse_args()
++    pattern = args.glob or default_pattern(args, args.run_name)
++    results = load_results(pattern)
++    if not results:
++        raise SystemExit(f"No stats files matched: {pattern}")
++
++    parts = [
++        f"# {args.run_name} on R2R {args.split}",
++        "",
++        f"{len(results)} checkpoints: {', '.join(str(i) for i in sorted(results))}",
++        "",
++        table(results),
++        "",
++        best_summary(results),
++        "",
++        "## Against reference rows",
++        "",
++        reference_table(results),
++    ]
++    if args.baseline_run:
++        base = load_results(default_pattern(args, args.baseline_run))
++        parts += ["", f"## Paired against {args.baseline_run}", "", paired_table(results, base, "distill", "baseline")]
++    report = "\n".join(parts) + "\n"
++    print(report)
++    if args.markdown_out:
++        Path(args.markdown_out).write_text(report, encoding="utf-8")
++        print(f"written: {args.markdown_out}")
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.43.0
+

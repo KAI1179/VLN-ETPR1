@@ -1,0 +1,173 @@
+From 57f8e95110ada827127e79332d62e3989fc04867 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 24 Sep 2026 15:27:57 +0000
+Subject: [PATCH 3/3] docs: record distillation review and follow-up protocol
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ docs/daily/2026-09-24.md | 152 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 152 insertions(+)
+ create mode 100644 docs/daily/2026-09-24.md
+
+diff --git a/docs/daily/2026-09-24.md b/docs/daily/2026-09-24.md
+new file mode 100644
+index 0000000..f831048
+--- /dev/null
++++ b/docs/daily/2026-09-24.md
+@@ -0,0 +1,152 @@
++# 2026-09-24
++
++## GT 教师蒸馏（`dagger_distill_gt_teacher`）结果与代码核查
++
++- 数据与配置：R2R `train_90`（10707/10819 条有 LLM cache），学生 `LLMGridTry5Policy`
++  + cache `llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree`，初始化
++  `try-5-r1p5_step_387500.pt`；教师 `try-5-r1p5-dagger.iter16000.pth` +
++  namespace `gt.online121c369.r1p5.direction5.v1`，`IL.gt_teacher_elevation_axis z`；
++  8 卡 × 4 env，seed 100，lr 1e-5 恒定，sample ratio 自 iter 8400 起为 0。
++- 训练日志健康：无 NaN/OOM/assert；`teacher_ce` 从 0.40 升到 0.51（学生离开 GT
++  走廊后教师也变差）；13.2k 时 `student_ce` 0.462、`teacher_ce` 0.436、`distill_loss`
++  0.113，训练 CE 仍在下降但验证已平台化。
++
++### val_unseen（1839 条，6 条 cache 缺失计零）
++
++| iter | SR | SPL | OSR | NE | stop error (OSR−SR) |
++|---:|---:|---:|---:|---:|---:|
++| 6000 | 61.34 | 52.39 | 68.03 | 4.15 | 6.69 |
++| 8000 | 63.73 | 54.19 | 69.77 | 4.07 | 6.04 |
++| 9000 | 64.06 | 53.21 | 70.15 | 3.99 | 6.09 |
++| 10000 | 65.09 | 53.92 | 71.72 | 3.92 | 6.63 |
++| 11000 | 63.46 | 53.23 | 69.87 | 3.92 | 6.41 |
++| 14000 | 63.62 | 53.08 | 69.60 | 4.00 | 5.98 |
++
++- 8k–14k 五个点均值 63.99、标准差 0.65，65.09 是五次抽样的最大值，不能作为
++  结论数字；诚实的平台值是 64.0 ± 0.3，和无教师的 S4 平台（64.2）无法区分。
++- 6k→10k 的 SR +3.75 等于 OSR +3.69；stop error 一直在 6.0–6.7，GT 地图策略
++  是 2.4–3.75。蒸馏只改善了可达性，没有传递停止能力。
++- 决定不跑 matched no-teacher baseline（用户判断）。
++
++### 已验证的代码事实（不是假设）
++
++1. **预训练的地图权重从未进入在线策略。** 训练日志第 381 行 HF 报告
++   `were not used when initializing GlocalTextPathNavCMT`，列表包含全部 37 个
++   `map_encoder.*` 和 6 个 `bert.global_encoder.graph_map_attention.*`。原因：
++   预训练把 fusion 放在 `GlobalMapEncoder` 里（`pretrain_src/.../vilmodel.py:672`），
++   在线模型放在顶层（`vilmodel_cmt.py:855`）；`vlnbert_init.py` 不重命名；
++   `ETP_PriorGT` 的 `map_encoder` 是新建的，没有任何加载代码。所以每次 DAgger 的
++   地图通路都从 CLIP 初始化 + 零残差开始，387500 和 460000 只提供语言/全景/global
++   encoder 权重。**换成 460000 初始化不会改变地图通路。**
++2. **`dz` "elevation" 是世界坐标系的方向分量。** `get_pos_fts` 把 heading 旋转到
++   agent 坐标系，但 elevation 的 `base_elevation` 恒为 0（`graph_utils.py:316,340`）。
++   `elevation_axis=z` 时每个节点携带 `dz/d`，与 `direction5` 元数据的
++   `normalize(-dz,-dx)` 同坐标系；`=y` 时平地上该维为常数。同一教师权重 74.23 →
++   68.13（R5）。从未用 `z` 训练过 LLM 学生。
++3. **地图编码器没有位置编码**（`map_encoder.py`），100 个空间 token 对
++   cross-attention 是置换不变的无序集合；策略能读到的全局几何只有每个 5 m 方块
++   内部布局和元数据 token。S5 的 `gt_full` 只替换了 `grid`，从未测过元数据通道。
++
++## 补丁与脚本（在 `exp/refiner` 上 `git am`）
++
++补丁文件在 `claude/awesome-ride-axuad6` 分支的 `scripts/distill/patches/`。
++
++新增 config：
++
++- `MODEL.MAP_ENCODER.load_pretrained_map_modules`（默认 True）：把预训练的
++  `map_encoder.*` 和重命名后的 fusion 权重加载进策略，加载后逐张量校验，失败即报错。
++  设 False 复现历史行为。
++- `MODEL.MAP_ENCODER.map_ablation`：`none | metadata_only | raster_only | no_direction`。
++- `MODEL.MAP_ENCODER.start_position_scale`（默认 1.0）：在线 GT 地图存格子（= 2 × 米），
++  cache 存米；教师在 LLM 地图上评测时设 2.0。
++
++## 执行顺序与判据
++
++### 第 0 步（CPU，几分钟）
++
++```bash
++python scripts/distill/check_pretrained_map_loading.py \
++  --dagger-ckpts data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth \
++    data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter14000.pth \
++    /data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth \
++    data/logs/checkpoints/s4_try5_refiner/ckpt.iter15000.pth
++```
++
++- 预期：`load_pretrained_map_modules=False` 时 0/6 fusion 张量落地，`=True` 时 6/6；
++  `map_encoder` strict load OK。任一不满足则第 4 步的 `z_loader` 不能跑。
++- 残差范数表：若教师的 `residual_projection` 范数 ≥ 2 × 所有 LLM 学生的，说明
++  LLM 地图上"地图门"打不开；若相近，瓶颈在 token 内容而不是门。
++
++### 第 1 步（单卡，每个约 1–2 小时，可并行）
++
++```bash
++bash scripts/distill/eval_teacher_ablation.sh none           # 关闭 R5 §6：dz 教师应回到 ~74
++bash scripts/distill/eval_teacher_ablation.sh metadata_only  # 只剩元数据 token
++bash scripts/distill/eval_teacher_ablation.sh raster_only    # 只剩栅格
++bash scripts/distill/eval_teacher_ablation.sh no_direction   # 只去掉 5 个方向向量
++bash scripts/distill/eval_teacher_on_llm_maps.sh llm         # 教师读 LLM 地图
++bash scripts/distill/eval_teacher_on_llm_maps.sh nomap       # 教师无地图
++```
++
++判据：
++
++- `none` ≥ 73：R5 的 dz 归因成立，后面所有教师数字以它为基准。若仍 ≈ 68，
++  说明 121c369 与 HEAD 之间还有未找到的差异，先停下来找。
++- `metadata_only` ≥ 71 且 `raster_only` ≤ 68：教师优势主要在方向向量元数据，
++  LLM 的方向向量（val_unseen 余弦 0.11–0.18）无法承载，整图 IoU 是错误目标。
++  反之（`raster_only` ≥ 72）：栅格才是关键，提高 LLM 栅格质量仍有意义。
++- `llm` ≥ 62：GT 训练出的"读图电路"对 LLM 地图仍有效，应从教师权重热启动
++  （`IL.load_from_ckpt True IL.ckpt_to_load <教师> MODEL.elevation_axis z`），
++  放弃从零训练。`llm` ≤ 58 且低于 `nomap` 3 分以上：LLM 地图会主动误导 GT 电路。
++
++### 第 2 步（单卡，约 2 小时）
++
++```bash
++bash scripts/distill/eval_student_gt_full.sh p0 10000       # 对照，应复现 ≈65.1
++bash scripts/distill/eval_student_gt_full.sh gt_full 10000
++bash scripts/distill/eval_student_gt_full.sh gt_full 14000
++```
++
++判据：`gt_full` − `p0` ≥ +3 → 学生的地图通道活着，瓶颈在地图，保留 387500 初始化；
++≈ 0（S5 模式）→ 通道已萎缩，任何更好的地图或教师都推不动 SR，问题在融合结构和门。
++
++### 第 3 步（CPU）
++
++```bash
++python scripts/distill/paired_analysis.py --run-a dagger_distill_gt_teacher --iter-a 10000 \
++  --run-b dagger_distill_gt_teacher --iter-b 14000
++python scripts/distill/paired_analysis.py --run-a dagger_distill_gt_teacher --iter-a 8000 \
++  --run-b dagger_distill_gt_teacher --iter-b 10000
++```
++
++判据：10k vs 14k 的 ΔSR 置信区间包含 0 且 McNemar p > 0.01 → 平台成立，报告
++64.0 ± 0.3 而不是 65.09。8k→10k 的 net O→S 若在 ±10 条以内而 net N→reach ≈ +65，
++则增益全是可达性。
++
++### 第 4 步（8 卡，每个约 36 小时；根据前三步再决定跑哪个）
++
++```bash
++bash scripts/distill/run_dagger_distill_v2.sh z         # 只改 elevation_axis z，其它同原 run
++bash scripts/distill/run_dagger_distill_v2.sh z_loader  # z + 预训练地图权重真正加载
++bash scripts/distill/run_dagger_distill_v2.sh loader    # 只修 loader，elevation 仍为 y
++```
++
++判据（用 `summarize_eval.py` 和 `paired_analysis.py` 对同 iter 比较）：
++
++- `z` 相对原 run 在 8k–12k 平台上 ≥ +2 SR 且 CI 不含 0：指南针假说成立。
++- `z_loader` 前 1400 iter 的 `student_ce` 均值 < 0.95（原 run 1.09）：预训练地图
++  通路在 iter 0 就在工作；若仍 ≈ 1.05–1.10，地图预训练本身没学到可用信号。
++
++## 未验证的假设
++
++- dz 能让教师回到 74（R5 §6 未完成）。
++- 教师优势主要在元数据 token 而非栅格。
++- LLM 学生的 fusion 残差范数显著小于教师（"门未打开"）。
++- 教师在 LLM 地图上的表现区间（预测 52–60）。
++
++## 反馈给分析方的文件
++
++- 第 0 步的完整 stdout。
++- 第 1、2 步每个 run 的 `eval_results/stats_ckpt_*_val_unseen.json` 和 `eval.log` 尾部。
++- 第 3 步两份 markdown 输出。
++- 第 4 步的 `train.log` 与 `summarize_eval.py` 输出。
+-- 
+2.43.0
+

@@ -1,0 +1,206 @@
+From 7a417c8fa0aae6a9a713bd0670d6f5ee92813175 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 28 Sep 2026 04:29:51 +0000
+Subject: [PATCH] Pretraining: tokenizer health logging, broader init guard,
+ fixed-tokenizer launchers
+
+- train_r2r.py logs the spatial tokenizer's weight norm, bias norm and weight
+  gradient norm every log_steps (TensorBoard map/* and the text log), so a
+  dead raster path is visible within minutes instead of after 460k steps.
+- The start-up guard now covers every parameter: non-finite anywhere, or
+  all-zero convolution / map-encoder matrices, abort; other all-zero matrices
+  (some are zero by design) are logged as warnings.
+- scripts/submit/llm-grid-try5-pretrain-fixedtok.sh re-runs the LLM-Grid Try5
+  pretraining from the ETP-R1 release weights with the fix in place, with
+  preflight checks that the checkout carries patch 0017; extra arguments go
+  to train_r2r.py. Output dir pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok.
+- run_r2r/main_server.bash gains llm_grid_try5_fixedtok_dagger and its eval,
+  loading the pretrained map modules (load_pretrained_map_modules True);
+  scripts/submit/llm-grid-try5-fixedtok-dagger.sh submits it.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ pretrain_src/pretrain_src/train_r2r.py        | 54 ++++++++++++++-----
+ run_r2r/main_server.bash                      | 23 ++++++++
+ .../submit/llm-grid-try5-fixedtok-dagger.sh   | 11 ++++
+ .../submit/llm-grid-try5-pretrain-fixedtok.sh | 28 ++++++++++
+ 4 files changed, 103 insertions(+), 13 deletions(-)
+ create mode 100755 scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+ create mode 100755 scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
+
+diff --git a/pretrain_src/pretrain_src/train_r2r.py b/pretrain_src/pretrain_src/train_r2r.py
+index 32c2c67..c5997f7 100644
+--- a/pretrain_src/pretrain_src/train_r2r.py
++++ b/pretrain_src/pretrain_src/train_r2r.py
+@@ -70,27 +70,40 @@ def create_dataloaders(
+ 
+ def assert_conv_modules_initialised(model):
+     """from_pretrained() disables torch.nn.init during construction and BERT's
+-    _init_weights() ignores convolutions, so a conv absent from the starting
+-    state_dict silently keeps uninitialised memory.  Refuse to train such a model."""
++    _init_weights() ignores convolutions and raw parameters, so anything absent
++    from the starting state_dict silently keeps uninitialised memory.  Refuse to
++    train when a convolution or map-encoder parameter is non-finite or all-zero;
++    warn about any other all-zero matrix (some are zero by design)."""
+     conv_types = (torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Conv3d, torch.nn.ConvTranspose2d)
+-    bad = []
+-    for name, module in model.named_modules():
+-        if not isinstance(module, conv_types):
+-            continue
+-        for pname, param in module.named_parameters(recurse=False):
+-            if not torch.isfinite(param).all():
+-                bad.append(f"{name}.{pname}: non-finite")
+-            elif param.dim() >= 2 and not param.detach().any():
+-                bad.append(f"{name}.{pname}: all zeros")
++    conv_param_ids = {
++        id(param)
++        for module in model.modules()
++        if isinstance(module, conv_types)
++        for param in module.parameters(recurse=False)
++    }
++    bad, suspicious = [], []
++    for name, param in model.named_parameters():
++        if not torch.isfinite(param).all():
++            bad.append(f"{name}: non-finite")
++        elif param.dim() >= 2 and not param.detach().any():
++            target = bad if id(param) in conv_param_ids or "map_encoder" in name else suspicious
++            target.append(f"{name}: all zeros")
++    if suspicious:
++        LOGGER.warning("All-zero matrices after from_pretrained(): %s", ", ".join(suspicious))
+     if bad:
+         raise RuntimeError(
+-            "Uninitialised convolution parameters after from_pretrained(): "
+-            + ", ".join(bad)
++            "Uninitialised parameters after from_pretrained(): " + ", ".join(bad)
+         )
+     if getattr(model, "map_encoder", None) is not None:
+         model.map_encoder.assert_initialised("model.map_encoder")
+ 
+ 
++def _spatial_tokenizer(model):
++    base = model.module if hasattr(model, "module") else model
++    encoder = getattr(base, "map_encoder", None)
++    return None if encoder is None else encoder.spatial_tokenizer
++
++
+ def main(opts):
+     default_gpu, n_gpu, device = set_cuda(opts)
+     print(default_gpu, n_gpu, device)
+@@ -403,6 +416,21 @@ def main(opts):
+                 grad_scaler.update()
+             else:
+                 optimizer.step()
++            tokenizer = _spatial_tokenizer(model)
++            if tokenizer is not None and global_step % opts.log_steps == 0:
++                # Raster path health: the pretrained tokenizer used to sit at
++                # weight 0 with an exploded bias and never receive a gradient.
++                grad = tokenizer.weight.grad
++                weight_norm = tokenizer.weight.norm().item()
++                bias_norm = tokenizer.bias.norm().item()
++                grad_norm_value = 0.0 if grad is None else grad.norm().item()
++                TB_LOGGER.add_scalar("map/spatial_tokenizer_weight_norm", weight_norm, global_step)
++                TB_LOGGER.add_scalar("map/spatial_tokenizer_bias_norm", bias_norm, global_step)
++                TB_LOGGER.add_scalar("map/spatial_tokenizer_weight_grad_norm", grad_norm_value, global_step)
++                LOGGER.info(
++                    f"spatial_tokenizer @ {global_step}: weight norm {weight_norm:.4f} "
++                    f"bias norm {bias_norm:.4f} weight grad norm {grad_norm_value:.3e}"
++                )
+             optimizer.zero_grad()
+             pbar.update(1)
+ 
+diff --git a/run_r2r/main_server.bash b/run_r2r/main_server.bash
+index 06ced2c..4a8cf4b 100644
+--- a/run_r2r/main_server.bash
++++ b/run_r2r/main_server.bash
+@@ -183,6 +183,19 @@ LLM_GRID_TRY5_GRPO_MODEL_ARGS="TRAINER_NAME GRPO-ETP-LLM
+       GRPO.require_complete_checkpoint True
+       MODEL.pretrained_path ${LLM_GRID_TRY5_PRETRAINED_CKPT}"
+ 
++# Fixed-tokenizer pretraining (scripts/submit/llm-grid-try5-pretrain-fixedtok.sh).
++# Override the step with LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT=... when submitting.
++LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT="${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT:-pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok/ckpts/model_step_500000.pt}"
++LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT="${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT:-}"
++LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS="TRAINER_NAME SS-ETP-LLM
++      MODEL.policy_name LLMGridTry5Policy
++      MODEL.MAP_ENCODER.enabled True
++      MODEL.MAP_ENCODER.architecture try5
++      MODEL.MAP_ENCODER.source llm_grid
++      MODEL.MAP_ENCODER.llm_cache_model_key ${LLM_GRID_TRY5_MODEL_KEY}
++      MODEL.MAP_ENCODER.load_pretrained_map_modules True
++      MODEL.pretrained_path ${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}"
++
+ launch() {
+       torchrun --standalone --nproc-per-node="${NPROC_PER_NODE}" run.py $1
+ }
+@@ -290,6 +303,16 @@ case $mode in
+       echo "###### LLM-Grid Try5 GRPO eval ######"
+       launch "--exp_name release_r2r_llm_grid_try5_grpo --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_GRPO_CKPT} IL.back_algo control"
+       ;;
++      llm_grid_try5_fixedtok_dagger)
++      echo "###### LLM-Grid Try5 (fixed tokenizer pretraining) DAgger ######"
++      [ -f "${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}" ] || { echo "missing ${LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT}" >&2; exit 2; }
++      launch "--exp_name release_r2r_llm_grid_try5_fixedtok_dagger --run-type dagger ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS} ${DAGGER_ARGS}"
++      ;;
++      llm_grid_try5_fixedtok_eval_dagger)
++      echo "###### LLM-Grid Try5 (fixed tokenizer pretraining) DAgger eval ######"
++      [ -n "${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT}" ] || { echo "set LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT" >&2; exit 2; }
++      launch "--exp_name release_r2r_llm_grid_try5_fixedtok_dagger --run-type eval ${COMMON_ARGS} NUM_ENVIRONMENTS ${MAP_NUM_ENVS} ${LLM_GRID_TRY5_FIXEDTOK_MODEL_ARGS} EVAL.CKPT_PATH_DIR ${LLM_GRID_TRY5_FIXEDTOK_DAGGER_CKPT} IL.back_algo control"
++      ;;
+       imagined_infer)
+       warn_unimplemented "inference path for imagined cognitive maps"
+       ;;
+diff --git a/scripts/submit/llm-grid-try5-fixedtok-dagger.sh b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+new file mode 100755
+index 0000000..f81297b
+--- /dev/null
++++ b/scripts/submit/llm-grid-try5-fixedtok-dagger.sh
+@@ -0,0 +1,11 @@
++#!/bin/bash
++#SBATCH --job-name=llm-grid-try5-fixedtok-dagger
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++# DAgger from the fixed LLM-Grid Try5 pretraining, loading its map encoder and
++# fusion (the first DAgger whose pretrained raster path is actually trained).
++# LLM_GRID_TRY5_FIXEDTOK_PRETRAINED_CKPT selects the pretraining step.
++set -euo pipefail
++eval "$(conda shell.bash hook)" && conda activate etpr1-uv
++bash run_r2r/main_server.bash llm_grid_try5_fixedtok_dagger
+diff --git a/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh b/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
+new file mode 100755
+index 0000000..723cf9f
+--- /dev/null
++++ b/scripts/submit/llm-grid-try5-pretrain-fixedtok.sh
+@@ -0,0 +1,28 @@
++#!/bin/bash
++#SBATCH --job-name=llm-grid-try5-pt-fixedtok
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH -p vip_gpu_scze096
++# LLM-Grid Try5 pretraining, re-run from the ETP-R1 release weights with the
++# spatial-tokenizer initialisation fix (patch 0017) and the start-up guard.
++# Submit from the checkout that carries the fix (the exp/refiner worktree).
++# Extra arguments are passed to train_r2r.py, e.g. --num_train_steps 200000.
++set -euo pipefail
++eval "$(conda shell.bash hook)" && conda activate etpr1-uv
++
++grep -q "def reinit_spatial_tokenizer" vlnce_baselines/models/etp_prior_gt/map_encoder.py \
++  || { echo "checkout lacks the tokenizer init fix (patch 0017)" >&2; exit 2; }
++grep -q "assert_conv_modules_initialised" pretrain_src/pretrain_src/train_r2r.py \
++  || { echo "checkout lacks the start-up guard (patch 0017)" >&2; exit 2; }
++python -c "import transformers; print('transformers', transformers.__version__)"
++START_CKPT="pretrained/r2r_rxr_ce/baseline/store2/model_step_367500.pt"
++[ -f "${START_CKPT}" ] || { echo "missing ETP-R1 release checkpoint ${START_CKPT}" >&2; exit 2; }
++OUTPUT_DIR="${OUTPUT_DIR:-pretrained/r2r_rxr_ce/llm_grid_try5_fixedtok}"
++
++bash pretrain_src/run_pt/run_mix_server.bash "${OUTPUT_DIR}" \
++  --navigation-architecture try5 \
++  --cognitive-map-source llm_grid \
++  --llm-cache-model-key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree \
++  --checkpoint "${START_CKPT}" \
++  --log_steps 1000 \
++  "$@"
+-- 
+2.43.0
+

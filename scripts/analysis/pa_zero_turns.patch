@@ -1,0 +1,285 @@
+--- a/scripts/analysis/dump_eval.sh
++++ b/scripts/analysis/dump_eval.sh
+@@ -2,7 +2,8 @@
+ # Decision dump for the paired-episode analysis, R2R val_unseen.
+ #
+ # Usage: bash scripts/analysis/dump_eval.sh MODEL PROTOCOL
+-#   MODEL     base | try5 | kd -- checkpoints and every evaluation setting come
++#   MODEL     base | try5 | kd | zero -- zero supports own only.
++#             Other checkpoints and every evaluation setting come
+ #             from scripts/eval_d7/d7d_eval.sh unchanged (baseline iter25000 no
+ #             map; try5 no-KD iter28000 and KD FULL iter27000 with their own
+ #             LLM map; control, 4 envs/rank, 150 tokens, 15 high-level steps).
+@@ -23,10 +24,14 @@
+ ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
+ PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
+ 
+-[[ $# -eq 2 ]] || { echo "Usage: bash scripts/analysis/dump_eval.sh base|try5|kd own|shared" >&2; exit 2; }
++[[ $# -eq 2 ]] || { echo "Usage: bash scripts/analysis/dump_eval.sh base|try5|kd|zero own|shared" >&2; exit 2; }
+ MODEL="$1"; PROTOCOL="$2"
+ case "$MODEL" in base) PORT=29820 ;; try5) PORT=29821 ;; kd) PORT=29822 ;;
+-    *) echo "MODEL must be base, try5 or kd" >&2; exit 2 ;; esac
++    zero) PORT=29826 ;;
++    *) echo "MODEL must be base, try5, kd or zero" >&2; exit 2 ;; esac
++if [[ "$MODEL" == zero && "$PROTOCOL" != own ]]; then
++    echo "zero supports own only; shared is not implemented" >&2; exit 2
++fi
+ 
+ EXP_NAME="pa_${MODEL}_${PROTOCOL}_val_unseen"
+ RESULT_DIR="$ROOT/data/logs/checkpoints/$EXP_NAME/eval_results"
+@@ -36,6 +41,22 @@
+ fi
+ 
+ EXTRA=()
++LAUNCH_MODEL="$MODEL"
++LAUNCH_GPUS="${GPUS:-0,1,2,3}"
++if [[ "$MODEL" == zero ]]; then
++    LAUNCH_MODEL=try5
++    LAUNCH_GPUS="${GPUS:-4,5,6,7}"
++    CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
++        "$PYTHON" "$ROOT/scripts/analysis/make_zero_input_cache.py"
++    # The archived checkpoint used input_mask=zero-grid-and-directions.
++    # HEAD has no such switch. Supply zero-valued tensors through a separate
++    # cache instead, without modifying the trainer or the source cache.
++    EXTRA=(EVAL.CKPT_PATH_DIR /data/xukai/etp-r1-snapshot/checkpoints/llm-grid-000-baseline-dagger-28k/ckpt.iter28000.pth
++           MODEL.pretrained_path "$ROOT/pretrained/r2r_rxr_ce/mlm.sap_habitat_depth/store2/model_step_367500.pt"
++           MODEL.MAP_ENCODER.map_ablation none
++           MODEL.MAP_ENCODER.llm_cache_dir "$ROOT/data/logs/checkpoints/pa_zero_inputs"
++           MODEL.MAP_ENCODER.llm_cache_model_key pa_zero_all_inputs)
++fi
+ case "$PROTOCOL" in
+     own) ;;
+     shared)
+@@ -58,8 +79,8 @@
+ esac
+ 
+ echo "$(date -Is) model=$MODEL protocol=$PROTOCOL -> $RESULT_DIR"
+-EXP_NAME="$EXP_NAME" MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-0,1,2,3}" \
+-    bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
++EXP_NAME="$EXP_NAME" MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="$LAUNCH_GPUS" \
++    bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$LAUNCH_MODEL" \
+     EVAL.d7d_logging False EVAL.decision_dump True ${EXTRA[@]+"${EXTRA[@]}"}
+ 
+ "$PYTHON" - "$RESULT_DIR" <<'PY'
+@@ -75,6 +96,30 @@
+ PY
+ 
+ if [[ "$PROTOCOL" == own ]]; then
++    if [[ "$MODEL" == zero ]]; then
++        REFERENCE=/data/xukai/etp-r1-snapshot/checkpoints/llm-grid-000-baseline-dagger-28k/eval_results
++        VERIFY_OUT="$ROOT/data/logs/checkpoints/$EXP_NAME/verify.json"
++        if "$PYTHON" "$ROOT/scripts/eval_d8/verify.py" --reference "$REFERENCE" --candidate "$RESULT_DIR" --output "$VERIFY_OUT"; then
++            echo 'zero reference check: PASS'
++        else
++            # A valid comparison with changed rollout metrics is informational,
++            # not a reason to abort. Missing/malformed verification output fails.
++            "$PYTHON" - "$VERIFY_OUT" <<'PY'
++import json, sys
++result = json.load(open(sys.argv[1]))
++changes = result['changes']
++if not changes:
++    raise RuntimeError('Verifier failed without recording metric differences')
++print(f"zero reference check: NOT PASS; {len({x['episode'] for x in changes})} changed episodes, {len(changes)} changed field values; continuing")
++PY
++        fi
++        "$PYTHON" - "$RESULT_DIR/stats_ckpt_28000_val_unseen.json" <<'PY'
++import json, sys
++m = json.load(open(sys.argv[1]))
++print(f"zero SR {100*m['success']:.2f}, SPL {100*m['spl']:.2f}; archived reference: SR 63.30, SPL 53.20")
++PY
++        exit 0
++    fi
+     REFERENCE="$ROOT/data/logs/checkpoints/d7d_${MODEL}_control_val_unseen/eval_results"
+     if [[ -d "$REFERENCE" ]]; then
+         mkdir -p "$ROOT/reports/analysis"
+--- a/scripts/analysis/make_zero_input_cache.py
++++ b/scripts/analysis/make_zero_input_cache.py
+@@ -0,0 +1,71 @@
++"""Create a separate zero-input cache with the original available-episode set."""
++
++import json
++from pathlib import Path
++import sys
++
++import numpy as np
++
++ROOT = Path('/home/xukai/code/ETP-R1-snapshot/ETP-R1')
++sys.path.insert(0, str(ROOT))
++
++from prior.vlnce import VLNCEEpisodeEntry
++from vlnce_baselines.models.etp_llm.navigation import (
++    llm_cached_cognitive_map_to_tensors,
++    llm_navigation_cache_report,
++    llm_navigation_cognitive_map_raster_path,
++    llm_navigation_status_path,
++)
++
++
++def main():
++    cache = ROOT / 'data/logs/checkpoints/pa_zero_inputs'
++    key = 'pa_zero_all_inputs'
++    episodes = list(VLNCEEpisodeEntry.iter_from('R2R', splits=('val_unseen',)))
++    ids = [str(ep.episode_id) for ep in episodes]
++    original = llm_navigation_cache_report(
++        'R2R', 'val_unseen', ids, require_boxes=False,
++        model_key='llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree',
++    )
++    available = set(original.available_episode_ids)
++    cache.mkdir(parents=True, exist_ok=True)
++    template = cache / 'all_zero.npz'
++    if not template.exists():
++        np.savez_compressed(
++            template, grid=np.zeros((37, 100, 100), dtype=np.float32),
++            direction_vectors=np.zeros((5, 2), dtype=np.float32),
++            start_direction_vector=np.zeros(2, dtype=np.float32),
++            start_position=np.zeros(2, dtype=np.float32),
++            range_y=np.asarray([None, None], dtype=object),
++        )
++    for ep in episodes:
++        if str(ep.episode_id) not in available:
++            continue
++        raster = llm_navigation_cognitive_map_raster_path(
++            ep.scene_id, ep.unique_id, 'R2R', 'val_unseen', cache_dir=cache, model_key=key,
++        )
++        raster.parent.mkdir(parents=True, exist_ok=True)
++        if not raster.is_symlink():
++            raster.symlink_to(template)
++        status = llm_navigation_status_path(
++            ep.scene_id, ep.unique_id, 'R2R', 'val_unseen', cache_dir=cache, model_key=key,
++        )
++        status.parent.mkdir(parents=True, exist_ok=True)
++        status.write_text(json.dumps({'status': 'complete', 'input_mode': 'all_zero'}) + '\n')
++    report = llm_navigation_cache_report(
++        'R2R', 'val_unseen', ids, require_boxes=False, cache_dir=cache, model_key=key,
++    )
++    assert report.available_episode_ids == original.available_episode_ids
++    assert report.missing_episode_ids == original.missing_episode_ids
++    first = next(ep for ep in episodes if str(ep.episode_id) in available)
++    tensors = llm_cached_cognitive_map_to_tensors(
++        first.scene_id, first.unique_id, 'R2R', 'val_unseen',
++        metadata_schema='direction5', cache_dir=cache, model_key=key,
++    )
++    for field in ('grid', 'map_trajectory_metadata', 'start_direction_vector', 'start_position'):
++        assert not tensors[field].any(), field
++    print(f'zero inputs: available={report.available_count}, missing={report.missing_count}; {cache}')
++
++
++if __name__ == '__main__':
++    main()
+--- a/scripts/analysis/turn_table.py
++++ b/scripts/analysis/turn_table.py
+@@ -0,0 +1,77 @@
++#!/usr/bin/env python3
++"""Compare paired SR/SPL by ground-truth turn count on val_unseen."""
++
++import json
++from pathlib import Path
++
++from tap import Tap
++
++from paired_report import load_dump, md_table
++
++
++class Args(Tap):
++    features: str
++    base: str
++    ours: str
++    out: str = "data/logs/checkpoints/pa_zero_own_val_unseen/turn_table.md"
++
++
++def load_metrics(directory):
++    """Include cache-missing episodes recorded in stats but absent from dumps."""
++    _, episodes = load_dump(directory, "val_unseen")
++    for path in sorted(Path(directory).glob("stats_ep_*_val_unseen_r*_w*.json")):
++        for episode_id, metric in json.loads(path.read_text()).items():
++            episodes.setdefault(episode_id, {"metric": None})["metric"] = metric
++    return episodes
++
++
++def build_table(features, base, ours):
++    ids = sorted(
++        episode_id
++        for episode_id in base.keys() & ours.keys()
++        if base[episode_id]["metric"] is not None
++        and ours[episode_id]["metric"] is not None
++    )
++    if not ids:
++        raise ValueError("No common episodes with completed metrics")
++    groups = {"0": [], "1": [], "≥2": []}
++    for episode_id in ids:
++        turns = features[episode_id]["n_turns"]
++        if type(turns) is not int or turns < 0:
++            raise ValueError(f"Episode {episode_id}: invalid n_turns={turns!r}")
++        groups[str(turns) if turns < 2 else "≥2"].append(episode_id)
++    groups["全部"] = ids
++    rows = []
++    for label, episode_ids in groups.items():
++        values = []
++        for metric in ("success", "spl"):
++            if not episode_ids:
++                values.extend(["-", "-", "-"])
++                continue
++            baseline = sum(base[i]["metric"][metric] for i in episode_ids) / len(episode_ids)
++            try5 = sum(ours[i]["metric"][metric] for i in episode_ids) / len(episode_ids)
++            values.extend(
++                [f"{100 * baseline:.2f}", f"{100 * try5:.2f}", f"{100 * (try5 - baseline):+.2f}"]
++            )
++        rows.append([label, len(episode_ids), *values])
++    return md_table(
++        ["转向数", "n", "base SR", "try5 SR", "ΔSR",
++         "base SPL", "try5 SPL", "ΔSPL"],
++        rows,
++    )
++
++
++def main():
++    args = Args().parse_args()
++    features = json.loads(Path(args.features).read_text())
++    base = load_metrics(args.base)
++    ours = load_metrics(args.ours)
++    table = build_table(features, base, ours)
++    output = Path(args.out)
++    output.parent.mkdir(parents=True, exist_ok=True)
++    output.write_text(table + "\n")
++    print(table)
++
++
++if __name__ == "__main__":
++    main()
+--- a/scripts/analysis/run_zero_turns.sh
++++ b/scripts/analysis/run_zero_turns.sh
+@@ -0,0 +1,34 @@
++#!/usr/bin/env bash
++# User-run workflow: one GPU evaluation, CPU turn table, then append data dumps.
++set -euo pipefail
++ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
++PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
++DATA=/tmp/pa-data
++RUN=pa_zero_own_val_unseen
++cd "$ROOT"
++export GPUS="${GPUS:-4,5,6,7}"
++bash "$ROOT/scripts/analysis/dump_eval.sh" zero own
++CUDA_VISIBLE_DEVICES='' "$PYTHON" "$ROOT/scripts/analysis/turn_table.py" \
++    --features "$ROOT/data/logs/analysis/features_val_unseen.json" \
++    --base "$ROOT/data/logs/checkpoints/$RUN/eval_results" \
++    --ours "$ROOT/data/logs/checkpoints/pa_try5_own_val_unseen/eval_results" \
++    --out "$ROOT/data/logs/checkpoints/$RUN/turn_table.md"
++
++# /tmp/pa-data is the existing data-only repository, not the source worktree.
++[[ -z "$(git -C "$DATA" status --porcelain)" ]]
++REMOTE="$(git -C "$ROOT" remote get-url origin)"
++git -C "$DATA" fetch "$REMOTE" data/pa-dumps
++git -C "$DATA" merge --ff-only FETCH_HEAD
++FILES=()
++for source in "$ROOT/data/logs/checkpoints/$RUN/eval_results"/decisions_*.jsonl; do
++    target="${RUN}__$(basename "$source").gz"
++    gzip -c "$source" > "$DATA/$target"
++    FILES+=("$target")
++done
++git -C "$DATA" add -- "${FILES[@]}"
++if ! git -C "$DATA" diff --cached --quiet; then
++    git -C "$DATA" -c user.name="$(git -C "$ROOT" config user.name)" \
++        -c user.email="$(git -C "$ROOT" config user.email)" \
++        commit -m 'Add zero-input own-rollout decision dumps'
++fi
++git -C "$DATA" push "$REMOTE" HEAD:refs/heads/data/pa-dumps

@@ -1,0 +1,249 @@
+From f843e862d48a696e8187ea297730c359077c835c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 24 Sep 2026 15:27:57 +0000
+Subject: [PATCH 1/3] Load pretrained map modules and add map-channel ablation
+ flags
+
+Pretraining stores the fusion under bert.global_encoder.graph_map_attention
+and the map encoder as map_encoder.*; the navigation model owns the fusion
+at the top level and never loaded the map encoder, so HF dropped all 43
+tensors as unused in every DAgger run. Remap the fusion keys, load the map
+encoder strictly, verify the transfer, and gate it behind
+MODEL.MAP_ENCODER.load_pretrained_map_modules (True by default).
+
+Also add MODEL.MAP_ENCODER.map_ablation (none, metadata_only, raster_only,
+no_direction) and MODEL.MAP_ENCODER.start_position_scale for eval-time
+channel attribution, and let eval_s4.sh take PRETRAINED_CKPT and
+LOAD_PRETRAINED_MAP_MODULES from the environment.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/refiner/eval_s4.sh                    |  3 +-
+ vlnce_baselines/config/default.py             | 11 +++++
+ vlnce_baselines/models/etp_prior_gt/policy.py | 42 ++++++++++++++++++
+ .../models/etp_prior_gt/vlnbert_init.py       | 43 +++++++++++++++++++
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py     | 17 ++++++++
+ 5 files changed, 115 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/refiner/eval_s4.sh b/scripts/refiner/eval_s4.sh
+index 4798023..80403d1 100755
+--- a/scripts/refiner/eval_s4.sh
++++ b/scripts/refiner/eval_s4.sh
+@@ -4,7 +4,7 @@ set -euo pipefail
+ REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
+ PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+ TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+-PRETRAINED_CKPT="/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt"
++PRETRAINED_CKPT="${PRETRAINED_CKPT:-/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt}"
+ REPORT_PATH="${REPO_ROOT}/reports/refiner/S4_progress.md"
+ 
+ DRY_RUN_ARGS=()
+@@ -59,6 +59,7 @@ COMMAND=(
+     MODEL.MAP_ENCODER.llm_cache_model_key llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree
+     "${REFINER_ARGS[@]}"
+     MODEL.pretrained_path "${PRETRAINED_CKPT}"
++    MODEL.MAP_ENCODER.load_pretrained_map_modules "${LOAD_PRETRAINED_MAP_MODULES:-False}"
+ )
+ 
+ cd "${REPO_ROOT}"
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index c84717b..2452f3c 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -224,6 +224,17 @@ _C.MODEL.MAP_ENCODER.llm_train_reference_model_key = (
+ )
+ _C.MODEL.MAP_ENCODER.refiner_ckpt = ""
+ _C.MODEL.MAP_ENCODER.eval_map_source = "refiner"
++# Load pretrained map_encoder.* and bert.global_encoder.graph_map_attention.* from
++# MODEL.pretrained_path into the navigation policy. False reproduces the historical
++# behaviour where both modules start from CLIP/zero init in every DAgger run.
++_C.MODEL.MAP_ENCODER.load_pretrained_map_modules = True
++# Map-channel ablation applied in _prepare_map_inputs:
++#   none | metadata_only (zero raster) | raster_only (zero all metadata)
++#   | no_direction (zero the five route direction vectors only)
++_C.MODEL.MAP_ENCODER.map_ablation = "none"
++# Multiply start_position before the map encoder (online GT maps store grid
++# cells = 2x metres; cached GT/LLM maps store metres).
++_C.MODEL.MAP_ENCODER.start_position_scale = 1.0
+ 
+ 
+ def purge_keys(config: CN, keys: List[str]) -> None:
+diff --git a/vlnce_baselines/models/etp_prior_gt/policy.py b/vlnce_baselines/models/etp_prior_gt/policy.py
+index 2cfa581..c449438 100644
+--- a/vlnce_baselines/models/etp_prior_gt/policy.py
++++ b/vlnce_baselines/models/etp_prior_gt/policy.py
+@@ -9,6 +9,8 @@ The author's R1Policy.py and etp/ directory are not modified.
+ """
+ 
+ from copy import deepcopy
++import os
++from pathlib import Path
+ from typing import Any
+ 
+ import numpy as np
+@@ -24,6 +26,7 @@ from habitat_baselines.rl.ppo.policy import Net
+ from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
+ from vlnce_baselines.models.etp_prior_gt.vlnbert_init import get_vlnbert_models
+ from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
++from vlnce_baselines.models.etp_imagined.checkpoint import load_complete_state_dict
+ from vlnce_baselines.models.encoders.resnet_encoders import (
+     VlnResnetDepthEncoder,
+     CLIPEncoder,
+@@ -34,6 +37,8 @@ from vlnce_baselines.waypoint_pred.utils import nms
+ from vlnce_baselines.models.utils import angle_feature_torch
+ import math
+ 
++MAP_ENCODER_PREFIX = "map_encoder."
++
+ 
+ @baseline_registry.register_policy
+ class PriorGTPolicy(ILPolicy):
+@@ -168,6 +173,43 @@ class ETP_PriorGT(Net):
+             print(
+                 f"  Map encoder enabled: CLIP 37-category init -> map tokens (101, {map_hidden_size})"
+             )
++            if getattr(map_cfg, "load_pretrained_map_modules", True):
++                self._load_pretrained_map_encoder(
++                    getattr(model_config, "pretrained_path", None)
++                )
++
++    def _load_pretrained_map_encoder(self, pretrained_path):
++        """Load map_encoder.* from the pretraining checkpoint, strictly.
++
++        Historically nothing loaded these tensors: the map encoder started from
++        CLIP init in every DAgger run even when pretraining had trained it.
++        """
++        if not pretrained_path or not os.path.isfile(pretrained_path):
++            print("  map_encoder: no pretrained_path file; keeping CLIP init")
++            return
++        checkpoint = torch.load(pretrained_path, map_location="cpu")
++        state_dict = checkpoint
++        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
++            state_dict = checkpoint["state_dict"]
++        module_state = {}
++        for key, value in state_dict.items():
++            if key.startswith("module."):
++                key = key[len("module.") :]
++            if key.startswith(MAP_ENCODER_PREFIX):
++                module_state[key[len(MAP_ENCODER_PREFIX) :]] = value
++        if not module_state:
++            print(
++                f"  map_encoder: no map_encoder.* tensors in {pretrained_path}; "
++                "keeping CLIP init"
++            )
++            return
++        load_complete_state_dict(
++            self.map_encoder, module_state, Path(pretrained_path), "map_encoder"
++        )
++        print(
++            f"  map_encoder: loaded {len(module_state)} pretrained tensors "
++            f"from {pretrained_path}"
++        )
+ 
+     @property
+     def output_size(self):
+diff --git a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+index 6a39bcf..457e0ce 100644
+--- a/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
++++ b/vlnce_baselines/models/etp_prior_gt/vlnbert_init.py
+@@ -1,5 +1,8 @@
+ import torch
+ 
++PRETRAIN_FUSION_PREFIX = "bert.global_encoder.graph_map_attention."
++NAV_FUSION_PREFIX = "bert.graph_map_attention."
++
+ 
+ def get_tokenizer(args):
+     from transformers import AutoTokenizer
+@@ -22,7 +25,11 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
+     model_class = GlocalTextPathNavCMT
+ 
+     model_name_or_path = config.pretrained_path
++    load_map_modules = bool(
++        getattr(config.MAP_ENCODER, "load_pretrained_map_modules", True)
++    )
+     new_ckpt_weights = {}
++    remapped_fusion = {}
+     keywords = [
+         "graph_query_text",
+         "graph_attentioned_txt_embeds_transform",
+@@ -35,6 +42,13 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
+                 new_ckpt_weights[k[7:]] = v
+             if any(key in k for key in keywords):
+                 new_ckpt_weights["bert." + k] = v
++            elif load_map_modules and k.startswith(PRETRAIN_FUSION_PREFIX):
++                # Pretraining stores the fusion inside GlobalMapEncoder; the
++                # navigation model owns it at the top level. Without this remap
++                # the pretrained fusion is silently dropped as "unused".
++                nav_key = NAV_FUSION_PREFIX + k[len(PRETRAIN_FUSION_PREFIX) :]
++                new_ckpt_weights[nav_key] = v
++                remapped_fusion[nav_key[len("bert.") :]] = v
+             else:
+                 new_ckpt_weights[k] = v
+ 
+@@ -76,4 +90,33 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
+         config=vis_config,
+         state_dict=new_ckpt_weights,
+     )
++    _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path)
+     return visual_model
++
++
++def _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path):
++    """Fail loudly if remapped pretrained fusion tensors did not land."""
++    if not remapped_fusion:
++        print(
++            "  graph_map_attention: no pretrained tensors loaded "
++            "(checkpoint has none or load_pretrained_map_modules=False); "
++            "fusion starts from random attention + zero residual projection"
++        )
++        return
++    fusion_state = visual_model.graph_map_attention.state_dict()
++    mismatched = [
++        key
++        for key, value in remapped_fusion.items()
++        if key not in fusion_state
++        or fusion_state[key].shape != value.shape
++        or not torch.equal(fusion_state[key].cpu(), value.cpu())
++    ]
++    if mismatched:
++        raise RuntimeError(
++            "Pretrained graph_map_attention tensors were remapped but did not "
++            f"land in the navigation model: {mismatched}"
++        )
++    print(
++        f"  graph_map_attention: loaded {len(remapped_fusion)} pretrained tensors "
++        f"from {model_name_or_path}"
++    )
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index a6e2237..a339abe 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1323,6 +1323,23 @@ class RLTrainer(BaseVLNCETrainer):
+                 for cognitive_map in cognitive_maps[: self.envs.num_envs]
+             ]
+         ).to(self.device)
++        start_position_scale = float(getattr(map_cfg, "start_position_scale", 1.0))
++        if start_position_scale != 1.0:
++            start_positions = start_positions * start_position_scale
++        ablation = getattr(map_cfg, "map_ablation", "none")
++        if ablation == "metadata_only":
++            cognitive_crops = torch.zeros_like(cognitive_crops)
++        elif ablation == "raster_only":
++            map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
++            start_direction_vectors = torch.zeros_like(start_direction_vectors)
++            start_positions = torch.zeros_like(start_positions)
++        elif ablation == "no_direction":
++            map_trajectory_metadata = torch.zeros_like(map_trajectory_metadata)
++        elif ablation != "none":
++            raise ValueError(
++                "MODEL.MAP_ENCODER.map_ablation must be one of none, "
++                f"metadata_only, raster_only, no_direction; got {ablation!r}"
++            )
+         map_tokens, map_token_masks = self.policy.net(
+             mode="map_encoding",
+             cognitive_crops=cognitive_crops,
+-- 
+2.43.0
+

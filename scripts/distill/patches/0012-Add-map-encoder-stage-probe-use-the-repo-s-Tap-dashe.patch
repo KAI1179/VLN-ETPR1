@@ -1,0 +1,249 @@
+From be6df7f99f0a70ef6ecfab10dcc526eb36b207ce Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 26 Sep 2026 11:18:18 +0000
+Subject: [PATCH] Add map-encoder stage probe; use the repo's Tap dashes
+ convention
+
+R8 found that the R7 student's map tokens are identical for the LLM grid,
+the GT grid and an all-zero grid (tok_rel = 0), so the raster path is blind
+at the encoder itself, not just weak at the action head. The stage probe
+loads map_encoder.* from pretraining or DAgger checkpoints and reports the
+relative change the grid makes after each stage, plus the spatial
+tokenizer's ||W*x|| / ||b|| ratio, to locate where the signal dies and
+whether the 460000 pretraining checkpoint already carried the collapse.
+
+map_sensitivity_probe.py now passes underscores_to_dashes to the Tap
+constructor like the other scripts; configure() did not take effect on the
+installed Tap version.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xm3S8jGTjU1YqXnUPuWMgH
+---
+ scripts/distill/map_encoder_stage_probe.py | 191 +++++++++++++++++++++
+ scripts/distill/map_sensitivity_probe.py   |   5 +-
+ 2 files changed, 192 insertions(+), 4 deletions(-)
+ create mode 100755 scripts/distill/map_encoder_stage_probe.py
+
+diff --git a/scripts/distill/map_encoder_stage_probe.py b/scripts/distill/map_encoder_stage_probe.py
+new file mode 100755
+index 0000000..817174c
+--- /dev/null
++++ b/scripts/distill/map_encoder_stage_probe.py
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++"""Where does the grid signal die inside a map encoder?
++
++Loads ``map_encoder.*`` from each checkpoint (pretraining ``map_encoder.*`` or
++DAgger ``net.module.map_encoder.*``), runs one episode's LLM grid, GT grid and
++an all-zero grid through the encoder stage by stage, and prints the relative
++difference the grid makes after every stage.  Also prints how large the
++spatial tokenizer's learned response ``W*x`` is against its bias ``b``: when
++``W*x`` is negligible, LayerNorm turns every spatial token into the same
++constant and the encoder is blind to the raster no matter what it is fed.
++
++Usage:
++  CUDA_VISIBLE_DEVICES=4 python scripts/distill/map_encoder_stage_probe.py
++"""
++
++import os
++import sys
++from pathlib import Path
++from typing import Any, Dict, List
++
++from tap import Tap
++
++REPO_ROOT = Path(__file__).resolve().parents[2]
++PREFIXES = ("net.module.", "net.", "module.")
++STAGES = (
++    "category_projection",
++    "spatial_tokenizer",
++    "spatial_token_norm",
++    "token_transformer",
++    "output_norm",
++)
++
++
++class Args(Tap):
++    checkpoints: List[str] = [
++        "/home/xukai/code/ETP-R1-snapshot/checkpoints/llm-grid-try5-r1p5/model_step_460000.pt",
++        "/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5_step_387500.pt",
++        "data/logs/checkpoints/dagger_distill_gt_teacher_llmpt/ckpt.iter5000.pth",
++        "data/logs/checkpoints/dagger_distill_gt_teacher/ckpt.iter10000.pth",
++        "/data/xukai/etp-r1-snapshot/checkpoints/prior-gt-try5-r1p5/try-5-r1p5-dagger.iter16000.pth",
++    ]
++    """Pretraining or DAgger checkpoints; missing files are reported and skipped."""
++    episode_ids: List[int] = [53, 992, 444, 1352, 1685]
++    llm_model_key: str = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++    gt_namespace: str = "gt.legacy.r1p5.direction5.v1"
++    device: str = "cuda"
++
++
++def _map_encoder_state(state: Dict[str, Any]) -> Dict[str, Any]:
++    out = {}
++    for key, value in state.items():
++        for prefix in PREFIXES:
++            if key.startswith(prefix):
++                key = key[len(prefix) :]
++                break
++        if key.startswith("map_encoder."):
++            out[key[len("map_encoder.") :]] = value
++    return out
++
++
++def _rel(a, b) -> float:
++    return ((a - b).norm() / a.norm().clamp_min(1e-12)).item()
++
++
++def main() -> None:
++    args = Args(underscores_to_dashes=True).parse_args()
++    os.chdir(REPO_ROOT)
++    sys.path.insert(0, str(REPO_ROOT))
++
++    import torch
++
++    from vlnce_baselines.models.cognitive_map_candidate import CognitiveMapCandidate
++    from vlnce_baselines.models.etp_llm.navigation import (
++        llm_cached_cognitive_map_to_tensors,
++    )
++    from vlnce_baselines.models.etp_prior_gt.map_encoder import EmbeddingGridMapEncoder
++    from vlnce_baselines.models.etp_prior_gt.map_utils import (
++        VLNCE_COGNITIVE_MAP_DIR,
++        cached_cognitive_map_to_tensors,
++    )
++
++    device = torch.device(args.device)
++    schema = CognitiveMapCandidate.parse("try5", "llm_grid").metadata_schema
++
++    episodes = []
++    for episode_id in args.episode_ids:
++        cache_id = f"R2R_val_unseen_{episode_id}"
++        hits = sorted(
++            (VLNCE_COGNITIVE_MAP_DIR / args.gt_namespace / "raster").glob(
++                f"*/{cache_id}.npz"
++            )
++        )
++        if len(hits) != 1:
++            raise FileNotFoundError(
++                f"expected one GT raster for {cache_id}, found {len(hits)}"
++            )
++        scene_key = hits[0].parent.name
++        llm = llm_cached_cognitive_map_to_tensors(
++            scene_key,
++            cache_id,
++            "r2r",
++            "val_unseen",
++            metadata_schema=schema,
++            model_key=args.llm_model_key,
++        )
++        gt = cached_cognitive_map_to_tensors(
++            scene_key, cache_id, namespace=args.gt_namespace, metadata_schema=schema
++        )
++        metadata = (
++            torch
++            .cat([
++                llm["map_trajectory_metadata"].flatten(),
++                llm["start_direction_vector"],
++                llm["start_position"],
++            ])
++            .float()
++            .unsqueeze(0)
++            .to(device)
++        )
++        episodes.append((
++            episode_id,
++            llm["grid"].float().unsqueeze(0).to(device),
++            gt["grid"].float().unsqueeze(0).to(device),
++            metadata,
++        ))
++
++    def stages(enc: EmbeddingGridMapEncoder, grid, metadata):
++        emb = enc.category_projection(grid)
++        conv = enc.spatial_tokenizer(emb)
++        spatial = conv.flatten(start_dim=2).transpose(1, 2)
++        spatial_n = enc.spatial_token_norm(spatial)
++        tokens = torch.cat(
++            [spatial_n, enc.metadata_encoder(metadata).unsqueeze(1)], dim=1
++        )
++        transformed = enc.token_transformer(tokens)
++        out = enc.output_norm(transformed)
++        bias = enc.spatial_tokenizer.bias.view(1, -1, 1, 1).expand_as(conv)
++        wx_over_bias = ((conv - bias).norm() / bias.norm().clamp_min(1e-12)).item()
++        return dict(
++            zip(STAGES, (emb, spatial, spatial_n, transformed, out))
++        ), wx_over_bias
++
++    print(
++        "rel(gt) = ||stage(GT grid) - stage(LLM grid)|| / ||stage(LLM grid)||, "
++        "rel(zero) likewise for an all-zero grid; mean over episodes."
++    )
++    for ckpt in args.checkpoints:
++        path = Path(ckpt)
++        if not path.is_file():
++            print(f"\n=== {ckpt}\n    missing file, skipped")
++            continue
++        raw = torch.load(path, map_location="cpu")
++        if isinstance(raw, dict) and "state_dict" in raw:
++            raw = raw["state_dict"]
++        enc_state = _map_encoder_state(raw)
++        print(f"\n=== {ckpt}")
++        if not enc_state:
++            print("    no map_encoder.* tensors, skipped")
++            continue
++        enc = EmbeddingGridMapEncoder(hidden_size=768)
++        enc.load_state_dict(enc_state, strict=True)
++        enc = enc.to(device).eval()
++        print(
++            "    weight norms: category_projection.weight "
++            f"{enc.category_projection.weight.norm():.4f} | spatial_tokenizer.weight "
++            f"{enc.spatial_tokenizer.weight.norm():.4f} bias {enc.spatial_tokenizer.bias.norm():.4f} | "
++            f"metadata_encoder.0.weight {enc.metadata_encoder[0].weight.norm():.4f}"
++        )
++        acc = {stage: {"gt": [], "zero": []} for stage in STAGES}
++        ratios = []
++        with torch.no_grad():
++            for _, llm_grid, gt_grid, metadata in episodes:
++                s_llm, ratio = stages(enc, llm_grid, metadata)
++                s_gt, _ = stages(enc, gt_grid, metadata)
++                s_zero, _ = stages(enc, torch.zeros_like(llm_grid), metadata)
++                ratios.append(ratio)
++                for stage in STAGES:
++                    acc[stage]["gt"].append(_rel(s_llm[stage], s_gt[stage]))
++                    acc[stage]["zero"].append(_rel(s_llm[stage], s_zero[stage]))
++        print(
++            f"    spatial_tokenizer ||W*x|| / ||b|| (LLM grid): {sum(ratios) / len(ratios):.6f}"
++        )
++        print(f"    {'stage':>20} {'rel(gt)':>10} {'rel(zero)':>10}")
++        for stage in STAGES:
++            gt_mean = sum(acc[stage]["gt"]) / len(acc[stage]["gt"])
++            zero_mean = sum(acc[stage]["zero"]) / len(acc[stage]["zero"])
++            print(f"    {stage:>20} {gt_mean:>10.6f} {zero_mean:>10.6f}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/distill/map_sensitivity_probe.py b/scripts/distill/map_sensitivity_probe.py
+index 06f938d..01414b3 100755
+--- a/scripts/distill/map_sensitivity_probe.py
++++ b/scripts/distill/map_sensitivity_probe.py
+@@ -38,9 +38,6 @@ class Args(Tap):
+     graphs: int = 32
+     """Random graph draws per episode."""
+ 
+-    def configure(self) -> None:
+-        self.underscores_to_dashes = True
+-
+ 
+ def _strip_net_prefix(state: Dict[str, Any]) -> Dict[str, Any]:
+     out = {}
+@@ -54,7 +51,7 @@ def _strip_net_prefix(state: Dict[str, Any]) -> Dict[str, Any]:
+ 
+ 
+ def main() -> None:
+-    args = Args().parse_args()
++    args = Args(underscores_to_dashes=True).parse_args()
+     os.chdir(REPO_ROOT)
+     sys.path.insert(0, str(REPO_ROOT))
+ 
+-- 
+2.43.0
+

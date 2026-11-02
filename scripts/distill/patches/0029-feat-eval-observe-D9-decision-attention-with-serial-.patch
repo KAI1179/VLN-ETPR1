@@ -1,0 +1,1452 @@
+From edce7a6cfdadf97f862101c902e4d90d60ff5fd7 Mon Sep 17 00:00:00 2001
+From: PRO-2684 <54608551+PRO-2684@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:47:02 -0400
+Subject: [PATCH] feat(eval): observe D9 decision attention with serial
+ unattended collection
+
+---
+ docs/daily/2026-10-15.md                  |  10 +
+ reports/d9_setup.md                       | 117 +++++++
+ scripts/distill/attention_stats.py        | 407 ++++++++++++++++++++++
+ scripts/eval_d9/attention_dump.py         | 169 +++++++++
+ scripts/eval_d9/attention_report.py       |  80 +++++
+ scripts/eval_d9/dump.sh                   |  26 ++
+ scripts/eval_d9/run_all.sh                |  93 +++++
+ scripts/eval_d9/verify.py                 | 124 +++++++
+ scripts/submit/d9-dump.sh                 |  14 +
+ upload_files/d9_attention_taskbook-v2.md  | 204 +++++++++++
+ vlnce_baselines/config/default.py         |   1 +
+ vlnce_baselines/ss_trainer_ETP_PriorGT.py |  19 +-
+ vlnce_baselines/ss_trainer_ETP_R1.py      |  18 +-
+ 13 files changed, 1274 insertions(+), 8 deletions(-)
+ create mode 100644 docs/daily/2026-10-15.md
+ create mode 100644 reports/d9_setup.md
+ create mode 100644 scripts/distill/attention_stats.py
+ create mode 100644 scripts/eval_d9/attention_dump.py
+ create mode 100644 scripts/eval_d9/attention_report.py
+ create mode 100755 scripts/eval_d9/dump.sh
+ create mode 100755 scripts/eval_d9/run_all.sh
+ create mode 100644 scripts/eval_d9/verify.py
+ create mode 100755 scripts/submit/d9-dump.sh
+ create mode 100644 upload_files/d9_attention_taskbook-v2.md
+
+diff --git a/docs/daily/2026-10-15.md b/docs/daily/2026-10-15.md
+new file mode 100644
+index 0000000..f8af7c7
+--- /dev/null
++++ b/docs/daily/2026-10-15.md
+@@ -0,0 +1,10 @@
++# 2026-10-15
++
++## D9 注意力实验
++
++- 阅读修订任务书 `upload_files/d9_attention_taskbook-v2.md`，确认此前的 STOP 候选 NA、空间并集、特殊 token 公共样本集、A4 非配对统计问题已修正。
++- 用户随后授权无人值守启动。按任务书实现只在 eval 开启的注意力观察器，不修改模型结构、前向输出或决策逻辑，不训练。
++- 与 D8 保持相同 4-rank 划分；GPU 4–7 当前有作业，后台流程须先等待资源满足条件，不终止现有作业。
++- 开始全量采集前执行规定的 4 条 episode 等价性及共享状态对齐校验。校验失败即停止并保留错误，不跳过。
++- A1–A3 为配对统计；A4 为高/低 STOP 倾向两组的场景 bootstrap。STOP 时候选区域不可定义，不填零或当前位置。
++- 当前阶段为实现与启动准备；尚无 D9 结果，不能据此声称地图改善了语言关注或空间推理。
+diff --git a/reports/d9_setup.md b/reports/d9_setup.md
+new file mode 100644
+index 0000000..82f31e4
+--- /dev/null
++++ b/reports/d9_setup.md
+@@ -0,0 +1,117 @@
++# D9 unattended attention experiment
++
++## Scope and status
++
++Protocol: `upload_files/d9_attention_taskbook-v2.md`. The user explicitly
++authorised unattended execution after the design review. No training is
++scheduled. Normal map inputs remain enabled for Try5 and KD FULL.
++
++The workflow must pass its four-episode hook-on/off equivalence checks and
++alignment checks against D8 before collecting full dumps. A failed check
++terminates the workflow; it is not skipped or repaired by changing decisions.
++GPU collection is serial. CPU statistics use single-thread BLAS, with no more
++than four workers. Existing jobs are not terminated or reconfigured.
++
++## Read-only architecture audit
++
++- Baseline: `vlnce_baselines/models/etp/ETP_R1_vilmodel_cmt.py`,
++  `graph_query_text` constructed at line 864 and called at line 976.
++- Try5/KD: `vlnce_baselines/models/etp_prior_gt/vilmodel_cmt.py`,
++  `graph_query_text` constructed at line 889 and called at line 1019.
++- Each is one dedicated graph-to-text attention module, not the last of the
++  graph encoder's cross-modal layers. The active head count is recorded from
++  the loaded module rather than inferred from the map encoder.
++- `BertOutAttention` returns the masked, pre-softmax scores alongside the
++  context. A read-only output hook can recover probabilities without changing
++  the context or the original forward calculation.
++- `GraphMapCrossAttention` in
++  `vlnce_baselines/models/etp_prior_gt/map_fusion.py` calls multihead attention
++  with `need_weights=False`. An observer must not change that call's execution
++  path. Map probabilities can instead be calculated separately from the
++  original query/key projections and masks.
++- Map fusion precedes graph-text interaction (map-policy lines 1000/1019).
++  Its probabilities are upstream attention, not contributions to action scores.
++- `map_encoder.py:329` flattens the convolutional output row-major:
++  token `10*r+c` corresponds nominally to raster rows `[10*r,10*r+10)` and
++  columns `[10*c,10*c+10)`. Metadata is appended at index 100 (line 351).
++  All tokens are subsequently mixed by the token transformer. A spatial
++  token is therefore not an isolated physical cell.
++- `map_utils.py:94` defines the assumed origin as
++  `(start_world_x - start_position[0]*meters_per_unit,
++  start_world_z - start_position[1]*meters_per_unit)`.
++  Raster rows follow world x and columns world z, at 0.5 m/cell. Overlays
++  are labelled **assumed registration**; the LLM prediction need not be
++  physically correct.
++
++## Statistical clarifications
++
++1. A1–A3 use paired comparisons on their explicitly common valid frames.
++   A4 instead compares different high/low STOP-tendency groups by a
++   scene-cluster bootstrap.
++2. STOP argmax has no candidate position. Candidate-region mass is NA;
++   no high-versus-low STOP candidate-region contrast is fabricated.
++   The spatial "other" union on such a frame contains only agent and route.
++3. Special-token filtering is never performed independently before a paired
++   comparison. Undefined statistics are reported as unavailable, not zero.
++4. Attention descriptions do not establish causal use, training-time
++   internalisation, or necessity of the map branch.
++
++## Resource policy
++
++At initial inspection, all eight GPUs had existing allocations: GPUs 0–3
++used about 17–18 GiB each, and GPUs 4–7 about 12 GiB each. To preserve D8's
++four-rank episode partition, collection waits for GPUs 4–7 together rather
++than changing to one rank. It starts only after the launcher's documented
++free-memory/utilisation checks pass. No running GPU process is killed.
++
++The unattended driver log and final status are recorded under `reports/d9/`.
++This file documents setup, not completed experimental results.
++
++## Implementation and validation
++
++Changed core files are limited to one default-off eval flag in
++`vlnce_baselines/config/default.py` and recorder lifecycle/decision calls in
++`ss_trainer_ETP_R1.py` and `ss_trainer_ETP_PriorGT.py`. No model source,
++checkpoint, optimizer, training configuration, or environment package was
++modified. Hooks live in `scripts/eval_d9/attention_dump.py`.
++
++CPU checks completed before launch:
++
++- Separate map QK calculation matches PyTorch MHA's per-head probabilities
++  exactly in the tested masked two-sample case (maximum absolute difference
++  0); the original forward outputs remain bit-identical.
++- Recorder synthetic episode round-trip passed, including the distinction
++  between policy argmax and executed action and float16 attention arrays.
++- All D8 reference dumps and four-rank metric files exist. The smoke list
++  is episodes 1, 2, 3, and 13; all are available for every model/source.
++- Shell syntax, Python syntax, CLI parsing and whitespace checks passed.
++- `ruff` and `ty` are unavailable in PATH and the existing conda environment;
++  no packages were installed to obtain them.
++
++The GPU equivalence and replay checks are **pending**, not represented as
++passed by these CPU checks.
++
++## Driver and outputs
++
++Local unattended driver: `scripts/eval_d9/run_all.sh`.
++Slurm entrypoint: `scripts/submit/d9-dump.sh` (not submitted by this run).
++
++```bash
++GPUS=4,5,6,7 bash /home/xukai/code/ETP-R1-snapshot/ETP-R1/scripts/eval_d9/run_all.sh
++```
++
++The local driver is launched with `nohup`; do not launch another copy while
++the existing lock is held. It performs the prescribed finite smoke checks,
++then six full collection passes and CPU statistics. It never retries a
++failed check or silently overwrites a partial episode dump.
++
++- Driver log: `reports/d9/run.log`
++- Driver state and PID: `reports/d9/status.json`
++- Full dumps: `data/logs/d9_dump/<base|try5|kd>/<S|O>/`
++- Smoke results: `reports/d9/*_smoke_equivalence.json`
++- Tables: `reports/d9/stats.md`, `reports/d9/stats.json`
++- Final index: `reports/d9/README.md`
++- Case assets (no compositing): `reports/figs/d9_case/{302,1813}/`
++
++Waiting time depends on the existing jobs. Do not report an inference ETA
++before the GPU smoke/collection throughput is observed.
+diff --git a/scripts/distill/attention_stats.py b/scripts/distill/attention_stats.py
+new file mode 100644
+index 0000000..6447b50
+--- /dev/null
++++ b/scripts/distill/attention_stats.py
+@@ -0,0 +1,407 @@
++#!/usr/bin/env python3
++"""D9 CPU-only, prespecified attention summaries and uncomposited case assets."""
++from __future__ import annotations
++
++import gzip
++import json
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
++    os.environ[_name] = "1"
++os.environ["CUDA_VISIBLE_DEVICES"] = ""
++
++import numpy as np
++from scipy.stats import spearmanr
++from tap import Tap
++
++REPO = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(REPO))
++MODELS = ("base", "try5", "kd")
++KEY = "llm-grid-r2r-rxr-r1p5-direction5-s2-tagfree"
++
++
++class Args(Tap):
++    dump_root: str = str(REPO / "data/logs/d9_dump")
++    output: str = str(REPO / "reports/d9")
++    cases_output: str = str(REPO / "reports/figs/d9_case")
++    draws: int = 2000
++
++
++def word_attention(row, field, index):
++    """Sum pieces before normalising; retain special-token mass separately."""
++    attn = row[field][index].astype(np.float64)
++    mapping = row["word_index"]
++    words = np.zeros((len(attn), len(row["words"])), dtype=np.float64)
++    for piece, word in enumerate(mapping):
++        if word >= 0:
++            words[:, int(word)] += attn[:, piece]
++    total = words.sum(1, keepdims=True)
++    words = np.divide(words, total, out=np.full_like(words, np.nan), where=total > 0)
++    # The declared main statistic averages heads first, then renormalises words.
++    mean = np.zeros(words.shape[1], dtype=np.float64)
++    for piece, word in enumerate(mapping):
++        if word >= 0:
++            mean[int(word)] += attn[:, piece].mean()
++    mean = mean / mean.sum() if mean.sum() else np.full_like(mean, np.nan)
++    special_field = "txt_special" if field == "txt_attn" else "stop_txt_special"
++    specials = row[special_field][index].astype(np.float64)
++    return mean, words, specials
++
++
++def text_values(row, field, index):
++    mean, heads, specials = word_attention(row, field, index)
++    positions = np.arange(len(mean), dtype=np.float64) / max(1, len(mean))
++
++    def metrics(weights):
++        if not np.isfinite(weights).all():
++            return [np.nan, np.nan, np.nan]
++        positive = weights > 0
++        return [np.sum(weights * positions), -np.sum(weights[positive] * np.log(weights[positive])),
++                np.sort(weights)[-3:].sum()]
++
++    values = metrics(mean)
++    spread = np.std([metrics(head) for head in heads], axis=0)
++    output = dict(zip(("position", "entropy", "top3"), values))
++    output.update({name + "_head_std": value for name, value in zip(("position", "entropy", "top3"), spread)})
++    output.update(dict(zip(("cls", "sep", "padding"), specials.mean(0))))
++    output["special"] = specials.mean(0).sum()
++    output["flag"] = float(output["special"] > .8)
++    return output
++
++
++def point_distance(points, path):
++    """Horizontal distance to a polyline, without treating it as isolated nodes."""
++    path = np.asarray(path, dtype=np.float64)[:, [0, 2]]
++    distance = np.full(len(points), np.inf)
++    if len(path) == 1:
++        return np.linalg.norm(points-path[0], axis=1)
++    for a, b in zip(path[:-1], path[1:]):
++        delta = b-a
++        t = (points-a) @ delta / (delta @ delta) if delta @ delta else np.zeros(len(points))
++        nearest = a + np.clip(t, 0, 1)[:, None] * delta
++        distance = np.minimum(distance, np.linalg.norm(points-nearest, axis=1))
++    return distance
++
++
++def geometry(episode, row):
++    origin = np.asarray(row["map_origin_xz"], dtype=np.float64)
++    cell = (np.indices((100, 100)).transpose(1, 2, 0).reshape(-1, 2) + .5) * .5 + origin
++    centers = (np.indices((10, 10)).transpose(1, 2, 0).reshape(-1, 2) + .5) * 5 + origin
++    return cell, centers, point_distance(cell, episode["reference_path"]) <= 1.5
++
++
++def map_values(row, index, geom, field):
++    cell, centers, route = geom
++    position = row["pos"][index][[0, 2]]
++    agent = np.linalg.norm(cell-position, axis=1) <= 1.5
++    chosen = str(row["policy_argmax_id"][index])
++    ids = json.loads(str(row["candidate_ids"][index]))
++    coords = json.loads(str(row["candidate_positions"][index]))
++    candidate = None if chosen == "-1" else np.asarray(coords[ids.index(chosen)])[[0, 2]]
++    disc = np.zeros(len(cell), dtype=bool) if candidate is None else np.linalg.norm(cell-candidate, axis=1) <= 1.5
++
++    def coverage(mask):
++        return mask.reshape(10, 10, 10, 10).mean((1, 3)).reshape(100)
++
++    probabilities = row[field][index].astype(np.float64)
++    weights = {"agent": coverage(agent), "candidate": coverage(disc), "route": coverage(route),
++               "other": coverage(~(agent | disc | route)),
++               "patch_distance": np.linalg.norm(centers-position, axis=1)}
++    output = {}
++    for name, weight in weights.items():
++        values = probabilities[:, :100] @ weight
++        if name == "patch_distance":
++            mass = probabilities[:, :100].sum(1)
++            values = np.divide(values, mass, out=np.full_like(values, np.nan), where=mass > 0)
++            total = probabilities[:, :100].mean(0)
++            output[name] = float(total @ weight / total.sum()) if total.sum() else np.nan
++        else:
++            output[name] = float(values.mean())
++        output[name + "_head_std"] = float(values.std())
++    if candidate is None:
++        output["candidate"] = output["candidate_head_std"] = np.nan
++    output["metadata"] = float(probabilities[:, 100].mean())
++    output["metadata_head_std"] = float(probabilities[:, 100].std())
++    return output
++
++
++def load_rows(directory):
++    rows = {}
++    for path in sorted(directory.glob("*.npz")):
++        with np.load(path, allow_pickle=False) as data:
++            row = {key: data[key].copy() for key in data.files}
++        eid = str(row["episode_id"].item())
++        if eid in rows:
++            raise ValueError(f"Duplicate episode: {directory}/{eid}")
++        rows[eid] = row
++    if not rows:
++        raise ValueError(f"No dumps: {directory}")
++    return rows
++
++
++def geodesic_labels(episodes, shared):
++    """Exactly D8's geodesic definition, CPU PathFinder only (no Simulator)."""
++    import habitat_sim
++
++    finders, output = {}, {}
++    for eid, row in shared.items():
++        episode = episodes[eid]
++        scene = Path(episode["scene_id"]).stem
++        if scene not in finders:
++            finder = habitat_sim.PathFinder()
++            navmesh = REPO / "data/scene_datasets/mp3d" / scene / f"{scene}.navmesh"
++            if not finder.load_nav_mesh(str(navmesh)):
++                raise ValueError(f"Cannot load {navmesh}")
++            finders[scene] = finder
++        finder = finders[scene]
++
++        def distance(position):
++            query = habitat_sim.MultiGoalShortestPath()
++            query.requested_start = np.asarray(position, dtype=np.float32)
++            query.requested_ends = np.asarray([goal["position"] for goal in episode["goals"]], dtype=np.float32)
++            finder.find_path(query)
++            return float(query.geodesic_distance)
++
++        start = distance(episode["start_position"])
++        if not np.isfinite(start) or start <= 0:
++            raise ValueError(f"Invalid start geodesic: {eid}/{start}")
++        for index, step in enumerate(row["step"]):
++            dist = distance(row["pos"][index])
++            if not np.isfinite(dist):
++                raise ValueError(f"Nonfinite S geodesic: {eid}/{step}")
++            p = 1-dist/start
++            output[eid, int(step)] = (p, dist, min(4, int(max(0, p)*5)))
++    return output
++
++
++def frame_data(rows, episodes, labels, has_map):
++    chunks = []
++    for eid in sorted(rows, key=int):
++        row = rows[eid]
++        geom = geometry(episodes[eid], row) if has_map else None
++        for index, step in enumerate(row["step"]):
++            proximity, distance, label = labels[eid, int(step)]
++            frame = {"eid": eid, "step": int(step), "scene": str(row["scene_id"].item()),
++                     "proximity": proximity, "distance": distance, "bin": label,
++                     "stop_prob": float(row["stop_prob"][index])}
++            frame.update(text_values(row, "txt_attn", index))
++            frame.update({"stop_"+k: v for k, v in text_values(row, "stop_txt", index).items()})
++            if has_map:
++                frame.update({"map_"+k: v for k, v in map_values(row, index, geom, "map_attn").items()})
++                frame.update({"stop_map_"+k: v for k, v in map_values(row, index, geom, "stop_map").items()})
++            chunks.append(frame)
++    return {key: np.asarray([frame[key] for frame in chunks]) for key in chunks[0]}
++
++
++def scene_ci(values, scenes, draws):
++    """Frame-weighted means; resample whole scenes including their frame counts."""
++    keep = np.isfinite(values)
++    values, scenes = values[keep], scenes[keep]
++    groups = [values[scenes == scene] for scene in np.unique(scenes)]
++    if not groups:
++        return {"n": 0, "value": None, "ci": None}
++    sums = np.array([x.sum() for x in groups])
++    sizes = np.array([len(x) for x in groups])
++    sample = np.random.default_rng(0).integers(0, len(groups), (draws, len(groups)))
++    boot = sums[sample].sum(1) / sizes[sample].sum(1)
++    return {"n": int(len(values)), "value": float(values.mean()), "ci": np.quantile(boot, [.025, .975]).tolist()}
++
++
++def scene_trends(data, mask):
++    output = {}
++    for scene in np.unique(data["scene"]):
++        keep = mask & (data["scene"] == scene) & np.isfinite(data["position"])
++        x, y = data["proximity"][keep], data["position"][keep]
++        valid = len(x) > 1 and np.ptp(x) > 0 and np.ptp(y) > 0
++        output[str(scene)] = {"n": int(len(x)), "rho": float(spearmanr(x, y).correlation) if valid else None,
++                              "slope": float(np.polyfit(x, y, 1)[0]) if valid else None,
++                              "special": float(data["special"][keep].mean()) if len(x) else None}
++    return output
++
++
++def trend_difference(left, right, key, draws):
++    scenes = [scene for scene in left if left[scene][key] is not None and right[scene][key] is not None]
++    return scene_ci(np.array([left[s][key]-right[s][key] for s in scenes]), np.asarray(scenes), draws)
++
++
++def group_difference(data, metric, high, low, draws):
++    high, low = high & np.isfinite(data[metric]), low & np.isfinite(data[metric])
++    scenes = np.unique(data["scene"])
++    hs = np.array([data[metric][high & (data["scene"] == s)].sum() for s in scenes])
++    ls = np.array([data[metric][low & (data["scene"] == s)].sum() for s in scenes])
++    hn = np.array([(high & (data["scene"] == s)).sum() for s in scenes])
++    ln = np.array([(low & (data["scene"] == s)).sum() for s in scenes])
++    sizes = {str(s): {"high": int(a), "low": int(b)} for s, a, b in zip(scenes, hn, ln)}
++    if not hn.sum() or not ln.sum():
++        return {"high_n": int(hn.sum()), "low_n": int(ln.sum()), "value": None, "ci": None, "per_scene": sizes}
++    sample = np.random.default_rng(0).integers(0, len(scenes), (draws, len(scenes)))
++    valid = (hn[sample].sum(1) > 0) & (ln[sample].sum(1) > 0)
++    sample = sample[valid]
++    boot = hs[sample].sum(1)/hn[sample].sum(1)-ls[sample].sum(1)/ln[sample].sum(1)
++    return {"high_n": int(hn.sum()), "low_n": int(ln.sum()), "value": float(hs.sum()/hn.sum()-ls.sum()/ln.sum()),
++            "ci": np.quantile(boot, [.025, .975]).tolist() if len(boot) else None,
++            "valid_bootstrap_draws": int(len(boot)), "per_scene": sizes,
++            "high_special": float(data["stop_special"][high].mean()),
++            "low_special": float(data["stop_special"][low].mean())}
++
++
++def aggregate(data, draws):
++    result = {"text": {}, "A1": {}, "paired_text": {}, "paired_A1": {}, "A3": {}, "paired_A3": {}, "A4": {}}
++    text_metrics = ("position", "entropy", "top3", "special", "cls", "sep", "padding", "flag",
++                    "position_head_std", "entropy_head_std", "top3_head_std")
++    for model, row in data.items():
++        result["text"][model] = {}
++        for name, mask in (("unflagged", row["flag"] == 0), ("flagged", row["flag"] == 1),
++                           ("all", np.ones(len(row["step"]), dtype=bool))):
++            result["text"][model][name] = {metric: scene_ci(row[metric][mask], row["scene"][mask], draws) for metric in text_metrics}
++        result["A1"][model] = scene_trends(row, row["flag"] == 0)
++        high = (row["distance"] > 3) & (row["stop_prob"] > .5)
++        low = (row["distance"] > 3) & (row["stop_prob"] < .1)
++        result["A4"][model] = {}
++        for metric in ["stop_position", "stop_entropy", "stop_top3", "stop_special", "stop_flag"] + [k for k in row if k.startswith("stop_map_") and not k.endswith("head_std")]:
++            if metric in ("stop_position", "stop_entropy", "stop_top3"):
++                for flag in (0, 1):
++                    mask = row["stop_flag"] == flag
++                    result["A4"][model][metric+f"_flag{flag}"] = group_difference(row, metric, high & mask, low & mask, draws)
++            elif metric != "stop_map_candidate":
++                result["A4"][model][metric] = group_difference(row, metric, high, low, draws)
++        if model != "base":
++            result["A3"][model] = {}
++            for label in ("all", 0, 1, 2, 3, 4):
++                mask = np.ones(len(row["step"]), dtype=bool) if label == "all" else row["bin"] == label
++                result["A3"][model][str(label)] = {key: scene_ci(row[key][mask], row["scene"][mask], draws) for key in row if key.startswith("map_")}
++                result["A3"][model][str(label)]["text_special"] = scene_ci(row["special"][mask], row["scene"][mask], draws)
++    for left, right in (("kd", "base"), ("try5", "base"), ("kd", "try5")):
++        a, b = data[left], data[right]
++        common = (a["flag"] == 0) & (b["flag"] == 0)
++        key = f"{left}-{right}"
++        result["paired_text"][key] = {}
++        for metric in text_metrics:
++            mask = np.ones(len(common), dtype=bool) if metric in ("special", "cls", "sep", "padding", "flag") else common
++            result["paired_text"][key][metric] = scene_ci((a[metric]-b[metric])[mask], a["scene"][mask], draws)
++        ta, tb = scene_trends(a, common), scene_trends(b, common)
++        result["paired_A1"][key] = {"common_frames": int(common.sum()), "left_scenes": ta, "right_scenes": tb,
++                                             "special": scene_ci((a["special"]-b["special"])[common], a["scene"][common], draws),
++                                             **{metric: trend_difference(ta, tb, metric, draws) for metric in ("rho", "slope")}}
++    a, b = data["kd"], data["try5"]
++    for label in ("all", 0, 1, 2, 3, 4):
++        mask = np.ones(len(a["step"]), dtype=bool) if label == "all" else a["bin"] == label
++        result["paired_A3"][str(label)] = {key: scene_ci((a[key]-b[key])[mask], a["scene"][mask], draws) for key in a if key.startswith("map_")}
++        result["paired_A3"][str(label)]["text_special"] = scene_ci((a["special"]-b["special"])[mask], a["scene"][mask], draws)
++    return result
++
++
++def export_cases(root, episodes, destination):
++    import matplotlib
++    matplotlib.use("Agg")
++    import matplotlib.pyplot as plt
++
++    assets, missing = [], []
++
++    def serializable(value):
++        if isinstance(value, dict):
++            return {key: serializable(item) for key, item in value.items()}
++        if isinstance(value, list):
++            return [serializable(item) for item in value]
++        if isinstance(value, float) and not np.isfinite(value):
++            return None
++        return value
++    for eid, wanted in (("302", (0, 3, 4)), ("1813", (0, 7, 8))):
++        output = destination / eid
++        output.mkdir(parents=True, exist_ok=True)
++        aligned = {}
++        episode = episodes[eid]
++        scene = Path(episode["scene_id"]).stem
++        cache = REPO / "data/llm_navigation" / KEY / "r2r/val_unseen/cognitive_maps/raster" / scene / f"R2R_val_unseen_{eid}.npz"
++        with np.load(cache) as item:
++            grid = item["grid"].copy()
++        manifest = REPO / "reports/figs/d7_case2" / eid / "manifest.json"
++        crop = json.loads(manifest.read_text()).get("topdown_crop") if manifest.exists() else None
++        for model in MODELS:
++            with np.load(root / model / "O" / f"{eid}.npz", allow_pickle=False) as item:
++                row = {key: item[key].copy() for key in item.files}
++            for step in dict.fromkeys((*wanted, int(row["step"][-1]))):
++                indices = np.flatnonzero(row["step"] == step)
++                if not len(indices):
++                    missing.append({"episode_id": eid, "model": model, "requested_step": step,
++                                    "last_recorded_step": int(row["step"][-1]), "reason": "step absent from recorded own rollout"})
++                    continue
++                index = int(indices[0])
++                text = {"words": row["words"].tolist(), "step": step, "model": model,
++                        "policy_argmax_id": str(row["policy_argmax_id"][index]), "executed_id": str(row["executed_id"][index])}
++                for field in ("txt_attn", "stop_txt"):
++                    mean, heads, specials = word_attention(row, field, index)
++                    text[field] = {"mean": mean.tolist(), "per_head": heads.tolist(), "special_per_head": specials.tolist()}
++                text_path = output / f"attn_txt_{model}_step{step}.json"
++                text = serializable(text)
++                text_path.write_text(json.dumps(text, indent=2, allow_nan=False)+"\n")
++                assets.append(str(text_path))
++                aligned.setdefault(step, {})[model] = text
++                if model == "base":
++                    continue
++                prefix = output / f"attn_map_{model}_step{step}"
++                np.savez_compressed(str(prefix)+".npz", selected=row["map_attn"][index, :, :100].mean(0).reshape(10, 10),
++                                    stop=row["stop_map"][index, :, :100].mean(0).reshape(10, 10),
++                                    selected_per_head=row["map_attn"][index], stop_per_head=row["stop_map"][index],
++                                    origin_xz=row["map_origin_xz"], meters_per_cell=.5, patch_size_cells=10,
++                                    registration="assumed registration", agent_pos=row["pos"][index], heading=row["heading"][index],
++                                    policy_argmax_id=row["policy_argmax_id"][index], executed_id=row["executed_id"][index],
++                                    metadata_mass=row["map_attn"][index, :, 100].mean(), stop_metadata_mass=row["stop_map"][index, :, 100].mean(),
++                                    candidate_ids=row["candidate_ids"][index], candidate_positions=row["candidate_positions"][index],
++                                    gt_path=np.asarray(episode["reference_path"]), topdown_crop_json=json.dumps(crop))
++                fig, ax = plt.subplots(figsize=(4, 4))
++                ax.imshow(grid[17] > 0, cmap="gray", origin="upper", interpolation="nearest", extent=(-.5, 9.5, 9.5, -.5))
++                ax.imshow(row["map_attn"][index, :, :100].mean(0).reshape(10, 10), cmap="magma", alpha=.75, interpolation="nearest", origin="upper")
++                ax.set_axis_off()
++                fig.savefig(str(prefix)+"_raw.png", dpi=150, bbox_inches="tight", pad_inches=0)
++                plt.close(fig)
++                assets += [str(prefix)+".npz", str(prefix)+"_raw.png"]
++        for step, models in aligned.items():
++            target = output / f"attn_txt_aligned_step{step}.json"
++            target.write_text(json.dumps({"episode_id": eid, "models": models}, indent=2, allow_nan=False)+"\n")
++            assets.append(str(target))
++    return assets, missing
++
++
++def main():
++    args = Args(underscores_to_dashes=True).parse_args()
++    output = Path(args.output)
++    output.mkdir(parents=True, exist_ok=True)
++    with gzip.open(REPO / "data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz", "rt") as stream:
++        episodes = {str(e["episode_id"]): e for e in json.load(stream)["episodes"]}
++    root = Path(args.dump_root)
++    dumps = {model: load_rows(root / model / "S") for model in MODELS}
++    if not set(dumps["base"]) == set(dumps["try5"]) == set(dumps["kd"]):
++        raise ValueError("S episode sets differ")
++    for eid, row in dumps["base"].items():
++        for model in ("try5", "kd"):
++            for key in ("step", "pos", "candidate_ids", "candidate_positions"):
++                if not np.array_equal(row[key], dumps[model][eid][key]):
++                    raise ValueError(f"S alignment differs: {eid}/{model}/{key}")
++    labels = geodesic_labels(episodes, dumps["base"])
++    data = {model: frame_data(rows, episodes, labels, model != "base") for model, rows in dumps.items()}
++    result = {"definitions": {"dump_root": str(root.resolve()), "draws": args.draws, "seed": 0, "cpu_workers": 1,
++                               "script_commit": subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip(),
++                               "heads": {model: {"graph_query_text": int(next(iter(rows.values()))["txt_attn"].shape[1]),
++                                                 "graph_map_attention": int(next(iter(rows.values()))["map_attn"].shape[1]) if model != "base" else None}
++                                         for model, rows in dumps.items()},
++                               "A4": "unpaired high-minus-low scene-cluster bootstrap; candidate contrast omitted (high argmax STOP)",
++                               "registration": "assumed registration; upstream map attention before graph-text interaction",
++                               "patch_distance": "mean distance conditional on spatial-token mass (metadata excluded)",
++                               "special_flag": ">0.8; paired words use neither-flagged common frames", "undefined": "NA, never zero"},
++              "statistics": aggregate(data, args.draws)}
++    # Keep raw frame values so every aggregate is reproducible without GPU dumps.
++    for model, row in data.items():
++        np.savez_compressed(output / f"frames_{model}.npz", **row)
++    result["case_assets"], result["missing_case_frames"] = export_cases(root, episodes, Path(args.cases_output))
++    (output / "stats.json").write_text(json.dumps(result, indent=2, allow_nan=False)+"\n")
++    from scripts.eval_d9.attention_report import write_report
++    write_report(result, output)
++    print(f"D9 complete: {output / 'README.md'}", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/eval_d9/attention_dump.py b/scripts/eval_d9/attention_dump.py
+new file mode 100644
+index 0000000..c21439d
+--- /dev/null
++++ b/scripts/eval_d9/attention_dump.py
+@@ -0,0 +1,169 @@
++"""Read-only eval observers for decision-query text and map attention."""
++
++import json
++import math
++from pathlib import Path
++
++import numpy as np
++import torch
++import torch.nn.functional as F
++
++from scripts.eval_d8.feature_dump import DecisionFeatureDump
++
++
++def map_attention_probabilities(module, inputs):
++    """Observe QK probabilities without changing MHA's original forward path."""
++    graph, _, tokens, masks = inputs[:4]
++    if tokens is None:
++        return None
++    attention = module.attention
++    with torch.autocast(device_type=graph.device.type, enabled=False):
++        graph, tokens = graph.float(), tokens.float()
++        width = attention.embed_dim
++        bias = attention.in_proj_bias
++        query = F.linear(graph, attention.in_proj_weight[:width],
++                         None if bias is None else bias[:width])
++        key = F.linear(tokens, attention.in_proj_weight[width:2 * width],
++                       None if bias is None else bias[width:2 * width])
++        batch, nodes, _ = query.shape
++        heads = attention.num_heads
++        head_width = width // heads
++        query = query.view(batch, nodes, heads, head_width).transpose(1, 2)
++        key = key.view(batch, tokens.size(1), heads, head_width).transpose(1, 2)
++        scores = torch.matmul(query / math.sqrt(head_width), key.transpose(-1, -2))
++        if module.coordinate_fusion:
++            # D9 runs disable coordinate fusion; reject a silently wrong observer.
++            raise ValueError("D9 observer requires coordinate_fusion=False")
++        padding = module._map_key_padding_mask(masks)
++        if padding is not None:
++            scores.masked_fill_(padding[:, None, None, :], -float("inf"))
++        return scores.softmax(dim=-1)
++
++
++class AttentionDump(DecisionFeatureDump):
++    """Implements the D8 replay interface, but observes attention, not features."""
++
++    def __init__(self, network, directory, shared, replay_directory, map_config=None):
++        from transformers import XLMRobertaTokenizerFast
++
++        self.directory = Path(directory)
++        self.directory.mkdir(parents=True, exist_ok=True)
++        self.shared = shared
++        self.replay_directory = Path(replay_directory) if replay_directory else None
++        self.records = {}
++        self.references = {}
++        self.text = None
++        self.maps = None
++        self.map_config = map_config
++        tokenizer_path = Path(__file__).resolve().parents[2] / "bert_config/xlm-roberta-base"
++        self.tokenizer = XLMRobertaTokenizerFast.from_pretrained(
++            str(tokenizer_path), local_files_only=True
++        )
++        self.handles = [network.vln_bert.graph_query_text.register_forward_hook(self._text)]
++        fusion = getattr(network.vln_bert, "graph_map_attention", None)
++        if fusion is not None:
++            self.handles.append(fusion.register_forward_pre_hook(self._map))
++
++    def _text(self, module, inputs, output):
++        self.text = output[1].softmax(dim=-1).detach().cpu()
++
++    def _map(self, module, inputs):
++        probabilities = map_attention_probabilities(module, inputs)
++        self.maps = None if probabilities is None else probabilities.detach().cpu()
++
++    def _language(self, token_ids):
++        tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
++        word_index, words = [], []
++        special_ids = {self.tokenizer.cls_token_id, self.tokenizer.sep_token_id,
++                       self.tokenizer.pad_token_id}
++        for token, token_id in zip(tokens, token_ids):
++            if token_id in special_ids:
++                word_index.append(-1)
++            else:
++                if token.startswith("▁") or not words:
++                    words.append(token.lstrip("▁"))
++                else:
++                    words[-1] += token
++                word_index.append(len(words) - 1)
++        return {
++            "token_ids": np.asarray(token_ids), "tokens": np.asarray(tokens),
++            "word_index": np.asarray(word_index), "words": np.asarray(words),
++        }
++
++    def _special(self, attention, token_ids):
++        ids = [self.tokenizer.cls_token_id, self.tokenizer.sep_token_id,
++               self.tokenizer.pad_token_id]
++        return np.stack([attention[:, token_ids == token].sum(axis=-1)
++                         for token in ids], axis=-1)
++
++    def decision(self, episodes, step, positions, rotations, graphs, candidate_ids,
++                 probabilities, actions, no_candidates, max_steps, txt_ids,
++                 cognitive_maps=None):
++        from vlnce_baselines.models.graph_utils import heading_from_quaternion
++
++        probabilities = probabilities.detach().cpu().numpy()
++        token_ids = txt_ids.detach().cpu().numpy()
++        if self.text is None or self.text.size(0) != len(episodes):
++            raise RuntimeError("Missing graph_query_text attention snapshot")
++        for index, episode in enumerate(episodes):
++            eid = str(episode.episode_id)
++            selected = int(probabilities[index].argmax())
++            ids = [node for node in candidate_ids[index]
++                   if node is not None and node.startswith("g")]
++            stopped = int(actions[index]) == 0 or step == max_steps - 1 or bool(no_candidates[index])
++            text = self.text[index, :, selected].numpy()
++            stop_text = self.text[index, :, 0].numpy()
++            row = {
++                "step": int(step), "pos": np.asarray(positions[index]),
++                "heading": float(heading_from_quaternion(rotations[index])),
++                "stop_prob": float(probabilities[index, 0]),
++                "policy_argmax_id": "-1" if selected == 0 else candidate_ids[index][selected],
++                "executed_id": "-1" if stopped else candidate_ids[index][int(actions[index])],
++                "candidate_ids": json.dumps(ids),
++                "candidate_positions": json.dumps([
++                    np.asarray(graphs[index].ghost_aug_pos[node]).tolist() for node in ids
++                ]),
++                "txt_attn": text.astype(np.float16),
++                "stop_txt": stop_text.astype(np.float16),
++                "txt_special": self._special(text, token_ids[index]).astype(np.float16),
++                "stop_txt_special": self._special(stop_text, token_ids[index]).astype(np.float16),
++            }
++            if self.maps is not None:
++                row["map_attn"] = self.maps[index, :, selected].numpy().astype(np.float16)
++                row["stop_map"] = self.maps[index, :, 0].numpy().astype(np.float16)
++            if eid not in self.records:
++                record = {
++                    "scene_id": Path(episode.scene_id).stem,
++                    "episode_id": eid, "source": "S" if self.shared else "O",
++                    **self._language(token_ids[index].tolist()),
++                }
++                if cognitive_maps is not None:
++                    start = cognitive_maps[index]["start_position"].detach().cpu().numpy()
++                    scale = float(self.map_config.start_position_scale)
++                    unit = float(self.map_config.start_position_meters_per_unit)
++                    start = start * scale
++                    record.update(
++                        map_start_position=start,
++                        map_origin_xz=np.asarray(episode.start_position)[[0, 2]] - start * unit,
++                        meters_per_cell=0.5,
++                        registration="assumed registration",
++                    )
++                self.records[eid] = {"metadata": record, "steps": []}
++            self.records[eid]["steps"].append(row)
++        self.text = None
++        self.maps = None
++
++    def finish(self, episode_id):
++        eid = str(episode_id)
++        record = self.records.pop(eid)
++        path = self.directory / f"{eid}.npz"
++        if path.exists():
++            raise FileExistsError(path)
++        steps = record["steps"]
++        arrays = {key: np.asarray([row[key] for row in steps]) for key in steps[0]}
++        np.savez_compressed(path, **arrays, **record["metadata"])
++        self.references.pop(eid, None)
++
++    def close(self):
++        for handle in self.handles:
++            handle.remove()
+diff --git a/scripts/eval_d9/attention_report.py b/scripts/eval_d9/attention_report.py
+new file mode 100644
+index 0000000..1e2fdbe
+--- /dev/null
++++ b/scripts/eval_d9/attention_report.py
+@@ -0,0 +1,80 @@
++"""Render the prespecified D9 tables; no mechanistic inference from attention."""
++
++import json
++
++
++def number(value):
++    return "NA" if value is None else f"{value:.6f}"
++
++
++def estimate(item):
++    ci = item.get("ci")
++    return number(item["value"]), "NA" if ci is None else f"[{number(ci[0])}, {number(ci[1])}]"
++
++
++def table(lines, header, rows):
++    lines += ["| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
++    lines += ["| " + " | ".join(str(x) for x in row) + " |" for row in rows]
++    lines.append("")
++
++
++def write_report(result, directory):
++    stats = result["statistics"]
++    lines = ["# D9 attention statistics", "", "Raw tables precede any reading. All attention is descriptive, not causal.",
++             "Map attention is upstream of graph–text interaction; world overlays use **assumed registration**.", "",
++             "Undefined statistics are NA. Selected-node word statistics use attention averaged across heads before word renormalisation; head spread is retained separately.", "",
++             "## A1–A2: instruction attention", ""]
++    rows = []
++    for model, subsets in stats["text"].items():
++        for subset, metrics in subsets.items():
++            for metric, item in metrics.items():
++                rows.append([model, subset, metric, item["n"], *estimate(item), number(metrics["special"]["value"])])
++    table(lines, ["Model", "Special flag subset", "Metric", "Frames", "Mean", "Scene CI", "Special mass"], rows)
++    rows = []
++    for model, scenes in stats["A1"].items():
++        for scene, values in scenes.items():
++            rows.append([model, scene, values["n"], number(values["rho"]), number(values["slope"]), number(values["special"])])
++    table(lines, ["Model", "Scene", "Unflagged frames", "Spearman rho", "Slope", "Special mass"], rows)
++    rows = []
++    for contrast, metrics in stats["paired_text"].items():
++        for metric, item in metrics.items():
++            rows.append([contrast, metric, item["n"], *estimate(item), *estimate(metrics["special"])])
++    table(lines, ["Paired contrast", "Metric", "Common frames", "Difference", "Scene CI", "Special difference (all frames)", "Special CI"], rows)
++    rows = []
++    for contrast, values in stats["paired_A1"].items():
++        for metric in ("rho", "slope"):
++            item = values[metric]
++            rows.append([contrast, metric, values["common_frames"], item["n"], *estimate(item), *estimate(values["special"])])
++    table(lines, ["Paired contrast", "Trend", "Common frames", "Defined scenes", "Difference", "Scene CI", "Special difference", "Special CI"], rows)
++    lines += ["## A3: upstream map attention", "", "Regions overlap and are reported independently. Other uses the raster-level union before pooling into patches. Candidate mass is NA for STOP; paired candidate contrasts require both models to choose non-STOP.", ""]
++    rows = []
++    for model, bins in stats["A3"].items():
++        for label, metrics in bins.items():
++            for metric, item in metrics.items():
++                rows.append([model, label, metric, item["n"], *estimate(item), number(metrics["text_special"]["value"])])
++    table(lines, ["Model", "Proximity bin", "Metric", "Defined frames", "Mean", "Scene CI", "Text special mass (all bin frames)"], rows)
++    rows = []
++    for label, metrics in stats["paired_A3"].items():
++        for metric, item in metrics.items():
++            rows.append([label, metric, item["n"], *estimate(item), *estimate(metrics["text_special"])])
++    table(lines, ["KD − Try5: bin", "Metric", "Common defined frames", "Difference", "Scene CI", "Special difference (all bin frames)", "Special CI"], rows)
++    lines += ["## A4: high versus low STOP tendency", "", "High stop probability >0.5 minus low <0.1, actual geodesic distance >3m. These are between-group contrasts, not paired-frame contrasts. Candidate-region comparison is omitted because high-tendency argmax is STOP. Other then uses agent ∪ route. Flagged STOP-row word statistics are kept separate.", ""]
++    rows, counts = [], []
++    for model, metrics in stats["A4"].items():
++        for metric, item in metrics.items():
++            rows.append([model, metric, item["high_n"], item["low_n"], *estimate(item), number(item.get("high_special")), number(item.get("low_special"))])
++            for scene, values in item["per_scene"].items():
++                counts.append([model, metric, scene, values["high"], values["low"]])
++    table(lines, ["Model", "STOP-row metric", "High n", "Low n", "High − low", "Scene CI", "High special mass", "Low special mass"], rows)
++    table(lines, ["Model", "STOP-row metric", "Scene", "High n", "Low n"], counts)
++    lines += ["## Reading boundary", "", "A1–A3 are paired contrasts; A4 is a between-group scene-cluster contrast. The tables describe what the decision attends to. They do not establish causal use, reliance, or training-time versus test-time map contributions.", "",
++              "## Provenance", "", "```json", json.dumps(result["definitions"], indent=2), "```", ""]
++    (directory / "stats.md").write_text("\n".join(lines))
++    readme = ["# D9 attention analysis", "", "See [stats.md](stats.md) for all prespecified A1–A4 tables and [stats.json](stats.json) for machine-readable values and scene counts.",
++              "", "Raw per-frame scalar summaries: frames_base.npz, frames_try5.npz, frames_kd.npz. Original attention dumps remain in the provenance directory.",
++              "", "Attention is descriptive, not causal. Map attention is upstream of graph–text interaction. No claim about training-time versus test-time assistance is made.",
++              "", "## Case assets", ""]
++    readme += [f"- `{path}`" for path in result["case_assets"]]
++    readme += ["", "### Requested own-rollout frames not recorded", "", "No absent frame is fabricated or substituted.", "", "```json", json.dumps(result.get("missing_case_frames", []), indent=2), "```", ""]
++    readme += ["", "## Provenance", "", "```json", json.dumps(result["definitions"], indent=2), "```", ""]
++    (directory / "README.md").write_text("\n".join(readme))
+diff --git a/scripts/eval_d9/dump.sh b/scripts/eval_d9/dump.sh
+new file mode 100755
+index 0000000..f2c27f1
+--- /dev/null
++++ b/scripts/eval_d9/dump.sh
+@@ -0,0 +1,26 @@
++#!/usr/bin/env bash
++# D9 eval-only extraction, one foreground inference at a time.
++set -euo pipefail
++ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
++PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
++[[ $# -ge 2 ]] || { echo 'Usage: dump.sh base|try5|kd S|O [config overrides...]' >&2; exit 2; }
++MODEL="$1"; SOURCE="$2"; shift 2
++export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
++D8_ROOT="$ROOT/data/logs/d8_dump"
++case "$SOURCE" in
++    S)
++        SHARED=True; REPLAY="$D8_ROOT/base/S"
++        IDS="$("$PYTHON" -c 'import pathlib,sys; print(repr(sorted(int(p.stem) for p in pathlib.Path(sys.argv[1]).glob("*.npz"))))' "$REPLAY")" ;;
++    O) SHARED=False; REPLAY=''; IDS='[]' ;;
++    *) echo "Unknown source: $SOURCE" >&2; exit 2 ;;
++esac
++if [[ -n "${D9_EPISODES_JSON:-}" ]]; then
++    IDS="$("$PYTHON" -c 'import json,sys; print(repr(json.load(open(sys.argv[1]))))' "$D9_EPISODES_JSON")"
++fi
++case "$MODEL" in base) PORT=29830 ;; try5) PORT=29831 ;; kd) PORT=29832 ;; *) exit 2 ;; esac
++export EXP_NAME="${EXP_NAME:-d9_${MODEL}_${SOURCE}_control_val_unseen}"
++MASTER_PORT="${MASTER_PORT:-$PORT}" GPUS="${GPUS:-4,5,6,7}" \
++    bash "$ROOT/scripts/eval_d7/d7d_eval.sh" "$MODEL" \
++    EVAL.dump_attention "$D9_DUMP_ROOT/$MODEL/$SOURCE" \
++    EVAL.d8_shared_states "$SHARED" EVAL.d8_replay_dir "$REPLAY" \
++    EVAL.EPISODE_ID "$IDS" "$@"
+diff --git a/scripts/eval_d9/run_all.sh b/scripts/eval_d9/run_all.sh
+new file mode 100755
+index 0000000..bef09d5
+--- /dev/null
++++ b/scripts/eval_d9/run_all.sh
+@@ -0,0 +1,93 @@
++#!/usr/bin/env bash
++# Unattended D9: fail immediately on a mismatch; never overlap inference jobs.
++set -euo pipefail
++ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
++PYTHON=/home/xukai/anaconda3/envs/etpr1-py38/bin/python
++export GPUS="${GPUS:-4,5,6,7}"
++export D9_DUMP_ROOT="${D9_DUMP_ROOT:-$ROOT/data/logs/d9_dump}"
++export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
++mkdir -p "$ROOT/reports/d9"
++exec 9>"$ROOT/reports/d9/run.lock"
++flock -n 9 || { echo 'Another D9 pipeline owns run.lock' >&2; exit 1; }
++STAGE=initializing
++write_status() {
++    "$PYTHON" -c 'import datetime,json,os,pathlib,sys
++pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3],gpus=sys.argv[4],pid=os.getppid(),updated_at=datetime.datetime.now().astimezone().isoformat(),exit_code=int(sys.argv[5])),indent=2)+"\n")' \
++        "$ROOT/reports/d9/status.json" "$1" "$STAGE" "$GPUS" "${2:-0}"
++}
++trap 'code=$?; if [[ $code == 0 ]]; then write_status completed "$code"; else write_status failed "$code"; fi; echo "$(date -Is) D9 pipeline exited with status $code"; exit "$code"' EXIT
++write_status running
++
++wait_for_gpus() {
++    while ! nvidia-smi --query-gpu=index,memory.free,utilization.gpu --format=csv,noheader,nounits |
++        "$PYTHON" -c 'import sys
++requested={int(x) for x in sys.argv[1].split(",")}
++rows={int(v[0]): (int(v[1]),int(v[2])) for v in (line.strip().split(",") for line in sys.stdin) if v[0].strip()}
++if requested-rows.keys():
++    raise ValueError("Requested GPU does not exist")
++sys.exit(0 if all(rows[g][0]>=16000 and rows[g][1]<10 for g in requested) else 1)' "$GPUS"; do
++        echo "$(date -Is) Waiting for GPUs $GPUS: each needs >=16000 MiB free and <10% utilization"
++        write_status waiting_for_gpus
++        sleep 60
++    done
++    write_status running
++}
++
++SMOKE_IDS="$ROOT/scripts/eval_d8/smoke_episodes.json"
++for MODEL in base try5 kd; do
++    STAGE="smoke_${MODEL}_O"
++    REPORT="$ROOT/reports/d9/${MODEL}_smoke_equivalence.json"
++    if [[ ! -f "$REPORT" ]]; then
++        for HOOK in off on; do
++            wait_for_gpus
++            EXTRA=()
++            [[ "$HOOK" == on ]] || EXTRA=(EVAL.dump_attention '')
++            D9_EPISODES_JSON="$SMOKE_IDS" \
++            D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/$HOOK" \
++            EXP_NAME="d9_smoke_${MODEL}_${HOOK}" \
++                bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" O "${EXTRA[@]}"
++        done
++    fi
++    "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 4 \
++        --reference-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_off/eval_results" \
++        --candidate-metrics "$ROOT/data/logs/checkpoints/d9_smoke_${MODEL}_on/eval_results" \
++        --output "$REPORT"
++    "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source O \
++        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/O" --episodes-json "$SMOKE_IDS"
++    STAGE="smoke_${MODEL}_S"
++    if [[ ! -f "$ROOT/data/logs/d9_smoke/on/$MODEL/S/.complete.json" ]]; then
++        wait_for_gpus
++        D9_EPISODES_JSON="$SMOKE_IDS" \
++        D9_DUMP_ROOT="$ROOT/data/logs/d9_smoke/on" EXP_NAME="d9_smoke_${MODEL}_S" \
++            bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" S
++    fi
++    "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source S \
++        --directory "$ROOT/data/logs/d9_smoke/on/$MODEL/S" --episodes-json "$SMOKE_IDS" \
++        --reference-dump "$ROOT/data/logs/d8_dump/$MODEL/S"
++done
++
++for SOURCE in S O; do
++    for MODEL in base try5 kd; do
++        STAGE="dump_${MODEL}_${SOURCE}"
++        DIRECTORY="$D9_DUMP_ROOT/$MODEL/$SOURCE"
++        if [[ ! -f "$DIRECTORY/.complete.json" ]]; then
++            wait_for_gpus
++            echo "$(date -Is) Starting D9 $MODEL/$SOURCE on GPUs $GPUS"
++            bash "$ROOT/scripts/eval_d9/dump.sh" "$MODEL" "$SOURCE"
++        fi
++        REFERENCE=()
++        [[ "$SOURCE" != S ]] || REFERENCE=(--reference-dump "$ROOT/data/logs/d8_dump/$MODEL/S")
++        "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode dump --model "$MODEL" --source "$SOURCE" \
++            --directory "$DIRECTORY" "${REFERENCE[@]}"
++        if [[ "$SOURCE" == O ]]; then
++            "$PYTHON" "$ROOT/scripts/eval_d9/verify.py" --mode metrics --expected 1839 \
++                --reference-metrics "$ROOT/data/logs/checkpoints/d8_${MODEL}_O_control_val_unseen/eval_results" \
++                --candidate-metrics "$ROOT/data/logs/checkpoints/d9_${MODEL}_O_control_val_unseen/eval_results" \
++                --output "$ROOT/reports/d9/${MODEL}_own_equivalence.json"
++        fi
++    done
++done
++STAGE=cpu_attention_statistics
++write_status running
++"$PYTHON" "$ROOT/scripts/distill/attention_stats.py" --dump-root "$D9_DUMP_ROOT"
++echo "$(date -Is) D9 completed: $ROOT/reports/d9/README.md"
+diff --git a/scripts/eval_d9/verify.py b/scripts/eval_d9/verify.py
+new file mode 100644
+index 0000000..89019e3
+--- /dev/null
++++ b/scripts/eval_d9/verify.py
+@@ -0,0 +1,124 @@
++"""CPU-only D9 dump validation and exact five-metric equivalence checks."""
++
++import gzip
++import json
++from pathlib import Path
++
++import numpy as np
++from tap import Tap
++
++ROOT = Path('/home/xukai/code/ETP-R1-snapshot/ETP-R1')
++MISSING = {'308', '349', '455', '804', '1318', '1331'}
++METRICS = ('success', 'oracle_success', 'spl', 'steps_taken', 'distance_to_goal')
++
++
++class Args(Tap):
++    mode: str
++    directory: str = ''
++    model: str = ''
++    source: str = ''
++    reference_dump: str = ''
++    episodes_json: str = ''
++    reference_metrics: str = ''
++    candidate_metrics: str = ''
++    output: str = ''
++    expected: int = 1839
++
++
++def read_metrics(directory, expected):
++    rows = {}
++    for path in sorted(Path(directory).glob('stats_ep_*_val_unseen_r*_w*.json')):
++        data = json.loads(path.read_text())
++        if rows.keys() & data.keys():
++            raise ValueError(f'Duplicate episode IDs: {path}')
++        rows.update(data)
++    if len(rows) != expected:
++        raise ValueError(f'{directory}: expected {expected}, found {len(rows)} episodes')
++    return rows
++
++
++def check_metrics(args):
++    reference = read_metrics(args.reference_metrics, args.expected)
++    candidate = read_metrics(args.candidate_metrics, args.expected)
++    if reference.keys() != candidate.keys():
++        raise ValueError('Metric episode sets differ')
++    changes = [dict(episode=eid, field=key, reference=reference[eid][key],
++                    candidate=candidate[eid][key])
++               for eid in reference for key in METRICS
++               if reference[eid][key] != candidate[eid][key]]
++    result = dict(episodes=len(reference), fields=METRICS, changes=changes,
++                  reference=args.reference_metrics, candidate=args.candidate_metrics)
++    Path(args.output).write_text(json.dumps(result, indent=2) + '\n')
++    if changes:
++        raise ValueError(f'{len(changes)} metric mismatches: {args.output}')
++    print(f'PASS exact equivalence: {len(reference)} episodes, five metrics', flush=True)
++
++
++def check_dump(args):
++    directory = Path(args.directory)
++    if args.episodes_json:
++        expected = {str(eid) for eid in json.loads(Path(args.episodes_json).read_text())}
++    else:
++        with gzip.open(ROOT / 'data/datasets/R2R_VLNCE_v1-3_preprocessed_xlmr/val_unseen/val_unseen.json.gz', 'rt') as stream:
++            expected = {str(episode['episode_id']) for episode in json.load(stream)['episodes']}
++        if args.source == 'S' or args.model != 'base':
++            expected -= MISSING
++    paths = sorted(directory.glob('*.npz'))
++    actual = {path.stem for path in paths}
++    if actual != expected:
++        raise ValueError(f'{directory}: missing={sorted(expected-actual)}, extra={sorted(actual-expected)}')
++    frames = 0
++    for path in paths:
++        with np.load(path, allow_pickle=False) as data:
++            count = len(data['step'])
++            if count == 0 or not np.array_equal(data['step'], np.arange(count)):
++                raise ValueError(f'Invalid step sequence: {path}')
++            if str(data['episode_id'].item()) != path.stem or str(data['source'].item()) != args.source:
++                raise ValueError(f'Incorrect episode/source metadata: {path}')
++            for key in ('pos', 'heading', 'stop_prob', 'policy_argmax_id', 'executed_id',
++                        'candidate_ids', 'candidate_positions', 'txt_special', 'stop_txt_special'):
++                if len(data[key]) != count:
++                    raise ValueError(f'{path}: frame count mismatch in {key}')
++            for key in ('txt_attn', 'stop_txt'):
++                values = data[key]
++                if values.shape != (count, 12, len(data['tokens'])) or values.dtype != np.float16:
++                    raise ValueError(f'{path}: invalid {key} shape/dtype {values.shape}/{values.dtype}')
++                if not np.isfinite(values).all() or np.any(values < 0) or not np.allclose(values.sum(axis=-1, dtype=np.float32), 1, atol=0.003):
++                    raise ValueError(f'{path}: invalid attention probabilities in {key}')
++            for key in ('txt_special', 'stop_txt_special'):
++                if data[key].shape != (count, 12, 3) or not np.isfinite(data[key]).all():
++                    raise ValueError(f'{path}: invalid special-token masses in {key}')
++            if args.model == 'base':
++                if 'map_attn' in data:
++                    raise ValueError(f'Baseline unexpectedly has map attention: {path}')
++            else:
++                for key in ('map_attn', 'stop_map'):
++                    values = data[key]
++                    if values.shape != (count, 12, 101) or values.dtype != np.float16 or not np.isfinite(values).all() or np.any(values < 0) or not np.allclose(values.sum(axis=-1, dtype=np.float32), 1, atol=0.003):
++                        raise ValueError(f'{path}: invalid {key}')
++            if args.reference_dump:
++                with np.load(Path(args.reference_dump) / path.name, allow_pickle=False) as reference:
++                    for key in ('step', 'pos', 'candidate_ids', 'candidate_positions'):
++                        if not np.array_equal(data[key], reference[key]):
++                            raise ValueError(f'{path}: D8 shared-state mismatch in {key}')
++                    if not np.array_equal(data['executed_id'], reference['sel_id']):
++                        raise ValueError(f'{path}: D8 executed-action mismatch')
++            frames += count
++    summary = dict(model=args.model, source=args.source, episodes=len(paths), frames=frames,
++                   reference_dump=args.reference_dump)
++    (directory / '.complete.json').write_text(json.dumps(summary, indent=2) + '\n')
++    print(f'PASS {args.model}/{args.source}: {len(paths)} episodes, {frames} frames', flush=True)
++
++
++def main():
++    args = Args(underscores_to_dashes=True).parse_args()
++    if args.mode == 'metrics':
++        check_metrics(args)
++    elif args.mode == 'dump':
++        check_dump(args)
++    else:
++        raise ValueError(f'Unknown mode: {args.mode}')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/submit/d9-dump.sh b/scripts/submit/d9-dump.sh
+new file mode 100755
+index 0000000..3867977
+--- /dev/null
++++ b/scripts/submit/d9-dump.sh
+@@ -0,0 +1,14 @@
++#!/usr/bin/env bash
++#SBATCH --job-name=d9-dump
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --gpus=4
++#SBATCH --cpus-per-task=16
++#SBATCH -p vip_gpu_scze096
++set -euo pipefail
++ROOT=/home/xukai/code/ETP-R1-snapshot/ETP-R1
++if [[ -n "${SLURM_JOB_ID:-}" ]]; then
++    export GPUS="${GPUS:-${CUDA_VISIBLE_DEVICES:?Slurm must expose allocated GPUs}}"
++else
++    export GPUS="${GPUS:-4,5,6,7}"
++fi
++bash "$ROOT/scripts/eval_d9/run_all.sh"
+diff --git a/upload_files/d9_attention_taskbook-v2.md b/upload_files/d9_attention_taskbook-v2.md
+new file mode 100644
+index 0000000..ed5b464
+--- /dev/null
++++ b/upload_files/d9_attention_taskbook-v2.md
+@@ -0,0 +1,204 @@
++# D9 — Where does the action decision look? Attention over instruction and cognitive map
++
++Task book for the CLI. Framework unchanged: baseline (no map) / Try5 (LLM
++cognitive map) / KD FULL (LLM cognitive map + KD), each in its own normal
++inference setting. CLI prepares code and runs CPU analysis; GPU passes are
++submitted by the user.
++
++## 1. Purpose
++
++D8 detected no clear improvement in linearly decodable goal proximity for
++the map models over the baseline (KD − baseline +0.68 pp BA, CI includes 0;
++Try5 provisional, one fold unconverged), so the map's behavioural effect
++(fewer premature stops on long routes, Part A) is not accounted for by that
++readout. D9 looks one step earlier in
++the computation: **what the decision attends to**.
++
++- For every model: at each high-level decision, how is attention
++  distributed over the **instruction tokens**?
++- For the map models: how is attention distributed over the **cognitive
++  map cells**, and how does that relate to the agent's position, the
++  candidates and the route?
++
++Two outputs: (i) qualitative figures for the case episodes (302, 1813 and
++any later ones), showing instruction-word attention for both models and
++map-cell attention for ours at the keyframes; (ii) a small set of
++pre-defined aggregate statistics on the shared S states so that the
++figures are not the only evidence.
++
++## 2. Design rationale
++
++- **Attention of the decision, not of the whole network.** The action
++  head scores each graph node from `fusion_input = cat(gmap_embeds,
++  graph_attentioned_txt_embeds)`; the second half is produced by the
++  `graph_query_text` module (graph nodes attending over the instruction;
++  same module role in all three policies, confirmed). The attention row
++  that matters is the one whose query is the **node the policy itself
++  would pick, `policy_argmax_id`**, plus the STOP row (index 0). On S
++  frames the executed action is the expert's, so `executed_id` is stored
++  separately and is *not* used as the query; D8's `sel_id` is not reused.
++  Map attention in Try5/KD is the `GraphMapCrossAttention` row of the
++  same query node over the 100 map tokens (+1 metadata token). That module
++  sits **before** the graph–text interaction, so its weights are an
++  upstream attention distribution, not a contribution to the final
++  action score; the report says so.
++- **Last cross-attention layer, heads averaged**, reported with the
++  per-head spread so that head averaging is visible as a choice. Earlier
++  layers are not used.
++- **Shared states (S dumps' action sequence) for the statistics**, as in
++  D8, so differences are not caused by different states. Own rollouts (O)
++  for the case figures, since those are the trajectories in the figures.
++- **Statistics fixed in advance.** Attention maps invite story-telling;
++  the three numbers below are chosen because each one answers a concrete
++  question and can be compared across models with the same paired
++  scene-bootstrap machinery as D8.
++- Attention is descriptive, not causal. The report says "attends to", never
++  "uses" or "relies on".
++
++## 3. Protocol
++
++### 3.1 Extraction (eval-only, equivalence-checked)
++
++Locate, and report file:line for each:
++- the cross-attention module that produces `graph_attentioned_txt_embeds`
++  in `ETP_R1_vilmodel_cmt.py` (baseline) and in
++  `etp_prior_gt/vilmodel_cmt.py` (Try5/KD): number of layers, heads, and
++  whether the attention probabilities are available as a tensor inside the
++  forward (if the module only returns the context, add an eval-only
++  attribute `self.last_attn_probs` set after the softmax; nothing else
++  changes);
++- `GraphMapCrossAttention` in the map policies: same information, plus how
++  the 100 map tokens index into the 10×10 spatial grid of the 100×100
++  raster (row-major? origin?) and which token is the metadata token.
++
++Per decision, store (float16, CPU):
++
++    txt_attn   [H, L]      selected-node query row over instruction tokens, last layer
++    stop_txt   [H, L]      STOP (index 0) query row
++    map_attn   [H, 101]    selected-node row over map tokens (map models only)
++    stop_map   [H, 101]
++    tokens     list[str]   instruction tokens as tokenised, with word-piece → word map
++    policy_argmax_id, executed_id, stop_prob, pos, heading, step,
++    candidates (ids, positions)
++    txt_special [H, 3]    mass on [CLS], [SEP], padding before renormalisation
++
++Equivalence smoke as in D8: hook on vs off, 4 episodes, five metrics
++identical.
++
++Flag `EVAL.dump_attention <dir>`, default off. Launcher
++`scripts/submit/d9-dump.sh`: one job, serial over {base, try5, kd} × {S, O},
++skipping complete dirs. S uses the same expert action sequence as D8 so the
++frames align with the D8 dumps (verify episode/step alignment on 4
++episodes). The user submits.
++
++### 3.2 Aggregate statistics (S frames, all three models; CPU)
++
++Heads averaged; word-pieces summed into words. First record the mass on
++[CLS]/[SEP]/padding per frame (reported as its own column in every table,
++with its paired differences), then renormalise the remaining word mass to
++1. A frame whose special-token mass exceeds 0.8 is flagged and counted;
++word-level statistics on such frames are reported separately so that
++"barely reads the text" is not shown as "focuses on a few words". Any
++cross-model paired comparison of word-level statistics uses one common
++frame set — frames flagged by **neither** model — and reports its size;
++the flag itself is compared as a paired per-frame indicator (flag rate
++difference with scene-bootstrap CI). Models are never filtered separately
++and then treated as paired.
++
++**A1 — attended instruction position vs goal proximity.**
++Attended position = Σ_w a_w · (w / W), the attention-weighted mean word
++index normalised to [0, 1]. For each model, fit attended position against
++D8's geodesic proximity label p (same frames): Spearman ρ and the slope of
++a linear fit, per scene, then scene-bootstrap CI on the paired differences
++KD − baseline, Try5 − baseline, KD − Try5. Question: does the decision's
++focus move along the instruction as the agent advances, and does it move
++more consistently with a map?
++
++**A2 — instruction attention concentration.** Entropy of the word
++distribution, and the mass on the top-3 words. Same paired comparisons.
++Question: does the map sharpen or diffuse language attention?
++
++**A3 — map attention geometry (Try5, KD only).** Each spatial token
++covers a 10×10-cell patch of the 100×100 raster (about 5 × 5 m) and has
++already been mixed by the map transformer, so a token is not a point.
++Regions are defined on the raster and a token's membership is the
++**fraction of its patch covered by the region**; the mass assigned to a
++region is Σ_spatial-token attn · coverage. Regions: (a) agent — disc of
++radius 1.5 m around the agent; (b) candidate — disc of radius 1.5 m around
++the `policy_argmax` candidate; (c) route — 1.5 m band around the GT path;
++(d) metadata token mass. These overlap; report (a)–(d) **independently**.
++"Other" = Σ_spatial-token attn · (1 − coverage by the union of (a)–(c)),
++computed over spatial tokens only (the metadata token is not a spatial
++token, so nothing is subtracted). When `policy_argmax` is STOP there is no
++candidate position: (b) is NA for that frame, never filled with the agent
++position or zero; the KD − Try5 comparison of (b) uses only frames where
++**both** models have a non-STOP argmax, and the number of such frames is
++reported. Also the attention-weighted mean patch-centre distance to the
++agent. The raster-to-world transform is the LLM map's own, so any world
++overlay is labelled "assumed registration". Compare KD vs Try5 with paired
++CIs, and split frames by proximity bin (D8 labels).
++
++**A4 — high-STOP-tendency frames.** On S frames where actual geodesic
++distance > 3 m, compare the STOP-row statistics (A1 position, A2 entropy,
++special-token mass, A3 masses) between frames where the model's stop_prob
++> 0.5 and frames where it is < 0.1, per model. The two groups are
++different frames, so this is a **between-group difference with
++scene-cluster bootstrap**, not a paired per-frame comparison; group sizes
++per scene are reported. On S the model does not actually stop (the expert
++drives), so these are frames of high STOP tendency, not premature stops.
++Question: when a model is inclined to stop while still far from the goal,
++what is it attending to?
++
++Paired statistics: 2000 scene-cluster bootstrap draws, seed 0, fixed
++per-frame values. No other statistics unless a sanity check fails and
++names the reason.
++
++### 3.3 Case figures (O frames; assets only, compositing separately)
++
++For each case episode and each keyframe already used in the d7_case2
++figures (302: steps 0/3/4/end; 1813: steps 0/7/8/end), export:
++
++- `attn_txt_<model>_step<k>.json`: words, per-word attention (heads
++  averaged) for the selected-node row and the STOP row, per-head values
++  too;
++- `attn_map_<model>_step<k>.npz` (map models): 10×10 attention grid for
++  the policy_argmax-node row and STOP row, the raster's world transform
++  (labelled "assumed registration"), agent pose, candidate positions, GT
++  path — enough to overlay on the existing `topdown_crop_002.png` via the
++  manifest's crop transform; the overlay is drawn as 10×10 patches, not
++  interpolated;
++- `attn_map_<model>_step<k>_raw.png`: the 10×10 grid rendered as a plain
++  heatmap on the LLM map's own 100×100 raster (occupancy channel as
++  background), no annotations, for a quick sanity look.
++
++Both models' instruction attention at the same keyframe go into one JSON
++so the compositing script can draw them as two aligned bar rows under the
++instruction text.
++
++### 3.4 Reading rule
++
++A1–A4 are reported as paired differences with CIs; a sentence is written
++only for a comparison whose CI excludes 0, and it is phrased as "attends
++to". Map-attention statements are additionally qualified as upstream
++attention (before graph–text interaction). The case figures illustrate; they do not establish anything on their
++own. Nothing in D9 separates training-time from test-time map use, and the
++report does not attempt it.
++
++## 4. CLI tasks, in order
++
++1. Report file:line, layer/head counts for `graph_query_text` (all three)
++   and `GraphMapCrossAttention` (Try5/KD), the token → 10×10 patch
++   mapping with its raster origin convention, and whether probabilities
++   need an eval-only attribute.
++2. Implement the dump (eval-only flag + hooks), the equivalence smoke, the
++   S/O alignment check, and `scripts/submit/d9-dump.sh`. Push as a patch;
++   give the user the apply + sbatch commands.
++3. After the dumps: `scripts/distill/attention_stats.py` → A1–A4 tables in
++   `reports/d9/stats.md`, raw tables first.
++4. Case assets per §3.3 into `reports/figs/d9_case/<episode>/`.
++5. `reports/d9/README.md`: provenance (script commit, dump dirs), A1–A4,
++   reading per §3.4, list of case assets.
++
++Constraints: no training, no model-structure change, no additional
++layers/heads/statistics beyond this book; CPU jobs capped at 4 workers
++with single-thread BLAS; GPU jobs are the user's.
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index a993e6d..6530bff 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -35,6 +35,7 @@ _C.EVAL.SAVE_RESULTS = True
+ _C.EVAL.dump_trajectory = False
+ _C.EVAL.d7d_logging = False
+ _C.EVAL.dump_decision_features = ""
++_C.EVAL.dump_attention = ""
+ _C.EVAL.d8_shared_states = False
+ _C.EVAL.d8_replay_dir = ""
+ _C.EVAL.EVAL_NONLEARNING = False
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index c80ae11..f8d08d5 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1129,7 +1129,14 @@ class RLTrainer(BaseVLNCETrainer):
+         self.policy.eval()
+         self.waypoint_predictor.eval()
+ 
+-        if self.config.EVAL.dump_decision_features:
++        if self.config.EVAL.dump_attention:
++            from scripts.eval_d9.attention_dump import AttentionDump
++
++            network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
++            self._d8_dump = AttentionDump(network, self.config.EVAL.dump_attention,
++                                          self.config.EVAL.d8_shared_states, self.config.EVAL.d8_replay_dir,
++                                          self.config.MODEL.MAP_ENCODER)
++        elif self.config.EVAL.dump_decision_features:
+             from scripts.eval_d8.feature_dump import DecisionFeatureDump
+ 
+             network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
+@@ -1160,7 +1167,7 @@ class RLTrainer(BaseVLNCETrainer):
+         self.envs.close()
+         self._close_decision_dumper()
+ 
+-        if self.config.EVAL.dump_decision_features:
++        if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
+             self._d8_dump.close()
+         self._write_eval_results(writer, checkpoint_index)
+ 
+@@ -2355,7 +2362,11 @@ class RLTrainer(BaseVLNCETrainer):
+                     teacher_actions, no_vp_left,
+                 )
+ 
+-            if mode == "eval" and self.config.EVAL.dump_decision_features:
++            if mode == "eval" and self.config.EVAL.dump_attention:
++                self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
++                                       self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
++                                       cpu_a_t, no_vp_left, self.max_len, all_txt_ids, cognitive_maps)
++            elif mode == "eval" and self.config.EVAL.dump_decision_features:
+                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                                        self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                                        cpu_a_t, no_vp_left, self.max_len)
+@@ -2512,7 +2523,7 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
+-                    if self.config.EVAL.dump_decision_features:
++                    if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
+                         self._d8_dump.finish(ep_id)
+                     if trajectory_recorder is not None:
+                         trajectory_recorder.finish(ep_id, metric, pred_path)
+diff --git a/vlnce_baselines/ss_trainer_ETP_R1.py b/vlnce_baselines/ss_trainer_ETP_R1.py
+index e4bf54c..2ef30d3 100644
+--- a/vlnce_baselines/ss_trainer_ETP_R1.py
++++ b/vlnce_baselines/ss_trainer_ETP_R1.py
+@@ -858,7 +858,13 @@ class RLTrainer(BaseVLNCETrainer):
+         self.policy.eval()
+         self.waypoint_predictor.eval()
+ 
+-        if self.config.EVAL.dump_decision_features:
++        if self.config.EVAL.dump_attention:
++            from scripts.eval_d9.attention_dump import AttentionDump
++
++            network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
++            self._d8_dump = AttentionDump(network, self.config.EVAL.dump_attention,
++                                          self.config.EVAL.d8_shared_states, self.config.EVAL.d8_replay_dir)
++        elif self.config.EVAL.dump_decision_features:
+             from scripts.eval_d8.feature_dump import DecisionFeatureDump
+ 
+             network = self.policy.net.module if self.config.GPU_NUMBERS > 1 else self.policy.net
+@@ -879,7 +885,7 @@ class RLTrainer(BaseVLNCETrainer):
+         self.envs.close()
+         self._close_decision_dumper()
+ 
+-        if self.config.EVAL.dump_decision_features:
++        if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
+             self._d8_dump.close()
+         if self.world_size > 1:
+             distr.barrier()
+@@ -1294,7 +1300,11 @@ class RLTrainer(BaseVLNCETrainer):
+                     teacher_actions, no_vp_left,
+                 )
+ 
+-            if mode == "eval" and self.config.EVAL.dump_decision_features:
++            if mode == "eval" and self.config.EVAL.dump_attention:
++                self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
++                                       self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
++                                       cpu_a_t, no_vp_left, self.max_len, all_txt_ids)
++            elif mode == "eval" and self.config.EVAL.dump_decision_features:
+                 self._d8_dump.decision(self.envs.current_episodes(), stepk, cur_pos, cur_ori,
+                                        self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
+                                        cpu_a_t, no_vp_left, self.max_len)
+@@ -1449,7 +1459,7 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
+-                    if self.config.EVAL.dump_decision_features:
++                    if self.config.EVAL.dump_decision_features or self.config.EVAL.dump_attention:
+                         self._d8_dump.finish(ep_id)
+                     if trajectory_recorder is not None:
+                         trajectory_recorder.finish(ep_id, metric, pred_path)
+-- 
+2.25.1
+

@@ -1,0 +1,115 @@
+diff --git a/vlnce_baselines/config/default.py b/vlnce_baselines/config/default.py
+index a4f9be6..55a458b 100755
+--- a/vlnce_baselines/config/default.py
++++ b/vlnce_baselines/config/default.py
+@@ -32,6 +32,7 @@ _C.EVAL.EPISODE_COUNT = -1
+ _C.EVAL.LANGUAGES = ["en-US", "en-IN"]
+ _C.EVAL.SAMPLE = False
+ _C.EVAL.SAVE_RESULTS = True
++_C.EVAL.dump_trajectory = False
+ _C.EVAL.EVAL_NONLEARNING = False
+ _C.EVAL.NONLEARNING = CN()
+ _C.EVAL.NONLEARNING.AGENT = "RandomAgent"
+diff --git a/vlnce_baselines/ss_trainer_ETP_PriorGT.py b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+index a27ceb8..a6cc58a 100644
+--- a/vlnce_baselines/ss_trainer_ETP_PriorGT.py
++++ b/vlnce_baselines/ss_trainer_ETP_PriorGT.py
+@@ -1853,6 +1853,15 @@ class RLTrainer(BaseVLNCETrainer):
+                     k = curr_eps[i].instruction.instruction_id
+                     self.inst_ids[ep_id] = int(k)
+ 
++        trajectory_recorder = None
++        if mode == "eval" and self.config.EVAL.dump_trajectory:
++            from scripts.eval_d7.case.trajectory_recorder import TrajectoryRecorder
++
++            trajectory_recorder = TrajectoryRecorder(
++                os.path.join(os.path.dirname(self.config.RESULTS_DIR.rstrip("/")), "trajectories"),
++                self.envs.current_episodes(),
++            )
++
+         # encode instructions
+         all_txt_ids = batch["instruction"]
+         all_txt_task_encoding = batch["txt_task_encoding"]
+@@ -2274,6 +2283,13 @@ class RLTrainer(BaseVLNCETrainer):
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
+ 
++            if trajectory_recorder is not None:
++                trajectory_recorder.decision(
++                    self.envs.current_episodes(), stepk, cur_pos, cur_ori,
++                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
++                    cpu_a_t, no_vp_left, self.max_len,
++                )
++
+             # make equiv action
+             env_actions = []
+             use_tryout = (
+@@ -2369,6 +2385,8 @@ class RLTrainer(BaseVLNCETrainer):
+                         if self._gtt_on and mode == "train":
+                             self.gtt_gmaps[i].delete_ghost(ghost_vp)
+ 
++            if trajectory_recorder is not None:
++                trajectory_recorder.executed(self.envs.current_episodes(), env_actions)
+             outputs = self.envs.step(env_actions)
+             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
+ 
+@@ -2410,6 +2428,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
++                    if trajectory_recorder is not None:
++                        trajectory_recorder.finish(ep_id, metric, pred_path)
+                     if self.pbar:
+                         self.pbar.update()
+ 
+diff --git a/vlnce_baselines/ss_trainer_ETP_R1.py b/vlnce_baselines/ss_trainer_ETP_R1.py
+index 967b9b4..6dda9d4 100644
+--- a/vlnce_baselines/ss_trainer_ETP_R1.py
++++ b/vlnce_baselines/ss_trainer_ETP_R1.py
+@@ -1102,6 +1102,15 @@ class RLTrainer(BaseVLNCETrainer):
+                     k = curr_eps[i].instruction.instruction_id
+                     self.inst_ids[ep_id] = int(k)
+ 
++        trajectory_recorder = None
++        if mode == "eval" and self.config.EVAL.dump_trajectory:
++            from scripts.eval_d7.case.trajectory_recorder import TrajectoryRecorder
++
++            trajectory_recorder = TrajectoryRecorder(
++                os.path.join(os.path.dirname(self.config.RESULTS_DIR.rstrip("/")), "trajectories"),
++                self.envs.current_episodes(),
++            )
++
+         # encode instructions
+         all_txt_ids = batch["instruction"]
+         all_txt_task_encoding = batch["txt_task_encoding"]
+@@ -1238,6 +1247,13 @@ class RLTrainer(BaseVLNCETrainer):
+                 raise NotImplementedError
+             cpu_a_t = a_t.cpu().numpy()
+ 
++            if trajectory_recorder is not None:
++                trajectory_recorder.decision(
++                    self.envs.current_episodes(), stepk, cur_pos, cur_ori,
++                    self.gmaps, nav_inputs["gmap_vp_ids"], nav_probs,
++                    cpu_a_t, no_vp_left, self.max_len,
++                )
++
+             # make equiv action
+             env_actions = []
+             use_tryout = (
+@@ -1331,6 +1347,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     if self.config.MODEL.consume_ghost:
+                         gmap.delete_ghost(ghost_vp)
+ 
++            if trajectory_recorder is not None:
++                trajectory_recorder.executed(self.envs.current_episodes(), env_actions)
+             outputs = self.envs.step(env_actions)
+             observations, _, dones, infos = [list(x) for x in zip(*outputs)]
+ 
+@@ -1372,6 +1390,8 @@ class RLTrainer(BaseVLNCETrainer):
+                     if ep_id in self.stat_eps:
+                         print("ERROR!!!!!!!!!! ", ep_id)
+                     self.stat_eps[ep_id] = metric
++                    if trajectory_recorder is not None:
++                        trajectory_recorder.finish(ep_id, metric, pred_path)
+                     if self.pbar:
+                         self.pbar.update()
