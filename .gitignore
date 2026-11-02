@@ -17,6 +17,7 @@ __pycache__/
 *.zip
 # *.bash
 /data
+/data_v2/
 /logs
 /pretrained
 /interact
