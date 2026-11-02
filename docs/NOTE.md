@@ -1,5 +1,7 @@
 # 基于指令的先验认知地图 Instruction-based prior
 
+Cogmap V2 任务书 01：已构建 GT 认知图、V1 兼容栅格与配准监督；val_unseen 1839 条区域实例数与原特征完全一致，栅格 IoU 均值 0.9369、四项元数据全部一致。详情见 [2026-11-02 每日记录](daily/2026-11-02.md)和[接口说明](cogmap_v2/INTERFACES.md)。
+
 最新 D1 探针：LLM Try5 `iter28000` 的五字段跨场景替换在 val_unseen 得到 SR 65.42，高于历史 own 64.33；因 rank/代码时点不同且五字段同换，尚不能归因单个字段。详见 [2026-10-08 每日记录](daily/2026-10-08.md)和[完整报告](../reports/d1_full_probe_result.md)。
 
 ## 结果对比
