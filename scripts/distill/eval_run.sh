@@ -8,9 +8,9 @@
 # (the layout summarize_eval.py and paired_analysis.py read).
 set -euo pipefail
 
-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
-PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
-TORCHRUN="/home/xukai/anaconda3/envs/etpr1-py38/bin/torchrun"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON="${PYTHON:-python}"
+TORCHRUN="${TORCHRUN:-torchrun}"
 # torchrun --standalone binds a fixed rendezvous port on torch 2.1, so concurrent
 # evals collide; pick a free port instead (override with MASTER_PORT).
 free_port() { "${PYTHON}" -c 'import socket; s=socket.socket(); s.bind(("localhost",0)); print(s.getsockname()[1]); s.close()'; }
@@ -31,11 +31,17 @@ NUM_ENVS="${NUM_ENVS:-4}"
 BACK_ALGO="${BACK_ALGO:-control}"
 SPLIT="${SPLIT:-val_unseen}"
 
-RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+OUTPUT_ARGS=()
+if [[ "${RUN_NAME}" == dagger_g1_* || -n "${OUTPUT_ROOT:-}" ]]; then
+    OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/data_v2/runs}"
+    RUN_ROOT="${OUTPUT_ROOT}/checkpoints"
+    OUTPUT_ARGS=(--output-root "${OUTPUT_ROOT}")
+else RUN_ROOT="${REPO_ROOT}/data/logs/checkpoints"; fi
+RUN_DIR="${RUN_ROOT}/${RUN_NAME}"
 CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
 EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}"
 EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}.log"
-RESULT_JSON="${REPO_ROOT}/data/logs/checkpoints/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
+RESULT_JSON="${RUN_ROOT}/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
 [[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
 
 MAP_LOAD_ARGS=()
@@ -59,6 +65,7 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
     --exp_name "${EVAL_NAME}" \
     --run-type eval \
     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" \
+    "${OUTPUT_ARGS[@]}" \
     SIMULATOR_GPU_IDS "${GPU_IDS}" TORCH_GPU_IDS "${GPU_IDS}" GPU_NUMBERS "${GPU_NUMBERS}" \
     TASK_CONFIG.SEED 100 \
     TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True \

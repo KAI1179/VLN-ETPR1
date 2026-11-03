@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 
 import argparse
 import os
@@ -25,6 +26,7 @@ class RunArgs(Tap):
     run_type: str
     exp_config: str
     dry_run: bool = False
+    output_root: Optional[str] = None
     opts: Optional[List[str]] = None
 
     def configure(self) -> None:
@@ -47,6 +49,10 @@ class RunArgs(Tap):
             default=False,
             required=False,
             help="resolve and save the configuration without starting a run",
+        )
+        self.add_argument(
+            "--output-root", default=None, required=False,
+            help="Repository-local V2 output root; defaults preserve existing runs",
         )
         self.add_argument(
             "opts",
@@ -74,6 +80,7 @@ def run_exp(
     exp_config: str,
     run_type: str,
     dry_run: bool = False,
+    output_root: Optional[str] = None,
     opts=None,
 ) -> None:
     r"""Runs experiment given mode and config
@@ -90,6 +97,16 @@ def run_exp(
     config = get_config(exp_config, opts)
     config.defrost()
 
+    if output_root is not None:
+        from pathlib import Path
+        from prior.cogmap_v2.graph import output_path
+
+        output_root = str(output_path(Path(output_root)))
+        config.CHECKPOINT_FOLDER = output_root + "/checkpoints/"
+        config.TENSORBOARD_DIR = output_root + "/tensorboard/"
+        config.RESULTS_DIR = output_root + "/checkpoints/"
+        config.VIDEO_DIR = output_root + "/videos/"
+
     config.TENSORBOARD_DIR += exp_name
     config.CHECKPOINT_FOLDER += exp_name
     if run_type == "dagger" or run_type == "grpo":
@@ -103,14 +120,22 @@ def run_exp(
 
     config.local_rank = local_rank_from_environment()
     config.freeze()
-    os.makedirs("data/logs/running_log", exist_ok=True)
-    os.makedirs("data/logs/checkpoints/" + exp_name, exist_ok=True)
+    running_log_dir = (
+        "data/logs/running_log" if output_root is None
+        else os.path.join(output_root, "running_log")
+    )
+    checkpoint_log_dir = (
+        "data/logs/checkpoints/" + exp_name if output_root is None
+        else config.CHECKPOINT_FOLDER
+    )
+    os.makedirs(running_log_dir, exist_ok=True)
+    os.makedirs(checkpoint_log_dir, exist_ok=True)
     if run_type == "dagger" or run_type == "grpo":
         logger.add_filehandler(
-            "data/logs/checkpoints/" + exp_name + "/" + config.LOG_FILE
+            os.path.join(checkpoint_log_dir, config.LOG_FILE)
         )
     else:
-        logger.add_filehandler("data/logs/running_log/" + config.LOG_FILE)
+        logger.add_filehandler(os.path.join(running_log_dir, config.LOG_FILE))
 
     if dry_run:
         if config.local_rank == 0:

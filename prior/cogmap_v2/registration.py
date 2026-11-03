@@ -54,8 +54,12 @@ class RegistrationLabels:
     node_start_index: np.ndarray
     selected_world_indices: np.ndarray
     selected_level_mask: np.ndarray
+    level_origin: np.ndarray
 
     def __post_init__(self) -> None:
+        self.level_origin = np.asarray(self.level_origin, dtype=np.float64)
+        if self.level_origin.shape != (2,) or not np.isfinite(self.level_origin).all():
+            raise ValueError("level_origin must contain two finite coordinates")
         self.path_node_id = np.asarray(self.path_node_id, dtype=np.int64)
         self.anchor_xz = np.asarray(self.anchor_xz, dtype=np.float64)
         self.progress = np.asarray(self.progress, dtype=np.float64)
@@ -180,7 +184,7 @@ class RegistrationLabels:
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             path,
-            schema_version=np.asarray(1, dtype=np.int64),
+            schema_version=np.asarray(2, dtype=np.int64),
             path_node_id=self.path_node_id,
             anchor_xz=self.anchor_xz,
             progress=self.progress,
@@ -190,14 +194,17 @@ class RegistrationLabels:
             node_start_index=self.node_start_index,
             selected_world_indices=self.selected_world_indices,
             selected_level_mask=self.selected_level_mask,
+            level_origin=self.level_origin,
         )
 
     @classmethod
     def load(cls, path: str | Path) -> RegistrationLabels:
         """Load labels and the geometry for online lookup without the graph JSON."""
         with np.load(path, allow_pickle=False) as data:
-            if int(data["schema_version"]) != 1:
-                raise ValueError("unsupported registration schema version")
+            if int(data["schema_version"]) != 2:
+                raise ValueError(
+                    "Registration schema 2 with level_origin is required; regenerate labels"
+                )
             return cls(**{
                 name: data[name]
                 for name in (
@@ -210,6 +217,7 @@ class RegistrationLabels:
                     "node_start_index",
                     "selected_world_indices",
                     "selected_level_mask",
+                    "level_origin",
                 )
             })
 
@@ -226,12 +234,14 @@ def build_registration(graph: CognitiveGraph) -> RegistrationLabels:
     route = [nodes[node_id] for node_id in graph.route]
     if not route:
         raise ValueError("graph.route must not be empty")
-    route_xz = np.asarray(graph.gt.path_level_xz, dtype=np.float64)
-    world = np.asarray(graph.gt.trajectory_world, dtype=np.float64)
-    selected = np.asarray(graph.gt.path_world_indices, dtype=np.int64)
-    path_xz = world[:, (0, 2)] - np.asarray(graph.gt.level_origin, dtype=np.float64)
-    node_starts = np.asarray([node.gt.path_index_range[0] for node in route])
-    ends = [node.gt.path_index_range[1] for node in route]
+    route_xz = np.asarray(graph.require_gt().path_level_xz, dtype=np.float64)
+    world = np.asarray(graph.require_gt().trajectory_world, dtype=np.float64)
+    selected = np.asarray(graph.require_gt().path_world_indices, dtype=np.int64)
+    path_xz = world[:, (0, 2)] - np.asarray(
+        graph.require_gt().level_origin, dtype=np.float64
+    )
+    node_starts = np.asarray([node.require_gt().path_index_range[0] for node in route])
+    ends = [node.require_gt().path_index_range[1] for node in route]
     if ends != [int(start) - 1 for start in node_starts[1:]] + [len(route_xz) - 1]:
         raise ValueError("route node ranges must partition selected-level points")
     orders = np.searchsorted(node_starts, np.arange(len(route_xz)), side="right") - 1
@@ -242,7 +252,7 @@ def build_registration(graph: CognitiveGraph) -> RegistrationLabels:
     # off-level points after all shape and geometry checks have passed.
     labels = RegistrationLabels(
         path_node_id=np.full(len(world), route_ids[0], dtype=np.int64),
-        anchor_xz=np.asarray([node.gt.center_level_xz for node in route]),
+        anchor_xz=np.asarray([node.require_gt().center_level_xz for node in route]),
         progress=np.zeros(len(world), dtype=np.float64),
         path_xz=path_xz,
         route_xz=route_xz,
@@ -250,6 +260,7 @@ def build_registration(graph: CognitiveGraph) -> RegistrationLabels:
         node_start_index=node_starts,
         selected_world_indices=selected,
         selected_level_mask=selected_mask,
+        level_origin=np.asarray(graph.require_gt().level_origin, dtype=np.float64),
     )
     labels.path_node_id[selected] = route_ids[orders]
     labels.progress[selected] = orders / len(route)
@@ -261,6 +272,59 @@ def build_registration(graph: CognitiveGraph) -> RegistrationLabels:
         labels.path_node_id[index] = match.node_id
         labels.progress[index] = match.progress
     return labels
+
+
+@dataclass(frozen=True)
+class TopologicalNodeLabels:
+    route_index: np.ndarray
+    progress: np.ndarray
+    overflow: bool
+
+
+def label_topological_nodes(
+    labels: RegistrationLabels,
+    node_ids: Sequence[Optional[str]],
+    world_positions: np.ndarray,
+    predecessors: dict[str, Optional[str]],
+    path_index_hints: dict[str, float],
+    *,
+    n_max: int = 16,
+    max_distance_m: float = 2.0,
+) -> TopologicalNodeLabels:
+    """Label rollout nodes without ever exposing oracle positions to the head.
+
+    ``path_index_hints`` is episode-local state updated for valid nodes. The
+    predecessor's previous label resolves repeated-route projection ties. A
+    STOP entry is represented by ``None``; nonfinite positions are padding.
+    Entire episodes above capacity are ignored rather than truncating labels.
+    """
+    positions = np.asarray(world_positions, dtype=np.float64)
+    if positions.shape != (len(node_ids), 3):
+        raise ValueError("world_positions must match node_ids and have shape (G,3)")
+    if n_max < 1 or max_distance_m < 0:
+        raise ValueError("Registration capacity and distance threshold are invalid")
+    targets = np.full(len(node_ids), -1, dtype=np.int64)
+    progress = np.zeros(len(node_ids), dtype=np.float32)
+    if len(labels.route_node_id) > n_max:
+        return TopologicalNodeLabels(targets, progress, overflow=True)
+    route_order = {
+        int(node_id): order for order, node_id in enumerate(labels.route_node_id)
+    }
+    for index, (node_id, position) in enumerate(zip(node_ids, positions)):
+        if node_id is None or not np.isfinite(position).all():
+            continue
+        predecessor = predecessors.get(node_id)
+        hint = path_index_hints.get(predecessor) if predecessor is not None else None
+        if hint is None:
+            hint = path_index_hints.get(node_id)
+        level_xz = position[[0, 2]] - labels.level_origin
+        match = labels.locate_position(level_xz, path_index_hint=hint)
+        if match.distance_m > max_distance_m:
+            continue
+        targets[index] = route_order[match.node_id]
+        progress[index] = match.progress
+        path_index_hints[node_id] = match.path_index
+    return TopologicalNodeLabels(targets, progress, overflow=False)
 
 
 class RegistrationArgs(Tap):
@@ -288,6 +352,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     n_points = 0
     for path in paths:
         graph = CognitiveGraph.model_validate_json(path.read_text(encoding="utf-8"))
+        if graph.meta.scene is None or graph.meta.episode_id is None:
+            raise ValueError("Registration export requires scene and episode identity")
         labels = build_registration(graph)
         labels.save(
             output_path(

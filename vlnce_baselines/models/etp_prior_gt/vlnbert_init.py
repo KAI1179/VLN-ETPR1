@@ -91,12 +91,24 @@ def get_vlnbert_models(config=None, dropout_rate=0.1):
         getattr(config.MAP_ENCODER, "enabled", False)
         and getattr(config.MAP_ENCODER, "coordinate_fusion", False)
     )
+    reg_cfg = getattr(config, "REGISTRATION", None)
+    registration_enabled = bool(getattr(reg_cfg, "enabled", False))
+    registration_feedback = bool(getattr(reg_cfg, "feedback", False))
+    # Load/initialize the unchanged template first. Missing auxiliary parameters
+    # would otherwise consume RNG in Transformers' post-constructor fast init.
+    vis_config.registration_enabled = False
+    vis_config.registration_feedback = False
+    vis_config.registration_n_max = int(getattr(reg_cfg, "n_max", 16))
 
     visual_model = model_class.from_pretrained(
         pretrained_model_name_or_path=None,
         config=vis_config,
         state_dict=new_ckpt_weights,
     )
+    if registration_enabled or registration_feedback:
+        visual_model.configure_registration(
+            registration_enabled, registration_feedback, vis_config.registration_n_max
+        )
     _verify_fusion_transfer(visual_model, remapped_fusion, model_name_or_path)
     return visual_model
 

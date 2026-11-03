@@ -73,6 +73,10 @@ class PriorGTPolicy(ILPolicy):
     ):
         config.defrost()
         config.MODEL.TORCH_GPU_ID = config.TORCH_GPU_ID
+        # The launcher exposes IL flags; the network receives only model config.
+        config.MODEL.REGISTRATION.enabled = bool(config.IL.reg_enabled)
+        config.MODEL.REGISTRATION.feedback = bool(config.IL.reg_feedback)
+        config.MODEL.REGISTRATION.n_max = int(config.IL.reg_n_max)
         expected_candidate = CognitiveMapCandidate.parse(
             cls.navigation_architecture,
             cls.cognitive_map_source,
@@ -306,6 +310,7 @@ class ETP_PriorGT(Net):
         gmap_map_coords=None,
         map_text_ids=None,
         map_text_masks=None,
+        reg_route_counts=None,
     ):
 
         if mode == "language":
@@ -514,5 +519,6 @@ class ETP_PriorGT(Net):
                 map_tokens=map_tokens,
                 map_token_masks=map_token_masks,
                 gmap_map_coords=gmap_map_coords,
+                reg_route_counts=reg_route_counts,
             )
             return outs

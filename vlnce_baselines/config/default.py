@@ -97,6 +97,12 @@ _C.IL.load_from_ckpt = False
 _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
 # if True, loads the optimizer state, epoch, and step_id from the ckpt dict.
 _C.IL.is_requeue = False
+_C.IL.reg_enabled = False
+_C.IL.reg_feedback = False
+_C.IL.reg_weight = 0.1
+_C.IL.reg_n_max = 16
+_C.IL.reg_label_dir = "data_v2/cogmap_v2/registration"
+_C.IL.reg_max_distance = 2.0
 # Frozen ground-truth map teacher used only by the DAgger distillation path.
 _C.IL.gt_teacher_enabled = False
 _C.IL.distill_weight = 1.0
@@ -273,7 +279,12 @@ _C.MODEL.PROGRESS_MONITOR.use = False
 _C.MODEL.PROGRESS_MONITOR.alpha = 1.0  # loss multiplier
 
 # MAP_ENCODER: embedding grid map module used by PriorGTPolicy and ImaginedPolicy.
+_C.MODEL.REGISTRATION = CN()
+_C.MODEL.REGISTRATION.enabled = False
+_C.MODEL.REGISTRATION.feedback = False
+_C.MODEL.REGISTRATION.n_max = 16
 _C.MODEL.MAP_ENCODER = CN()
+_C.MODEL.MAP_ENCODER.cache_dir = ""  # Optional PriorGT root; empty retains V1 paths.
 _C.MODEL.MAP_ENCODER.enabled = False  # toggle on/off
 _C.MODEL.MAP_ENCODER.freeze_base = (
     False  # freeze base VLN params (map modules remain trainable)

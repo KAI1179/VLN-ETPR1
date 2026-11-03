@@ -14,6 +14,10 @@ from vlnce_baselines.common.ops import (
     pad_tensors_wgrad,
 )
 from vlnce_baselines.models.etp_prior_gt.map_fusion import build_map_token_fusion
+from vlnce_baselines.models.etp_prior_gt.registration_head import (
+    RouteRegistrationHead,
+    append_registration_feedback,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -897,6 +901,13 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         self.init_weights()
         self.graph_map_attention._zero_residual_projection()
 
+        self.registration_head = None
+        self.configure_registration(
+            bool(getattr(config, "registration_enabled", False)),
+            bool(getattr(config, "registration_feedback", False)),
+            int(getattr(config, "registration_n_max", 16)),
+        )
+
         if config.fix_lang_embedding:
             print("FIX LANG EMBEDDING!!!!!!!!!!!!!!!!!!!!!!!!")
             for k, v in self.embeddings.named_parameters():
@@ -911,6 +922,29 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
                 v.requires_grad = False
         else:
             print("PANO EMBEDDING can be trained!!!!!!!!!!!!!!!!!!!!!!!!")
+
+    def configure_registration(self, enabled=False, feedback=False, n_max=16):
+        """Attach auxiliary parameters after pretraining transfer, preserving RNG.
+
+        The production loader deliberately calls this after ``from_pretrained``:
+        Transformers initializes missing weights outside the model constructor,
+        which would escape a constructor-only RNG guard.
+        """
+        if feedback and not enabled:
+            raise ValueError("Registration feedback requires an enabled head")
+        if enabled and self.config.navigation_architecture != "try5":
+            raise ValueError("Route registration is implemented for Try5 only")
+        self.registration_feedback = feedback
+        self.config.registration_enabled = enabled
+        self.config.registration_feedback = feedback
+        self.config.registration_n_max = n_max
+        if enabled:
+            with torch.random.fork_rng(devices=[]):
+                head = RouteRegistrationHead(self.config.hidden_size, n_max, feedback=feedback)
+                head.apply(self._init_weights)
+                self.registration_head = head.train(self.training)
+        else:
+            self.registration_head = None
 
     def forward_txt(self, txt_ids, txt_task_encoding, txt_masks):
         txt_token_type_ids = torch.zeros_like(txt_ids)
@@ -968,6 +1002,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         map_tokens=None,
         map_token_masks=None,
         gmap_map_coords=None,
+        reg_route_counts=None,
     ):
         # global branch
         batch_size = gmap_task_embeddings.size(0)
@@ -997,9 +1032,29 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         fusion_kwargs = (
             {} if gmap_map_coords is None else {"node_coords": gmap_map_coords}
         )
+        pre_fusion_gmap_embeds = gmap_embeds
         gmap_embeds, updated_map_tokens = self.graph_map_attention(
             gmap_embeds, gmap_masks, map_tokens, map_token_masks, **fusion_kwargs
         )
+        registration = None
+        if self.registration_head is not None:
+            registration = self.registration_head(gmap_embeds, gmap_masks, reg_route_counts)
+            if self.registration_feedback:
+                if map_tokens is None:
+                    raise ValueError("Registration feedback requires map tokens")
+                feedback_tokens, feedback_masks = append_registration_feedback(
+                    map_tokens, map_token_masks, registration
+                )
+                # Recompute the action's fusion from the original queries.
+                # The preliminary fused features above only predict the token;
+                # appending after the final attention would otherwise be inert.
+                gmap_embeds, updated_map_tokens = self.graph_map_attention(
+                    pre_fusion_gmap_embeds,
+                    gmap_masks,
+                    feedback_tokens,
+                    feedback_masks,
+                    **fusion_kwargs,
+                )
 
         if self.global_encoder.sprel_linear is not None:
             graph_sprels = (
@@ -1029,6 +1084,8 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         global_logits.masked_fill_(gmap_masks.logical_not(), -float("inf"))
 
         outs = {"gmap_embeds": gmap_embeds, "global_logits": global_logits}
+        if registration is not None:
+            outs["registration"] = registration
         if updated_map_tokens is not None:
             # Inspection-only POC output: trainers must not feed A* into action prediction.
             outs["updated_map_tokens"] = updated_map_tokens

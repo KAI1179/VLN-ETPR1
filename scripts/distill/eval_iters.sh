@@ -17,8 +17,8 @@
 # Per-iteration console output: data/logs/checkpoints/<RUN_NAME>/eval_iter<ITER>_<SPLIT>.log
 set -euo pipefail
 
-REPO_ROOT="/home/xukai/code/ETP-R1-snapshot/ETP-R1"
-PYTHON="/home/xukai/anaconda3/envs/etpr1-py38/bin/python"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON="${PYTHON:-python}"
 EVAL_RUN="${REPO_ROOT}/scripts/distill/eval_run.sh"
 
 if [[ $# -lt 1 ]]; then
@@ -27,10 +27,14 @@ if [[ $# -lt 1 ]]; then
 fi
 RUN_NAME="$1"; shift
 SPLIT="${SPLIT:-val_unseen}"
-RUN_DIR="${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}"
+if [[ "${RUN_NAME}" == dagger_g1_* || -n "${OUTPUT_ROOT:-}" ]]; then
+    export OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/data_v2/runs}"
+    RUN_ROOT="${OUTPUT_ROOT}/checkpoints"
+else RUN_ROOT="${REPO_ROOT}/data/logs/checkpoints"; fi
+RUN_DIR="${RUN_ROOT}/${RUN_NAME}"
 [[ -d "${RUN_DIR}" ]] || { echo "Run directory not found: ${RUN_DIR}" >&2; exit 1; }
 
-result_json() { echo "${REPO_ROOT}/data/logs/checkpoints/${RUN_NAME}_eval_iter$1_${SPLIT}/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
+result_json() { echo "${RUN_ROOT}/${RUN_NAME}_eval_iter$1_${SPLIT}/eval_results/stats_ckpt_$1_${SPLIT}.json"; }
 
 if [[ $# -eq 0 ]]; then
     echo "Checkpoints of ${RUN_NAME} (${SPLIT}):"
@@ -94,7 +98,7 @@ failed=()
 for it in "${ITERS[@]}"; do [[ -f "$(result_json "${it}")" ]] || failed+=("${it}"); done
 
 cd "${REPO_ROOT}"
-"${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" | tee -a "${DRIVER_LOG}"
+"${PYTHON}" scripts/distill/summarize_eval.py --run-name "${RUN_NAME}" --split "${SPLIT}" --root "${RUN_ROOT}" | tee -a "${DRIVER_LOG}"
 echo "Driver log: ${DRIVER_LOG}"
 if [[ ${#failed[@]} -gt 0 ]]; then
     echo "Missing results for iters: ${failed[*]}" >&2

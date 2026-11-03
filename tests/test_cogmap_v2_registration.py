@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -10,7 +12,12 @@ from prior.cogmap_v2.graph import (
     GraphNode,
     NodeGT,
 )
-from prior.cogmap_v2.registration import RegistrationLabels, build_registration, main
+from prior.cogmap_v2.registration import (
+    RegistrationLabels,
+    build_registration,
+    label_topological_nodes,
+    main,
+)
 
 
 def make_graph(points, starts, *, world=None, selected=None):
@@ -76,8 +83,119 @@ def test_round_trip_dense_route_and_pickle_free_artifact(tmp_path):
     loaded = RegistrationLabels.load(destination)
     with np.load(destination, allow_pickle=False) as data:
         assert all(data[name].dtype != object for name in data.files)
+        assert int(data["schema_version"]) == 2
+        np.testing.assert_array_equal(data["level_origin"], [10, 20])
     assert loaded.label_position((4, 3)) == 1
     np.testing.assert_array_equal(loaded.path_node_id, labels.path_node_id)
+
+
+def test_rollout_world_frame_predecessor_hint_stop_and_distance_mask():
+    points = [(0, 0), (1, 1), (2, 0), (2, 1), (1, 1), (0, 2)]
+    labels = build_registration(make_graph(points, [0, 2, 4]))
+    hints = {}
+    result = label_topological_nodes(
+        labels,
+        [None, "predecessor", "child", "far", "padding"],
+        np.asarray([
+            [np.nan] * 3,
+            [12, 0, 21],
+            [11, 0, 21],
+            [100, 0, 100],
+            [np.nan] * 3,
+        ]),
+        {"child": "predecessor"},
+        hints,
+    )
+    assert result.route_index.tolist() == [-1, 1, 2, -1, -1]
+    np.testing.assert_allclose(result.progress, [0, 1 / 3, 2 / 3, 0, 0])
+    assert hints == {"predecessor": 3, "child": 4}
+    assert not result.overflow
+    assert labels.label_position((1, 1)) == 0  # Without history: first visit.
+
+
+def test_rollout_targets_use_route_order_and_ignore_whole_overflow_episode():
+    graph = make_graph([(0, 0), (1, 0), (2, 0)], [0, 2])
+    payload = graph.model_dump()
+    payload["nodes"][0]["id"] = 42
+    payload["nodes"][1]["id"] = 77
+    payload["route"] = [42, 77]
+    labels = build_registration(CognitiveGraph.model_validate(payload))
+    result = label_topological_nodes(
+        labels, ["node"], np.asarray([[12, 0, 20]]), {}, {}
+    )
+    assert result.route_index.tolist() == [1]  # Class order, not graph ID 77.
+    ignored = label_topological_nodes(
+        labels, ["node"], np.asarray([[12, 0, 20]]), {}, {}, n_max=1
+    )
+    assert ignored.overflow and ignored.route_index.tolist() == [-1]
+
+
+def test_legacy_registration_artifact_requires_explicit_origin_migration(tmp_path):
+    path = tmp_path / "old.npz"
+    np.savez_compressed(path, schema_version=np.asarray(1))
+    with pytest.raises(ValueError, match="level_origin"):
+        RegistrationLabels.load(path)
+
+
+def test_actual_dagger_hook_passes_only_route_counts_to_policy():
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import torch
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "vlnce_baselines/ss_trainer_ETP_PriorGT.py"
+    )
+    tree = ast.parse(source.read_text())
+    trainer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "RLTrainer"
+    )
+    method = next(
+        node
+        for node in trainer.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_prepare_registration_inputs"
+    )
+    namespace: dict[str, Any] = {
+        "torch": torch,
+        "label_topological_nodes": label_topological_nodes,
+    }
+    exec(
+        compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"),
+        namespace,
+    )
+    prepare = namespace["_prepare_registration_inputs"]
+    labels = build_registration(make_graph([(0, 0), (1, 0), (2, 0)], [0, 2]))
+    gmap = SimpleNamespace(
+        get_vp_positions=lambda _: np.asarray([[np.nan] * 3, [10, 0, 20], [12, 0, 20]]),
+        front_to_ghost_dist=lambda _: (1.0, "0"),
+    )
+    instance = SimpleNamespace(
+        gmaps=[gmap],
+        config=SimpleNamespace(IL=SimpleNamespace(reg_n_max=16, reg_max_distance=2.0)),
+    )
+    inputs: dict[str, Any] = {
+        "gmap_masks": torch.tensor([[True, True, True, False]]),
+        "gmap_vp_ids": [[None, "0", "g0"]],
+    }
+    original_keys = set(inputs)
+    state = [{"labels": labels, "route_count": 2, "predecessors": {}, "hints": {}}]
+    target, progress = prepare(instance, inputs, state, ["0"], [None], "train")
+    assert target.tolist() == [[-1, 0, 1, -1]]
+    assert progress.tolist() == [[0, 0, 0.5, 0]]
+    assert set(inputs) - original_keys == {"reg_route_counts"}
+    assert inputs["reg_route_counts"].tolist() == [2]
+    # Evaluation gets semantic graph cardinality only: no label object exists.
+    assert (
+        prepare(instance, inputs, [{"route_count": 2}], ["0"], [None], "eval") is None
+    )
+    off_inputs = {"sentinel": object()}
+    assert prepare(instance, off_inputs, None, ["0"], [None], "train") is None
+    assert list(off_inputs) == ["sentinel"]
 
 
 def test_lookup_projects_to_bent_route_instead_of_nearest_anchor():

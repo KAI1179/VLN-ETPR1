@@ -2,6 +2,7 @@ import gc
 import os
 import random
 import re
+from pathlib import Path
 from collections import defaultdict
 from time import perf_counter
 from typing import Dict, List, Tuple
@@ -62,6 +63,8 @@ from vlnce_baselines.models.etp_prior_gt.nan_guard import (
     assert_finite_parameters,
 )
 from vlnce_baselines.models.etp_prior_gt import distill_losses
+from vlnce_baselines.models.etp_prior_gt.registration_head import registration_loss
+from prior.cogmap_v2.registration import RegistrationLabels, label_topological_nodes
 from prior.online_evidence import OnlineEvidence
 from vlnce_baselines.models.refiner import CognitiveMapRefiner
 
@@ -350,7 +353,15 @@ class RLTrainer(BaseVLNCETrainer):
             self.config.TASK_CONFIG.DATASET.SPLIT,
             require_boxes=candidate.requires_box_targets,
             namespace=map_cfg.cache_namespace,
+            cache_dir=self._prior_gt_cache_dir(),
         )
+
+    def _prior_gt_cache_dir(self):
+        configured = getattr(self.config.MODEL.MAP_ENCODER, "cache_dir", "")
+        if not configured:
+            return None
+        path = Path(configured)
+        return path if path.is_absolute() else Path(__file__).resolve().parents[1] / path
 
     def _initialize_policy(
         self,
@@ -417,7 +428,7 @@ class RLTrainer(BaseVLNCETrainer):
         # Probe mode: freeze the base VLN stack and train map modules.
         if freeze_base:
             for name, param in self.policy.named_parameters():
-                if "map_encoder" not in name and "map_predictor" not in name:
+                if "map_encoder" not in name and "map_predictor" not in name and "registration_head" not in name:
                     param.requires_grad_(False)
             logger.info("[Map probe] Base model frozen - map modules are trainable.")
 
@@ -585,6 +596,10 @@ class RLTrainer(BaseVLNCETrainer):
                 self.config.IL.gt_teacher_map_namespace
             )
             t_config.MODEL.MAP_ENCODER.refiner_ckpt = ""
+            # A frozen legacy teacher must not inherit the student's new head
+            # or feedback architecture when KD is combined with G1.
+            t_config.IL.reg_enabled = False
+            t_config.IL.reg_feedback = False
             t_config.freeze()
             teacher_cls = baseline_registry.get_policy(t_config.MODEL.policy_name)
             self.gt_teacher = teacher_cls.from_config(
@@ -1741,6 +1756,65 @@ class RLTrainer(BaseVLNCETrainer):
         split = self.config.TASK_CONFIG.DATASET.SPLIT
         return f"{dataset}_{split}_{episode.episode_id}"
 
+    def _build_registration_states(self, mode):
+        if not bool(getattr(self.config.IL, "reg_enabled", False)):
+            return None
+        if self.config.MODEL.task_type.lower() != "r2r":
+            raise ValueError("G1 registration artifacts currently support R2R only")
+        root = Path(self.config.IL.reg_label_dir)
+        if not root.is_absolute():
+            root = Path(__file__).resolve().parents[1] / root
+        split = self.config.TASK_CONFIG.DATASET.SPLIT
+        states = []
+        overflow = 0
+        for episode in self.envs.current_episodes():
+            scene = Path(episode.scene_id).stem
+            path = root / split / scene / f"{episode.episode_id}.npz"
+            if mode == "train":
+                labels = RegistrationLabels.load(path)
+                count = len(labels.route_node_id)
+                states.append({"labels": labels, "route_count": count,
+                               "predecessors": {}, "hints": {}})
+            else:
+                # Route cardinality is input-graph semantics. Evaluation does
+                # not read GT coordinates, paths, registration labels or hints.
+                with np.load(path, allow_pickle=False) as payload:
+                    count = len(payload["route_node_id"])
+                states.append({"route_count": count})
+            overflow += count > self.config.IL.reg_n_max
+        if mode == "train" and overflow:
+            self._reg_overflow_total = getattr(self, "_reg_overflow_total", 0) + overflow
+            logger.warning("Registration: ignoring %d episodes above N_MAX=%d (%d rollout episodes total)",
+                           overflow, self.config.IL.reg_n_max, self._reg_overflow_total)
+        return states
+
+    def _prepare_registration_inputs(self, nav_inputs, states, cur_vp, prev_vp, mode):
+        if states is None:
+            return None
+        node_mask = nav_inputs["gmap_masks"]
+        nav_inputs["reg_route_counts"] = torch.tensor(
+            [state["route_count"] for state in states], dtype=torch.long,
+            device=node_mask.device,
+        )
+        if mode != "train":
+            return None
+        targets = torch.full_like(node_mask, -1, dtype=torch.long)
+        progress = torch.zeros_like(node_mask, dtype=torch.float32)
+        for index, (state, gmap, node_ids) in enumerate(zip(states, self.gmaps, nav_inputs["gmap_vp_ids"])):
+            predecessors = state["predecessors"]
+            predecessors[cur_vp[index]] = prev_vp[index]
+            for node_id in node_ids:
+                if node_id is not None and node_id.startswith("g"):
+                    _, predecessors[node_id] = gmap.front_to_ghost_dist(node_id)
+            labelled = label_topological_nodes(
+                state["labels"], node_ids, gmap.get_vp_positions(node_ids),
+                predecessors, state["hints"], n_max=self.config.IL.reg_n_max,
+                max_distance_m=self.config.IL.reg_max_distance,
+            )
+            targets[index, :len(node_ids)] = torch.from_numpy(labelled.route_index).to(targets.device)
+            progress[index, :len(node_ids)] = torch.from_numpy(labelled.progress).to(progress.device)
+        return targets, progress
+
     def _build_cognitive_maps(self, random_rotation_augmentation=False):
         map_cfg = self.config.MODEL.MAP_ENCODER
         candidate = CognitiveMapCandidate.parse(
@@ -1752,6 +1826,7 @@ class RLTrainer(BaseVLNCETrainer):
                 ep.scene_id,
                 self._cognitive_map_cache_id(ep),
                 namespace=map_cfg.cache_namespace,
+                cache_dir=self._prior_gt_cache_dir(),
                 random_rotation_augmentation=random_rotation_augmentation,
                 metadata_schema=candidate.metadata_schema,
             )
@@ -1985,6 +2060,7 @@ class RLTrainer(BaseVLNCETrainer):
         map_aux_loss_total = None
         total_actions = 0.0
         student_ce = 0.0
+        reg_loss_total = None
 
         not_done_index = list(range(self.envs.num_envs))
         shared_eval = mode == "eval" and self.config.EVAL.d8_shared_states
@@ -2038,6 +2114,7 @@ class RLTrainer(BaseVLNCETrainer):
             dual_gt_kl_map = 0.0
             dual_gt_kl_zero = 0.0
         prev_vp = [None] * self.envs.num_envs
+        registration_states = self._build_registration_states(mode)
         gtt_map_origins = None
         # Auxiliary teacher/student map tokens (gate, effect matching); empty
         # unless _distill_aux_enabled(), but always defined because the
@@ -2192,6 +2269,9 @@ class RLTrainer(BaseVLNCETrainer):
                 }
             )
             no_vp_left = nav_inputs.pop("no_vp_left")
+            registration_targets = self._prepare_registration_inputs(
+                nav_inputs, registration_states, cur_vp, prev_vp, mode
+            )
 
             if self._refiner_enabled() and cognitive_maps is not None:
                 self._update_refined_cognitive_maps(
@@ -2231,6 +2311,10 @@ class RLTrainer(BaseVLNCETrainer):
                         "cognitive map per episode (no zero-raster branch was built)"
                     )
             nav_outs = self.policy.net(**nav_inputs)
+            if registration_targets is not None:
+                reg_step_loss = registration_loss(nav_outs["registration"], *registration_targets)
+                reg_step_loss = reg_step_loss * self.envs.num_envs
+                reg_loss_total = reg_step_loss if reg_loss_total is None else reg_loss_total + reg_step_loss
             nav_logits = nav_outs["global_logits"]
             act_logits = nav_logits
             zero_logits = None
@@ -2636,6 +2720,8 @@ class RLTrainer(BaseVLNCETrainer):
                         self.envs.pause_at(i)
                         observations.pop(i)
                         self.gmaps.pop(i)
+                        if registration_states is not None:
+                            registration_states.pop(i)
                         if self._gtt_on and mode == "train":
                             self.gtt_gmaps.pop(i)
                             if gtt_map_origins is not None:
@@ -2705,6 +2791,10 @@ class RLTrainer(BaseVLNCETrainer):
         if mode == "train":
             loss = ml_weight * loss / total_actions
             self.logs["student_ce"].append(student_ce / total_actions)
+            if reg_loss_total is not None:
+                reg_aux = self.config.IL.reg_weight * reg_loss_total / total_actions
+                loss = loss + reg_aux
+                self.logs["registration_loss"].append(reg_aux.item())
             if self._gtt_on:
                 gtt_distill_loss = self.config.IL.distill_weight * gtt_distill_loss / total_actions
                 loss = loss + gtt_distill_loss
