@@ -69,8 +69,7 @@ ARGS=(
     "${REPO_ROOT}/run.py" --exp_name "${RUN_NAME}" --run-type dagger
     --exp-config "${REPO_ROOT}/run_r2r/iter_train.yaml" --output-root "${OUTPUT_ROOT}"
 )
-if [[ "${DRY_RUN}" == true ]]; then ARGS+=(--dry-run); fi
-ARGS+=(
+OPTS=(
     SIMULATOR_GPU_IDS '[0,1,2,3]' TORCH_GPU_IDS '[0,1,2,3]' GPU_NUMBERS 4
     TASK_CONFIG.SEED 100 TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
     NUM_ENVIRONMENTS 4 CHECKPOINT_INTERVAL 800 ONLY_LAST_SAVEALL False
@@ -82,16 +81,24 @@ ARGS+=(
 )
 printf 'arm=%s\nseed=100\niters=30000\ncheckpoint_interval=800\nranks=4\nenvs_per_rank=4\npretrained=%s\n' \
     "${ARM}" "${PRETRAINED_CKPT}" > "${RUN_DIR}/launch_info.txt"
-printf 'command:'; printf ' %q' "${PYTHON}" "${ARGS[@]}"; printf '\n'
+TORCHRUN_COMMAND=(
+    "${PYTHON}" -m torch.distributed.run --nproc_per_node=4 --rdzv_backend=c10d
+    --rdzv_endpoint="localhost:${MASTER_PORT:-${DEFAULT_PORT}}" "${ARGS[@]}" "${OPTS[@]}"
+)
+{
+    printf 'env CUDA_VISIBLE_DEVICES=%q' "${VISIBLE_GPUS}"
+    printf ' %q' "${TORCHRUN_COMMAND[@]}"
+    printf '\n'
+} > "${RUN_DIR}/torchrun_command.sh"
+printf 'Resolved torchrun (training is not started by --dry-run):\n'
+cat "${RUN_DIR}/torchrun_command.sh"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export XDG_CACHE_HOME="${REPO_ROOT}/data_v2/cache"
 mkdir -p "${XDG_CACHE_HOME}"
 export __EGL_VENDOR_LIBRARY_DIRS="${__EGL_VENDOR_LIBRARY_DIRS:-/usr/share/glvnd/egl_vendor.d}"
 export GLOG_minloglevel=2 MAGNUM_LOG=quiet
 if [[ "${DRY_RUN}" == true ]]; then
-    CUDA_VISIBLE_DEVICES='' "${PYTHON}" "${ARGS[@]}" 2>&1 | tee "${RUN_DIR}/dry_run.log"
+    CUDA_VISIBLE_DEVICES='' "${PYTHON}" "${ARGS[@]}" --dry-run "${OPTS[@]}" 2>&1 | tee "${RUN_DIR}/dry_run.log"
 else
-    CUDA_VISIBLE_DEVICES="${VISIBLE_GPUS}" "${PYTHON}" -m torch.distributed.run \
-        --nproc_per_node=4 --rdzv_backend=c10d --rdzv_endpoint="localhost:${MASTER_PORT:-${DEFAULT_PORT}}" \
-        "${ARGS[@]}" 2>&1 | tee -a "${RUN_DIR}/train.log"
+    CUDA_VISIBLE_DEVICES="${VISIBLE_GPUS}" "${TORCHRUN_COMMAND[@]}" 2>&1 | tee -a "${RUN_DIR}/train.log"
 fi
