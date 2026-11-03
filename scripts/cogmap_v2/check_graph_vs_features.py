@@ -38,6 +38,8 @@ def compare(graph_dir: Path, features: dict, large_difference: int = 2) -> dict:
     seen = set()
     for path in sorted(graph_dir.glob("*/*.json")):
         graph = CognitiveGraph.load(path)
+        if graph.meta.scene is None or graph.meta.episode_id is None:
+            raise ValueError("Feature comparison needs GT scene and episode metadata")
         key = str(graph.meta.episode_id)
         feature = features.get(key)
         if feature is None or feature.get("n_rooms") is None:
@@ -48,9 +50,9 @@ def compare(graph_dir: Path, features: dict, large_difference: int = 2) -> dict:
         seen.add(key)
         node_map = {node.id: node for node in graph.nodes}
         regions = {
-            node_map[node_id].gt.region_id
+            node_map[node_id].require_gt().region_id
             for node_id in graph.route
-            if node_map[node_id].gt.region_id is not None
+            if node_map[node_id].require_gt().region_id is not None
         }
         expected = int(feature["n_rooms"])
         rows.append(

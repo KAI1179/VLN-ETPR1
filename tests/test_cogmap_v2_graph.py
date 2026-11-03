@@ -52,13 +52,13 @@ def test_two_regions_door_turn(tmp_path):
     graph = build_graph(
         episode, scene, forks=[], category_extractor=lambda _: ({1, 2}, {1})
     )
-    assert [n.region_category for n in graph.nodes if n.gt.region_id == "1:0"]
+    assert [n.region_category for n in graph.nodes if n.require_gt().region_id == "1:0"]
     assert any(edge.passage == "door" for edge in graph.edges)
     assert any(edge.turn == "right" for edge in graph.edges)
     assert any(n.anchor_kind == "turn" for n in graph.nodes)
     assert graph.nodes[0].role == "start"
     assert graph.nodes[graph.route[-1]].role == "goal"
-    assert len({n.gt.region_id for n in graph.nodes}) == 2
+    assert len({n.require_gt().region_id for n in graph.nodes}) == 2
     objects = [obj for n in graph.nodes for obj in n.objects]
     assert {obj.category for obj in objects} == {"door", "chair"}
     assert all(obj.mentioned for obj in objects)
@@ -88,8 +88,8 @@ def test_dense_forks_and_region_entries():
         episode, scene, forks=[3, 4], category_extractor=lambda _: (set(), set())
     )
     assert graph.nodes[1].anchor_kind == "fork"
-    assert graph.nodes[1].gt.path_index_range[0] == 3
-    assert any(n.gt.region_id == "1:0" for n in graph.nodes)
+    assert graph.nodes[1].require_gt().path_index_range[0] == 3
+    assert any(n.require_gt().region_id == "1:0" for n in graph.nodes)
     assert all(not obj.mentioned for n in graph.nodes for obj in n.objects)
 
 

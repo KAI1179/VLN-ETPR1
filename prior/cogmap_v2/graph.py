@@ -53,7 +53,12 @@ class GraphObject(StrictModel):
     category: str
     mentioned: bool
     offset_bin: Literal["left", "right", "ahead", "behind"]
-    gt: OBB2D
+    gt: Optional[OBB2D] = None
+
+    def require_gt(self) -> OBB2D:
+        if self.gt is None:
+            raise ValueError("Object has no ground-truth metric box")
+        return self.gt
 
 
 class NodeGT(StrictModel):
@@ -71,7 +76,12 @@ class GraphNode(StrictModel):
     order: int
     mentioned: bool
     objects: List[GraphObject] = Field(default_factory=list)
-    gt: NodeGT
+    gt: Optional[NodeGT] = None
+
+    def require_gt(self) -> NodeGT:
+        if self.gt is None:
+            raise ValueError("Node has no ground-truth metric fields")
+        return self.gt
 
 
 class GraphEdge(StrictModel):
@@ -84,12 +94,17 @@ class GraphEdge(StrictModel):
 
 
 class GraphMeta(StrictModel):
-    scene: str
-    episode_id: int
     instruction: str
-    level_idx: int
-    start_position_level_xz: Point
-    start_direction_vector: Point
+    scene: Optional[str] = None
+    episode_id: Optional[int] = None
+    level_idx: Optional[int] = None
+    start_position_level_xz: Optional[Point] = None
+    start_direction_vector: Optional[Point] = None
+
+    def require_start_pose(self) -> Tuple[Point, Point]:
+        if self.start_position_level_xz is None or self.start_direction_vector is None:
+            raise ValueError("Graph has no known start pose")
+        return self.start_position_level_xz, self.start_direction_vector
 
 
 class GraphGT(StrictModel):
@@ -106,7 +121,12 @@ class CognitiveGraph(StrictModel):
     edges: List[GraphEdge]
     route: List[int]
     meta: GraphMeta
-    gt: GraphGT
+    gt: Optional[GraphGT] = None
+
+    def require_gt(self) -> GraphGT:
+        if self.gt is None:
+            raise ValueError("Graph has no ground-truth metric supervision")
+        return self.gt
 
     @model_validator(mode="after")
     def validate_route(self) -> CognitiveGraph:
@@ -122,10 +142,28 @@ class CognitiveGraph(StrictModel):
             edge.src not in node_map or edge.dst not in node_map for edge in self.edges
         ):
             raise ValueError("Edge references missing nodes")
+        for order, node_id in enumerate(self.route):
+            node = node_map[node_id]
+            if node.role == "side" or node.order != order:
+                raise ValueError(
+                    "Route nodes must have their route order and a route role"
+                )
+        if any(node.role != "side" for node in self.nodes if node.id not in self.route):
+            raise ValueError("Non-route nodes must have side role")
+        if any(node.order != -1 for node in self.nodes if node.role == "side"):
+            raise ValueError("Side node order must be -1")
+        if self.gt is None:
+            if any(
+                node.gt is not None or any(obj.gt is not None for obj in node.objects)
+                for node in self.nodes
+            ):
+                raise ValueError("Semantic graphs must not carry partial metric GT")
+            return self
+        ground_truth = self.gt
         cursor = 0
         for order, node_id in enumerate(self.route):
             node = node_map[node_id]
-            start, end = node.gt.path_index_range
+            start, end = node.require_gt().path_index_range
             if (
                 node.role == "side"
                 or node.order != order
@@ -136,20 +174,20 @@ class CognitiveGraph(StrictModel):
                     "Route ranges must form an ordered contiguous partition"
                 )
             cursor = end + 1
-        if cursor != len(self.gt.path_level_xz):
+        if cursor != len(ground_truth.path_level_xz):
             raise ValueError("Route ranges must cover every selected-level point")
-        if len(self.gt.path_world_indices) != len(self.gt.path_level_xz):
+        if len(ground_truth.path_world_indices) != len(ground_truth.path_level_xz):
             raise ValueError("Selected-level path and source indices must align")
-        indices = self.gt.path_world_indices
+        indices = ground_truth.path_world_indices
         if (
             not indices
-            or any(i < 0 or i >= len(self.gt.trajectory_world) for i in indices)
+            or any(i < 0 or i >= len(ground_truth.trajectory_world) for i in indices)
             or any(a >= b for a, b in zip(indices, indices[1:]))
         ):
             raise ValueError(
                 "Source path indices must increase strictly within the full trajectory"
             )
-        if len(self.gt.range_y) != 2:
+        if len(ground_truth.range_y) != 2:
             raise ValueError("range_y must contain lower and upper level bounds")
         return self
 
@@ -414,7 +452,7 @@ def build_graph(
     # nearest dense path sample as an approximation to its continuous polyline.
     path_owners = np.empty(len(path), dtype=int)
     for node in nodes[: len(route)]:
-        start, end = node.gt.path_index_range
+        start, end = node.require_gt().path_index_range
         path_owners[start : end + 1] = node.id
     for category, boxes in enumerate(level.objects if include_objects else []):
         for box in boxes:
@@ -442,7 +480,10 @@ def build_graph(
     doors = level.objects[MAPPED_OBJECT_NAMES.index("door")]
     edges = []
     for previous, current in zip(nodes[: len(route) - 1], nodes[1 : len(route)]):
-        a, b = previous.gt.path_index_range[0], current.gt.path_index_range[0]
+        a, b = (
+            previous.require_gt().path_index_range[0],
+            current.require_gt().path_index_range[0],
+        )
         dy = float(world[selected_indices[b], 1] - world[selected_indices[a], 1])
         crossings = [index for index in region_entries if a < index <= b]
         passage = "stairs" if abs(dy) > 0.5 else "unknown"
@@ -470,9 +511,9 @@ def build_graph(
             )
         )
     for node in nodes[len(route) :]:
-        index = node.gt.path_index_range[0]
+        index = node.require_gt().path_index_range[0]
         owner = int(path_owners[index])
-        displacement = np.asarray(node.gt.center_level_xz) - points[index]
+        displacement = np.asarray(node.require_gt().center_level_xz) - points[index]
         edges.append(
             GraphEdge(
                 src=owner,
@@ -556,7 +597,7 @@ def rebin_graphs(paths: List[Path], thresholds: Tuple[float, float]) -> None:
     """Apply train-derived thresholds to route and side edges."""
     for path in paths:
         graph = CognitiveGraph.load(path)
-        points = np.asarray(graph.gt.path_level_xz, dtype=float)
+        points = np.asarray(graph.require_gt().path_level_xz, dtype=float)
         arc = np.concatenate((
             [0.0],
             np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1)),
@@ -567,13 +608,18 @@ def rebin_graphs(paths: List[Path], thresholds: Tuple[float, float]) -> None:
             length = (
                 float(
                     np.linalg.norm(
-                        np.asarray(b.gt.center_level_xz)
-                        - np.asarray(graph.gt.path_level_xz[b.gt.path_index_range[0]])
+                        np.asarray(b.require_gt().center_level_xz)
+                        - np.asarray(
+                            graph.require_gt().path_level_xz[
+                                b.require_gt().path_index_range[0]
+                            ]
+                        )
                     )
                 )
                 if b.role == "side"
                 else float(
-                    arc[b.gt.path_index_range[0]] - arc[a.gt.path_index_range[0]]
+                    arc[b.require_gt().path_index_range[0]]
+                    - arc[a.require_gt().path_index_range[0]]
                 )
             )
             edge.distance_bin = distance_bin(length, thresholds)
@@ -586,7 +632,7 @@ def calibrate_distance_bins(paths: List[Path]) -> dict:
         if "train" not in path.parts:
             raise ValueError("Distance calibration accepts train graphs only")
         graph = CognitiveGraph.load(path)
-        points = np.asarray(graph.gt.path_level_xz, dtype=float)
+        points = np.asarray(graph.require_gt().path_level_xz, dtype=float)
         arc = np.concatenate((
             [0.0],
             np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1)),
@@ -595,8 +641,8 @@ def calibrate_distance_bins(paths: List[Path]) -> dict:
         for a, b in zip(graph.route, graph.route[1:]):
             lengths.append(
                 float(
-                    arc[nodes[b].gt.path_index_range[0]]
-                    - arc[nodes[a].gt.path_index_range[0]]
+                    arc[nodes[b].require_gt().path_index_range[0]]
+                    - arc[nodes[a].require_gt().path_index_range[0]]
                 )
             )
     if not lengths:
@@ -653,9 +699,9 @@ def main() -> None:
         route_counts[len(graph.route)] += 1
         region_counts[
             len({
-                n.gt.region_id
+                n.require_gt().region_id
                 for n in graph.nodes
-                if n.role != "side" and n.gt.region_id is not None
+                if n.role != "side" and n.require_gt().region_id is not None
             })
         ] += 1
         if len(paths) % 100 == 0:

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Dict,
     Iterable,
     Iterator,
@@ -884,7 +885,12 @@ def _training_oom_message(
     )
 
 
-def train_model(args: LLMGridArgs) -> Dict[str, float]:
+def train_model(
+    args: LLMGridArgs,
+    *,
+    manifest_builder: Optional[Callable[[Any, str], TrainingManifest]] = None,
+    system_prompt_override: Optional[str] = None,
+) -> Dict[str, float]:
     _validate_llm_grid_training_args(args)
     if args.finetune_method == "full":
         raise NotImplementedError("full fine-tuning is not implemented for LLM-Grid")
@@ -897,14 +903,22 @@ def train_model(args: LLMGridArgs) -> Dict[str, float]:
         args.per_device_batch_size,
         args.gradient_accumulation_steps,
     )
-    system_prompt = load_system_prompt(scale=args.scale)
+    system_prompt = (
+        load_system_prompt(scale=args.scale)
+        if system_prompt_override is None
+        else system_prompt_override
+    )
     if accelerator.is_main_process:
         _write_run_system_prompt(args.output_dir, system_prompt)
     tokenizer = _load_grid_training_tokenizer(args.model_name_or_path)
     manifest = load_or_create_training_manifest(
         accelerator,
         Path(args.output_dir) / "artifacts" / "training_manifest.jsonl",
-        lambda: _build_grid_training_manifest(args, tokenizer, system_prompt),
+        lambda: (
+            _build_grid_training_manifest(args, tokenizer, system_prompt)
+            if manifest_builder is None
+            else manifest_builder(tokenizer, system_prompt)
+        ),
     )
     train_items = [_grid_training_item_from_manifest(item) for item in manifest.items]
     sequence_lengths = [int(item["sequence_tokens"]) for item in manifest.items]

@@ -33,6 +33,8 @@ def main() -> None:
     episodes_with_ambiguous_positions = []
     for path in paths:
         graph = CognitiveGraph.load(path)
+        if graph.meta.scene is None or graph.meta.episode_id is None:
+            raise ValueError("Registration audit needs GT scene and episode metadata")
         labels = RegistrationLabels.load(
             REPO_ROOT
             / args.registration_dir
@@ -40,11 +42,11 @@ def main() -> None:
             / graph.meta.scene
             / f"{graph.meta.episode_id}.npz"
         )
-        expected = np.empty(len(graph.gt.path_level_xz), dtype=np.int64)
+        expected = np.empty(len(graph.require_gt().path_level_xz), dtype=np.int64)
         expected_progress = np.empty(len(expected), dtype=np.float64)
         for order, node_id in enumerate(graph.route):
             node = next(node for node in graph.nodes if node.id == node_id)
-            start, end = node.gt.path_index_range
+            start, end = node.require_gt().path_index_range
             expected[start : end + 1] = node_id
             expected_progress[start : end + 1] = order / len(graph.route)
         np.testing.assert_array_equal(
