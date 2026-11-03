@@ -7,7 +7,13 @@
 #SBATCH --nodelist=ln01
 #SBATCH -p vip_gpu_scze096
 set -eo pipefail
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Under sbatch the script runs from Slurm's spool copy, so resolve the repo from
+# the submission directory first and from BASH_SOURCE only for direct runs.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/run.py" ]]; then
+    REPO_ROOT="${SLURM_SUBMIT_DIR}"
+else
+    REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
 if [[ "${2:-}" != --dry-run ]]; then
     eval "$(conda shell.bash hook)"
     conda activate etpr1-uv
