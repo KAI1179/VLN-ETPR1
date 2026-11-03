@@ -4,7 +4,6 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=4
-#SBATCH --nodelist=ln01
 #SBATCH -p vip_gpu_scze096
 set -eo pipefail
 # Under sbatch the script runs from Slurm's spool copy, so resolve the repo from
