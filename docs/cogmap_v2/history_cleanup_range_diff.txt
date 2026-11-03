@@ -1,0 +1,9 @@
+ 1:  a14ce78 =  1:  6e4bf79 feat(cogmap-v2): build GT episode graphs with train-calibrated distance bins
+ 2:  dce2670 =  2:  dc82904 feat(cogmap-v2): render start-frame layouts into V1 raster caches
+ 3:  5cfca93 =  3:  ec4edeb feat(cogmap-v2): label dense paths by graph route position
+ 4:  3d19925 =  4:  c99e62e docs(cogmap-v2): record interfaces and full-split validation results
+ 5:  68c0293 =  5:  1e6af1c feat(cogmap-v2): serialize semantic graphs and prepare graph SFT data
+ 6:  8378aa9 =  6:  46f7e43 feat(cogmap-v2): add whole-box raster namespace without route clipping
+ 7:  b866b28 =  7:  4638c31 feat(cogmap-v2): add supervised registration and G1 experiment launchers
+ 8:  6b33712 =  8:  752148d docs(cogmap-v2): record brief 02 validation and submission commands
+ 9:  251e0d9 =  9:  a69bca5 fix(cogmap-v2): prepare direct WZ launch commands and runtime guidance
