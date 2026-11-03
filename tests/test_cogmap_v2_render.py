@@ -184,3 +184,25 @@ def test_layout_rejects_invalid_pose_and_node_alignment():
         })
     with pytest.raises(ValueError, match="exactly one"):
         render_from_layout(graph, layout.model_copy(update={"nodes": []}))
+
+
+def test_whole_box_gt_render_has_no_corridor_and_identical_metadata():
+    graph = _graph((0.7071068286895752, 0.7071068286895752))
+    graph.gt.path_level_xz = [(3.0, 4.0), (3.5, 4.0)]
+    corridor = render_gt(graph)
+    whole = render_gt(graph, whole_boxes=True)
+    assert graph_to_layout(graph, whole_boxes=True).route_points_start is None
+    assert np.count_nonzero(whole.grid) > np.count_nonzero(corridor.grid)
+    assert np.all(whole.grid >= corridor.grid)
+    for key, value in corridor.arrays().items():
+        if key != "grid":
+            np.testing.assert_array_equal(value, whole.arrays()[key])
+    graph.gt.path_level_xz = [(50.0, 50.0), (55.0, 55.0)]
+    np.testing.assert_array_equal(whole.grid, render_gt(graph, whole_boxes=True).grid)
+
+
+def test_gt_renderer_rejects_semantic_only_graph():
+    graph = _graph((0.0, 1.0))
+    graph.gt = None
+    with pytest.raises(ValueError, match="metric GT"):
+        render_gt(graph, whole_boxes=True)

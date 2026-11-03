@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NAMESPACE = "gt.graph.r1p5.direction5.v1"
+BOX_NAMESPACE = "gt.graph.box.direction5.v1"
 Point = Tuple[float, float]
 
 
@@ -144,13 +145,20 @@ def _box_to_level(box: LayoutBox, layout: GraphLayout, mentioned: bool) -> OBB2D
     )
 
 
-def graph_to_layout(graph: CognitiveGraph) -> GraphLayout:
+def graph_to_layout(graph: CognitiveGraph, *, whole_boxes: bool = False) -> GraphLayout:
     """Build the metric M5 target. This function deliberately accesses GT."""
-    basis = _basis(graph.meta.start_direction_vector)
+    gt = graph.gt
     start = graph.meta.start_position_level_xz
+    direction = graph.meta.start_direction_vector
+    if gt is None or start is None or direction is None:
+        raise ValueError("GT layout targets require metric GT and a start pose")
+    basis = _basis(direction)
     layouts = []
     for node in graph.nodes:
-        region = node.gt.aabb_level
+        node_gt = node.gt
+        if node_gt is None:
+            raise ValueError(f"GT layout target requires geometry for node {node.id}")
+        region = node_gt.aabb_level
         region_layout = None
         if region is not None:
             box = OBB2D(
@@ -164,25 +172,34 @@ def graph_to_layout(graph: CognitiveGraph) -> GraphLayout:
                 ),
             )
             region_layout = _box_to_start(box, start, basis)
+        object_layouts = []
+        for obj in node.objects:
+            box = obj.gt
+            if box is None:
+                raise ValueError(
+                    f"GT layout target requires geometry for object {obj.category}"
+                )
+            object_layouts.append(_box_to_start(box, start, basis))
         layouts.append(
             NodeLayout(
                 node_id=node.id,
                 region=region_layout,
-                objects=[_box_to_start(obj.gt, start, basis) for obj in node.objects],
+                objects=object_layouts,
             )
         )
     directions = []
-    for sin_value, cos_value in graph.gt.direction_vectors:
+    for sin_value, cos_value in gt.direction_vectors:
         directions.append(tuple(basis.T @ np.asarray((-cos_value, -sin_value))))
     return GraphLayout(
         nodes=layouts,
         start_position_level_xz=start,
-        start_direction_vector=graph.meta.start_direction_vector,
+        start_direction_vector=direction,
         direction_vectors_start=directions,
-        range_y=(graph.gt.range_y[0], graph.gt.range_y[1]),
-        route_points_start=[
-            tuple(basis.T @ (np.asarray(point) - start))
-            for point in graph.gt.path_level_xz
+        range_y=(gt.range_y[0], gt.range_y[1]),
+        route_points_start=None
+        if whole_boxes
+        else [
+            tuple(basis.T @ (np.asarray(point) - start)) for point in gt.path_level_xz
         ],
     )
 
@@ -325,9 +342,15 @@ def render_from_layout(
 
 
 def render_gt(
-    graph: CognitiveGraph, output_path: Optional[str | Path] = None
+    graph: CognitiveGraph,
+    output_path: Optional[str | Path] = None,
+    *,
+    whole_boxes: bool = False,
 ) -> RenderedMap:
-    return render_from_layout(graph, graph_to_layout(graph), output_path)
+    """Render GT boxes, optionally without any route-neighborhood clipping."""
+    return render_from_layout(
+        graph, graph_to_layout(graph, whole_boxes=whole_boxes), output_path
+    )
 
 
 class RasterComparison(TypedDict):
@@ -384,6 +407,8 @@ class RenderArgs(Tap):
     output_dir: Path = Path("data_v2/cognitive_maps")
     reference_dir: Path = Path("data/cognitive_maps/gt.legacy.r1p5.direction5.v1")
     limit: Optional[int] = None
+    whole_boxes: bool = False
+    """Render complete boxes into gt.graph.box.direction5.v1, without a corridor."""
 
 
 def _rooted(path: Path) -> Path:
@@ -397,7 +422,8 @@ def main() -> None:
     if args.limit is not None and args.limit < 0:
         raise ValueError("limit must be nonnegative")
     graph_dir = _rooted(args.graph_dir) / args.split
-    output = output_path(args.output_dir / NAMESPACE)
+    namespace = BOX_NAMESPACE if args.whole_boxes else NAMESPACE
+    output = output_path(args.output_dir / namespace)
     paths = sorted(graph_dir.glob("*/*.json"))
     if args.limit is not None:
         paths = paths[: args.limit]
@@ -407,22 +433,31 @@ def main() -> None:
     missing_reference = 0
     for path in paths:
         graph = CognitiveGraph.load(path)
-        scene, episode = graph.meta.scene, str(graph.meta.episode_id)
+        scene, episode_id, level_idx = (
+            graph.meta.scene,
+            graph.meta.episode_id,
+            graph.meta.level_idx,
+        )
+        if scene is None or episode_id is None or level_idx is None:
+            raise ValueError(f"GT raster export requires episode metadata: {path}")
+        episode = str(episode_id)
         # Match VLNCEEpisodeEntry.unique_id and prevent cross-split collisions.
         cache_key = f"R2R_{args.split}_{episode}"
         rendered = render_gt(
-            graph, output_path(output / "raster" / scene / f"{cache_key}.npz")
+            graph,
+            output_path(output / "raster" / scene / f"{cache_key}.npz"),
+            whole_boxes=args.whole_boxes,
         )
         rendered.save_boxes(
             output_path(output / "boxes" / scene / f"{cache_key}.npz"),
             graph.meta.instruction,
-            graph.meta.level_idx,
+            level_idx,
         )
         reference = _rooted(args.reference_dir) / "raster" / scene / f"{cache_key}.npz"
         if reference.exists():
             comparisons.append({
                 "scene": scene,
-                "episode_id": graph.meta.episode_id,
+                "episode_id": episode_id,
                 **compare_rasters(rendered, reference),
             })
         else:
@@ -430,8 +465,11 @@ def main() -> None:
     summary = {
         "split": args.split,
         "rendered": len(paths),
-        "render_mode": "graph_boxes_with_explicit_route_mask",
-        "route_radius_m": 1.5,
+        "namespace": namespace,
+        "render_mode": "whole_graph_boxes"
+        if args.whole_boxes
+        else "graph_boxes_with_explicit_route_mask",
+        "route_radius_m": None if args.whole_boxes else 1.5,
         "reference_dir": str(_rooted(args.reference_dir)),
         "reference_missing": missing_reference,
         "episodes": comparisons,
