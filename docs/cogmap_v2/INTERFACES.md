@@ -16,6 +16,9 @@ V1 datasets, semantic caches, and cognitive maps are read-only inputs.
 | Registration | `data_v2/cogmap_v2/registration/<split>/<scene>/<episode_id>.npz` |
 | V1 boxes payload | `data_v2/cognitive_maps/gt.graph.r1p5.direction5.v1/boxes/<scene>/R2R_<split>_<episode_id>.npz` |
 | V1 raster payload | `data_v2/cognitive_maps/gt.graph.r1p5.direction5.v1/raster/<scene>/R2R_<split>_<episode_id>.npz` |
+| Whole-box V1 payloads | `data_v2/cognitive_maps/gt.graph.box.direction5.v1/{boxes,raster}/<scene>/R2R_<split>_<episode_id>.npz` |
+| M1 text training rows | `data_v2/llm_graph/{train,val_seen,val_unseen}.jsonl` |
+| M1 token budgets and source hashes | `data_v2/llm_graph/summary.json` |
 
 Graph and registration filenames use numeric episode IDs within a split. Raster
 and box filenames use `VLNCEEpisodeEntry.unique_id`, matching V1 consumers and
@@ -26,7 +29,11 @@ the selected scene level. It is diagnostic supervision, not a model input.
 
 ## Graph construction and GT boundary
 
-`CognitiveGraph.load(path)` validates the Pydantic schema. Each node has the
+`CognitiveGraph.load(path)` validates the Pydantic schema. Parsed semantic graphs
+have `gt=None` at every nesting level and absent scene/episode/pose metadata;
+metric consumers use `require_gt()` and `meta.require_start_pose()` to reject
+missing supervision explicitly. Existing GT JSON files retain their schema.
+Each node has the
 category, role, anchor kind, order, mention flag, and attached object categories
 and relative offset bins specified in the task brief. Edges carry distance,
 passage, turn, and vertical bins. `route` contains only route nodes; side nodes
@@ -80,7 +87,40 @@ For generated graphs, derive `mentioned` from the instruction using the same
 extractor, as ADR 0002 requires. The stored GT flags are training diagnostics,
 not a requirement to predict flags. Unknown regions have no GT region box and
 can be represented as `unknown`; do not invent a canonical region index for
-them. A compact serializer and LLM training are future M1 work.
+them.
+
+`prior.cogmap_v2.serialize.graph_to_text(graph)` emits one route node per line,
+then side nodes, then edges. `text_to_graph(text, instruction)` parses and
+derives mention flags with the canonical extractor. Categories containing
+spaces are shell-quoted. Anchor kind and object offset/multiplicity are retained;
+no mention flags, coordinates, identities, or GT are emitted. For example:
+
+```text
+N0 start 'private room' region_entry | obj: bed:left
+N1 goal circulation turn | obj:
+S2 side bathroom/sanitary region_entry | obj: sink:ahead
+E N0>N1 short door right none
+E N1>S2 short opening left none
+```
+
+`semantic_fields(graph)` returns the recursive allowlist used to check exact
+semantic round trips. `scripts/cogmap_v2/eval_graph_text.py` accepts prediction
+JSONL rows with `episode_id` and `text` (optional scene for disambiguation).
+Missing/invalid predictions remain in the denominator. It reports route-category
+edit distance, mentioned/unmentioned region node precision/recall/F1,
+matched-edge distance/passage/turn/vertical accuracy, side F1, and parse failures.
+The pure callable `scripts.cogmap_v2.eval_graph_text.graph_reward` returns the
+mean of route similarity, mentioned node F1, unmentioned node F1, side F1, and
+edge-label accuracy; invalid text scores zero and GT text scores one.
+
+`python -m prior.cogmap_v2.llm_data --tokenizer <local-tokenizer>` exports the
+same four-field SFT rows consumed by the existing LLM-Grid training machinery:
+`input_text`, `target_text`, `example_id`, and `dataset`. Only instruction and
+known start pose enter `input_text`; audit IDs never enter prompts. The first
+corpus is R2R only because the graph CLI has no RxR mode. Completion token counts
+use full rendered-chat token count minus prompt count, including EOS. The chosen
+640-token limit retains 99.6013% of 10,786 train targets. See [G1.md](G1.md) for
+the training launcher and model-weight prerequisite.
 
 ## M5: metric layout targets and rendering
 
@@ -89,6 +129,13 @@ them. A compact serializer and LLM training are future M1 work.
 `render_from_layout(graph, layout) -> RenderedMap`. Both optionally accept a
 raster output path. `.save(path)` writes the NPZ; `.save_boxes(path,
 instruction, level_idx)` writes a V1 `RelevantSemanticBoxes` payload.
+
+For the corridor-free M5 target, use `graph_to_layout(graph, whole_boxes=True)`
+and `render_gt(graph, whole_boxes=True)`. They omit `route_points_start` and write
+the `gt.graph.box.direction5.v1` namespace via CLI `--whole-boxes`. This is the
+honest box-layout target; the old corridor default remains for compatibility
+and the G1 controlled comparison. Metadata and box geometry are identical
+between the two variants; only the raster neighborhood mask differs.
 
 `GraphLayout` contains:
 
@@ -143,7 +190,10 @@ IoU, distribution summaries, and exact equality of all four metadata arrays.
 ## M2: online registration during DAgger
 
 `build_registration(graph) -> RegistrationLabels` creates a self-contained,
-pickle-free NPZ (`schema_version=1`). Load with `RegistrationLabels.load(path)`.
+pickle-free NPZ (`schema_version=2`). Load with `RegistrationLabels.load(path)`.
+Version 2 adds `level_origin[2]` in float64, so online callers can convert world
+X/Z without opening GT graph JSON. Version 1 requires regeneration; the CLI has
+regenerated all 13,403 existing artifacts.
 
 | Arrays | Index convention |
 | --- | --- |
@@ -163,8 +213,10 @@ labels if its rollout supervision requires actual level membership.
 projection onto dense route segments. It does not choose the nearest anchor.
 `locate_position` additionally returns progress, fractional selected-level path
 index, and projection distance in meters. Convert a world X/Z query by
-subtracting `graph.gt.level_origin`; M2 needs that known scene coordinate
-transform or an equivalent deployment frame transform.
+subtracting `labels.level_origin`. `label_topological_nodes` performs that
+conversion, looks up predecessor continuity hints, excludes STOP/nonfinite
+positions and projections more than 2 m away, and returns route-order class
+targets plus progress. The route IDs themselves can differ from route order.
 
 At exact crossings/repeated positions, X/Z alone cannot identify route
 occurrence. Without a hint lookup chooses the first occurrence. Pass the last
@@ -172,6 +224,19 @@ returned selected-level path index for continuity; ties within 1e-7 m choose
 the occurrence closest to that hint. A hint never overrides a spatially closer
 branch. The dense-point round-trip audit passes the known selected-level index;
 M2 should track history and inspect `distance_m` for off-route observations.
+
+The optional Try5 head uses `IL.reg_enabled`, `IL.reg_feedback`, `IL.reg_weight`
+(0.1), `IL.reg_n_max` (16), `IL.reg_max_distance` (2.0), and `IL.reg_label_dir`.
+CE over route-order classes plus progress MSE is added to the existing DAgger
+CE and optional KD losses. STOP, padding, off-route nodes and episodes exceeding
+16 route nodes receive ignored labels. Six train episodes exceed capacity;
+validation has none. Feedback pools predicted class probabilities and progress
+into one projected token; a second shared map-attention pass from the original
+graph queries consumes it. Labels never enter the action-feature path.
+The head and feedback flags default off. Head initialization is isolated after
+the production pretrained-base loader so missing auxiliary keys cannot change
+the baseline RNG stream. Evaluation uses only the known input graph's route
+cardinality for class padding, never path labels or GT geometry.
 
 ## CPU generation and checks
 
