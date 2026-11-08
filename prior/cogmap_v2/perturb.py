@@ -28,7 +28,7 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from tap import Tap
 
@@ -46,7 +46,7 @@ Mode = Literal["cross_scene", "mentioned_only", "shift", "rotate", "scale", "jit
 PARAMETRIC: tuple[str, ...] = ("shift", "rotate", "scale", "jitter")
 
 
-def namespace_for(mode: str, magnitude: float | None) -> str:
+def namespace_for(mode: str, magnitude: Optional[float]) -> str:
     tag = f"-{magnitude:g}" if mode in PARAMETRIC else ""
     return f"gt.graph.box.{mode}{tag}.direction5.v1"
 
@@ -88,7 +88,7 @@ def perturb_layout(
     graph: CognitiveGraph,
     layout: GraphLayout,
     mode: str,
-    magnitude: float | None,
+    magnitude: Optional[float],
     rng: random.Random,
 ) -> tuple[CognitiveGraph, GraphLayout]:
     """Return the (possibly filtered) graph and the perturbed layout."""
@@ -145,11 +145,11 @@ def perturb_layout(
 class PerturbArgs(Tap):
     split: str = "val_unseen"
     mode: Mode = "shift"
-    magnitude: float | None = None  # metres (shift/jitter), degrees (rotate), factor (scale)
+    magnitude: Optional[float] = None  # metres (shift/jitter), degrees (rotate), factor (scale)
     seed: int = 0
     graph_dir: Path = Path("data_v2/cogmap_v2/graphs")
     output_dir: Path = Path("data_v2/cognitive_maps")
-    limit: int | None = None
+    limit: Optional[int] = None
 
 
 def _rooted(path: Path) -> Path:
@@ -158,7 +158,7 @@ def _rooted(path: Path) -> Path:
     return path if path.is_absolute() else REPO_ROOT / path
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[list[str]] = None) -> None:
     args = PerturbArgs(underscores_to_dashes=True).parse_args(argv)
     if args.mode in PARAMETRIC and args.magnitude is None:
         raise ValueError(f"--magnitude is required for mode {args.mode}")
