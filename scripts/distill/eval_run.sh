@@ -3,7 +3,9 @@
 #
 # Usage: bash scripts/distill/eval_run.sh RUN_NAME ITER [PRETRAINED_CKPT]
 # Env: CUDA_VISIBLE_DEVICES (default 0; several ids = several processes),
-#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen).
+#      NUM_ENVS (4), BACK_ALGO (control), SPLIT (val_unseen),
+#      EVAL_TAG (suffix of the result directory), EXTRA_ARGS (space-separated
+#      config overrides appended last, e.g. a different map cache namespace).
 # Results: data/logs/checkpoints/<RUN_NAME>_eval_iter<ITER>_<SPLIT>/eval_results/
 # (the layout summarize_eval.py and paired_analysis.py read).
 set -euo pipefail
@@ -39,8 +41,12 @@ if [[ "${RUN_NAME}" == dagger_g1_* || -n "${OUTPUT_ROOT:-}" ]]; then
 else RUN_ROOT="${REPO_ROOT}/data/logs/checkpoints"; fi
 RUN_DIR="${RUN_ROOT}/${RUN_NAME}"
 CKPT_PATH="${RUN_DIR}/ckpt.iter${ITER}.pth"
-EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}"
-EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}.log"
+# EVAL_TAG separates several evaluations of one checkpoint (e.g. perturbed map
+# namespaces passed through EXTRA_ARGS); EXTRA_ARGS are config overrides
+# appended after eval_args.txt so they win over the run's recorded options.
+EVAL_NAME="${RUN_NAME}_eval_iter${ITER}_${SPLIT}${EVAL_TAG:+_${EVAL_TAG}}"
+EVAL_LOG="${RUN_DIR}/eval_iter${ITER}_${SPLIT}${EVAL_TAG:+_${EVAL_TAG}}.log"
+read -ra EXTRA_ARGS_ARR <<< "${EXTRA_ARGS:-}"
 RESULT_JSON="${RUN_ROOT}/${EVAL_NAME}/eval_results/stats_ckpt_${ITER}_${SPLIT}.json"
 [[ -f "${CKPT_PATH}" ]] || { echo "Checkpoint not found: ${CKPT_PATH}" >&2; exit 1; }
 
@@ -83,7 +89,7 @@ env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" GLOG_minloglevel=2 MAGNUM_LOG
     "${MAP_LOAD_ARGS[@]}" \
     MODEL.elevation_axis "${ELEVATION_AXIS:-y}" \
     MODEL.pretrained_path "${PRETRAINED_CKPT}" \
-    "${RUN_ARGS[@]}" 2>&1 | tee "${EVAL_LOG}"
+    "${RUN_ARGS[@]}" "${EXTRA_ARGS_ARR[@]}" 2>&1 | tee "${EVAL_LOG}"
 
 "${PYTHON}" - "${RESULT_JSON}" "${RUN_NAME}" "${ITER}" <<'PY'
 import json, sys
