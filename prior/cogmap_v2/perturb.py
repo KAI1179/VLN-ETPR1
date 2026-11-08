@@ -26,11 +26,10 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 import random
-from typing import Dict, List, Literal, Optional, Tuple
+from pathlib import Path
+from typing import Literal
 
-import numpy as np
 from tap import Tap
 
 from prior.cogmap_v2.graph import CognitiveGraph, GraphNode, output_path
@@ -44,10 +43,10 @@ from prior.cogmap_v2.render import (
 )
 
 Mode = Literal["cross_scene", "mentioned_only", "shift", "rotate", "scale", "jitter"]
-PARAMETRIC: Tuple[str, ...] = ("shift", "rotate", "scale", "jitter")
+PARAMETRIC: tuple[str, ...] = ("shift", "rotate", "scale", "jitter")
 
 
-def namespace_for(mode: str, magnitude: Optional[float]) -> str:
+def namespace_for(mode: str, magnitude: float | None) -> str:
     tag = f"-{magnitude:g}" if mode in PARAMETRIC else ""
     return f"gt.graph.box.{mode}{tag}.direction5.v1"
 
@@ -89,9 +88,9 @@ def perturb_layout(
     graph: CognitiveGraph,
     layout: GraphLayout,
     mode: str,
-    magnitude: Optional[float],
+    magnitude: float | None,
     rng: random.Random,
-) -> Tuple[CognitiveGraph, GraphLayout]:
+) -> tuple[CognitiveGraph, GraphLayout]:
     """Return the (possibly filtered) graph and the perturbed layout."""
     if mode == "shift":
         assert magnitude is not None
@@ -121,8 +120,8 @@ def perturb_layout(
         return graph, layout.model_copy(update={"nodes": nodes})
     if mode == "mentioned_only":
         by_id = {n.node_id: n for n in layout.nodes}
-        new_nodes: List[GraphNode] = []
-        new_layouts: List[NodeLayout] = []
+        new_nodes: list[GraphNode] = []
+        new_layouts: list[NodeLayout] = []
         for node in graph.nodes:
             nl = by_id[node.id]
             keep = [i for i, obj in enumerate(node.objects) if obj.mentioned]
@@ -146,11 +145,11 @@ def perturb_layout(
 class PerturbArgs(Tap):
     split: str = "val_unseen"
     mode: Mode = "shift"
-    magnitude: Optional[float] = None  # metres (shift/jitter), degrees (rotate), factor (scale)
+    magnitude: float | None = None  # metres (shift/jitter), degrees (rotate), factor (scale)
     seed: int = 0
     graph_dir: Path = Path("data_v2/cogmap_v2/graphs")
     output_dir: Path = Path("data_v2/cognitive_maps")
-    limit: Optional[int] = None
+    limit: int | None = None
 
 
 def _rooted(path: Path) -> Path:
@@ -159,7 +158,7 @@ def _rooted(path: Path) -> Path:
     return path if path.is_absolute() else REPO_ROOT / path
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     args = PerturbArgs(underscores_to_dashes=True).parse_args(argv)
     if args.mode in PARAMETRIC and args.magnitude is None:
         raise ValueError(f"--magnitude is required for mode {args.mode}")
@@ -173,13 +172,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise ValueError(f"No graph files found in {graph_dir}")
     rng = random.Random(args.seed)
 
-    graphs: Dict[Path, CognitiveGraph] = {p: CognitiveGraph.load(p) for p in paths}
-    by_scene: Dict[str, List[Path]] = {}
+    graphs: dict[Path, CognitiveGraph] = {p: CognitiveGraph.load(p) for p in paths}
+    by_scene: dict[str, list[Path]] = {}
     for p, g in graphs.items():
         by_scene.setdefault(str(g.meta.scene), []).append(p)
 
     rendered = 0
-    donors: Dict[str, str] = {}
+    donors: dict[str, str] = {}
     for path in paths:
         graph = graphs[path]
         scene, episode_id, level_idx = graph.meta.scene, graph.meta.episode_id, graph.meta.level_idx
